@@ -1,0 +1,21 @@
+{
+  "name": "@parle/pi-extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "@parle/agent-client": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "echo 'No tests yet'"
+  }
+}
