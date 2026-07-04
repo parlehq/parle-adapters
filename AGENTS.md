@@ -13,8 +13,9 @@ This repository is the private pre-release home for Parle agent harness adapters
 ## Package map
 
 - `packages/client` - shared Parle agent client primitives.
+- `packages/mcp-server` - host-agnostic MCP server package.
 - `packages/pi-extension` - Pi adapter package.
-- `packages/claude-extension` - Claude adapter package.
+- `packages/claude-plugin` - Claude Code plugin directory. Current scaffold still has `packages/claude-extension` and should be renamed before real Claude work starts.
 
 ## Tooling
 
