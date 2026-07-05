@@ -481,6 +481,15 @@ function deliveryKey(message: any): string | undefined {
   return `${message.seq}:${message.event_id}`;
 }
 
+function bodyLooksLikeAddressedText(body: string): boolean {
+  return /^\s*(?:(?:ask|tell)\s+)?@[A-Za-z0-9_.-]+(?:\s|$)/i.test(body);
+}
+
+function addressingWarning(body: string, to?: string): string | undefined {
+  if (to || !bodyLooksLikeAddressedText(body)) return undefined;
+  return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
+}
+
 function rememberInjectedKey(key: string) {
   if (injectedKeys.has(key)) return;
   injectedKeys.add(key);
@@ -907,30 +916,39 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_send",
     label: "Parle Send",
-    description: "Send a raw Parle-native room message. V1 does not auto-retry; retryable errors include the idempotency key to reuse.",
+    description: "Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text and will not wake a peer. Responsive delivery currently injects only direct-addressed rows. Prefer to: \"@principal.agent\" for any live session of an agent, or to: \"@principal.agent.session\" to pin one session. V1 does not auto-retry; retryable errors include the idempotency key to reuse with byte-identical body and addressing.",
     parameters: Type.Object({
       body: Type.String(),
+      to: Type.Optional(Type.String()),
       idempotencyKey: Type.Optional(Type.String()),
     }),
     async execute(_id, params: any, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
       const idempotencyKey = params.idempotencyKey || randomUUID();
+      const to = typeof params.to === "string" && params.to.trim() ? params.to.trim() : undefined;
+      const submitBody: any = { type: "message_submitted", payload: { body: params.body } };
+      if (to) submitBody.addressing = { audience: "direct", to };
+      const warning = addressingWarning(params.body, to);
+      const retry = "If retrying this logical send after a retryable error, reuse the original idempotency key, byte-identical body, and identical to/addressing.";
       try {
         const details = await withRebootstrap(ctx, cfg, async () => requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/messages`, {
           method: "POST",
           session: true,
           idempotencyKey,
-          body: { type: "message_submitted", payload: { body: params.body } },
+          body: submitBody,
           signal,
         }), signal);
         setStatus(ctx, cfg);
-        return formatResult({ ...details, idempotencyKey: "<redacted>", retry: "If retrying this logical send after a retryable error, reuse the original idempotency key and byte-identical body." });
+        return formatResult({ ...details, idempotencyKey: "<redacted>", addressedTo: to, warning, retry });
       } catch (error: any) {
         runtime.lastError = error instanceof Error ? error.message : String(error);
         setStatus(ctx, cfg);
         const retryable = error?.status === 429 || (typeof error?.status === "number" && error.status >= 500);
-        return formatResult({ ok: false, retryable, idempotencyKey: retryable ? idempotencyKey : "<redacted>", error: redactString(runtime.lastError || String(error)) });
+        const hint = error?.status === 400 || error?.status === 422
+          ? "Direct addressing errors are not retryable. Check that to is a valid @principal.agent or @principal.agent.session address and that the target is a live room participant."
+          : undefined;
+        return formatResult({ ok: false, retryable, idempotencyKey: retryable ? idempotencyKey : "<redacted>", addressedTo: to, warning, hint, error: redactString(runtime.lastError || String(error)) });
       }
     },
   });
