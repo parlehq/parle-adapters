@@ -212,6 +212,50 @@ test("parle_affordances wraps the room affordances endpoint", async () => {
   assert.match(result.details.note, /advisory/);
 });
 
+test("SSE parser ignores keepalives and returns wake events", () => {
+  const parsed = __testing.parseSSEBlocks(": keepalive\n\nevent: config\ndata: {\"keepalive_ms\":25000}\n\nevent: wake\ndata: {\"room_id\":\"room-send\"}\n\npartial");
+
+  assert.deepEqual(parsed.events, [
+    { event: "config", data: "{\"keepalive_ms\":25000}" },
+    { event: "wake", data: "{\"room_id\":\"room-send\"}" },
+  ]);
+  assert.equal(parsed.rest, "partial");
+});
+
+test("wake hint drains responsive delivery without long polling", async () => {
+  const requested = [];
+  const injected = [];
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    requested.push(u);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-wake", session_handle: "wake-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.wake-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-wake" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery/ack")) {
+      assert.equal(init.method, "POST");
+      return new Response(JSON.stringify({ last_acked_seq: 7, last_ack_event_id: "evt-wake" }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) {
+      return new Response(JSON.stringify({
+        watermark: 7,
+        delivery: { last_acked_seq: 0 },
+        messages: [{ seq: 7, event_id: "evt-wake", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "hello" }],
+      }), { status: 200 });
+    }
+    throw new Error("unexpected " + u);
+  });
+  const cfg = __testing.resolveConfig(harness.cwd);
+  await harness.call("parle_status");
+  const pi = { sendUserMessage: async (message) => injected.push(message) };
+
+  await __testing.handleWakeHint(pi, harness.ctx, cfg);
+
+  assert.equal(injected.length, 1);
+  assert.equal(__testing.runtimeState().lastAckedSeq, 7);
+  assert.equal(requested.some((u) => u.includes("/responsive-delivery?wait=0")), true);
+  assert.equal(requested.some((u) => /responsive-delivery\?wait=(?!0)/.test(u)), false);
+});
+
 test("heartbeat 404 reboots the session before the watcher can wedge", async () => {
   let sessionCreates = 0;
   let heartbeatCalls = 0;

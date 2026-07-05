@@ -149,7 +149,7 @@ Owns:
 - Pi tool registration
 - Pi Typebox schemas
 - Pi runtime status and footer presentation
-- watcher loop
+- SSE wake stream loop
 - responsive delivery injection
 - injection deduplication keys
 - Pi lifecycle hooks

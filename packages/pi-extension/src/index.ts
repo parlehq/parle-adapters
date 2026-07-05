@@ -13,8 +13,7 @@ const GUIDANCE_LIMIT_BYTES = 128 * 1024;
 const REQUEST_LIMIT_BYTES = 128 * 1024;
 const READ_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_READ_MESSAGE_LIMIT = 50;
-const WATCH_WAIT_SECONDS = 25;
-const WATCH_REQUEST_TIMEOUT_MARGIN_MS = 10_000;
+const WATCH_STREAM_MAX_MS = 4 * 60 * 1000;
 const WATCH_ERROR_BACKOFF_MS = 5000;
 const WATCH_ERROR_BACKOFF_JITTER_MS = 1000;
 const WATCH_EMPTY_BACKOFF_MS = 250;
@@ -45,6 +44,7 @@ type ParleConfig = {
   agentTokenId?: ConfigValue;
   sessionHandleOverride?: ConfigValue;
   watchEnabled: ConfigValue;
+  wakeBase: ConfigValue;
   warnings: string[];
 };
 
@@ -74,13 +74,13 @@ type RuntimeState = {
   duplicateSuppressed?: number;
   baselineSkipped?: number;
   baselineAt?: string;
-  lastPollStartedAt?: string;
-  lastPollCompletedAt?: string;
-  lastPollDurationMs?: number;
+  lastWakeStreamOpenedAt?: string;
+  lastWakeHintAt?: string;
+  lastDeliveryFetchAt?: string;
   lastSuccessAt?: string;
   lastHttpStatus?: number;
   lastErrorClass?: WatcherErrorClass;
-  consecutivePollFailures?: number;
+  consecutiveWatcherFailures?: number;
   lastHeartbeatAt?: string;
   lastEndSessionAt?: string;
 };
@@ -189,9 +189,10 @@ function resolveConfig(cwd: string): ParleConfig {
     agentTokenId: pick("PARLE_AGENT_TOKEN_ID", undefined),
     sessionHandleOverride: pick("PARLE_SESSION_HANDLE", undefined),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
+    wakeBase: pick("PARLE_WAKE_BASE", undefined),
     warnings,
   };
-  for (const value of [cfg.apiBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionHandleOverride, cfg.watchEnabled]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionHandleOverride, cfg.watchEnabled]) {
     if (value?.warning) cfg.warnings.push(value.warning);
   }
   return cfg;
@@ -235,6 +236,7 @@ function assertRuntimeConfig(cfg: ParleConfig) {
   if (!cfg.roomId?.value) throw new Error("Parle setup needed: PARLE_ROOM_ID is missing. Set it in the environment, .env, or .parle/credentials.");
   if (!cfg.agentToken?.value) throw new Error("Parle setup needed: PARLE_ROOM_AGENT_TOKEN is missing. Set it in the environment, .env, or .parle/credentials.");
   assertSafeBase(cfg.apiBase.value);
+  if (cfg.wakeBase.value) assertSafeBase(cfg.wakeBase.value);
 }
 
 function watcherConfigured(cfg: ParleConfig): boolean {
@@ -406,6 +408,123 @@ async function requestJson(cfg: ParleConfig, path: string, options: { method?: s
   } finally {
     if (timeout) clearTimeout(timeout);
     if (parentAbort) options.signal?.removeEventListener("abort", parentAbort);
+  }
+}
+
+function wakeUrl(cfg: ParleConfig): URL {
+  const base = cfg.wakeBase.value || cfg.apiBase.value;
+  return new URL("/v/agent/wake", base);
+}
+
+function withTimeoutSignal(parent: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let didTimeout = false;
+  const timer = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, timeoutMs);
+  const onAbort = () => controller.abort();
+  parent?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onAbort);
+    },
+    timedOut: () => didTimeout,
+  };
+}
+
+function parseSSEBlocks(buffer: string): { events: Array<{ event: string; data: string }>; rest: string } {
+  const events: Array<{ event: string; data: string }> = [];
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const parts = normalized.split("\n\n");
+  const rest = parts.pop() || "";
+  for (const block of parts) {
+    let event = "message";
+    const data: string[] = [];
+    for (const line of block.split("\n")) {
+      if (!line || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+      else if (line.startsWith("data:")) data.push(line.slice("data:".length).trimStart());
+    }
+    if (data.length > 0 || event !== "message") events.push({ event, data: data.join("\n") });
+  }
+  return { events, rest };
+}
+
+async function fetchWakeStream(cfg: ParleConfig, signal: AbortSignal): Promise<Response> {
+  assertRuntimeConfig(cfg);
+  const headers: Record<string, string> = {
+    Accept: "text/event-stream",
+    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
+    Authorization: `Bearer ${cfg.agentToken!.value}`,
+  };
+  if (runtime.sessionHandle) headers["Parle-Agent-Session"] = runtime.sessionHandle;
+  const response = await fetch(wakeUrl(cfg), { method: "GET", headers, signal });
+  runtime.lastHttpStatus = response.status;
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    const json = parseJsonMaybe(text);
+    const msg = redactString(json?.error?.message || truncateText(redactString(text), 4096).text || response.statusText);
+    const err: any = new Error(`Parle wake stream ${response.status}: ${msg}`);
+    err.status = response.status;
+    throw err;
+  }
+  return response;
+}
+
+async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
+  runtime.lastWakeHintAt = new Date().toISOString();
+  runtime.lastDeliveryFetchAt = runtime.lastWakeHintAt;
+  const delivery = await withRebootstrap(ctx, cfg, async () => requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal }), signal);
+  recordWatcherSuccess();
+  const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+  const heldCount = Number(delivery?.held_backlog?.held_count || 0);
+  if (heldCount > 0) {
+    runtime.watcherState = "held";
+    runtime.lastHeldBacklogAt = new Date().toISOString();
+  }
+  if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
+  if (messages.length === 0) {
+    runtime.lastEmptyWakeAt = new Date().toISOString();
+    setStatus(ctx, cfg);
+    return;
+  }
+  for (const message of messages) {
+    if (signal?.aborted) break;
+    await injectResponsiveMessage(pi, ctx, cfg, message, typeof delivery?.preamble === "string" ? delivery.preamble : undefined, signal);
+  }
+  runtime.watcherState = "watching";
+  setStatus(ctx, cfg);
+}
+
+async function consumeWakeStream(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal) {
+  const scoped = withTimeoutSignal(signal, WATCH_STREAM_MAX_MS);
+  try {
+    const response = await fetchWakeStream(cfg, scoped.signal);
+    runtime.lastWakeStreamOpenedAt = new Date().toISOString();
+    runtime.watcherState = "watching";
+    setStatus(ctx, cfg);
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Parle wake stream response body is not readable");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (!scoped.signal.aborted) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSSEBlocks(buffer);
+      buffer = parsed.rest;
+      for (const event of parsed.events) {
+        if (event.event === "wake") await handleWakeHint(pi, ctx, cfg, signal);
+      }
+    }
+  } catch (error: any) {
+    if (scoped.timedOut()) return;
+    throw error;
+  } finally {
+    scoped.cleanup();
   }
 }
 
@@ -685,7 +804,7 @@ function classifyWatcherError(error: any): WatcherErrorClass {
 
 function recordWatcherSuccess() {
   runtime.lastSuccessAt = new Date().toISOString();
-  runtime.consecutivePollFailures = 0;
+  runtime.consecutiveWatcherFailures = 0;
   runtime.lastErrorClass = undefined;
 }
 
@@ -693,7 +812,7 @@ function recordWatcherError(error: any) {
   runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
   runtime.lastWatcherErrorAt = new Date().toISOString();
   runtime.lastErrorClass = classifyWatcherError(error);
-  runtime.consecutivePollFailures = (runtime.consecutivePollFailures || 0) + 1;
+  runtime.consecutiveWatcherFailures = (runtime.consecutiveWatcherFailures || 0) + 1;
   runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
 }
 
@@ -737,38 +856,10 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       try {
         await maybeHeartbeatAgentSession(ctx, cfg, signal);
         runtime.watcherState = "waiting";
-        runtime.lastPollStartedAt = new Date().toISOString();
         setStatus(ctx, cfg);
-        const pollStarted = Date.now();
-        const delivery = await withRebootstrap(ctx, cfg, async () => requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=${WATCH_WAIT_SECONDS}`, {
-          session: true,
-          signal,
-          timeoutMs: WATCH_WAIT_SECONDS * 1000 + WATCH_REQUEST_TIMEOUT_MARGIN_MS,
-        }), signal);
-        runtime.lastPollCompletedAt = new Date().toISOString();
-        runtime.lastPollDurationMs = Date.now() - pollStarted;
+        await withRebootstrap(ctx, cfg, async () => consumeWakeStream(pi, ctx, cfg, signal), signal);
         recordWatcherSuccess();
-        const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-        runtime.lastError = undefined;
-        const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-        if (heldCount > 0) {
-          runtime.watcherState = "held";
-          runtime.lastHeldBacklogAt = new Date().toISOString();
-        }
-        if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-        if (messages.length === 0) {
-          runtime.watcherState = heldCount > 0 ? "held" : "idle";
-          runtime.lastEmptyWakeAt = new Date().toISOString();
-          setStatus(ctx, cfg);
-          await sleep(WATCH_EMPTY_BACKOFF_MS, signal);
-          continue;
-        }
-        for (const message of messages) {
-          if (signal.aborted) break;
-          await injectResponsiveMessage(pi, ctx, cfg, message, typeof delivery?.preamble === "string" ? delivery.preamble : undefined, signal);
-        }
-        runtime.watcherState = "watching";
-        setStatus(ctx, cfg);
+        if (!signal.aborted) await sleep(WATCH_EMPTY_BACKOFF_MS, signal);
       } catch (error: any) {
         if (signal.aborted) break;
         recordWatcherError(error);
@@ -808,6 +899,7 @@ function statusDetails(ctx: any) {
     enabled: cfg.enabled,
     enabledInput: redactedValue(cfg.enabledInput),
     apiBase: redactedValue(cfg.apiBase),
+    wakeBase: redactedValue(cfg.wakeBase),
     version: redactedValue(cfg.version),
     roomId: redactedValue(cfg.roomId),
     roomHandle: redactedValue(cfg.roomHandle),
@@ -838,13 +930,13 @@ function statusDetails(ctx: any) {
       duplicateSuppressed: runtime.duplicateSuppressed,
       baselineSkipped: runtime.baselineSkipped,
       baselineAt: runtime.baselineAt,
-      lastPollStartedAt: runtime.lastPollStartedAt,
-      lastPollCompletedAt: runtime.lastPollCompletedAt,
-      lastPollDurationMs: runtime.lastPollDurationMs,
+      lastWakeStreamOpenedAt: runtime.lastWakeStreamOpenedAt,
+      lastWakeHintAt: runtime.lastWakeHintAt,
+      lastDeliveryFetchAt: runtime.lastDeliveryFetchAt,
       lastSuccessAt: runtime.lastSuccessAt,
       lastHttpStatus: runtime.lastHttpStatus,
       lastErrorClass: runtime.lastErrorClass,
-      consecutivePollFailures: runtime.consecutivePollFailures,
+      consecutiveWatcherFailures: runtime.consecutiveWatcherFailures,
       lastHeartbeatAt: runtime.lastHeartbeatAt,
       lastEndSessionAt: runtime.lastEndSessionAt,
       sessionHandle: runtime.sessionHandle ? "<redacted>" : undefined,
@@ -856,7 +948,7 @@ function statusDetails(ctx: any) {
 function shouldShowFooterError(): boolean {
   if (runtime.watcherState === "auth_expired" || runtime.watcherState === "session_expired" || runtime.watcherState === "disconnected") return true;
   if (runtime.watcherState !== "backoff") return false;
-  if ((runtime.consecutivePollFailures || 0) >= FOOTER_FAILURE_THRESHOLD) return true;
+  if ((runtime.consecutiveWatcherFailures || 0) >= FOOTER_FAILURE_THRESHOLD) return true;
   if (!runtime.lastWatcherErrorAt) return false;
   return Date.now() - Date.parse(runtime.lastWatcherErrorAt) >= FOOTER_FAILURE_AGE_MS;
 }
@@ -867,6 +959,8 @@ export const __testing = {
   inboundPrompt,
   summarizeSendDelivery,
   maybeHeartbeatAgentSession,
+  handleWakeHint,
+  parseSSEBlocks,
   resolveConfig,
   runtimeState() { return runtime; },
   patchRuntime(patch: Partial<RuntimeState>) { runtime = { ...runtime, ...patch }; },

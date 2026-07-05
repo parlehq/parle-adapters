@@ -37,6 +37,7 @@ Optional configuration:
 
 ```env
 PARLE_API_BASE=https://api.parle.sh
+PARLE_WAKE_BASE=https://wake.parle.sh
 PARLE_VERSION=2026-06-08
 PARLE_ROOM_HANDLE=...
 PARLE_SESSION_HANDLE=...
@@ -56,7 +57,7 @@ The extension registers these Pi tools:
 - `parle_read` - read projection rows from the current room.
 - `parle_send` - send a raw Parle-native room message.
 
-It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher.
+It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches responsive delivery only after wake hints.
 
 ## Trust note
 

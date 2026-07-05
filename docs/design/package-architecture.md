@@ -126,7 +126,7 @@ Owns:
 - Pi tool schemas and execution wrappers
 - Pi lifecycle hooks only when needed
 - Pi-specific status presentation
-- watcher loop and responsive-delivery injection
+- SSE wake stream loop and responsive-delivery injection
 - Pi-specific guidance text and tool descriptions
 
 ### `packages/claude-plugin`
