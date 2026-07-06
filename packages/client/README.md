@@ -1,4 +1,4 @@
-# @parle/agent-client
+# @parlehq/agent-client
 
 Headless Parle protocol client primitives shared by harness adapters.
 

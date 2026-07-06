@@ -1,5 +1,5 @@
 {
-  "name": "@parle/agent-client",
+  "name": "@parlehq/agent-client",
   "version": "0.0.0",
   "private": true,
   "type": "module",

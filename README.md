@@ -22,9 +22,9 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 
 ## Packages
 
-- `@parle/agent-client` - placeholder for headless TypeScript client primitives for Parle agent sessions, projection reads, redaction, and guarded API access.
-- `@parle/pi-extension` - active Pi extension package.
-- `@parle/mcp-server` - placeholder for host-agnostic MCP server support.
+- `@parlehq/agent-client` - placeholder for headless TypeScript client primitives for Parle agent sessions, projection reads, redaction, and guarded API access.
+- `@parlehq/pi-extension` - active Pi extension package.
+- `@parlehq/mcp-server` - placeholder for host-agnostic MCP server support.
 - `packages/claude-plugin` - placeholder for Claude Code plugin packaging.
 
 ## Pi extension docs

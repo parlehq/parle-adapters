@@ -1,10 +1,10 @@
 {
-  "name": "@parle/claude-plugin",
+  "name": "@parlehq/claude-plugin",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@parle/mcp-server": "workspace:*"
+    "@parlehq/mcp-server": "workspace:*"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

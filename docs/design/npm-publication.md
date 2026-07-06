@@ -12,8 +12,8 @@ Make the Parle adapter packages installable from npm where npm is the correct di
 
 Use a phased npm rollout:
 
-1. Publish `@parle/pi-extension` first once its package metadata and pack output are clean.
-2. Keep `@parle/agent-client` and `@parle/mcp-server` private until they contain real APIs.
+1. Publish `@parlehq/pi-extension` first once its package metadata and pack output are clean.
+2. Keep `@parlehq/agent-client` and `@parlehq/mcp-server` private until they contain real APIs.
 3. Keep `packages/claude-plugin` as a git-installed Claude Code plugin directory, not an npm-published package.
 4. Add Changesets now for versioning, changelogs, and future multi-package release automation.
 5. Add a package validation workflow now, but make actual npm publishing a separate explicit release step.
@@ -22,9 +22,9 @@ This keeps the currently useful package installable without forcing empty packag
 
 ## Package publication posture
 
-- `@parle/pi-extension`: real extracted Pi extension. Publish candidate now because it has live functionality and tests.
-- `@parle/agent-client`: placeholder. Do not publish yet because a placeholder creates semver and support obligations before the API exists.
-- `@parle/mcp-server`: placeholder. Do not publish yet for the same reason. Publish after the MCP tool surface exists.
+- `@parlehq/pi-extension`: real extracted Pi extension. Publish candidate now because it has live functionality and tests.
+- `@parlehq/agent-client`: placeholder. Do not publish yet because a placeholder creates semver and support obligations before the API exists.
+- `@parlehq/mcp-server`: placeholder. Do not publish yet for the same reason. Publish after the MCP tool surface exists.
 - `packages/claude-plugin`: placeholder plugin directory. Do not publish to npm because Claude Code plugins are plugin directories installed through Claude plugin mechanisms, not npm packages.
 
 ## Install story after npm support
@@ -40,13 +40,13 @@ pi install git:github.com/parlehq/parle-agent-adapters@main
 Once published, the preferred Pi install path should be:
 
 ```bash
-pi install npm:@parle/pi-extension
+pi install npm:@parlehq/pi-extension
 ```
 
 For project-local install:
 
 ```bash
-pi install -l npm:@parle/pi-extension
+pi install -l npm:@parlehq/pi-extension
 ```
 
 Keep the Git install path documented as a development or prerelease path.
@@ -68,7 +68,7 @@ For each npm-published package:
 - `peerDependencies` for host-provided Pi dependencies.
 - no bundled secrets, local credentials, generated caches, or workspace-only assumptions.
 
-For `@parle/pi-extension`, the npm package must publish built JavaScript, not source TypeScript as the runtime entry. The Pi manifest should point at `dist/index.js`; `main`, `types`, and `exports` should point at built artifacts as well. Source TypeScript may be included only if useful for debugging, not as the runtime load path.
+For `@parlehq/pi-extension`, the npm package must publish built JavaScript, not source TypeScript as the runtime entry. The Pi manifest should point at `dist/index.js`; `main`, `types`, and `exports` should point at built artifacts as well. Source TypeScript may be included only if useful for debugging, not as the runtime load path.
 
 No published package may depend on an unpublished private workspace package. Before publication, inspect `dependencies`, `peerDependencies`, and the packed tarball to verify there are no `workspace:*` dependencies that resolve only inside the monorepo.
 
@@ -79,21 +79,21 @@ Add scripts scoped to publish candidates, not placeholder packages:
 ```json
 {
   "scripts": {
-    "pack:check": "pnpm filter @parle/pi-extension pack dry run",
+    "pack:check": "pnpm filter @parlehq/pi-extension pack dry run",
     "release:version": "changeset version",
     "release:publish": "changeset publish"
   }
 }
 ```
 
-When `@parle/agent-client` or `@parle/mcp-server` become real publish candidates, add them explicitly to `pack:check` rather than sweeping all workspace packages.
+When `@parlehq/agent-client` or `@parlehq/mcp-server` become real publish candidates, add them explicitly to `pack:check` rather than sweeping all workspace packages.
 
 Add package-specific validation for publishable packages:
 
 ```bash
-pnpm filter @parle/pi-extension build
-pnpm filter @parle/pi-extension test
-pnpm filter @parle/pi-extension pack dry run
+pnpm filter @parlehq/pi-extension build
+pnpm filter @parlehq/pi-extension test
+pnpm filter @parlehq/pi-extension pack dry run
 ```
 
 The pack dry run must be reviewed before first publication. It should include only expected files. After packing, install the local tarball into a disposable Pi test project and verify Pi can load the extension and expose `parle_status`.
@@ -106,7 +106,7 @@ The pack dry run must be reviewed before first publication. It should include on
 - Keep the root package `private: true`.
 - Keep placeholder packages explicitly `private: true` and unpublishable.
 - Configure Changesets so placeholder packages cannot be released accidentally.
-- Add a Changeset for the first `@parle/pi-extension` release.
+- Add a Changeset for the first `@parlehq/pi-extension` release.
 - Add CI validation that runs test, typecheck, build, and pack dry run.
 - Publish manually from a clean maintainer workstation or a one-off GitHub Actions workflow after reviewing pack output.
 
@@ -117,7 +117,7 @@ After one or two successful manual releases:
 - Add a GitHub Actions release workflow using Changesets Action.
 - Prefer npm trusted publishing or provenance from GitHub Actions if compatible with the selected workflow.
 - If a token is required, store a least-privilege `NPM_TOKEN` as a GitHub secret.
-- Require npm organization access to be configured for `@parle` and require maintainer 2FA.
+- Require npm organization access to be configured for `@parlehq` and require maintainer 2FA.
 - Protect release workflow triggers so publishing only happens from `main` and only after a version PR is merged.
 
 ## CI design
@@ -131,7 +131,7 @@ Add `.github/workflows/ci.yml`:
 - `pnpm test`
 - `pnpm typecheck`
 - `pnpm build`
-- `pnpm filter @parle/pi-extension pack dry run`
+- `pnpm filter @parlehq/pi-extension pack dry run`
 
 Do not publish from CI in the first implementation PR unless explicitly approved.
 
@@ -153,18 +153,18 @@ Do not publish from CI in the first implementation PR unless explicitly approved
 2. Update root README and package README to describe current Git install and future npm install clearly.
 3. Update `packages/pi-extension/package.json` metadata for npm publication.
 4. Point the Pi manifest, `main`, `types`, and `exports` at built artifacts.
-5. Add `files` allowlist and verify `pnpm filter @parle/pi-extension pack dry run`.
+5. Add `files` allowlist and verify `pnpm filter @parlehq/pi-extension pack dry run`.
 6. Resolve dependency classification and remove wildcard peer ranges.
 7. Add local packed tarball Pi install smoke test.
 8. Add CI validation, including pack dry run.
-9. Add a first release Changeset for `@parle/pi-extension`.
-10. Manually publish `@parle/pi-extension` with public access after pack, secret scans, lifecycle script review, and smoke tests pass.
-11. Update README to make `pi install npm:@parle/pi-extension` primary and Git install secondary.
-12. Leave `@parle/agent-client`, `@parle/mcp-server`, and `packages/claude-plugin` unpublished until real APIs exist.
+9. Add a first release Changeset for `@parlehq/pi-extension`.
+10. Manually publish `@parlehq/pi-extension` with public access after pack, secret scans, lifecycle script review, and smoke tests pass.
+11. Update README to make `pi install npm:@parlehq/pi-extension` primary and Git install secondary.
+12. Leave `@parlehq/agent-client`, `@parlehq/mcp-server`, and `packages/claude-plugin` unpublished until real APIs exist.
 
 ## Open decisions
 
-### Should `@parle/pi-extension` publish source TS or built JS?
+### Should `@parlehq/pi-extension` publish source TS or built JS?
 
 Decision: publish built JS and declarations, with the Pi manifest pointing at `dist/index.js`. This makes npm install less dependent on source transpilation and TypeScript loader behavior.
 
@@ -174,15 +174,15 @@ Required validation: install from a local packed tarball using Pi before publish
 
 Recommendation: `0.1.0`. The Pi extension is already functional and public, but the package ecosystem is pre-1.0.
 
-### Should `@parle/agent-client` be published together with `@parle/pi-extension`?
+### Should `@parlehq/agent-client` be published together with `@parlehq/pi-extension`?
 
 Recommendation: no. Until client extraction happens, publishing it would advertise an API that does not exist.
 
 ## Acceptance criteria for issue #1
 
-- `@parle/pi-extension` has npm-ready metadata, README, license metadata, exports, types, and `files` allowlist.
-- `@parle/pi-extension` loads built JS from `dist/index.js` in its Pi manifest.
-- `@parle/agent-client` and `@parle/mcp-server` remain private or otherwise unpublishable while placeholder-only.
+- `@parlehq/pi-extension` has npm-ready metadata, README, license metadata, exports, types, and `files` allowlist.
+- `@parlehq/pi-extension` loads built JS from `dist/index.js` in its Pi manifest.
+- `@parlehq/agent-client` and `@parlehq/mcp-server` remain private or otherwise unpublishable while placeholder-only.
 - No published package depends on an unpublished private `workspace:*` package.
 - `packages/claude-plugin` is not documented as npm-installed.
 - Changesets is configured without accidentally releasing placeholders.

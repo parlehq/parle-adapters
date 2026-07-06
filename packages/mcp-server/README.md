@@ -1,10 +1,10 @@
-# @parle/mcp-server
+# @parlehq/mcp-server
 
 Host-agnostic stdio MCP server for Parle.
 
 ## Contract
 
-This package exposes Parle tools over MCP by depending on `@parle/agent-client`. It must not import Pi, Claude Code plugin, Claude Desktop bundle, or GalexC-specific code.
+This package exposes Parle tools over MCP by depending on `@parlehq/agent-client`. It must not import Pi, Claude Code plugin, Claude Desktop bundle, or GalexC-specific code.
 
 MCP v1 tools:
 

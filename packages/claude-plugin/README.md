@@ -1,12 +1,12 @@
-# @parle/claude-plugin
+# @parlehq/claude-plugin
 
 Claude Code plugin packaging for Parle.
 
 ## Contract
 
-This package is a Claude Code plugin directory. It should launch a bundled `@parle/mcp-server` artifact and provide Claude-specific metadata, skills, and documentation.
+This package is a Claude Code plugin directory. It should launch a bundled `@parlehq/mcp-server` artifact and provide Claude-specific metadata, skills, and documentation.
 
-It must not call Parle protocol helpers directly. In particular, it should not depend on `@parle/agent-client` for runtime behavior.
+It must not call Parle protocol helpers directly. In particular, it should not depend on `@parlehq/agent-client` for runtime behavior.
 
 This package owns:
 

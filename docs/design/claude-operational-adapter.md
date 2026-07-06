@@ -20,9 +20,9 @@ The phrase "Claude CLI harness" means Claude Code CLI only when it refers to Ant
 
 Use one shared implementation with four install or runtime surfaces:
 
-1. `packages/client`, package `@parle/agent-client`: headless Parle protocol client.
-2. `packages/pi-extension`, package `@parle/pi-extension`: native Pi extension rebuilt on the shared client.
-3. `packages/mcp-server`, package `@parle/mcp-server`: stdio MCP server for Claude and other MCP hosts.
+1. `packages/client`, package `@parlehq/agent-client`: headless Parle protocol client.
+2. `packages/pi-extension`, package `@parlehq/pi-extension`: native Pi extension rebuilt on the shared client.
+3. `packages/mcp-server`, package `@parlehq/mcp-server`: stdio MCP server for Claude and other MCP hosts.
 4. `packages/claude-plugin`: Claude Code plugin that launches the MCP server.
 5. `packages/claude-desktop-extension`: Claude Desktop MCPB bundle packaging that launches the same MCP server.
 
@@ -101,11 +101,11 @@ Default safe API base policy:
 - Allow local development hosts only behind an explicit development opt-in, for example `PARLE_ALLOW_INSECURE_LOCAL=1`, and only for loopback hosts.
 - Never allow arbitrary remote hosts from user config.
 
-This policy belongs in `@parle/agent-client` and should be shared by Pi and MCP.
+This policy belongs in `@parlehq/agent-client` and should be shared by Pi and MCP.
 
 ## Package contracts
 
-### `@parle/agent-client` in `packages/client`
+### `@parlehq/agent-client` in `packages/client`
 
 Owns:
 
@@ -142,7 +142,7 @@ Boundary check mechanism:
 - Add a small test script that scans `packages/client/src` for forbidden import specifiers such as `pi`, `@modelcontextprotocol`, `claude`, `mcp`, and `galexc`.
 - Run that script under `pnpm test`.
 
-### `@parle/pi-extension` in `packages/pi-extension`
+### `@parlehq/pi-extension` in `packages/pi-extension`
 
 Owns:
 
@@ -160,7 +160,7 @@ Acceptance for Pi refactor:
 - Existing Pi tests pass without weakening their assertions.
 - Add tests only for new behavior, not to paper over extraction regressions.
 
-### `@parle/mcp-server` in `packages/mcp-server`
+### `@parlehq/mcp-server` in `packages/mcp-server`
 
 Owns:
 
@@ -171,7 +171,7 @@ Owns:
 - output caps and redacted error responses
 - MCP smoke-test fixtures
 
-Must depend on `@parle/agent-client`.
+Must depend on `@parlehq/agent-client`.
 
 Must not import Pi, Claude plugin, Desktop bundle, or GalexC code.
 
@@ -185,7 +185,7 @@ Owns:
 - README for Claude Code install and use
 - bundled copy or build output of the MCP server artifact
 
-Must invoke `@parle/mcp-server`, not `@parle/agent-client` directly. The current placeholder dependency on `@parle/agent-client` should be removed or replaced during scaffold hygiene.
+Must invoke `@parlehq/mcp-server`, not `@parlehq/agent-client` directly. The current placeholder dependency on `@parlehq/agent-client` should be removed or replaced during scaffold hygiene.
 
 ### `packages/claude-desktop-extension`
 
@@ -238,7 +238,7 @@ Deferred tools:
 Issue #2 is the umbrella epic. Create or track these implementation issues under it:
 
 1. #3 Scaffold hygiene and package contracts.
-2. #4 Extract tested `@parle/agent-client`.
+2. #4 Extract tested `@parlehq/agent-client`.
 3. #5 Refactor Pi onto the shared client with parity tests.
 4. #6 Implement MCP v1 safe tools.
 5. #7 Add MCP stdio smoke tests.
@@ -253,13 +253,13 @@ Issue #2 is the umbrella epic. Create or track these implementation issues under
 ### 1. Scaffold hygiene and package contracts
 
 - Confirm the current Pi extension and tests are the baseline for extraction.
-- Remove `@parle/agent-client` dependency from `packages/claude-plugin` unless a direct build-time reason remains.
-- Make `packages/claude-plugin` depend on or bundle `@parle/mcp-server` only through the MCP artifact path.
+- Remove `@parlehq/agent-client` dependency from `packages/claude-plugin` unless a direct build-time reason remains.
+- Make `packages/claude-plugin` depend on or bundle `@parlehq/mcp-server` only through the MCP artifact path.
 - Add placeholder `packages/claude-desktop-extension` only when ready to implement Desktop packaging.
 - Align `docs/design/package-architecture.md` so MCP v1 does not include `parle_request` as an initial tool.
 - Add package contract notes to each package README as they become real.
 
-### 2. Extract tested `@parle/agent-client`
+### 2. Extract tested `@parlehq/agent-client`
 
 Subphases:
 
@@ -271,7 +271,7 @@ Subphases:
 
 ### 3. Refactor Pi onto the shared client
 
-- Replace duplicated helper logic with `@parle/agent-client` imports.
+- Replace duplicated helper logic with `@parlehq/agent-client` imports.
 - Keep Pi-owned watcher, injection, status, footer, and schemas in `packages/pi-extension`.
 - Run the current Pi tests unchanged, including direct addressing, inbox, affordances, heartbeat 404, and room-tool 404 coverage.
 
@@ -334,10 +334,10 @@ pnpm build
 Package gates as they become real:
 
 ```bash
-pnpm -F @parle/agent-client test
-pnpm -F @parle/pi-extension test
-pnpm -F @parle/mcp-server test
-pnpm -F @parle/mcp-server build
+pnpm -F @parlehq/agent-client test
+pnpm -F @parlehq/pi-extension test
+pnpm -F @parlehq/mcp-server test
+pnpm -F @parlehq/mcp-server build
 ```
 
 Additional gates:
@@ -351,10 +351,10 @@ Additional gates:
 ## Acceptance criteria for the epic
 
 - Current Pi extension behavior is the extraction parity baseline.
-- `@parle/agent-client` owns shared protocol behavior and has no harness imports.
+- `@parlehq/agent-client` owns shared protocol behavior and has no harness imports.
 - Package boundary checks prevent client imports from Pi, Claude, MCP, or GalexC packages.
 - Pi extension still typechecks and tests after client extraction.
-- `@parle/mcp-server` exposes only the seven safe v1 tools over stdio MCP.
+- `@parlehq/mcp-server` exposes only the seven safe v1 tools over stdio MCP.
 - MCP tools include appropriate tool annotations where supported by the SDK.
 - MCP smoke tests verify tool list plus `parle_status` and `parle_setup` without live secrets.
 - MCP tools redact secrets, enforce safe host validation, cap output sizes, and avoid arbitrary remote hosts.

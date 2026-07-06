@@ -11,10 +11,10 @@ Recommended package shape:
 
 ```text
 packages/
-  client/                    # @parle/agent-client
-  mcp-server/                # @parle/mcp-server
-  pi-extension/              # @parle/pi-extension
-  claude-plugin/             # @parle/claude-plugin
+  client/                    # @parlehq/agent-client
+  mcp-server/                # @parlehq/mcp-server
+  pi-extension/              # @parlehq/pi-extension
+  claude-plugin/             # @parlehq/claude-plugin
   claude-desktop-extension/  # future Claude Desktop MCPB package
 ```
 
@@ -41,27 +41,27 @@ Duplicating these between adapters would create drift quickly. The client packag
 
 For Claude Code, the equivalent of Pi custom tools should be delivered as an MCP server, then packaged for Claude Code as a plugin.
 
-- `@parle/mcp-server` exposes Parle tools over stdio MCP and should be usable by any MCP host.
+- `@parlehq/mcp-server` exposes Parle tools over stdio MCP and should be usable by any MCP host.
 - `packages/claude-plugin` packages Claude-specific installation, skills, hooks, and references to the MCP server.
 
 This avoids burying reusable MCP functionality inside a Claude-only package.
 
 ### 3. Pi remains a native adapter
 
-Pi has a first-class extension API and package manifest. `@parle/pi-extension` should stay a native Pi extension that depends on `@parle/agent-client`, not an MCP bridge unless a concrete Pi use case requires that later.
+Pi has a first-class extension API and package manifest. `@parlehq/pi-extension` should stay a native Pi extension that depends on `@parlehq/agent-client`, not an MCP bridge unless a concrete Pi use case requires that later.
 
 ### 4. The monorepo is source organization only
 
 The repo must not publish or document a single all-in-one runtime package. Users install only the package for their harness:
 
-- Pi users install `@parle/pi-extension`.
+- Pi users install `@parlehq/pi-extension`.
 - Claude Code users install the Claude plugin.
 - Claude Desktop users install the future Desktop Extension bundle.
-- MCP host users may install `@parle/mcp-server` directly.
+- MCP host users may install `@parlehq/mcp-server` directly.
 
 ## Package responsibilities
 
-### `@parle/agent-client`
+### `@parlehq/agent-client`
 
 Headless TypeScript package. No Pi, Claude, MCP, terminal UI, or GalexC imports.
 
@@ -94,9 +94,9 @@ Does not own:
 - footer or status rendering
 - GalexC Intercom compatibility
 
-### `@parle/mcp-server`
+### `@parlehq/mcp-server`
 
-Host-agnostic MCP server package. Depends on `@parle/agent-client`.
+Host-agnostic MCP server package. Depends on `@parlehq/agent-client`.
 
 Owns:
 
@@ -117,9 +117,9 @@ Initial MCP v1 tools should mirror the safe Pi tool surface:
 
 Defer `parle_request` from MCP v1. It is an advanced generic request surface and should return only after the safe tool set is proven, with explicit confirmation semantics and MCP tool annotations.
 
-### `@parle/pi-extension`
+### `@parlehq/pi-extension`
 
-Pi package. Depends on `@parle/agent-client`.
+Pi package. Depends on `@parlehq/agent-client`.
 
 Owns:
 
@@ -159,7 +159,7 @@ packages/claude-plugin/
 
 Skills, hooks, scripts, and `.mcp.json` live at the plugin root. The `.claude-plugin/` directory holds plugin metadata. Hook scripts should use `${CLAUDE_PLUGIN_ROOT}` paths.
 
-The Claude plugin should not reimplement Parle protocol calls. It should launch or bundle `@parle/mcp-server`, not depend directly on `@parle/agent-client`.
+The Claude plugin should not reimplement Parle protocol calls. It should launch or bundle `@parlehq/mcp-server`, not depend directly on `@parlehq/agent-client`.
 
 ## Repository conventions
 
@@ -185,15 +185,15 @@ Keep packages private until public release. Before flipping public:
 
 Distribution surfaces differ:
 
-- `@parle/agent-client`, `@parle/mcp-server`, and `@parle/pi-extension` are npm package candidates.
+- `@parlehq/agent-client`, `@parlehq/mcp-server`, and `@parlehq/pi-extension` are npm package candidates.
 - `packages/claude-plugin` is a git-installed Claude Code plugin directory. It can have a `package.json` for local development, but it should not be described as an npm-published adapter unless Claude Code adds a registry-backed plugin distribution path.
 
 ## Implementation sequence
 
 1. Freeze the current Pi extension and tests as the extraction baseline.
 2. Extract headless client primitives from the existing Pi extension into `packages/client`.
-3. Rebuild the Pi extension on top of `@parle/agent-client` while preserving the current tests.
-4. Build `@parle/mcp-server` on top of `@parle/agent-client`.
+3. Rebuild the Pi extension on top of `@parlehq/agent-client` while preserving the current tests.
+4. Build `@parlehq/mcp-server` on top of `@parlehq/agent-client`.
 5. Package Claude Code support as `packages/claude-plugin` using the MCP server.
 6. Add Claude Desktop packaging separately as `packages/claude-desktop-extension` after MCP is proven.
 7. Add release tooling after package APIs stabilize, before public publication.
@@ -201,7 +201,7 @@ Distribution surfaces differ:
 ## Acceptance criteria before extraction starts
 
 - Package names and directory names are final enough to avoid churn during extraction.
-- `@parle/agent-client` has a documented public boundary.
+- `@parlehq/agent-client` has a documented public boundary.
 - Claude support is framed as Claude Code plugin packaging plus MCP tools, not a bespoke duplicate of the Pi extension.
 - The Claude plugin distribution model is documented as git-installed plugin distribution, not npm installation.
 - No package imports from GalexC.

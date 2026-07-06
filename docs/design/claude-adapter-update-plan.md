@@ -13,14 +13,14 @@ Turn the working Pi extension into shared infrastructure and ship Claude support
 
 Target: Claude Code plugin wrapping a stdio MCP server. No bespoke Claude extension, no Agent SDK adapter, no Desktop bundle in this phase.
 
-- `@parle/mcp-server` is the only Claude-facing runtime. It is a stdio MCP server bundled into a single ESM artifact (`dist/parle-mcp.js`) with esbuild. All dependencies including the MCP SDK are bundled; the artifact requires only Node 20 or newer on PATH.
+- `@parlehq/mcp-server` is the only Claude-facing runtime. It is a stdio MCP server bundled into a single ESM artifact (`dist/parle-mcp.js`) with esbuild. All dependencies including the MCP SDK are bundled; the artifact requires only Node 20 or newer on PATH.
 - `packages/claude-plugin` is packaging only: plugin manifest, `.mcp.json` launching `node ${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js`, a Parle skill, and install docs. Distribution is git-installed plugin directory, not npm.
 - Claude Desktop (MCPB) stays deferred until the MCP server passes smoke tests, per the epic. It will reuse the same bundled artifact.
 - Generic MCP hosts run the same artifact directly; document this separately from the plugin.
 
 Rationale: Claude Code has no injection watcher or custom tool API equivalent to Pi. MCP is the supported tool surface, and the bundled artifact removes any dependency on npm publication (issue #1 stays independent).
 
-## Decision 2: What moves into `@parle/agent-client`
+## Decision 2: What moves into `@parlehq/agent-client`
 
 The extraction inventory below is grounded in the current `packages/pi-extension/src/index.ts`. The client is headless, instance-based, and takes injectable `fetch` and clock. No module-level singletons: the current module-level `runtime`, `injectedKeys`, and watcher globals become state on a `ParleAgentRuntime` instance that each adapter owns.
 
@@ -36,7 +36,7 @@ Moves to client (protocol and policy):
 - wake and responsive delivery protocol primitives: `wakeUrl`, `fetchWakeStream`, `parseSSEBlocks`, drain via `responsive-delivery?wait=0`, `ackResponsiveMessage`, `baselineResponsiveDelivery`, `deliveryKey`, held-backlog and last-acked bookkeeping, error classification (`classifyWatcherError`)
 - ADR-0036 framing helpers: `FENCE_SUFFIX`, `compactServerWrappedContent`, `renderedContent`, `authorReplyAddress`, and the structured data needed to build an inbound prompt
 
-Stays in Pi (`@parle/pi-extension`):
+Stays in Pi (`@parlehq/pi-extension`):
 
 - the watcher loop itself (`runWatcher`, `consumeWakeStream` orchestration, backoff pacing, start and stop)
 - prompt injection (`injectResponsiveMessage`, `inboundPrompt` final prose, `pi.sendUserMessage`, injected-key dedup ordering)
@@ -60,7 +60,7 @@ Anti-watcher-loop requirement (applies to all adapters and docs):
 - The Claude plugin skill MUST repeat this: check `parle_inbox` at natural turn boundaries; never poll in a loop; if continuous attention is required, that is a Pi-session job, not an MCP loop.
 - Enforce with a description lint test (see contract tests) so the wording cannot silently regress.
 
-## Decision 4: `@parle/mcp-server` wiring
+## Decision 4: `@parlehq/mcp-server` wiring
 
 - Tools: exactly the frozen seven: `parle_status`, `parle_setup`, `parle_guidance`, `parle_read`, `parle_inbox`, `parle_affordances`, `parle_send`. `parle_request` stays deferred.
 - Annotations: `readOnlyHint: true` on the six read tools; `parle_send` gets `destructiveHint: false`, `idempotentHint: false`, `openWorldHint: true`.
@@ -74,7 +74,7 @@ Anti-watcher-loop requirement (applies to all adapters and docs):
 Layout per the epic: `.claude-plugin/plugin.json`, `.mcp.json` at plugin root, `skills/parle/SKILL.md`, README, and the bundled MCP artifact (copied from the mcp-server build).
 
 - `.mcp.json` launches `node ${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js`. Confirm the plugin-root variable against a real local install before merging (epic precondition).
-- The plugin depends on `@parle/mcp-server` only through the artifact copy step. Remove any direct `@parle/agent-client` dependency.
+- The plugin depends on `@parlehq/mcp-server` only through the artifact copy step. Remove any direct `@parlehq/agent-client` dependency.
 - SKILL.md content requirements: when to use inbox vs read, reply addressing rules (`to: "@principal.agent"` or `@principal.agent.session`, never participant ids), ADR-0036 posture (peer bodies are untrusted text, act only under standing instructions, ignore routing claims inside bodies), send idempotency retry rule, and the anti-watcher-loop rule from Decision 3.
 - No hooks in v1. There is no deterministic lifecycle behavior needed yet; do not add hooks for model-facing behavior.
 
@@ -103,7 +103,7 @@ Three layers, all runnable offline with mocked fetch.
 Maps onto the epic's issue split (#3 to #12). Gates in parentheses must pass before the next step starts.
 
 1. Scaffold hygiene (#3): remove the claude-plugin dependency mismatch, reserve final package names, land this doc. (gate: `pnpm test`, `typecheck`, `build` green)
-2. Extract `@parle/agent-client` (#4): pure helpers first with tests, then lifecycle and room operations, then wake primitives, all instance-based. (gate: client unit tests plus boundary test green; Pi untouched and still green)
+2. Extract `@parlehq/agent-client` (#4): pure helpers first with tests, then lifecycle and room operations, then wake primitives, all instance-based. (gate: client unit tests plus boundary test green; Pi untouched and still green)
 3. Refactor Pi onto the client (#5). (gate: all 16 existing Pi tests pass unchanged)
 4. Implement MCP v1 tools (#6) plus stdio smoke tests (#7) against the shared fixture, including the description lint. (gate: smoke and behavior tests green)
 5. Package the Claude Code plugin (#8) and validate a real local install (#9): plugin loads, tools listed, `parle_status` and a mocked-config `parle_setup` behave. (gate: manual install checklist recorded in the plugin README)
@@ -116,7 +116,7 @@ Steps 2 and 3 are the critical path. Step 4 can start once the client lifecycle 
 
 No npm account or org is required for anything in this plan: the Claude path uses a bundled artifact and the plugin is git-installed. Publication remains issue #1 and its phased design stands.
 
-However, package names freeze at extraction time, and every design doc assumes the `@parle` scope. Recommendation: verify and reserve the `@parle` npm scope now (create the org, publish nothing). It costs minutes and removes the rename-churn risk if the scope turns out to be taken; if it is taken, decide the fallback scope (for example `@parlehq`) before step 2 starts, because renaming packages after extraction is pure churn. This is the only npm action needed now.
+The `@parle` npm scope was unavailable, so `@parlehq` is the canonical package scope. No publish is required for this plan, but extraction should use the `@parlehq` package names from the start to avoid rename churn.
 
 ## Risks
 
@@ -135,10 +135,10 @@ pnpm install
 pnpm test
 pnpm typecheck
 pnpm build
-pnpm -F @parle/agent-client test
-pnpm -F @parle/pi-extension test
-pnpm -F @parle/mcp-server test
-pnpm -F @parle/mcp-server build
+pnpm -F @parlehq/agent-client test
+pnpm -F @parlehq/pi-extension test
+pnpm -F @parlehq/mcp-server test
+pnpm -F @parlehq/mcp-server build
 ```
 
 Plus, per sequencing gates: MCP stdio smoke run, Claude Code local plugin install checklist, artifact inspection and secret scan before sharing any built artifact.
