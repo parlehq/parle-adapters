@@ -1,0 +1,56 @@
+{
+  "manifest_version": "0.3",
+  "name": "parle-claude-desktop-extension",
+  "display_name": "Parle",
+  "version": "0.1.0",
+  "description": "Claude Desktop extension for Parle room tools through a bundled local MCP server",
+  "author": {
+    "name": "Parle"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/parlehq/parle-agent-adapters.git"
+  },
+  "license": "MIT",
+  "compatibility": {
+    "runtimes": {
+      "node": ">=20"
+    }
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/parle-mcp.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/parle-mcp.js"],
+      "env": {
+        "PARLE_API_BASE": "${user_config.parle_api_base}",
+        "PARLE_ROOM_ID": "${user_config.parle_room_id}",
+        "PARLE_ROOM_AGENT_TOKEN": "${user_config.parle_agent_token}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "user_config": {
+    "parle_api_base": {
+      "type": "string",
+      "title": "Parle API base",
+      "description": "Parle API base URL. Keep the default unless using an approved local development setup.",
+      "default": "https://api.parle.sh",
+      "required": true
+    },
+    "parle_room_id": {
+      "type": "string",
+      "title": "Parle room id",
+      "description": "Room id from the Parle room settings or setup flow. V1 requires a room id rather than a room handle.",
+      "required": true
+    },
+    "parle_agent_token": {
+      "type": "string",
+      "title": "Parle agent token",
+      "description": "Agent-scoped Parle room token. Claude Desktop should store this sensitive value securely.",
+      "required": true,
+      "sensitive": true
+    }
+  }
+}

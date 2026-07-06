@@ -3,6 +3,7 @@ dist/
 !packages/claude-plugin/dist/
 packages/claude-plugin/dist/*
 !packages/claude-plugin/dist/parle-mcp.js
+packages/claude-desktop-extension/out/
 coverage/
 .env
 .parle/credentials

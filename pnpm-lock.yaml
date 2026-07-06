@@ -25,6 +25,15 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/claude-desktop-extension:
+    devDependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      '@parlehq/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
+
   packages/claude-plugin:
     dependencies:
       '@parlehq/mcp-server':
