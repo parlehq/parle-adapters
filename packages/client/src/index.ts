@@ -79,6 +79,12 @@ export type SendParams = {
   idempotencyKey?: string;
 };
 
+export type SendDeliveryStatus = {
+  state: "accepted_scan_skipped" | "held_for_moderation" | "delivered";
+  message: string;
+  nextStep?: string;
+};
+
 export class ParleApiError extends Error {
   status?: number;
   code?: string;
@@ -272,6 +278,29 @@ export function addressingWarning(body: string, to?: string): string | undefined
   return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
 }
 
+export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefined {
+  const moderation = details?.moderation;
+  if (!moderation || typeof moderation !== "object") return undefined;
+  const steps = Array.isArray(moderation.steps) ? moderation.steps : [];
+  if (moderation.scan === "skipped" && steps.length === 0) {
+    return {
+      state: "accepted_scan_skipped",
+      message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion.",
+    };
+  }
+  if (moderation.held === true) {
+    return {
+      state: "held_for_moderation",
+      message: moderation.reason || "Message accepted but held for moderation completion.",
+      nextStep: typeof details?.seq === "number" ? `Poll parle_read or parle_inbox around seq ${details.seq}; if held_backlog drains and the row never appears, it was blocked.` : "Poll parle_read or parle_inbox; if held_backlog drains and the row never appears, it was blocked.",
+    };
+  }
+  if (moderation.delivered === true) {
+    return { state: "delivered", message: "Message accepted and delivered." };
+  }
+  return undefined;
+}
+
 export function compactServerWrappedContent(content: string, preamble?: string, fence?: string | null): string {
   if (!preamble || !fence) return content;
   const open = `«FENCE BEGIN ${fence}»`;
@@ -439,7 +468,8 @@ export class ParleAgentClient {
       if (params.to) body.addressing = { audience: "direct", to: params.to };
       try {
         const result = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/messages`, { method: "POST", session: true, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
-        return { ...result, idempotencyKey, warning: addressingWarning(params.body, params.to) };
+        const deliveryStatus = summarizeSendDelivery(result);
+        return { ...result, idempotencyKey, warning: addressingWarning(params.body, params.to), ...(deliveryStatus ? { deliveryStatus } : {}) };
       } catch (error: any) {
         if (error instanceof ParleApiError) {
           return { ok: false, retryable: error.retryable, idempotencyKey: error.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };

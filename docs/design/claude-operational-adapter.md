@@ -127,7 +127,7 @@ Owns:
 - structured delivery and moderation state
 - typed errors that adapters can map into host-safe responses
 
-The client should return structured state, not final host-specific prose. Adapters own user-facing guidance strings and tool-name-specific next steps.
+The client should return structured state and shared Parle protocol summaries when the wording is adapter-neutral. Adapters own host-specific prose, approval UX, and tool-name-specific next steps. Delivery-state summaries currently name shared Parle tool concepts (`parle_read` and `parle_inbox`) that exist on both Pi and MCP surfaces, so the client owns that summary to avoid Pi/MCP drift.
 
 Must not import:
 

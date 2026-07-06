@@ -94,9 +94,11 @@ export async function runStdio() {
 
 function toolResult(value: unknown): any {
   const structuredContent = typeof value === "object" && value !== null ? value : { value };
+  const isError = (structuredContent as any).ok === false;
   return {
     structuredContent,
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    ...(isError ? { isError } : {}),
   };
 }
 

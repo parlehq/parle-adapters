@@ -12,6 +12,7 @@ import {
   redactedSecretValue,
   redactString,
   resolveConfig,
+  summarizeSendDelivery,
   updateCursorFromMessages,
 } from "../dist/index.js";
 
@@ -76,6 +77,20 @@ test("addressing warning fires only for body mentions without structured to", ()
   assert.equal(addressingWarning("@gilman.agent hello", "@gilman.agent.session"), undefined);
 });
 
+test("send delivery summary classifies moderation envelopes", () => {
+  assert.deepEqual(summarizeSendDelivery({ seq: 7, moderation: { held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending", reason: "awaiting moderation completion" } }), {
+    state: "accepted_scan_skipped",
+    message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion.",
+  });
+  const held = summarizeSendDelivery({ seq: 8, moderation: { held: true, delivered: false, scan: "queued", steps: [{ name: "scan" }], verdict: "pending", reason: "awaiting scan" } });
+  assert.equal(held.state, "held_for_moderation");
+  assert.equal(held.message, "awaiting scan");
+  assert.match(held.nextStep, /seq 8/);
+  assert.deepEqual(summarizeSendDelivery({ moderation: { delivered: true } }), { state: "delivered", message: "Message accepted and delivered." });
+  assert.equal(Object.hasOwn({ event_id: "evt-1" }, "deliveryStatus"), false);
+  assert.equal(summarizeSendDelivery({ event_id: "evt-1" }), undefined);
+});
+
 test("wrapped content compacts only exact same-response framing", () => {
   const preamble = "trusted";
   const content = "trusted\n«FENCE BEGIN ABC»\nhello\n«FENCE END ABC»\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
@@ -110,7 +125,7 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 4, messages: [{ seq: 4, content: "hello" }] });
-      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 5, replayed: false }, 201);
+      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 5, replayed: false, moderation: { held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending" } }, 201);
       return json({});
     },
   });
@@ -118,10 +133,29 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
   assert.equal(inbox.cursorAfter, 4);
   const sent = await client.send({ body: "hello", to: "@p.a.s1" });
   assert.equal(sent.idempotencyKey, "idem-1");
+  assert.equal(sent.deliveryStatus.state, "accepted_scan_skipped");
   assert.equal(requests.some((r) => r.url.includes("/inbound?since_seq=3&wait=2")), true);
   const sendReq = requests.find((r) => r.url.includes("/messages"));
   assert.equal(sendReq.init.headers["Idempotency-Key"], "idem-1");
   assert.equal(JSON.parse(sendReq.init.body).payload.turn, undefined);
+});
+
+test("send omits delivery status when success has no moderation envelope", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    randomUUID: () => "idem-no-moderation",
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (u.includes("/messages")) return json({ event_id: "evt-no-moderation", seq: 6 }, 201);
+      return json({});
+    },
+  });
+  const result = await client.send({ body: "hello" });
+  assert.equal(result.idempotencyKey, "idem-no-moderation");
+  assert.equal(Object.hasOwn(result, "deliveryStatus"), false);
 });
 
 test("read cursor advances only through returned capped messages", async () => {
@@ -158,6 +192,7 @@ test("retryable send errors return idempotency key for byte-identical retry", as
   assert.equal(result.ok, false);
   assert.equal(result.retryable, true);
   assert.equal(result.idempotencyKey, "idem-retry");
+  assert.equal(Object.hasOwn(result, "deliveryStatus"), false);
   assert.match(result.error, /Bearer <redacted>/);
 });
 

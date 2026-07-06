@@ -81,7 +81,7 @@ Owns:
 - direct addressing payload helpers
 - message send helpers
 - wake SSE stream handling, responsive-delivery drain with `wait=0`, ack helpers, and delivery dedupe state
-- structured delivery and moderation state
+- structured delivery and moderation state, including adapter-neutral delivery summaries shared by Pi and MCP
 - redaction and truncation utilities
 - typed error classes
 
