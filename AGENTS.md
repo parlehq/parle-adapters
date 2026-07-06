@@ -9,7 +9,7 @@ This repository is the public home for Parle agent harness adapters.
 - Keep the shared client headless. It must not import Pi, Claude, GalexC, or harness-specific APIs.
 - Keep each adapter independently installable. Do not create an all-in-one runtime package that loads every harness integration.
 - Keep GalexC-specific UX and compatibility glue out of this repo.
-- API-first fixes are the default. Before changing an adapter for a bug, ambiguity, or UX problem, ask whether the Parle HTTP API, discovery guidance, OpenAPI schema, or primitive semantics can fix it safely for all clients. Adapter-local fixes are for host UX and packaging, not protocol ambiguity, unless an API-layer fix is not viable.
+- API-first fixes are the default. Before changing an adapter for a bug, ambiguity, or UX problem, ask whether the Parle HTTP API, discovery guidance, OpenAPI schema, or primitive semantics can fix it safely for all clients. Adapter-local fixes are for host UX and packaging, not protocol ambiguity, unless an API-layer fix is not viable. Use `docs/design/api-first-adapter-foundation.md` as the controlling doctrine.
 
 ## Package map
 

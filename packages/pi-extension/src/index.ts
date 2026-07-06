@@ -726,6 +726,8 @@ function inboundPrompt(message: any, responsePreamble?: string): string {
   ].join("\n");
 }
 
+// @parle-interpretation parlehq/parle#41
+// Delete this Pi-local copy during the shared-client refactor.
 function summarizeSendDelivery(details: any): any {
   const moderation = details?.moderation;
   if (!moderation || typeof moderation !== "object") return undefined;

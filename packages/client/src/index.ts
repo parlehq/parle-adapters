@@ -269,15 +269,20 @@ export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT
   return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated };
 }
 
+// @parle-interpretation parlehq/parle#42
+// Temporary local advisory until the API returns canonical inert-mention warnings.
 export function bodyLooksLikeAddressedText(body: string): boolean {
   return /^\s*@[-a-z0-9_.]+\b/i.test(body);
 }
 
+// @parle-interpretation parlehq/parle#42
 export function addressingWarning(body: string, to?: string): string | undefined {
   if (to || !bodyLooksLikeAddressedText(body)) return undefined;
   return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
 }
 
+// @parle-interpretation parlehq/parle#41
+// Remove or narrow this when the API exposes canonical delivery state semantics.
 export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefined {
   const moderation = details?.moderation;
   if (!moderation || typeof moderation !== "object") return undefined;
@@ -301,6 +306,8 @@ export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefi
   return undefined;
 }
 
+// @parle-interpretation parlehq/parle#44
+// Exact validation of server framing until the byte format is a versioned core contract.
 export function compactServerWrappedContent(content: string, preamble?: string, fence?: string | null): string {
   if (!preamble || !fence) return content;
   const open = `«FENCE BEGIN ${fence}»`;
@@ -403,6 +410,8 @@ export class ParleAgentClient {
     if (!response.ok) {
       const code = json?.error?.code;
       const msg = redactString(json?.error?.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      // @parle-interpretation parlehq/parle#45
+      // Replace status-class retry inference once API errors expose canonical retryability.
       throw new ParleApiError(`Parle API ${response.status}: ${msg}`, { status: response.status, code, retryable: response.status >= 500 || response.status === 429, details: json });
     }
     return json;

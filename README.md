@@ -61,6 +61,7 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 - MCP server: [`packages/mcp-server/README.md`](./packages/mcp-server/README.md) for the tool contract and build.
 - Claude Desktop: [`packages/claude-desktop-extension/README.md`](./packages/claude-desktop-extension/README.md) for MCPB build and validation.
 - Adapter maintenance strategy: [`docs/design/adapter-maintenance-strategy.md`](./docs/design/adapter-maintenance-strategy.md) for shared client, MCP wrapper, Pi, Claude Code, and Desktop boundaries.
+- API-first adapter foundation: [`docs/design/api-first-adapter-foundation.md`](./docs/design/api-first-adapter-foundation.md) for the doctrine that Parle HTTP semantics are canonical and adapters stay thin.
 
 ## Boundary rules
 
