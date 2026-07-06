@@ -4,6 +4,7 @@ import {
   ParleAgentClient,
   addressingWarning,
   assertSafeBase,
+  capProjectionMessages,
   clampWaitSeconds,
   compactServerWrappedContent,
   parseKeyValueFile,
@@ -31,7 +32,9 @@ test("key value parser handles quotes and comments", () => {
 test("safe base rejects non-Parle hosts unless loopback opt-in is set", () => {
   assert.doesNotThrow(() => assertSafeBase("https://api.parle.sh"));
   assert.throws(() => assertSafeBase("http://evil.example"));
+  assert.throws(() => assertSafeBase("https://evilparle.sh"));
   assert.doesNotThrow(() => assertSafeBase("http://localhost:3000", { PARLE_ALLOW_INSECURE_LOCAL: "1" }));
+  assert.doesNotThrow(() => assertSafeBase("http://[::1]:3000", { PARLE_ALLOW_INSECURE_LOCAL: "1" }));
 });
 
 test("client safe-base validation uses injected env", async () => {
@@ -39,8 +42,10 @@ test("client safe-base validation uses injected env", async () => {
   assert.doesNotThrow(() => client.assertConfigured());
 });
 
-test("secret values are always redacted when configured", () => {
+test("secret values and protocol headers are redacted", () => {
   assert.deepEqual(redactedSecretValue({ source: "env", value: "opaque-token" }), { source: "env", configured: true, value: "<redacted>" });
+  const text = "Bearer abc.def Idempotency-Key: idem-1 Parle-Agent-Session=s1 parle_inv_secret parle_agt_secret prt_secret";
+  assert.equal(redactString(text), "Bearer <redacted> Idempotency-Key: <redacted> Parle-Agent-Session=<redacted> <redacted-token> <redacted-token> prt_<redacted>");
 });
 
 test("wait clamp is bounded and integral", () => {
@@ -60,6 +65,12 @@ test("cursor math advances from messages or watermark", () => {
   assert.equal(updateCursorFromMessages(3, [], 5), 5);
 });
 
+test("message cap does not drop an oversized first content row", () => {
+  const capped = capProjectionMessages([{ seq: 9, content: "x".repeat(300_000) }], 50, 4096);
+  assert.equal(capped.messages.length, 1);
+  assert.equal(capped.truncated, true);
+});
+
 test("addressing warning fires only for body mentions without structured to", () => {
   assert.match(addressingWarning("@gilman.agent hello"), /will not wake/);
   assert.equal(addressingWarning("@gilman.agent hello", "@gilman.agent.session"), undefined);
@@ -71,6 +82,11 @@ test("wrapped content compacts only exact same-response framing", () => {
   assert.equal(compactServerWrappedContent(content, preamble, "ABC"), "«FENCE BEGIN ABC»\nhello\n«FENCE END ABC»");
   assert.equal(compactServerWrappedContent(content, "wrong", "ABC"), content);
   assert.equal(compactServerWrappedContent(content.replace("trusted\n", "trusted\n\n"), preamble, "ABC"), content.replace("trusted\n", "trusted\n\n"));
+});
+
+test("requestJson validates absolute URLs before sending bearer tokens", async () => {
+  const client = new ParleAgentClient({ env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" }, fetch: async () => { throw new Error("fetch should not run"); } });
+  await assert.rejects(() => client.requestJson("https://evil.example/x"), /not allowlisted/);
 });
 
 test("human session auth mode fails closed until implemented", async () => {
@@ -105,6 +121,27 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
   assert.equal(requests.some((r) => r.url.includes("/inbound?since_seq=3&wait=2")), true);
   const sendReq = requests.find((r) => r.url.includes("/messages"));
   assert.equal(sendReq.init.headers["Idempotency-Key"], "idem-1");
+  assert.equal(JSON.parse(sendReq.init.body).payload.turn, undefined);
+});
+
+test("retryable send errors return idempotency key for byte-identical retry", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    randomUUID: () => "idem-retry",
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (u.includes("/messages")) return json({ error: { code: "rate_limited", message: "Bearer secret" } }, 429);
+      return json({});
+    },
+  });
+  const result = await client.send({ body: "hello" });
+  assert.equal(result.ok, false);
+  assert.equal(result.retryable, true);
+  assert.equal(result.idempotencyKey, "idem-retry");
+  assert.match(result.error, /Bearer <redacted>/);
 });
 
 function json(body, status = 200) {

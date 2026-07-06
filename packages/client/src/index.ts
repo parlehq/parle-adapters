@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
-export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
+export const DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
 export const DEFAULT_VERSION = "2026-06-08";
-export const DEFAULT_READ_MESSAGE_LIMIT = 20;
-export const READ_LIMIT_BYTES = 120_000;
+export const DEFAULT_READ_MESSAGE_LIMIT = 50;
+export const READ_LIMIT_BYTES = 256 * 1024;
 export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
 
 export type FetchLike = typeof fetch;
@@ -150,12 +150,22 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
   return cfg;
 }
 
+function parseJsonMaybe(text: string): any {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function redactString(input: string): string {
   return input
-    .replace(/parle_agt_[A-Za-z0-9._-]+/g, "parle_agt_<redacted>")
-    .replace(/prt_[A-Za-z0-9._-]+/g, "prt_<redacted>")
+    .replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>")
     .replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>")
-    .replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, "$1<redacted>");
+    .replace(/(parle_(?:agt|inv)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>")
+    .replace(/\bprt_[A-Za-z0-9_./+=:-]+/g, "prt_<redacted>")
+    .replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>")
+    .replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
 }
 
 export function redactedValue(value?: ConfigValue): { source: string; configured: boolean; value?: string } {
@@ -169,19 +179,22 @@ export function redactedSecretValue(value?: ConfigValue): { source: string; conf
 }
 
 export function truncateText(text: string, maxBytes: number): { text: string; truncated: boolean; bytes: number } {
-  const bytes = Buffer.byteLength(text, "utf8");
+  const source = Buffer.from(text, "utf8");
+  const bytes = source.byteLength;
   if (bytes <= maxBytes) return { text, truncated: false, bytes };
-  let out = text;
-  while (Buffer.byteLength(out + "\n[truncated]", "utf8") > maxBytes && out.length > 0) out = out.slice(0, -1);
-  return { text: out + "\n[truncated]", truncated: true, bytes };
+  const suffix = Buffer.from("\n[truncated]", "utf8");
+  const limit = Math.max(0, maxBytes - suffix.byteLength);
+  let slice = source.subarray(0, limit);
+  while (slice.length > 0 && (slice[slice.length - 1] & 0b1100_0000) === 0b1000_0000) slice = slice.subarray(0, -1);
+  return { text: Buffer.concat([slice, suffix]).toString("utf8"), truncated: true, bytes };
 }
 
 export function assertSafeBase(base: string, env: Record<string, string | undefined> = process.env): void {
   const url = new URL(base);
-  const isLocal = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const isLocal = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
   if (isLocal && env.PARLE_ALLOW_INSECURE_LOCAL === "1") return;
   if (url.protocol !== "https:") throw new Error(`Parle API base must use https: ${base}`);
-  if (!url.hostname.endsWith("parle.sh")) throw new Error(`Parle API base is not allowlisted: ${url.hostname}`);
+  if (url.hostname !== "parle.sh" && !url.hostname.endsWith(".parle.sh")) throw new Error(`Parle API base is not allowlisted: ${url.hostname}`);
 }
 
 export function clampWaitSeconds(value: unknown): number {
@@ -228,14 +241,26 @@ export function updateCursorFromMessages(cursor: number, messages: unknown[], wa
 export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT_READ_MESSAGE_LIMIT, maxBytes = READ_LIMIT_BYTES) {
   const capped: unknown[] = [];
   let returnedBytes = 0;
+  let truncated = messages.length > maxMessages;
   for (const message of messages.slice(0, maxMessages)) {
-    const text = JSON.stringify(message);
+    const copy: any = typeof message === "object" && message !== null ? { ...(message as Record<string, unknown>) } : message;
+    let text = JSON.stringify(copy);
+    if (returnedBytes + Buffer.byteLength(text, "utf8") > maxBytes && copy && typeof copy === "object" && typeof copy.content === "string") {
+      const remaining = Math.max(512, maxBytes - returnedBytes);
+      copy.content = truncateText(copy.content, remaining).text;
+      text = JSON.stringify(copy);
+      truncated = true;
+    }
     const bytes = Buffer.byteLength(text, "utf8");
-    if (returnedBytes + bytes > maxBytes) break;
-    capped.push(message);
+    if (returnedBytes + bytes > maxBytes) {
+      truncated = true;
+      if (capped.length === 0) capped.push(copy);
+      break;
+    }
+    capped.push(copy);
     returnedBytes += bytes;
   }
-  return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated: capped.length < messages.length };
+  return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated };
 }
 
 export function bodyLooksLikeAddressedText(body: string): boolean {
@@ -318,6 +343,7 @@ export class ParleAgentClient {
 
   async requestJson(pathOrUrl: string, options: RequestOptions = {}): Promise<any> {
     const url = requestUrl(this.cfg, pathOrUrl);
+    assertSafeBase(url.origin, this.env);
     const headers: Record<string, string> = {
       Accept: "application/json",
       "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
@@ -334,11 +360,11 @@ export class ParleAgentClient {
     const signal = options.signal && timeout ? AbortSignal.any([options.signal, timeout]) : options.signal || timeout;
     const response = await this.fetchImpl(url, { method: options.method || (options.body === undefined ? "GET" : "POST"), headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal });
     this.runtime.lastHttpStatus = response.status;
-    const text = await response.text();
-    const json = text ? JSON.parse(text) : {};
+    const text = redactString(await response.text());
+    const json = parseJsonMaybe(text);
     if (!response.ok) {
       const code = json?.error?.code;
-      const msg = redactString(json?.error?.message || response.statusText || `HTTP ${response.status}`);
+      const msg = redactString(json?.error?.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       throw new ParleApiError(`Parle API ${response.status}: ${msg}`, { status: response.status, code, retryable: response.status >= 500 || response.status === 429, details: json });
     }
     return json;
@@ -397,7 +423,7 @@ export class ParleAgentClient {
       const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
       const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), READ_LIMIT_BYTES);
       const cursorBefore = this.runtime.cursor;
-      if (params.advanceCursor !== false && params.sinceSeq === undefined) this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : undefined);
+      if (params.advanceCursor !== false && params.sinceSeq === undefined) this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, rawMessages, rawMessages.length === 0 ? projection.watermark : undefined);
       return { ...projection, surface, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: this.runtime.cursor, advancedCursor: cursorBefore !== this.runtime.cursor, note: wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text." };
     }, signal);
   }
@@ -409,10 +435,17 @@ export class ParleAgentClient {
   async send(params: SendParams, signal?: AbortSignal) {
     return this.withRebootstrap(async () => {
       const idempotencyKey = params.idempotencyKey || this.randomUUID();
-      const body: any = { type: "message_submitted", payload: { turn: 1, body: params.body } };
+      const body: any = { type: "message_submitted", payload: { body: params.body } };
       if (params.to) body.addressing = { audience: "direct", to: params.to };
-      const result = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/messages`, { method: "POST", session: true, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
-      return { ...result, idempotencyKey, warning: addressingWarning(params.body, params.to), retryable: false };
+      try {
+        const result = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/messages`, { method: "POST", session: true, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
+        return { ...result, idempotencyKey, warning: addressingWarning(params.body, params.to) };
+      } catch (error: any) {
+        if (error instanceof ParleApiError) {
+          return { ok: false, retryable: error.retryable, idempotencyKey: error.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
+        }
+        throw error;
+      }
     }, signal);
   }
 
