@@ -1,0 +1,8 @@
+{
+  "name": "parle-claude-plugin",
+  "version": "0.1.0",
+  "description": "Claude Code plugin for Parle room tools through the bundled MCP server",
+  "author": { "name": "Parle" },
+  "skills": "./skills/",
+  "keywords": ["parle", "mcp", "agents", "coordination"]
+}

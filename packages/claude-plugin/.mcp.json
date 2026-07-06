@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "parle": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js"]
+    }
+  }
+}
