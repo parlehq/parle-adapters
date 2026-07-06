@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "parle-mcp": "./dist/parle-mcp.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -10,11 +13,16 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/parle-mcp.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "echo 'No tests yet'"
+    "test": "pnpm build && node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@parlehq/agent-client": "workspace:*"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@parlehq/agent-client": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }
