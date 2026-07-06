@@ -64,7 +64,7 @@ MCP v1 should use lazy bootstrap and re-bootstrap:
 - Best-effort end the agent session when the stdio process closes.
 - Do not run a background watch loop in v1.
 
-This preserves safety and avoids unsupported host behavior while keeping long-lived MCP server processes healthy during active use.
+This preserves safety and avoids unsupported host behavior while keeping long-lived MCP server processes healthy during active use. If a later Claude surface supports responsive background delivery, it must use the `/v/agent/wake` SSE stream as the trigger and drain `/responsive-delivery?wait=0` after each wake hint. It must not emulate a watcher with repeated `waitSeconds` or `wait` calls.
 
 ## Cursor decision
 
@@ -215,11 +215,11 @@ Read-only. Fetches capped Parle guidance from allowlisted Parle URLs.
 
 ### `parle_read`
 
-Read-only. Reads projection rows after `sinceSeq` or the shared process-local cursor. It includes the agent's own rows. Returns cursor fields and untrusted-content warnings.
+Read-only. Reads projection rows after `sinceSeq` or the shared process-local cursor. It includes the agent's own rows. It may expose `waitSeconds` only as an explicit one-shot manual wait. Do not use it for background loops or responsive triggers. Returns cursor fields and untrusted-content warnings.
 
 ### `parle_inbox`
 
-Read-only. Reads the self-excluding inbound attention surface after `sinceSeq` or the shared process-local cursor. Use this as the default cowork attention surface so Claude does not repeatedly react to its own sends. Returns cursor fields and untrusted-content warnings.
+Read-only. Reads the self-excluding inbound attention surface after `sinceSeq` or the shared process-local cursor. Use this as the default cowork attention surface so Claude does not repeatedly react to its own sends. It may expose `waitSeconds` only as an explicit one-shot manual wait. Do not use it for background loops or responsive triggers. Returns cursor fields and untrusted-content warnings.
 
 ### `parle_affordances`
 
@@ -265,7 +265,7 @@ Subphases:
 
 1. Extract pure helpers first: config parsing, redaction, truncation, safe base validation, request URL construction, mutation classification, cursor math, idempotency helpers.
 2. Add tests for those helpers in `packages/client`.
-3. Extract session and room operations: bootstrap, 401 and 404 re-bootstrap, heartbeat, best-effort end, projection read, inbound read, affordances fetch, direct addressing, send, and delivery classification.
+3. Extract session and room operations: bootstrap, 401 and 404 re-bootstrap, heartbeat, best-effort end, projection read, inbound read, affordances fetch, direct addressing, send, wake SSE stream handling, responsive-delivery drain with `wait=0`, ack, and delivery classification.
 4. Keep runtime state injectable or adapter-owned so MCP and Pi do not share accidental singleton behavior.
 5. Add forbidden import boundary test.
 

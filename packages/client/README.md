@@ -15,6 +15,7 @@ It owns:
 - setup diagnostics and guidance fetches
 - session bootstrap, 401 and session-404 re-bootstrap, heartbeat, and best-effort session end primitives
 - projection read, inbound read, affordances fetch, send, direct addressing, shared cursor helpers, and idempotency helpers
+- wake SSE stream handling, responsive-delivery drain with `wait=0`, ack helpers, and delivery dedupe state
 - structured delivery and moderation state
 - typed errors for adapters to render safely
 

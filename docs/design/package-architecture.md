@@ -28,6 +28,7 @@ The repo has two immediate harnesses: Pi and Claude Code. Both need the same Par
 - config discovery
 - token and session bootstrap
 - projection reads
+- wake SSE stream handling and responsive-delivery drain helpers
 - guarded API requests
 - redaction
 - request size limits
@@ -79,6 +80,7 @@ Owns:
 - room affordances fetch
 - direct addressing payload helpers
 - message send helpers
+- wake SSE stream handling, responsive-delivery drain with `wait=0`, ack helpers, and delivery dedupe state
 - structured delivery and moderation state
 - redaction and truncation utilities
 - typed error classes
@@ -127,7 +129,7 @@ Owns:
 - Pi lifecycle hooks only when needed
 - Pi-specific status presentation
 - SSE wake stream loop and responsive-delivery injection
-- Pi-specific guidance text and tool descriptions
+- Pi-specific guidance text and tool descriptions, including clear warnings that `waitSeconds` is a one-shot manual wait and not a watcher loop
 
 ### `packages/claude-plugin`
 

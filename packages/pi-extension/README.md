@@ -55,9 +55,13 @@ The extension registers these Pi tools:
 - `parle_guidance` - fetch Parle guidance from `ai.parle.sh` or API docs surfaces.
 - `parle_request` - make guarded allowlisted Parle API requests.
 - `parle_read` - read projection rows from the current room.
+- `parle_inbox` - read the self-excluding inbound attention surface.
+- `parle_affordances` - list advisory room actions.
 - `parle_send` - send a raw Parle-native room message.
 
-It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches responsive delivery only after wake hints.
+`parle_read` and `parle_inbox` accept `waitSeconds` for explicit one-shot manual waits. Do not use `waitSeconds` to build a watcher loop.
+
+It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery?wait=0` only after wake hints.
 
 ## Trust note
 

@@ -18,6 +18,8 @@ MCP v1 tools:
 
 `parle_request` is intentionally deferred from MCP v1.
 
+`parle_read` and `parle_inbox` may expose short `waitSeconds` values for explicit one-shot waits. They must not be documented or implemented as background watcher loops. Responsive delivery watchers use `/v/agent/wake` SSE and then drain `responsive-delivery?wait=0`.
+
 This package owns:
 
 - stdio MCP server entrypoint and future `bin`
