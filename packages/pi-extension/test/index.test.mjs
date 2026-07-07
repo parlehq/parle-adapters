@@ -57,6 +57,17 @@ test("status reads room and token from project .env and redacts token", async ()
   assert.equal(status.details.agentToken.value, "<redacted>");
 });
 
+test("watcher bootstrap failure records status instead of escaping", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=bad-version\n");
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "unsupported_version", message: "missing or unsupported Parle-Version header" } }), { status: 400 });
+  const ctx = { cwd, ui: { setStatus() {} } };
+  __testing.startWatcher({ sendUserMessage() {} }, ctx, __testing.resolveConfig(cwd));
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const state = __testing.runtimeState();
+  assert.equal(state.watcherState, "backoff");
+  assert.match(state.lastError, /unsupported Parle-Version/);
+});
+
 test("status bootstraps and redacts session handle", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
   globalThis.fetch = async (url) => {

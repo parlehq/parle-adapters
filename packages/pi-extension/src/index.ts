@@ -870,10 +870,20 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
         await sleep(jitteredBackoffMs(), signal).catch(() => undefined);
       }
     }
+  } catch (error: any) {
+    if (!signal.aborted) {
+      recordWatcherError(error);
+      runtime.watcherState = error?.status === 401 ? "auth_expired" : error?.status === 404 ? "session_expired" : "backoff";
+      setStatus(ctx, cfg);
+    }
   } finally {
     if (runId === activeWatcherRunId) {
       watcherLoopRunning = false;
-      runtime.watcherState = signal.aborted ? "disconnected" : "off";
+      if (signal.aborted) {
+        runtime.watcherState = "disconnected";
+      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff") {
+        runtime.watcherState = "off";
+      }
       setStatus(ctx, cfg);
     }
   }
@@ -967,6 +977,7 @@ export const __testing = {
   inboundPrompt,
   summarizeSendDelivery,
   maybeHeartbeatAgentSession,
+  startWatcher,
   handleWakeHint,
   parseSSEBlocks,
   resolveConfig,
