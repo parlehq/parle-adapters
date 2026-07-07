@@ -36,6 +36,9 @@ jobs:
       - name: Check manifest versions
         run: pnpm check:manifests
 
+      - name: Build
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 
