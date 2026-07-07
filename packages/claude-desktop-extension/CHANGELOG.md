@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-07-07)
+
+Wire protocol hard cut (parlehq/parle #436/#437; bundled artifact refresh; behavior shipped in adapters commit 207c8cc without a version bump - this release corrects that):
+
+- Parle-Version 2026-07-07 required; prior version rejected. Pre-cutover sessions invalid; reconnect with parle_connect.
+- Secret parle_ses_ session credential selects sessions; optional PARLE_SESSION_ALIAS claims a durable named route with generation fencing.
+- parle_ses_ added to redaction.
+
 ## 0.2.0 (2026-07-07)
 
 MCP tool contract change (bundled `@parlehq/mcp-server` artifact refresh):
