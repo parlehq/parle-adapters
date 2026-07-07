@@ -140,7 +140,7 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
     fetch: async (url, init = {}) => {
       const u = String(url);
       requests.push({ url: u, init });
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", address: "@p.a.s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", address: "@p.a.s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 4, messages: [{ seq: 4, content: "hello" }] });
@@ -165,7 +165,7 @@ test("send omits delivery status when success has no moderation envelope", async
     randomUUID: () => "idem-no-moderation",
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
       if (u.includes("/messages")) return json({ event_id: "evt-no-moderation", seq: 6 }, 201);
@@ -182,7 +182,7 @@ test("read cursor advances only through returned capped messages", async () => {
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 5, messages: [{ seq: 4, content: "returned" }, { seq: 5, content: "not returned" }] });
@@ -201,7 +201,7 @@ test("401 rebootstrap retries once and preserves cursor", async () => {
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection?wait=0")) return json({ watermark: 12, messages: [] });
       if (u.includes("/projection?since_seq=")) {
@@ -224,7 +224,7 @@ test("session 404 rebootstrap retries once and surfaces second 404", async () =>
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection?wait=0")) return json({ watermark: 21, messages: [] });
       if (u.includes("/inbound")) {
@@ -247,7 +247,7 @@ test("affordances rebootstrap after session 404 and preserve cursor", async () =
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection?wait=0")) return json({ watermark: 33, messages: [] });
       if (u.includes("/affordances")) {
@@ -274,7 +274,7 @@ test("send reuses generated idempotency key across session 404 rebootstrap", asy
     randomUUID: () => "idem-stable",
     fetch: async (url, init = {}) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection?wait=0")) return json({ watermark: 44, messages: [] });
       if (u.includes("/messages")) {
@@ -324,7 +324,7 @@ test("retryable send errors return idempotency key for byte-identical retry", as
     randomUUID: () => "idem-retry",
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
       if (u.includes("/messages")) return json({ error: { code: "rate_limited", message: "Bearer secret" } }, 429);
@@ -345,7 +345,7 @@ test("connect bootstraps once, returns factual summary, and reuses live sessions
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token", PARLE_ROOM_HANDLE: "room-handle" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, address: "@p.a.s1", expires_at: "2999-01-01T00:00:00Z" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, address: "@p.a.s1", expires_at: "2999-01-01T00:00:00Z" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 7, messages: [], held_backlog: { held_count: 2 } });
       return json({});
@@ -372,7 +372,7 @@ test("connect re-bootstraps an expired session", async () => {
     now: () => new Date("2030-01-01T00:00:00Z"),
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, expires_at: "2029-01-01T00:00:00Z" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "2029-01-01T00:00:00Z" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 1, messages: [] });
       return json({});
@@ -389,7 +389,7 @@ test("implicit bootstrap attaches session block to the triggering call only", as
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", address: "@p.a.s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", address: "@p.a.s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 3, messages: [] });
@@ -413,7 +413,7 @@ test("send that bootstraps attaches the session block", async () => {
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
       if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 1 }, 201);
@@ -429,7 +429,7 @@ test("status exposes agent_session_id, redacts session handle, marks optional co
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
       return json({});

@@ -30961,7 +30961,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
-var DEFAULT_VERSION = "2026-06-08";
+var DEFAULT_VERSION = "2026-07-07";
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
 var CONNECT_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
@@ -31026,11 +31026,11 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     roomHandle: firstConfigValue("PARLE_ROOM_HANDLE", sources),
     agentToken: firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
     agentTokenId: firstConfigValue("PARLE_AGENT_TOKEN_ID", sources),
-    sessionHandleOverride: firstConfigValue("PARLE_SESSION_HANDLE", sources),
+    sessionAlias: firstConfigValue("PARLE_SESSION_ALIAS", sources),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     warnings: []
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionHandleOverride, cfg.watchEnabled]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning)
       cfg.warnings.push(value.warning);
   }
@@ -31044,12 +31044,12 @@ function parseJsonMaybe(text) {
   }
 }
 function redactString(input) {
-  return input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(parle_(?:agt|inv)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>").replace(/\bprt_[A-Za-z0-9_./+=:-]+/g, "prt_<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
+  return input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(parle_(?:agt|inv|ses)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>").replace(/\bprt_[A-Za-z0-9_./+=:-]+/g, "prt_<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
 }
 function redactedValue(value) {
   if (!value?.value)
     return { source: value?.source || "missing", configured: false };
-  const sensitiveShape = /parle_agt_|prt_|__Host-parle_session/.test(value.value);
+  const sensitiveShape = /parle_agt_|parle_ses_|prt_|__Host-parle_session/.test(value.value);
   return { source: value.source, configured: true, value: sensitiveShape ? redactString(value.value) : value.value };
 }
 function redactedSecretValue(value) {
@@ -31187,7 +31187,7 @@ var ParleAgentClient = class {
         agentToken: redactedSecretValue(this.cfg.agentToken),
         agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true }
       },
-      // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#48); session_handle is the credential and stays redacted.
+      // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
       runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       warnings: this.cfg.warnings
     };
@@ -31254,10 +31254,10 @@ var ParleAgentClient = class {
     this.assertConfigured();
     const previousCursor = this.runtime.cursor;
     const body = {};
-    if (this.cfg.sessionHandleOverride?.value)
-      body.session_handle = this.cfg.sessionHandleOverride.value;
+    if (this.cfg.sessionAlias?.value)
+      body.alias = this.cfg.sessionAlias.value;
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body, signal });
-    this.runtime.sessionHandle = String(session.session_handle || "");
+    this.runtime.sessionHandle = String(session.session_credential || "");
     this.runtime.sessionAddress = typeof session.address === "string" ? session.address : null;
     this.runtime.agentSessionId = String(session.agent_session_id || "");
     this.runtime.expiresAt = String(session.expires_at || "");
@@ -31280,7 +31280,7 @@ var ParleAgentClient = class {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle)
       await this.bootstrap(signal);
   }
-  // @parle-interpretation parlehq/parle#49
+  // @parle-interpretation parlehq/parle#434
   // Deliberately factual until the core session lifecycle and delivery baseline
   // contract exists: reports client cursor position and server-reported held
   // backlog only; makes no responsive-delivery baseline or ack-init claims.

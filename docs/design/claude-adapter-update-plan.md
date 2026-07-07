@@ -121,7 +121,7 @@ The `@parle` npm scope was unavailable, so `@parlehq` is the canonical package s
 ## Risks
 
 - High: client extraction regresses the working Pi adapter. Mitigation: parity gate on the unchanged 16 tests, phased extraction (pure helpers before lifecycle before wake), `__testing` surface preserved.
-- High: wake contract drift between client primitives and the Parle server. Mitigation: the wake drain contract test pins wake-then-drain-wait-0 behavior; fixture is versioned against `Parle-Version: 2026-06-08`; server-side changes require a fixture update PR, making drift visible.
+- High: wake contract drift between client primitives and the Parle server. Mitigation: the wake drain contract test pins wake-then-drain-wait-0 behavior; fixture is versioned against `Parle-Version: 2026-07-07`; server-side changes require a fixture update PR, making drift visible.
 - Medium: accidental shared state between adapters after extraction. Mitigation: instance-based runtime, no module singletons in the client; a test constructs two runtimes and asserts isolation.
 - Medium: committed `dist/parle-mcp.js` goes stale relative to source. Mitigation: CI rebuilds and diffs the artifact; a mismatch fails the build.
 - Medium: MCP users treat `waitSeconds` as a subscription and burn tokens polling. Mitigation: description lint, skill wording, and the 30-second clamp in the client.

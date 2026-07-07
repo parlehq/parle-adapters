@@ -37,7 +37,7 @@ The plugin build copies `../mcp-server/dist/parle-mcp.js` into `packages/claude-
 node ${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js
 ```
 
-Configure Parle with `PARLE_API_BASE`, `PARLE_VERSION`, `PARLE_ROOM_ID`, `PARLE_ROOM_AGENT_TOKEN`, and optionally `PARLE_SESSION_HANDLE` in the Claude environment. `.mcp.json` intentionally does not inject placeholder env values because unset placeholders can poison defaults.
+Configure Parle with `PARLE_API_BASE`, `PARLE_VERSION`, `PARLE_ROOM_ID`, `PARLE_ROOM_AGENT_TOKEN`, and optionally `PARLE_SESSION_ALIAS` in the Claude environment. `.mcp.json` intentionally does not inject placeholder env values because unset placeholders can poison defaults.
 
 ### Permissions
 

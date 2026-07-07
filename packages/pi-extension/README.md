@@ -38,9 +38,9 @@ Optional configuration:
 ```env
 PARLE_API_BASE=https://api.parle.sh
 PARLE_WAKE_BASE=https://wake.parle.sh
-PARLE_VERSION=2026-06-08
+PARLE_VERSION=2026-07-07
 PARLE_ROOM_HANDLE=...
-PARLE_SESSION_HANDLE=...
+PARLE_SESSION_ALIAS=...
 PARLE_WATCH_ENABLED=1
 ```
 

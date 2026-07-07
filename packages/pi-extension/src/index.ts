@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const DEFAULT_API_BASE = "https://api.parle.sh";
-const DEFAULT_VERSION = "2026-06-08";
+const DEFAULT_VERSION = "2026-07-07";
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
 const OPENAPI_URL = "https://api.parle.sh/openapi.json";
@@ -42,7 +42,7 @@ type ParleConfig = {
   roomHandle?: ConfigValue;
   agentToken?: ConfigValue;
   agentTokenId?: ConfigValue;
-  sessionHandleOverride?: ConfigValue;
+  sessionAlias?: ConfigValue;
   watchEnabled: ConfigValue;
   wakeBase: ConfigValue;
   warnings: string[];
@@ -188,12 +188,12 @@ function resolveConfig(cwd: string): ParleConfig {
     roomHandle: pick("PARLE_ROOM_HANDLE", undefined),
     agentToken: pick("PARLE_ROOM_AGENT_TOKEN", undefined, true),
     agentTokenId: pick("PARLE_AGENT_TOKEN_ID", undefined),
-    sessionHandleOverride: pick("PARLE_SESSION_HANDLE", undefined),
+    sessionAlias: pick("PARLE_SESSION_ALIAS", undefined),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
     wakeBase: pick("PARLE_WAKE_BASE", undefined),
     warnings,
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionHandleOverride, cfg.watchEnabled]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning) cfg.warnings.push(value.warning);
   }
   return cfg;
@@ -215,7 +215,7 @@ function redactString(input: string): string {
   return input
     .replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>")
     .replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>")
-    .replace(/(parle_(?:agt|inv)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>")
+    .replace(/(parle_(?:agt|inv|ses)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>")
     .replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>")
     .replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
 }
@@ -533,9 +533,9 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
   assertRuntimeConfig(cfg);
   const previousCursor = runtime.cursor;
   const sessionBody: Record<string, string> = {};
-  if (cfg.sessionHandleOverride?.value) sessionBody.session_handle = cfg.sessionHandleOverride.value;
+  if (cfg.sessionAlias?.value) sessionBody.alias = cfg.sessionAlias.value;
   const session = await requestJson(cfg, "/v/agent/sessions", { method: "POST", body: sessionBody, signal });
-  runtime.sessionHandle = String(session.session_handle || "");
+  runtime.sessionHandle = String(session.session_credential || "");
   runtime.sessionAddress = typeof session.address === "string" ? session.address : null;
   runtime.agentSessionId = String(session.agent_session_id || "");
   runtime.expiresAt = String(session.expires_at || "");
@@ -565,7 +565,7 @@ async function withRebootstrap<T>(ctx: any, cfg: ParleConfig, fn: () => Promise<
     if (error?.status !== 401 && error?.status !== 404) throw error;
     const hadBaseline = Boolean(runtime.baselineAt);
     await bootstrap(ctx, cfg, signal, true);
-    if (hadBaseline && !cfg.sessionHandleOverride?.value) await baselineResponsiveDelivery(ctx, cfg, signal);
+    if (hadBaseline && !cfg.sessionAlias?.value) await baselineResponsiveDelivery(ctx, cfg, signal);
     return fn();
   }
 }
@@ -853,7 +853,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
   setStatus(ctx, cfg);
   try {
     await ensureBootstrapped(ctx, cfg, signal);
-    if (!runtime.baselineAt && !cfg.sessionHandleOverride?.value) await baselineResponsiveDelivery(ctx, cfg, signal);
+    if (!runtime.baselineAt && !cfg.sessionAlias?.value) await baselineResponsiveDelivery(ctx, cfg, signal);
     while (!signal.aborted && watcherConfigured(cfg)) {
       try {
         await maybeHeartbeatAgentSession(ctx, cfg, signal);
@@ -913,7 +913,7 @@ function statusDetails(ctx: any) {
     roomHandle: redactedValue(cfg.roomHandle),
     agentToken: redactedValue(cfg.agentToken),
     agentTokenId: redactedValue(cfg.agentTokenId),
-    sessionHandleOverride: redactedValue(cfg.sessionHandleOverride),
+    sessionAlias: redactedValue(cfg.sessionAlias),
     watchEnabled: redactedValue(cfg.watchEnabled),
     warnings: Array.from(new Set(cfg.warnings)),
     runtime: {

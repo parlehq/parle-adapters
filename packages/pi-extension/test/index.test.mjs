@@ -61,7 +61,7 @@ test("status bootstraps and redacts session handle", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
   globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-1", session_handle: "raw-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-1", session_credential: "parle_ses_raw-session", session_handle: "raw-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-1", room_id: "room-1", agent_session_id: "as-1" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
     throw new Error("unexpected " + u);
@@ -94,7 +94,7 @@ test("parle_send includes direct addressing when to is present", async () => {
   let messageRequest;
   const harness = installSendHarness(async (url, init = {}) => {
     const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-send", session_handle: "send-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.send-session" }), { status: 201 });
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-send", session_credential: "parle_ses_send-session", session_handle: "send-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.send-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-send" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send/messages")) {
@@ -173,7 +173,7 @@ test("parle_inbox reads the inbound attention surface", async () => {
   let inboxURL;
   const harness = installSendHarness(async (url) => {
     const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-inbox", session_handle: "inbox-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.inbox-session" }), { status: 201 });
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-inbox", session_credential: "parle_ses_" + String("inbox-session"), session_handle: "inbox-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.inbox-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-inbox" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 3, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) {
@@ -207,7 +207,7 @@ test("parle_affordances wraps the room affordances endpoint", async () => {
   let sawAffordances = false;
   const harness = installSendHarness(async (url) => {
     const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-aff", session_handle: "aff-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.aff-session" }), { status: 201 });
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-aff", session_credential: "parle_ses_" + String("aff-session"), session_handle: "aff-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.aff-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-aff" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send/affordances")) {
@@ -240,7 +240,7 @@ test("wake hint drains responsive delivery without long polling", async () => {
   const harness = installSendHarness(async (url, init = {}) => {
     const u = String(url);
     requested.push(u);
-    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-wake", session_handle: "wake-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.wake-session" }), { status: 201 });
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-wake", session_credential: "parle_ses_" + String("wake-session"), session_handle: "wake-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.wake-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-wake" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.includes("/responsive-delivery/ack")) {
@@ -275,7 +275,7 @@ test("heartbeat 404 reboots the session before the watcher can wedge", async () 
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
       sessionCreates += 1;
-      return new Response(JSON.stringify({ agent_session_id: `as-heart-${sessionCreates}`, session_handle: `heart-session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.heart-session-${sessionCreates}` }), { status: 201 });
+      return new Response(JSON.stringify({ agent_session_id: `as-heart-${sessionCreates}`, session_credential: `parle_ses_heart-session-${sessionCreates}`, session_handle: `heart-session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.heart-session-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-heart" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
@@ -304,7 +304,7 @@ test("room tool calls rebootstrap after session 404", async () => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
       sessionCreates += 1;
-      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_handle: `session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.session-${sessionCreates}` }), { status: 201 });
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.session-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-reboot" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
@@ -331,7 +331,7 @@ test("mid-run unpinned rebootstrap baselines the new session before retry", asyn
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
       sessionCreates += 1;
-      return new Response(JSON.stringify({ agent_session_id: `as-baseline-${sessionCreates}`, session_handle: `baseline-session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.baseline-session-${sessionCreates}` }), { status: 201 });
+      return new Response(JSON.stringify({ agent_session_id: `as-baseline-${sessionCreates}`, session_credential: `parle_ses_baseline-session-${sessionCreates}`, session_handle: `baseline-session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.baseline-session-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-baseline" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });

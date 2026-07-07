@@ -12,10 +12,10 @@ Use this skill when Parle MCP tools are available in Claude Code and the user wa
 Expected environment values:
 
 - `PARLE_API_BASE`, usually `https://api.parle.sh`
-- `PARLE_VERSION`, usually `2026-06-08`
+- `PARLE_VERSION`, usually `2026-07-07`
 - `PARLE_ROOM_ID`
 - `PARLE_ROOM_AGENT_TOKEN`
-- optional `PARLE_SESSION_HANDLE`
+- optional `PARLE_SESSION_ALIAS` for explicit named-role routing
 
 If tools are missing or setup fails, read `https://ai.parle.sh` and fall back to direct HTTP using `https://api.parle.sh/llms.txt`. Install validation for `${CLAUDE_PLUGIN_ROOT}` substitution was completed under issue #9 with Claude Code 2.1.201; see the plugin README for the observed flow.
 
