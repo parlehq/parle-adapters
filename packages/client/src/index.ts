@@ -9,7 +9,7 @@ export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
 
-// @parle-interpretation parlehq/parle#47
+// @parle-interpretation parlehq/parle#433
 // Canonical connect guidance pending server-authored text in discovery surfaces.
 export const CONNECT_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
 
@@ -297,19 +297,19 @@ export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT
   return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated };
 }
 
-// @parle-interpretation parlehq/parle#42
+// @parle-interpretation parlehq/parle#428
 // Temporary local advisory until the API returns canonical inert-mention warnings.
 export function bodyLooksLikeAddressedText(body: string): boolean {
   return /^\s*@[-a-z0-9_.]+\b/i.test(body);
 }
 
-// @parle-interpretation parlehq/parle#42
+// @parle-interpretation parlehq/parle#428
 export function addressingWarning(body: string, to?: string): string | undefined {
   if (to || !bodyLooksLikeAddressedText(body)) return undefined;
   return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
 }
 
-// @parle-interpretation parlehq/parle#41
+// @parle-interpretation parlehq/parle-agent-adapters#13
 // Remove or narrow this when the API exposes canonical delivery state semantics.
 export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefined {
   const moderation = details?.moderation;
@@ -334,7 +334,7 @@ export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefi
   return undefined;
 }
 
-// @parle-interpretation parlehq/parle#44
+// @parle-interpretation parlehq/parle#430
 // Exact validation of server framing until the byte format is a versioned core contract.
 export function compactServerWrappedContent(content: string, preamble?: string, fence?: string | null): string {
   if (!preamble || !fence) return content;
@@ -387,7 +387,7 @@ export class ParleAgentClient {
         agentToken: redactedSecretValue(this.cfg.agentToken),
         agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true },
       },
-      // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#48); session_handle is the credential and stays redacted.
+      // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_handle is the credential and stays redacted.
       runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       warnings: this.cfg.warnings,
     };
@@ -397,7 +397,7 @@ export class ParleAgentClient {
     const missing = [];
     if (!this.cfg.roomId?.value) missing.push("PARLE_ROOM_ID");
     if (!this.cfg.agentToken?.value) missing.push("PARLE_ROOM_AGENT_TOKEN");
-    // @parle-interpretation parlehq/parle#49
+    // @parle-interpretation parlehq/parle#434
     // Connection-posture wording pending the core session lifecycle contract.
     const note = missing.length
       ? "Set missing configuration in env, .env, or .parle/credentials."
@@ -447,7 +447,7 @@ export class ParleAgentClient {
     if (!response.ok) {
       const code = json?.error?.code;
       const msg = redactString(json?.error?.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      // @parle-interpretation parlehq/parle#45
+      // @parle-interpretation parlehq/parle#431
       // Replace status-class retry inference once API errors expose canonical retryability.
       throw new ParleApiError(`Parle API ${response.status}: ${msg}`, { status: response.status, code, retryable: response.status >= 500 || response.status === 429, details: json });
     }
@@ -482,7 +482,7 @@ export class ParleAgentClient {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) await this.bootstrap(signal);
   }
 
-  // @parle-interpretation parlehq/parle#49
+  // @parle-interpretation parlehq/parle#434
   // Deliberately factual until the core session lifecycle and delivery baseline
   // contract exists: reports client cursor position and server-reported held
   // backlog only; makes no responsive-delivery baseline or ack-init claims.

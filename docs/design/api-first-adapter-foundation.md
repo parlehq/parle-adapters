@@ -4,7 +4,7 @@ Status: design draft for adversarial review
 Date: 2026-07-06
 Owner repo: `parlehq/parle-agent-adapters`
 Core counterpart needed: `parlehq/parle` API and discovery doctrine
-Related: `adapter-maintenance-strategy.md`, `package-architecture.md`, `claude-adapter-update-plan.md`, `claude-desktop-mcpb-package.md`, `parlehq/parle#41`
+Related: `adapter-maintenance-strategy.md`, `package-architecture.md`, `claude-adapter-update-plan.md`, `claude-desktop-mcpb-package.md`, `parlehq/parle#427`, `parlehq/parle-agent-adapters#13`
 
 ## Why this exists
 
@@ -16,7 +16,7 @@ The working rule is:
 
 > Fix meaning at the API layer first. Use adapters to make harnesses convenient, not to define what Parle means.
 
-The reverted no-scan masking fix is the template. The adapter could hide confusing moderation internals, but that would only help Parle-maintained wrappers and would require repacking installed artifacts. The better fix is `parlehq/parle#41`: make no-scan send responses unambiguous at the API and discovery layer so every client benefits.
+The reverted no-scan masking fix is the template. The adapter could hide confusing moderation internals, but that would only help Parle-maintained wrappers and would require repacking installed artifacts. The better fix was `parlehq/parle#427`: make no-scan send responses unambiguous at the API and discovery layer so every client benefits. Adapter follow-through is tracked in `parlehq/parle-agent-adapters#13`.
 
 ## Layer model
 
@@ -139,53 +139,53 @@ Interpretation is permitted only when all are true:
 Current ledger:
 
 - Helper: `summarizeSendDelivery` in `@parlehq/agent-client`
-  - Marker: `@parle-interpretation parlehq/parle#41`
+  - Marker: `@parle-interpretation parlehq/parle-agent-adapters#13`
   - Layer: L1
   - Meaning interpreted: moderation envelope to send delivery status
-  - Upstream issue: `parlehq/parle#41`
-  - Removal condition: Parle API exposes canonical no-scan and delivery state semantics that clients can present directly, ideally as an explicit delivery state field plus docs.
-  - Reason it still exists: current adapters need a temporary shared way to avoid divergent handling until the API makes the state unambiguous.
+  - Upstream issue: `parlehq/parle#427`, adapter follow-through `parlehq/parle-agent-adapters#13`
+  - Removal condition: adapters pass through server-authored `moderation.delivery_state` when present and keep only legacy fallback for older API deployments.
+  - Reason it still exists: the API fix landed, but adapter follow-through still needs to retire local no-scan inference debt.
 - Helper: `addressingWarning` and `bodyLooksLikeAddressedText` in `@parlehq/agent-client`
-  - Marker: `@parle-interpretation parlehq/parle#42`
+  - Marker: `@parle-interpretation parlehq/parle#428`
   - Layer: L1
   - Meaning interpreted: body text that looks addressed is only inert text unless structured addressing is present.
-  - Upstream issue: `parlehq/parle#42`
+  - Upstream issue: `parlehq/parle#428`
   - Removal condition: message submit responses include canonical server-authored addressing advisories for inert body mentions.
   - Reason it still exists: current adapters need to warn users before the API can return the same advisory for every client.
 - Helper: `compactServerWrappedContent` in `@parlehq/agent-client`
-  - Marker: `@parle-interpretation parlehq/parle#44`
+  - Marker: `@parle-interpretation parlehq/parle#430`
   - Layer: L1
   - Meaning interpreted: exact ADR-0036 fence and preamble byte shape.
-  - Upstream issue: `parlehq/parle#44`
+  - Upstream issue: `parlehq/parle#430`
   - Removal condition: ADR-0036 framing bytes are versioned and documented, and the server offers canonical compact or non-repeated presentation where appropriate.
   - Reason it still exists: clients need safe exact-validation compaction without trusting peer-authored content.
 - Helper: `CONNECT_NEXT_GUIDANCE` in `@parlehq/agent-client`
-  - Marker: `@parle-interpretation parlehq/parle#47`
+  - Marker: `@parle-interpretation parlehq/parle#433`
   - Layer: L1
   - Meaning interpreted: canonical post-connect next step (report address and expiry, arm responsive delivery) that discovery surfaces do not yet author.
-  - Upstream issue: `parlehq/parle#47`
+  - Upstream issue: `parlehq/parle#433`
   - Removal condition: session bootstrap and connect guidance are server-authored in `llms.txt`/OpenAPI/`ai.parle.sh`; adapters render the server text.
   - Reason it still exists: the sessions and participant-join endpoints are entirely undocumented at L0, so clients have no server-owned connect narrative to render.
 - Helper: `connectionSummary`/`connect` and the `setup` connection-posture note in `@parlehq/agent-client`
-  - Marker: `@parle-interpretation parlehq/parle#49`
+  - Marker: `@parle-interpretation parlehq/parle#434`
   - Layer: L1
   - Meaning interpreted: what "connected" means (session + join + cursor at bootstrap watermark) and how connection posture is described. Deliberately factual per adversarial review: reports client cursor position and server-reported held backlog only; no responsive-delivery baseline or ack-initialization claims.
-  - Upstream issue: `parlehq/parle#49`
+  - Upstream issue: `parlehq/parle#434`
   - Removal condition: core session lifecycle and delivery baseline contract exists; the summary narrows to citing server-owned semantics.
   - Reason it still exists: clients need a stable connect affordance now, and the lifecycle contract is not yet specified.
 - Helper: retryability inference in `requestJson`
-  - Marker: `@parle-interpretation parlehq/parle#45`
+  - Marker: `@parle-interpretation parlehq/parle#431`
   - Layer: L1
   - Meaning interpreted: HTTP status classes imply retryability, currently `429` or `>=500`.
-  - Upstream issue: `parlehq/parle#45`
+  - Upstream issue: `parlehq/parle#431`
   - Removal condition: Parle API error bodies expose canonical retryability or documented error-code semantics.
   - Reason it still exists: adapters need a consistent retry hint until the API makes retryability explicit.
 - Helper: Pi-local `summarizeSendDelivery`
-  - Marker: `@parle-interpretation parlehq/parle#41`
+  - Marker: `@parle-interpretation parlehq/parle-agent-adapters#13`
   - Layer: L2 legacy copy
   - Meaning interpreted: same as shared-client `summarizeSendDelivery`.
-  - Upstream issue: `parlehq/parle#41`
-  - Removal condition: Pi refactor onto `@parlehq/agent-client`, then eventual API delivery-state fix.
+  - Upstream issue: `parlehq/parle-agent-adapters#13`
+  - Removal condition: Pi refactor onto `@parlehq/agent-client`, then shared delivery-state passthrough from `parlehq/parle-agent-adapters#13`.
   - Reason it still exists: Pi refactor is still pending, so the copy is explicitly marked as temporary debt.
 
 Ledger rules:
@@ -232,7 +232,7 @@ These strings should have one canonical source and byte-parity tests across surf
 - untrusted peer content and ADR-0036 posture
 - direct addressing rules
 - idempotency retry rule
-- no-scan and moderation state guidance after `parlehq/parle#41`
+- no-scan and moderation state guidance after core `parlehq/parle#427` and adapter follow-through `parlehq/parle-agent-adapters#13`
 - setup and missing-config diagnostics
 
 Preference order:
@@ -479,9 +479,9 @@ API-first should not freeze UX. It should prevent semantics from leaking into ev
 
 ## Immediate next steps
 
-1. Keep `parlehq/parle#41` as the exemplar API-first fix for no-scan delivery ambiguity.
-2. Land the core counterpart doctrine tracked by `parlehq/parle#43`.
-3. File core issues for conformance fixtures, canonical guidance strings, token format registry, error taxonomy, session lifecycle, wake/drain/ack spec, ADR-0036 byte spec, and `Parle-Version` lifecycle.
+1. Treat core `parlehq/parle#427` plus adapter `parlehq/parle-agent-adapters#13` as the exemplar API-first loop for no-scan delivery ambiguity.
+2. Keep ADR-0060 in core as the counterpart doctrine and update this adapter doctrine when the layer contract changes.
+3. File or maintain core issues for conformance fixtures, canonical guidance strings, token format registry, error taxonomy, session lifecycle, wake/drain/ack spec, ADR-0036 byte spec, and `Parle-Version` lifecycle.
 4. Keep interpretation marker comments on existing interpretation helpers in `@parlehq/agent-client` and Pi until Pi is fully refactored.
 5. Add CI checks that fail new interpretation helpers without a ledger entry. Use `@parle-interpretation <upstream issue>` marker comments and cross-check them against the ledger.
 6. Add MCP tool-contract lock file generation and diff checks.
