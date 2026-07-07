@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/copy-mcp-artifact.mjs && node scripts/stage-mcpb.mjs && npx -y @anthropic-ai/mcpb@2.1.2 validate manifest.json",
+    "build": "node scripts/copy-mcp-artifact.mjs && node scripts/stage-mcpb.mjs && pnpm dlx @anthropic-ai/mcpb@2.1.2 validate manifest.json",
     "typecheck": "echo 'No TypeScript sources' && node scripts/check-mcp-artifact.mjs",
-    "test": "node scripts/check-mcp-artifact.mjs && node scripts/smoke-server.mjs && node scripts/stage-mcpb.mjs && npx -y @anthropic-ai/mcpb@2.1.2 validate manifest.json && npx -y @anthropic-ai/mcpb@2.1.2 pack out/staging out/parle-claude-desktop-extension.mcpb && rm -rf out/unpacked && npx -y @anthropic-ai/mcpb@2.1.2 unpack out/parle-claude-desktop-extension.mcpb out/unpacked && node scripts/inspect-pack.mjs out/unpacked && node scripts/secret-scan.mjs . out/staging out/unpacked"
+    "test": "node scripts/check-mcp-artifact.mjs && node scripts/smoke-server.mjs && node scripts/stage-mcpb.mjs && pnpm dlx @anthropic-ai/mcpb@2.1.2 validate manifest.json && pnpm dlx @anthropic-ai/mcpb@2.1.2 pack out/staging out/parle-claude-desktop-extension.mcpb && rm -rf out/unpacked && pnpm dlx @anthropic-ai/mcpb@2.1.2 unpack out/parle-claude-desktop-extension.mcpb out/unpacked && node scripts/inspect-pack.mjs out/unpacked && node scripts/secret-scan.mjs . out/staging out/unpacked"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
