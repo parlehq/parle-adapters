@@ -339,6 +339,112 @@ test("retryable send errors return idempotency key for byte-identical retry", as
   assert.match(result.error, /Bearer <redacted>/);
 });
 
+test("connect bootstraps once, returns factual summary, and reuses live sessions", async () => {
+  let sessions = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token", PARLE_ROOM_HANDLE: "room-handle" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, address: "@p.a.s1", expires_at: "2999-01-01T00:00:00Z" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 7, messages: [], held_backlog: { held_count: 2 } });
+      return json({});
+    },
+  });
+  const first = await client.connect();
+  assert.equal(first.connected, true);
+  assert.equal(first.reusedExistingSession, false);
+  assert.equal(first.agentSessionId, "as-1");
+  assert.equal(first.participantId, "part-1");
+  assert.equal(first.cursor, 7);
+  assert.equal(first.heldBacklogCount, 2);
+  assert.equal(first.roomHandle, "room-handle");
+  assert.match(first.next, /arm responsive delivery/);
+  const second = await client.connect();
+  assert.equal(second.reusedExistingSession, true);
+  assert.equal(sessions, 1);
+});
+
+test("connect re-bootstraps an expired session", async () => {
+  let sessions = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    now: () => new Date("2030-01-01T00:00:00Z"),
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_handle: `s${sessions}`, expires_at: "2029-01-01T00:00:00Z" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 1, messages: [] });
+      return json({});
+    },
+  });
+  await client.connect();
+  const second = await client.connect();
+  assert.equal(second.reusedExistingSession, false);
+  assert.equal(sessions, 2);
+});
+
+test("implicit bootstrap attaches session block to the triggering call only", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", address: "@p.a.s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
+      if (u.includes("/inbound")) return json({ watermark: 3, messages: [] });
+      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 4 }, 201);
+      return json({});
+    },
+  });
+  const first = await client.readInbox();
+  assert.equal(first.session.established, "this_call");
+  assert.equal(first.session.sessionAddress, "@p.a.s1");
+  assert.equal(first.session.agentSessionId, "as-1");
+  assert.match(first.session.next, /arm responsive delivery/);
+  const second = await client.readInbox();
+  assert.equal(Object.hasOwn(second, "session"), false);
+  const sent = await client.send({ body: "hello" });
+  assert.equal(Object.hasOwn(sent, "session"), false);
+});
+
+test("send that bootstraps attaches the session block", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 1 }, 201);
+      return json({});
+    },
+  });
+  const sent = await client.send({ body: "hello" });
+  assert.equal(sent.session.established, "this_call");
+});
+
+test("status exposes agent_session_id, redacts session handle, marks optional config", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      return json({});
+    },
+  });
+  assert.equal(client.setup().connected, false);
+  assert.match(client.setup().note, /Not yet connected/);
+  await client.connect();
+  const status = client.status();
+  assert.equal(status.runtime.agentSessionId, "as-1");
+  assert.equal(status.runtime.sessionHandle, "<redacted>");
+  assert.equal(status.config.agentTokenId.optional, true);
+  assert.match(client.setup().note, /holds a session/);
+});
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }

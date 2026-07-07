@@ -9,6 +9,10 @@ export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
 
+// @parle-interpretation parlehq/parle#47
+// Canonical connect guidance pending server-authored text in discovery surfaces.
+export const CONNECT_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
+
 export type FetchLike = typeof fetch;
 
 export type ConfigValue = {
@@ -77,6 +81,30 @@ export type SendParams = {
   body: string;
   to?: string;
   idempotencyKey?: string;
+};
+
+export type ConnectionSummary = {
+  connected: boolean;
+  reusedExistingSession: boolean;
+  roomId: string;
+  roomHandle?: string;
+  sessionAddress: string | null;
+  agentSessionId: string;
+  participantId: string;
+  expiresAt: string;
+  cursor: number;
+  heldBacklogCount?: number;
+  note: string;
+  next: string;
+};
+
+export type SessionEstablishedBlock = {
+  established: "this_call";
+  sessionAddress: string | null;
+  agentSessionId: string;
+  participantId: string;
+  expiresAt: string;
+  next: string;
 };
 
 export type SendDeliveryStatus = {
@@ -337,6 +365,7 @@ export class ParleAgentClient {
     roomId: "",
     cursor: 0,
   };
+  private bootstrapGeneration = 0;
 
   constructor(options: ClientOptions = {}) {
     this.env = options.env || process.env;
@@ -356,9 +385,10 @@ export class ParleAgentClient {
         roomId: redactedValue(this.cfg.roomId),
         roomHandle: redactedValue(this.cfg.roomHandle),
         agentToken: redactedSecretValue(this.cfg.agentToken),
-        agentTokenId: redactedValue(this.cfg.agentTokenId),
+        agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true },
       },
-      runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "", agentSessionId: this.runtime.agentSessionId ? "<redacted>" : "" },
+      // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#48); session_handle is the credential and stays redacted.
+      runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       warnings: this.cfg.warnings,
     };
   }
@@ -367,7 +397,14 @@ export class ParleAgentClient {
     const missing = [];
     if (!this.cfg.roomId?.value) missing.push("PARLE_ROOM_ID");
     if (!this.cfg.agentToken?.value) missing.push("PARLE_ROOM_AGENT_TOKEN");
-    return { ok: missing.length === 0, missing, apiBase: this.cfg.apiBase.value, note: missing.length ? "Set missing configuration in env, .env, or .parle/credentials." : "Parle configuration is present." };
+    // @parle-interpretation parlehq/parle#49
+    // Connection-posture wording pending the core session lifecycle contract.
+    const note = missing.length
+      ? "Set missing configuration in env, .env, or .parle/credentials."
+      : this.runtime.bootstrapped
+        ? "Parle configuration is present and this process holds a session."
+        : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
+    return { ok: missing.length === 0, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note };
   }
 
   assertConfigured() {
@@ -435,12 +472,54 @@ export class ParleAgentClient {
     else {
       const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/projection?wait=0`, { session: true, signal });
       this.runtime.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
+      if (typeof projection?.held_backlog?.held_count === "number") this.runtime.heldBacklogCount = projection.held_backlog.held_count;
     }
+    this.bootstrapGeneration += 1;
     return { ...this.runtime };
   }
 
   async ensureBootstrapped(signal?: AbortSignal) {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) await this.bootstrap(signal);
+  }
+
+  // @parle-interpretation parlehq/parle#49
+  // Deliberately factual until the core session lifecycle and delivery baseline
+  // contract exists: reports client cursor position and server-reported held
+  // backlog only; makes no responsive-delivery baseline or ack-init claims.
+  connectionSummary(reusedExistingSession = false): ConnectionSummary {
+    return {
+      connected: this.runtime.bootstrapped,
+      reusedExistingSession,
+      roomId: this.runtime.roomId,
+      roomHandle: this.cfg.roomHandle?.value,
+      sessionAddress: this.runtime.sessionAddress,
+      agentSessionId: this.runtime.agentSessionId,
+      participantId: this.runtime.participantId,
+      expiresAt: this.runtime.expiresAt,
+      cursor: this.runtime.cursor,
+      ...(typeof this.runtime.heldBacklogCount === "number" ? { heldBacklogCount: this.runtime.heldBacklogCount } : {}),
+      note: "cursor is this process's read position; a fresh session initializes it at the projection watermark observed during bootstrap.",
+      next: CONNECT_NEXT_GUIDANCE,
+    };
+  }
+
+  async connect(signal?: AbortSignal): Promise<ConnectionSummary> {
+    const expiry = this.runtime.expiresAt ? new Date(this.runtime.expiresAt) : null;
+    const expired = expiry !== null && !Number.isNaN(expiry.getTime()) && expiry <= this.now();
+    const reused = this.runtime.bootstrapped && Boolean(this.runtime.sessionHandle) && !expired;
+    if (!reused) await this.bootstrap(signal);
+    return this.connectionSummary(reused);
+  }
+
+  private sessionEstablishedBlock(): SessionEstablishedBlock {
+    return {
+      established: "this_call",
+      sessionAddress: this.runtime.sessionAddress,
+      agentSessionId: this.runtime.agentSessionId,
+      participantId: this.runtime.participantId,
+      expiresAt: this.runtime.expiresAt,
+      next: CONNECT_NEXT_GUIDANCE,
+    };
   }
 
   async withRebootstrap<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -463,6 +542,7 @@ export class ParleAgentClient {
   }
 
   private async readSurface(surface: "projection" | "inbound", params: ReadParams, signal?: AbortSignal) {
+    const generation = this.bootstrapGeneration;
     return this.withRebootstrap(async () => {
       const since = typeof params.sinceSeq === "number" ? params.sinceSeq : this.runtime.cursor || 0;
       const wait = clampWaitSeconds(params.waitSeconds);
@@ -471,23 +551,26 @@ export class ParleAgentClient {
       const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), READ_LIMIT_BYTES);
       const cursorBefore = this.runtime.cursor;
       if (params.advanceCursor !== false && params.sinceSeq === undefined) this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : undefined);
-      return { ...projection, surface, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: this.runtime.cursor, advancedCursor: cursorBefore !== this.runtime.cursor, note: wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text." };
+      return { ...projection, surface, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: this.runtime.cursor, advancedCursor: cursorBefore !== this.runtime.cursor, ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}), note: wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text." };
     }, signal);
   }
 
   async affordances(signal?: AbortSignal) {
-    return this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/affordances`, { session: true, signal }), signal);
+    const generation = this.bootstrapGeneration;
+    const result = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/affordances`, { session: true, signal }), signal);
+    return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, session: this.sessionEstablishedBlock() } : result;
   }
 
   async send(params: SendParams, signal?: AbortSignal) {
     const idempotencyKey = params.idempotencyKey || this.randomUUID();
+    const generation = this.bootstrapGeneration;
     const body: any = { type: "message_submitted", payload: { body: params.body } };
     if (params.to) body.addressing = { audience: "direct", to: params.to };
     try {
       return await this.withRebootstrap(async () => {
         const result = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/messages`, { method: "POST", session: true, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
         const deliveryStatus = summarizeSendDelivery(result);
-        return { ...result, idempotencyKey, warning: addressingWarning(params.body, params.to), ...(deliveryStatus ? { deliveryStatus } : {}) };
+        return { ...result, idempotencyKey, warning: addressingWarning(params.body, params.to), ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
       }, signal);
     } catch (error: any) {
       if (error instanceof ParleApiError) {

@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "parle-claude-desktop-extension",
   "display_name": "Parle",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Claude Desktop extension for Parle room tools through a bundled local MCP server",
   "author": {
     "name": "Parle"
@@ -22,7 +22,9 @@
     "entry_point": "server/parle-mcp.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/server/parle-mcp.js"],
+      "args": [
+        "${__dirname}/server/parle-mcp.js"
+      ],
       "env": {
         "PARLE_API_BASE": "${user_config.parle_api_base}",
         "PARLE_ROOM_ID": "${user_config.parle_room_id}",

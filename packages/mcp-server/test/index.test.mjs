@@ -9,6 +9,7 @@ import { createParleMcpServer, isDirectRun } from "../dist/index.js";
 
 const expectedTools = [
   "parle_affordances",
+  "parle_connect",
   "parle_guidance",
   "parle_inbox",
   "parle_read",
@@ -27,6 +28,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
   const fakeClient = {
     status: () => ({ ok: true }),
     setup: () => ({ ok: true }),
+    connect: async () => { calls.push(["connect"]); return { connected: true, sessionAddress: "@p.a.s1", agentSessionId: "as-1", cursor: 3 }; },
     guidance: async () => ({ ok: true }),
     readProjection: async (params) => { calls.push(["read", params]); return { messages: [], cursorAfter: 3 }; },
     readInbox: async () => ({ messages: [] }),
@@ -38,12 +40,15 @@ test("in-memory server maps read, send, and errors through fake client", async (
   const client = new Client({ name: "parle-mcp-unit", version: "0.0.0" }, { capabilities: {} });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
+    const connect = await client.callTool({ name: "parle_connect", arguments: {} });
+    assert.equal(connect.structuredContent.connected, true);
+    assert.equal(connect.structuredContent.agentSessionId, "as-1");
     const read = await client.callTool({ name: "parle_read", arguments: { waitSeconds: 1 } });
     assert.equal(read.structuredContent.cursorAfter, 3);
     const send = await client.callTool({ name: "parle_send", arguments: { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" } });
     assert.equal(send.structuredContent.idempotencyKey, "idem-1");
     assert.equal(send.structuredContent.deliveryStatus.state, "accepted_scan_skipped");
-    assert.deepEqual(calls, [["read", { waitSeconds: 1 }], ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }]]);
+    assert.deepEqual(calls, [["connect"], ["read", { waitSeconds: 1 }], ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }]]);
   } finally {
     await client.close();
     await server.close();
@@ -134,7 +139,7 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-test("stdio server lists the seven v1 tools and setup works without secrets", async () => {
+test("stdio server lists the eight v1 tools and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],

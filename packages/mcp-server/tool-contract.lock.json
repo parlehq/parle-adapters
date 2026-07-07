@@ -1,0 +1,78 @@
+{
+  "parle_affordances": {
+    "title": "Parle Affordances",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "input": []
+  },
+  "parle_connect": {
+    "title": "Parle Connect",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": []
+  },
+  "parle_guidance": {
+    "title": "Parle Guidance",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "input": [
+      "target"
+    ]
+  },
+  "parle_inbox": {
+    "title": "Parle Inbox",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "input": [
+      "advanceCursor",
+      "limitMessages",
+      "sinceSeq",
+      "waitSeconds"
+    ]
+  },
+  "parle_read": {
+    "title": "Parle Read",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "input": [
+      "advanceCursor",
+      "limitMessages",
+      "sinceSeq",
+      "waitSeconds"
+    ]
+  },
+  "parle_send": {
+    "title": "Parle Send",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "body",
+      "idempotencyKey",
+      "to"
+    ]
+  },
+  "parle_setup": {
+    "title": "Parle Setup",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "input": []
+  },
+  "parle_status": {
+    "title": "Parle Status",
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "input": []
+  }
+}

@@ -159,6 +159,20 @@ Current ledger:
   - Upstream issue: `parlehq/parle#44`
   - Removal condition: ADR-0036 framing bytes are versioned and documented, and the server offers canonical compact or non-repeated presentation where appropriate.
   - Reason it still exists: clients need safe exact-validation compaction without trusting peer-authored content.
+- Helper: `CONNECT_NEXT_GUIDANCE` in `@parlehq/agent-client`
+  - Marker: `@parle-interpretation parlehq/parle#47`
+  - Layer: L1
+  - Meaning interpreted: canonical post-connect next step (report address and expiry, arm responsive delivery) that discovery surfaces do not yet author.
+  - Upstream issue: `parlehq/parle#47`
+  - Removal condition: session bootstrap and connect guidance are server-authored in `llms.txt`/OpenAPI/`ai.parle.sh`; adapters render the server text.
+  - Reason it still exists: the sessions and participant-join endpoints are entirely undocumented at L0, so clients have no server-owned connect narrative to render.
+- Helper: `connectionSummary`/`connect` and the `setup` connection-posture note in `@parlehq/agent-client`
+  - Marker: `@parle-interpretation parlehq/parle#49`
+  - Layer: L1
+  - Meaning interpreted: what "connected" means (session + join + cursor at bootstrap watermark) and how connection posture is described. Deliberately factual per adversarial review: reports client cursor position and server-reported held backlog only; no responsive-delivery baseline or ack-initialization claims.
+  - Upstream issue: `parlehq/parle#49`
+  - Removal condition: core session lifecycle and delivery baseline contract exists; the summary narrows to citing server-owned semantics.
+  - Reason it still exists: clients need a stable connect affordance now, and the lifecycle contract is not yet specified.
 - Helper: retryability inference in `requestJson`
   - Marker: `@parle-interpretation parlehq/parle#45`
   - Layer: L1

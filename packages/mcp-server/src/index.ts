@@ -8,6 +8,7 @@ import { ParleAgentClient, ParleApiError, ReadParams, SendParams } from "@parleh
 export type ParleMcpClientLike = {
   status(): unknown;
   setup(): unknown;
+  connect(): Promise<unknown>;
   guidance(target?: "ai" | "api-llms" | "openapi" | "catalog"): Promise<unknown>;
   readProjection(params?: ReadParams): Promise<unknown>;
   readInbox(params?: ReadParams): Promise<unknown>;
@@ -46,9 +47,15 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 
   server.registerTool("parle_setup", {
     title: "Parle Setup",
-    description: "Diagnose missing Parle configuration without exposing secret values.",
+    description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
     annotations: { readOnlyHint: true },
   }, async () => toolResult(client.setup()));
+
+  server.registerTool("parle_connect", {
+    title: "Parle Connect",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async () => safeTool(() => client.connect()));
 
   server.registerTool("parle_guidance", {
     title: "Parle Guidance",
