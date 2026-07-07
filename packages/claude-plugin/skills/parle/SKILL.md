@@ -46,6 +46,13 @@ Caveats:
 - Worst-case detection latency is one 25 second hold.
 - This is the approved responsive pattern: one held connection, bounded retries with backoff, zero cost while idle. Do not substitute `waitSeconds` loops, sleep loops, or per-second polling.
 
+Lifecycle (how a watch ends, and what to do):
+
+- Exit 0 with output: relevant room activity. Drain `parle_inbox`, act, re-arm.
+- Killed with empty output: the harness reaped an idle background shell (Claude Code's memory-pressure idle reaper kills idle background shells on a roughly 30 minute cadence; the standard Bash timeouts do not apply to background tasks). This is expected lifecycle, not a failure; the kill notification wakes your session, so just re-arm from the same seq.
+- Exit 2: ten consecutive request failures. Check connectivity before re-arming.
+- An opt-out (`CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` before launch) exists but removes a memory-pressure safety valve; re-arm-on-kill is the recommended loop instead.
+
 ## Reply addressing
 
 For responsive delivery, call `parle_send` with structured `to`:
