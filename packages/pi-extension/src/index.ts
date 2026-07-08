@@ -1341,6 +1341,20 @@ function shouldShowFooterError(): boolean {
   return Date.now() - Date.parse(runtime.lastWatcherErrorAt) >= FOOTER_FAILURE_AGE_MS;
 }
 
+function footerErrorLabel(): string {
+  if (runtime.watcherState === "auth_expired" || runtime.lastHttpStatus === 401 || runtime.lastHttpStatus === 403) return "parle x check auth";
+  if (runtime.watcherState === "session_expired") return "parle x session expired";
+  if (runtime.watcherState === "disconnected") return "parle x disconnected";
+  if (runtime.lastHttpStatus === 400) {
+    if (/version/i.test(runtime.lastError || "")) return "parle x check version";
+    return "parle x check config";
+  }
+  if (runtime.lastErrorClass === "network" || runtime.lastErrorClass === "timeout") return "parle x network";
+  if (runtime.lastHttpStatus && runtime.lastHttpStatus >= 500) return "parle x server error";
+  if (runtime.lastError || runtime.lastErrorClass || runtime.lastHttpStatus) return "parle x run parle_status";
+  return `parle x ${runtime.watcherState || "error"}`;
+}
+
 export const __testing = {
   authorReplyAddress,
   compactServerWrappedContent,
@@ -1372,7 +1386,7 @@ function setStatus(ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
     if (!ui?.setStatus) return;
     let label = "parle x setup";
     if (!cfg.enabled) label = "parle off";
-    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `parle x ${runtime.sessionAddress}` : `parle x ${runtime.watcherState || "error"}`;
+    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `parle x ${runtime.sessionAddress}` : footerErrorLabel();
     else if (runtime.sessionAddress) label = `parle ✓ ${runtime.sessionAddress}`;
     else if (cfg.roomId?.value && cfg.agentToken?.value) label = `parle ✓ ${cfg.roomHandle?.value || "ready"}`;
     ui.setStatus(EXTENSION_ID, label);

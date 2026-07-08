@@ -75,7 +75,7 @@ test("footer shows x when configured Parle cannot bootstrap", async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "unsupported_version", message: "missing or unsupported Parle-Version header" } }), { status: 400 });
   const harness = installHarness(cwd);
   await harness.call("parle_status");
-  assert.equal(harness.statuses.at(-1).label, "parle x starting");
+  assert.equal(harness.statuses.at(-1).label, "parle x check version");
 });
 
 test("status bootstraps and redacts session handle", async () => {
