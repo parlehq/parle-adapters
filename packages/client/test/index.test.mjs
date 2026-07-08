@@ -663,6 +663,42 @@ test("connect-time 401 carries a stale-token hint when the on-disk token differs
   }
 });
 
+test("connect-time reauthorize reloads a rotated disk token once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "parle-client-reload-"));
+  try {
+    writeFileSync(join(dir, ".env"), "PARLE_ROOM_AGENT_TOKEN=old-disk-token\n");
+    let sessionAttempts = 0;
+    const client = new ParleAgentClient({
+      cwd: dir,
+      env: { PARLE_ROOM_ID: "room-1" },
+      fetch: async (url, init = {}) => {
+        const u = String(url);
+        if (u.endsWith("/v/agent/sessions")) {
+          sessionAttempts += 1;
+          if (init.headers.Authorization === "Bearer old-disk-token") {
+            writeFileSync(join(dir, ".env"), "PARLE_ROOM_AGENT_TOKEN=new-disk-token\n");
+            return json({ error: { code: "invalid_agent_token", message: "token revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }, 401);
+          }
+          assert.equal(init.headers.Authorization, "Bearer new-disk-token");
+          return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
+        }
+        if (u.endsWith("/participants")) {
+          assert.equal(init.headers.Authorization, "Bearer new-disk-token");
+          return json({ participant_id: "part-1" }, 201);
+        }
+        if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+        return json({});
+      },
+    });
+    await client.connect();
+    assert.equal(sessionAttempts, 2);
+    assert.equal(client.cfg.agentToken.value, "new-disk-token");
+    assert.equal(client.runtime.bootstrapped, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("401 without on-disk divergence carries no stale-token hint", async () => {
   const dir = mkdtempSync(join(tmpdir(), "parle-client-fresh-"));
   try {

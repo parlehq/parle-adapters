@@ -31463,13 +31463,13 @@ var ParleAgentClient = class {
       missing.push("PARLE_ROOM_ID");
     if (!this.cfg.agentToken?.value)
       missing.push("PARLE_ROOM_AGENT_TOKEN");
-    const note = missing.length ? "Set missing configuration in env, .env, or .parle/credentials (checked in that order; values load once at process start)." : this.runtime.bootstrapped ? "Parle configuration is present and this process holds a session." : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
+    const note = missing.length ? "Set missing configuration in env, .env, or .parle/credentials (checked in that order; disk token rotations can be reloaded once during bootstrap recovery)." : this.runtime.bootstrapped ? "Parle configuration is present and this process holds a session." : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
     const staleToken = this.staleTokenHint();
     return { ok: missing.length === 0 && !staleToken, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...staleToken ? { warning: staleToken } : {} };
   }
-  // Config is resolved once at construction; a token rotated on disk afterwards
-  // cannot take effect until the host process restarts. Compare against the first
-  // disk source that defines the key (mirrors firstConfigValue precedence).
+  // Config is resolved at construction and may be refreshed once when a
+  // reauthorize bootstrap failure sees a different disk token. Compare against
+  // the first disk source that defines the key (mirrors firstConfigValue precedence).
   staleTokenHint() {
     const current = this.cfg.agentToken?.value;
     if (!current)
@@ -31481,12 +31481,24 @@ var ParleAgentClient = class {
           continue;
         if (onDisk === current)
           return void 0;
-        return `PARLE_ROOM_AGENT_TOKEN in ${rel} differs from the value this process loaded at startup (source: ${this.cfg.agentToken?.source}). The token was likely rotated. Restart the host process (agent session or MCP server) to reload configuration.`;
+        return `PARLE_ROOM_AGENT_TOKEN in ${rel} differs from the value this process loaded at startup (source: ${this.cfg.agentToken?.source}). The token was likely rotated. Parle will try to reload it during the next bootstrap; restart the host process if the terminal error remains.`;
       } catch {
         return void 0;
       }
     }
     return void 0;
+  }
+  refreshConfigIfAgentTokenChanged() {
+    const oldToken = this.cfg.agentToken?.value;
+    const next = resolveConfig(this.cwd, this.env);
+    const newToken = next.agentToken?.value;
+    if (!oldToken || !newToken || oldToken === newToken)
+      return false;
+    this.cfg = next;
+    this.runtime.lastBootstrapError = void 0;
+    this.runtime.nextRetryAt = void 0;
+    this.publishRuntimeState();
+    return true;
   }
   assertConfigured() {
     if (!this.cfg.roomId?.value)
@@ -31586,7 +31598,7 @@ var ParleAgentClient = class {
       this.bootstrapInFlight = null;
     }
   }
-  async doBootstrap(signal, preserveCursor = false) {
+  async doBootstrap(signal, preserveCursor = false, allowConfigReload = true) {
     this.runtime.bootstrapState = "starting";
     this.publishRuntimeState();
     try {
@@ -31621,6 +31633,9 @@ var ParleAgentClient = class {
       this.scheduleUnreadPoll();
       return { ...this.runtime };
     } catch (error51) {
+      if (allowConfigReload && error51 instanceof ParleApiError && error51.action === "reauthorize" && this.refreshConfigIfAgentTokenChanged()) {
+        return this.doBootstrap(signal, preserveCursor, false);
+      }
       this.consecutiveBootstrapFailures += 1;
       const backoffMs = Math.min(6e4, 5e3 * 2 ** (this.consecutiveBootstrapFailures - 1));
       this.runtime.bootstrapState = "failed";

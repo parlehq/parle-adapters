@@ -496,7 +496,7 @@ export function compactServerWrappedContent(content: string, preamble?: string, 
 }
 
 export class ParleAgentClient {
-  readonly cfg: ParleConfig;
+  cfg: ParleConfig;
   readonly cwd: string;
   readonly fetchImpl: FetchLike;
   readonly env: Record<string, string | undefined>;
@@ -569,7 +569,7 @@ export class ParleAgentClient {
     // @parle-interpretation parlehq/parle#434
     // Connection-posture wording pending the core session lifecycle contract.
     const note = missing.length
-      ? "Set missing configuration in env, .env, or .parle/credentials (checked in that order; values load once at process start)."
+      ? "Set missing configuration in env, .env, or .parle/credentials (checked in that order; disk token rotations can be reloaded once during bootstrap recovery)."
       : this.runtime.bootstrapped
         ? "Parle configuration is present and this process holds a session."
         : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
@@ -577,9 +577,9 @@ export class ParleAgentClient {
     return { ok: missing.length === 0 && !staleToken, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...(staleToken ? { warning: staleToken } : {}) };
   }
 
-  // Config is resolved once at construction; a token rotated on disk afterwards
-  // cannot take effect until the host process restarts. Compare against the first
-  // disk source that defines the key (mirrors firstConfigValue precedence).
+  // Config is resolved at construction and may be refreshed once when a
+  // reauthorize bootstrap failure sees a different disk token. Compare against
+  // the first disk source that defines the key (mirrors firstConfigValue precedence).
   staleTokenHint(): string | undefined {
     const current = this.cfg.agentToken?.value;
     if (!current) return undefined;
@@ -588,12 +588,24 @@ export class ParleAgentClient {
         const onDisk = readKeyValueFile(join(this.cwd, rel))["PARLE_ROOM_AGENT_TOKEN"];
         if (onDisk === undefined || onDisk === "") continue;
         if (onDisk === current) return undefined;
-        return `PARLE_ROOM_AGENT_TOKEN in ${rel} differs from the value this process loaded at startup (source: ${this.cfg.agentToken?.source}). The token was likely rotated. Restart the host process (agent session or MCP server) to reload configuration.`;
+        return `PARLE_ROOM_AGENT_TOKEN in ${rel} differs from the value this process loaded at startup (source: ${this.cfg.agentToken?.source}). The token was likely rotated. Parle will try to reload it during the next bootstrap; restart the host process if the terminal error remains.`;
       } catch {
         return undefined;
       }
     }
     return undefined;
+  }
+
+  private refreshConfigIfAgentTokenChanged(): boolean {
+    const oldToken = this.cfg.agentToken?.value;
+    const next = resolveConfig(this.cwd, this.env);
+    const newToken = next.agentToken?.value;
+    if (!oldToken || !newToken || oldToken === newToken) return false;
+    this.cfg = next;
+    this.runtime.lastBootstrapError = undefined;
+    this.runtime.nextRetryAt = undefined;
+    this.publishRuntimeState();
+    return true;
   }
 
   assertConfigured() {
@@ -688,7 +700,7 @@ export class ParleAgentClient {
     }
   }
 
-  private async doBootstrap(signal?: AbortSignal, preserveCursor = false): Promise<RuntimeState> {
+  private async doBootstrap(signal?: AbortSignal, preserveCursor = false, allowConfigReload = true): Promise<RuntimeState> {
     this.runtime.bootstrapState = "starting";
     this.publishRuntimeState();
     try {
@@ -723,6 +735,9 @@ export class ParleAgentClient {
       this.scheduleUnreadPoll();
       return { ...this.runtime };
     } catch (error: any) {
+      if (allowConfigReload && error instanceof ParleApiError && error.action === "reauthorize" && this.refreshConfigIfAgentTokenChanged()) {
+        return this.doBootstrap(signal, preserveCursor, false);
+      }
       this.consecutiveBootstrapFailures += 1;
       const backoffMs = Math.min(60_000, 5_000 * 2 ** (this.consecutiveBootstrapFailures - 1));
       this.runtime.bootstrapState = "failed";
