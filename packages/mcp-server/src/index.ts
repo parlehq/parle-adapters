@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary } from "@parlehq/agent-client";
+import { ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary, compactStatusCardFromStatus } from "@parlehq/agent-client";
 
 export type ParleMcpClientLike = {
   status(): unknown;
@@ -50,14 +50,18 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 
   server.registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params) => safeTool(async () => {
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     const status = client.status();
-    return typeof status === "object" && status !== null ? { ...status, bootstrapAttempted } : { value: status, bootstrapAttempted };
+    if (typeof status === "object" && status !== null) {
+      const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(status as any) } : {};
+      return { ...status, bootstrapAttempted, ...card };
+    }
+    return { value: status, bootstrapAttempted };
   }));
 
   server.registerTool("parle_setup", {

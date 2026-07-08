@@ -57,7 +57,7 @@ Next: open another session and send a message to this Session Address.
 ========================================
 ```
 
-`parle_status` is the full detail entrypoint for config provenance and runtime state. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
+`parle_status` is the full detail entrypoint for config provenance and runtime state, and it also carries `compactText`: when the user asks about Parle status or session state, render that card verbatim (same rules as the connect card, including the watcher line insert) instead of improvising a summary from the JSON. The JSON is diagnostic detail; report it only when the user asks for specifics. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
 
 ## Tool posture
 

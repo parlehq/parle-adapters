@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.5.12 (2026-07-08)
+
+`parle_status` carries the compact card (bundled artifact refresh; revisits the 89dd52e deferral on live evidence).
+
+- Two independent sessions improvised status summaries in one day when users asked "what's your parle status": the connect card's render-verbatim contract was unreachable because the word "status" routes to `parle_status`, which returned complete-looking JSON and no card. The card now lives on the tool the question routes to: `parle_status` returns `compactText` -- the connect card plus an `Unread N` line when nonzero (next hint switches to read-inbox), a short "Parle configured, not connected" card pointing at `parle_connect` when down, and a "Parle not configured" card pointing at `parle_setup`. Cursor, expiry, and UUIDs stay out of the card per the skill's reporting rules; the config/runtime JSON is unchanged as diagnostic detail.
+- The `parle_status` tool description gains the same render-verbatim sentence as connect, and SKILL.md tells agents to render the status card instead of improvising. Unknown status shapes (objects without config/runtime) get no fabricated card.
+
 ## 0.5.11 (2026-07-08)
 
 No warning when PARLE_VERSION in the process env equals the adapter default (bundled artifact refresh).

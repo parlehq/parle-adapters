@@ -31131,11 +31131,14 @@ function formatCompactConnectionCard(input) {
     lines.push(line("In room", room));
   if (input.watcher && input.watcher !== "unknown")
     lines.push(line("Watcher", input.watcher));
+  if (typeof input.unread === "number" && input.unread > 0)
+    lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
     lines.push("", "Session Address:", input.sessionAddress);
   }
   lines.push("", `Next: ${nextTextFor(input.next)}`, CARD_RULE);
-  return lines.join("\n");
+  const collapsed = lines.filter((entry, index) => entry !== "" || lines[index - 1] !== "");
+  return collapsed.join("\n");
 }
 function compactConnectionCardFromSummary(summary, opts = {}) {
   return formatCompactConnectionCard({
@@ -31145,6 +31148,30 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
     next: opts.next || (summary.reusedExistingSession ? "already-connected" : void 0),
     watcher: opts.watcher,
     connectedLabel: opts.connectedLabel
+  });
+}
+function compactStatusCardFromStatus(status) {
+  const runtime = status.runtime;
+  if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
+    const unread = typeof runtime.unreadCount === "number" ? runtime.unreadCount : void 0;
+    return formatCompactConnectionCard({
+      sessionAddress: runtime.sessionAddress,
+      roomHandle: status.config?.roomHandle?.value,
+      roomId: runtime.roomId || status.config?.roomId?.value,
+      unread,
+      next: unread && unread > 0 ? "read-inbox" : "already-connected"
+    });
+  }
+  const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
+  if (configured) {
+    return formatCompactConnectionCard({
+      connectedLabel: "Parle configured, not connected",
+      next: "run parle_connect to establish the session."
+    });
+  }
+  return formatCompactConnectionCard({
+    connectedLabel: "Parle not configured",
+    next: "run parle_setup to diagnose configuration."
   });
 }
 
@@ -32031,14 +32058,18 @@ function createParleMcpServer(client = new ParleAgentClient()) {
   const server = new McpServer({ name: "parle-mcp-server", version: "0.1.0" });
   server.registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params) => safeTool(async () => {
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     const status = client.status();
-    return typeof status === "object" && status !== null ? { ...status, bootstrapAttempted } : { value: status, bootstrapAttempted };
+    if (typeof status === "object" && status !== null) {
+      const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(status) } : {};
+      return { ...status, bootstrapAttempted, ...card };
+    }
+    return { value: status, bootstrapAttempted };
   }));
   server.registerTool("parle_setup", {
     title: "Parle Setup",

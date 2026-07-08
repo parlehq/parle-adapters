@@ -8,6 +8,7 @@ export type CompactConnectionCardInput = {
   roomHandle?: string;
   roomId?: string;
   watcher?: CompactConnectionWatcher;
+  unread?: number;
   next?: CompactConnectionNextKey | string;
 };
 
@@ -64,11 +65,15 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   const room = roomLabel(input);
   if (room) lines.push(line("In room", room));
   if (input.watcher && input.watcher !== "unknown") lines.push(line("Watcher", input.watcher));
+  if (typeof input.unread === "number" && input.unread > 0) lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
     lines.push("", "Session Address:", input.sessionAddress);
   }
   lines.push("", `Next: ${nextTextFor(input.next)}`, CARD_RULE);
-  return lines.join("\n");
+  // Cards with an empty middle (not-connected variants) would otherwise render
+  // consecutive blank lines.
+  const collapsed = lines.filter((entry, index) => entry !== "" || lines[index - 1] !== "");
+  return collapsed.join("\n");
 }
 
 export function compactConnectionCardFromSummary(summary: ConnectionSummaryLike, opts: Omit<CompactConnectionCardInput, "sessionAddress" | "roomHandle" | "roomId"> = {}): string {
@@ -79,5 +84,49 @@ export function compactConnectionCardFromSummary(summary: ConnectionSummaryLike,
     next: opts.next || (summary.reusedExistingSession ? "already-connected" : undefined),
     watcher: opts.watcher,
     connectedLabel: opts.connectedLabel,
+  });
+}
+
+export type StatusLike = {
+  config?: {
+    roomHandle?: { value?: string };
+    roomId?: { value?: string; configured?: boolean };
+    agentToken?: { configured?: boolean };
+  };
+  runtime?: {
+    bootstrapState?: string;
+    sessionAddress?: string | null;
+    roomId?: string;
+    unreadCount?: number;
+  };
+};
+
+// The status-path counterpart of the connect card: "status" is where users ask
+// for the standard card most (connect output has usually scrolled away), and a
+// missing field guarantees improvised summaries. Deliberately excludes cursor,
+// expiry, and UUIDs (the skill says not to surface them); provenance JSON stays
+// alongside for diagnostics.
+export function compactStatusCardFromStatus(status: StatusLike): string {
+  const runtime = status.runtime;
+  if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
+    const unread = typeof runtime.unreadCount === "number" ? runtime.unreadCount : undefined;
+    return formatCompactConnectionCard({
+      sessionAddress: runtime.sessionAddress,
+      roomHandle: status.config?.roomHandle?.value,
+      roomId: runtime.roomId || status.config?.roomId?.value,
+      unread,
+      next: unread && unread > 0 ? "read-inbox" : "already-connected",
+    });
+  }
+  const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
+  if (configured) {
+    return formatCompactConnectionCard({
+      connectedLabel: "Parle configured, not connected",
+      next: "run parle_connect to establish the session.",
+    });
+  }
+  return formatCompactConnectionCard({
+    connectedLabel: "Parle not configured",
+    next: "run parle_setup to diagnose configuration.",
   });
 }

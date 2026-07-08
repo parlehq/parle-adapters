@@ -172,6 +172,7 @@ test("parle_status auto-connects a configured client and reports the attempt", a
     assert.equal(first.structuredContent.runtime.bootstrapped, true);
     assert.equal(first.structuredContent.runtime.bootstrapState, "ready");
     assert.equal(first.structuredContent.runtime.sessionAddress, "@p.a.s1");
+    assert.match(first.structuredContent.compactText, /Session Address:\n@p\.a\.s1/);
     assert.equal(counters.sessions, 1);
     const second = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(second.structuredContent.bootstrapAttempted, false);
@@ -193,6 +194,7 @@ test("parle_status inspect:true is a passive read with no network side effects",
     const result = await client.callTool({ name: "parle_status", arguments: { inspect: true } });
     assert.equal(result.structuredContent.bootstrapAttempted, false);
     assert.equal(result.structuredContent.runtime.bootstrapped, false);
+    assert.match(result.structuredContent.compactText, /Parle configured, not connected/);
     assert.equal(counters.total ?? 0, 0);
   } finally {
     await client.close();
@@ -218,6 +220,8 @@ test("parle_status works against minimal fake clients without lifecycle methods"
     const result = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(result.structuredContent.ok, true);
     assert.equal(result.structuredContent.bootstrapAttempted, false);
+    // No config/runtime shape means no card; never fabricate one from unknown status shapes.
+    assert.equal(Object.hasOwn(result.structuredContent, "compactText"), false);
   } finally {
     await client.close();
     await server.close();

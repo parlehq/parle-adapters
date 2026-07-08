@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.7 (2026-07-08)
+
+Bundled MCP refresh: `parle_status` carries the compact card.
+
+- `parle_status` returns `compactText` (connect card plus unread line when live, short not-connected/not-configured cards otherwise) and its description says to render it verbatim. Diagnostic JSON unchanged.
+
 ## 0.5.6 (2026-07-08)
 
 Bundled MCP refresh: no spurious PARLE_VERSION override warning.
