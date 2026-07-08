@@ -12,15 +12,16 @@ Use this skill when Parle MCP tools are available in Claude Code and the user wa
 Expected environment values:
 
 - `PARLE_API_BASE`, usually `https://api.parle.sh`
-- `PARLE_VERSION`, usually `2026-07-07`
 - `PARLE_ROOM_ID`
 - `PARLE_ROOM_AGENT_TOKEN`
+
+`Parle-Version` is owned by the adapter. Do not store `PARLE_VERSION` in `.env` or `.parle/credentials`; persisted values are ignored with a warning. For staging or rollback only, set `PARLE_VERSION` in the process environment for that launch.
 
 Do not set `PARLE_SESSION_ALIAS` for ordinary sessions. Use it only for an explicit singleton role where this process should take over a named route.
 
 Source precedence and snapshot semantics:
 
-- Values resolve from three sources, first non-empty wins: process environment, then `<cwd>/.env`, then `<cwd>/.parle/credentials`. A stale process-env value shadows a corrected `.env`.
+- Values resolve from three sources, first non-empty wins: process environment, then `<cwd>/.env`, then `<cwd>/.parle/credentials`. `PARLE_VERSION` is the exception: only process env overrides the adapter default.
 - Configuration loads ONCE when the MCP server process starts. Nothing re-reads it mid-session. The plugin never writes any of these files; `parle_setup` is diagnostic only.
 - Harness env injectors (for example mise `[env] _.file = ".env"`) snapshot `.env` into the process environment at shell init, which becomes the highest-precedence source.
 

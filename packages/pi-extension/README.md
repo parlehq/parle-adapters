@@ -40,13 +40,14 @@ Optional configuration:
 ```env
 PARLE_API_BASE=https://api.parle.sh
 PARLE_WAKE_BASE=https://wake.parle.sh
-PARLE_VERSION=2026-07-07
 PARLE_ROOM_HANDLE=...
 PARLE_SESSION_COOKIE=...
 PARLE_WATCH_ENABLED=1
 ```
 
 Secrets are redacted in status output.
+
+`Parle-Version` is a strict wire header owned by the adapter version. Do not store `PARLE_VERSION` in `.env` or `.parle/credentials`; persisted values are ignored with a warning. For staging or rollback only, set `PARLE_VERSION` in the process environment for that launch.
 
 ### Session aliases
 

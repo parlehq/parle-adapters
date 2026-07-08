@@ -14,13 +14,14 @@
 # author.agent_session_id on rows you authored in parle_read. Without it,
 # any new room row wakes you (v1 behavior).
 #
-# Needs: PARLE_API_BASE, PARLE_ROOM_ID, PARLE_ROOM_AGENT_TOKEN, PARLE_VERSION
+# Needs: PARLE_API_BASE, PARLE_ROOM_ID, PARLE_ROOM_AGENT_TOKEN
 # Exit:  0 = relevant activity past since_seq, 2 = terminal or repeated failures
 #
 # Config self-loads from the same sources and precedence as the adapters
 # client: process env first, then ./.env, then ./.parle/credentials (relative
-# to the cwd). Run it from the project directory and no env injection or
-# wrapper is needed.
+# to the cwd). PARLE_VERSION is adapter-owned: only a process-env value
+# overrides the script default. Run it from the project directory and no env
+# injection or wrapper is needed.
 set -u
 since="${1:?usage: parle-watch.sh <since_seq> [my_agent_session_id]}"
 me="${2:-}"
@@ -46,7 +47,13 @@ load_missing() {
 load_missing PARLE_API_BASE
 load_missing PARLE_ROOM_ID
 load_missing PARLE_ROOM_AGENT_TOKEN
-load_missing PARLE_VERSION
+if [ -z "${PARLE_VERSION:-}" ]; then
+  for f in ./.env ./.parle/credentials; do
+    if [ -f "$f" ] && grep -q '^[[:space:]]*PARLE_VERSION=' "$f"; then
+      echo "Parle warning: ignoring persisted PARLE_VERSION in $f; remove it. Set PARLE_VERSION in process env only for staging or rollback." >&2
+    fi
+  done
+fi
 : "${PARLE_API_BASE:=https://api.parle.sh}"
 : "${PARLE_VERSION:=2026-07-07}"
 if [ -z "${PARLE_ROOM_ID:-}" ] || [ -z "${PARLE_ROOM_AGENT_TOKEN:-}" ]; then

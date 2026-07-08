@@ -203,11 +203,21 @@ function resolveConfig(cwd: string): ParleConfig {
     return value || { value: fallback || "", source: "default", key, secret };
   }
 
+  function pickVersion(): ConfigValue {
+    if (process.env.PARLE_VERSION) {
+      warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${process.env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+      return { value: process.env.PARLE_VERSION, source: "env", key: "PARLE_VERSION" };
+    }
+    if (projectEnv.PARLE_VERSION) warnings.push(`Ignoring PARLE_VERSION from project .env (${projectEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
+    if (projectParle.PARLE_VERSION) warnings.push(`Ignoring stale PARLE_VERSION from project .parle/credentials (${projectParle.PARLE_VERSION}); remove it. The adapter default is ${DEFAULT_VERSION}.`);
+    return { value: DEFAULT_VERSION, source: "default", key: "PARLE_VERSION" };
+  }
+
   const cfg: ParleConfig = {
     enabled,
     enabledInput,
     apiBase: pick("PARLE_API_BASE", DEFAULT_API_BASE),
-    version: pick("PARLE_VERSION", DEFAULT_VERSION),
+    version: pickVersion(),
     roomId: pick("PARLE_ROOM_ID", undefined),
     roomHandle: pick("PARLE_ROOM_HANDLE", undefined),
     agentToken: pick("PARLE_ROOM_AGENT_TOKEN", undefined, true),
@@ -243,6 +253,15 @@ function redactedValue(value?: ConfigValue) {
     secret: value.secret === true,
     warning: value.warning,
   };
+}
+
+function formatVersionErrorHint(cfg: ParleConfig, errorObj: any): string {
+  const sent = cfg.version.value || DEFAULT_VERSION;
+  const supported = Array.isArray(errorObj?.supported) ? errorObj.supported.join(", ") : typeof errorObj?.supported === "string" ? errorObj.supported : undefined;
+  const current = typeof errorObj?.current === "string" ? errorObj.current : undefined;
+  const server = supported ? ` Server supports ${supported}.` : current ? ` Server current version is ${current}.` : "";
+  const action = cfg.version.source === "default" ? "Upgrade the adapter." : "Unset the stale PARLE_VERSION override or upgrade the adapter.";
+  return ` Sent Parle-Version ${sent} from ${cfg.version.source}; adapter default is ${DEFAULT_VERSION}.${server} ${action}`;
 }
 
 function redactString(input: string): string {
@@ -353,7 +372,6 @@ function credentialKeys(): string[] {
   return [
     "PARLE_API_BASE",
     "PARLE_WAKE_BASE",
-    "PARLE_VERSION",
     "PARLE_PRINCIPAL_HANDLE",
     "PARLE_AGENT_HANDLE",
     "PARLE_ROOM_HANDLE",
@@ -426,6 +444,7 @@ function writeCredentialFile(cwd: string, values: Record<string, string | undefi
   const path = credentialsPath(cwd);
   const existing = readKeyValueFile(path);
   const merged: Record<string, string> = { ...existing };
+  delete merged.PARLE_VERSION;
   for (const [key, value] of Object.entries(values)) {
     if (value === undefined || value === "") continue;
     merged[key] = value;
@@ -508,8 +527,10 @@ async function humanJson(cfg: ParleConfig, path: string, cookie: string, options
   const text = await response.text();
   const json = parseJsonMaybe(text);
   if (!response.ok) {
-    const msg = redactString(json?.error?.message || truncateText(redactString(text), 4096).text || response.statusText);
-    const err: any = new Error(`Parle API ${response.status}: ${msg}`);
+    const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
+    const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text || response.statusText);
+    const versionHint = response.status === 400 && /version/i.test(`${errorObj.code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
+    const err: any = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
     err.status = response.status;
     throw err;
   }
@@ -561,7 +582,6 @@ async function parleLogin(ctx: any, cfg: ParleConfig, params: ParleLoginParams, 
       writeCredentialFile(cwd, {
         PARLE_API_BASE: cfg.apiBase.value || DEFAULT_API_BASE,
         PARLE_WAKE_BASE: cfg.wakeBase.value || undefined,
-        PARLE_VERSION: cfg.version.value || DEFAULT_VERSION,
         PARLE_SESSION_COOKIE: sessionCookie,
       });
       if (updateGitignore) ensureCredentialsIgnored(cwd);
@@ -606,7 +626,6 @@ async function parleLogin(ctx: any, cfg: ParleConfig, params: ParleLoginParams, 
     writeCredentialFile(cwd, {
       PARLE_API_BASE: cfg.apiBase.value || DEFAULT_API_BASE,
       PARLE_WAKE_BASE: cfg.wakeBase.value || undefined,
-      PARLE_VERSION: cfg.version.value || DEFAULT_VERSION,
       PARLE_AGENT_HANDLE: agent.agent_handle,
       PARLE_ROOM_HANDLE: room.room_handle,
       PARLE_ROOM_ID: room.room_id,
@@ -716,8 +735,10 @@ async function requestJson(cfg: ParleConfig, path: string, options: { method?: s
     const text = await response.text();
     const json = parseJsonMaybe(text);
     if (!response.ok) {
-      const msg = redactString(json?.error?.message || truncateText(redactString(text), 4096).text);
-      const err: any = new Error(`Parle API ${response.status}: ${msg}`);
+      const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
+      const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text);
+      const versionHint = response.status === 400 && /version/i.test(`${errorObj.code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
+      const err: any = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
       err.status = response.status;
       throw err;
     }

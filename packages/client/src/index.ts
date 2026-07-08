@@ -189,6 +189,16 @@ function firstConfigValue(name: string, sources: Array<{ name: string; values: R
   return { value: fallback, source: fallback === undefined ? "missing" : "default" };
 }
 
+function versionConfig(env: Record<string, string | undefined>, dotEnv: Record<string, string>, credentials: Record<string, string>, warnings: string[]): ConfigValue {
+  if (env.PARLE_VERSION) {
+    warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+    return { value: env.PARLE_VERSION, source: "env" };
+  }
+  if (dotEnv.PARLE_VERSION) warnings.push(`Ignoring PARLE_VERSION from .env (${dotEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
+  if (credentials.PARLE_VERSION) warnings.push(`Ignoring stale PARLE_VERSION from .parle/credentials (${credentials.PARLE_VERSION}); remove it. The adapter default is ${DEFAULT_VERSION}.`);
+  return { value: DEFAULT_VERSION, source: "default" };
+}
+
 export function resolveConfig(cwd = process.cwd(), env: Record<string, string | undefined> = process.env): ParleConfig {
   const dotEnv = readKeyValueFile(join(cwd, ".env"));
   const credentials = readKeyValueFile(join(cwd, ".parle", "credentials"));
@@ -197,11 +207,12 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
     { name: ".env", values: dotEnv },
     { name: ".parle/credentials", values: credentials },
   ];
+  const warnings: string[] = [];
   const cfg: ParleConfig = {
     enabledInput: firstConfigValue("PARLE_ENABLED", sources, "1"),
     apiBase: firstConfigValue("PARLE_API_BASE", sources, DEFAULT_API_BASE),
     wakeBase: firstConfigValue("PARLE_WAKE_BASE", sources, DEFAULT_WAKE_BASE),
-    version: firstConfigValue("PARLE_VERSION", sources, DEFAULT_VERSION),
+    version: versionConfig(env, dotEnv, credentials, warnings),
     roomId: firstConfigValue("PARLE_ROOM_ID", sources),
     roomHandle: firstConfigValue("PARLE_ROOM_HANDLE", sources),
     agentToken: firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
@@ -209,7 +220,7 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
     sessionAlias: firstConfigValue("PARLE_SESSION_ALIAS", sources),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     unreadPollIntervalSeconds: firstConfigValue("PARLE_UNREAD_POLL_INTERVAL_SECONDS", sources, "60"),
-    warnings: [],
+    warnings,
   };
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning) cfg.warnings.push(value.warning);
@@ -223,6 +234,15 @@ function parseJsonMaybe(text: string): any {
   } catch {
     return {};
   }
+}
+
+function formatVersionErrorHint(cfg: ParleConfig, errorObj: any): string {
+  const sent = cfg.version.value || DEFAULT_VERSION;
+  const supported = Array.isArray(errorObj?.supported) ? errorObj.supported.join(", ") : typeof errorObj?.supported === "string" ? errorObj.supported : undefined;
+  const current = typeof errorObj?.current === "string" ? errorObj.current : undefined;
+  const server = supported ? ` Server supports ${supported}.` : current ? ` Server current version is ${current}.` : "";
+  const action = cfg.version.source === "default" ? "Upgrade the adapter." : "Unset the stale PARLE_VERSION override or upgrade the adapter.";
+  return ` Sent Parle-Version ${sent} from ${cfg.version.source}; adapter default is ${DEFAULT_VERSION}.${server} ${action}`;
 }
 
 function parseRetryAfterMs(header: string | null): number | undefined {
@@ -643,7 +663,8 @@ export class ParleAgentClient {
       const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
       const retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
       const msg = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      let message = `Parle API ${response.status}: ${msg}`;
+      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(this.cfg, errorObj) : "";
+      let message = `Parle API ${response.status}: ${msg}${versionHint}`;
       if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
         if (hint) message += ` ${hint}`;

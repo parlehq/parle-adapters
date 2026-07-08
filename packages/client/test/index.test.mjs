@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
 import {
+  DEFAULT_VERSION,
   ERROR_ACTIONS,
   ERROR_REGISTRY,
   ERROR_SCOPES,
@@ -23,6 +24,13 @@ import {
   terminalStatusFor,
   updateCursorFromMessages,
 } from "../dist/index.js";
+
+test("adapter DEFAULT_VERSION constants stay in lockstep", () => {
+  const clientSrc = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  const piSrc = readFileSync(new URL("../../pi-extension/src/index.ts", import.meta.url), "utf8");
+  assert.match(clientSrc, new RegExp(`DEFAULT_VERSION = "${DEFAULT_VERSION}"`));
+  assert.match(piSrc, new RegExp(`DEFAULT_VERSION = "${DEFAULT_VERSION}"`));
+});
 
 test("client boundary scan ignores prose and detects forbidden import specifiers", () => {
   assert.deepEqual(findForbiddenImports(new URL("../src", import.meta.url).pathname), []);
@@ -47,6 +55,27 @@ test("config resolves env before files and redacts tokens", () => {
   assert.equal(cfg.roomId?.value, "room-1");
   assert.equal(cfg.agentToken?.source, "env");
   assert.equal(redactString("Authorization: Bearer parle_agt_secret"), "Authorization: Bearer <redacted>");
+});
+
+test("PARLE_VERSION is adapter-owned unless explicitly set in process env", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-version-config-"));
+  try {
+    writeFileSync(join(cwd, ".env"), "PARLE_VERSION=from-dotenv\n");
+    mkdirSync(join(cwd, ".parle"));
+    writeFileSync(join(cwd, ".parle", "credentials"), "PARLE_VERSION=from-credentials\n");
+    const defaultCfg = resolveConfig(cwd, {});
+    assert.equal(defaultCfg.version.value, "2026-07-07");
+    assert.equal(defaultCfg.version.source, "default");
+    assert.match(defaultCfg.warnings.join("\n"), /Ignoring PARLE_VERSION from \.env/);
+    assert.match(defaultCfg.warnings.join("\n"), /Ignoring stale PARLE_VERSION from \.parle\/credentials/);
+
+    const envCfg = resolveConfig(cwd, { PARLE_VERSION: "from-env" });
+    assert.equal(envCfg.version.value, "from-env");
+    assert.equal(envCfg.version.source, "env");
+    assert.match(envCfg.warnings.join("\n"), /process environment/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("key value parser handles quotes and comments", () => {

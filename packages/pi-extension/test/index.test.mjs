@@ -59,6 +59,19 @@ test("status reads room and token from project .env and redacts token", async ()
   assert.equal(status.details.agentToken.value, "<redacted>");
 });
 
+test("status ignores persisted PARLE_VERSION and warns", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=from-dotenv\nPARLE_WATCH_ENABLED=0\n");
+  mkdirSync(join(cwd, ".parle"));
+  writeFileSync(join(cwd, ".parle", "credentials"), "PARLE_VERSION=from-credentials\n");
+  globalThis.fetch = async () => { throw new Error("offline test"); };
+  const harness = installHarness(cwd);
+  const status = await harness.call("parle_status");
+  assert.equal(status.details.version.value, "2026-07-07");
+  assert.equal(status.details.version.source, "default");
+  assert.match(status.details.warnings.join("\n"), /Ignoring PARLE_VERSION from project \.env/);
+  assert.match(status.details.warnings.join("\n"), /Ignoring stale PARLE_VERSION from project \.parle\/credentials/);
+});
+
 test("watcher bootstrap failure records status instead of escaping", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=bad-version\n");
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "unsupported_version", message: "missing or unsupported Parle-Version header" } }), { status: 400 });
@@ -231,6 +244,7 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
   assert.match(credentials, /^PARLE_ROOM_AGENT_TOKEN=parle_agt_plain-secret$/m);
   assert.match(credentials, /^PARLE_ROOM_ID=room-1$/m);
   assert.match(credentials, /^PARLE_AGENT_TOKEN_ID=tok-1$/m);
+  assert.equal(credentials.includes("PARLE_VERSION="), false);
   assert.equal(statSync(join(cwd, ".parle", "credentials")).mode & 0o777, 0o600);
   assert.match(readFileSync(join(cwd, ".gitignore"), "utf8"), /^\.parle\/credentials$/m);
 
