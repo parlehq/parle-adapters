@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.9 (2026-07-08)
+
+Watcher lifecycle doc correction.
+
 - Skill lifecycle doc: the exit 2 bullet now matches the script (terminal actions, missing config, or five consecutive request failures; the retry budget was never ten).
 
 ## 0.5.8 (2026-07-08)

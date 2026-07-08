@@ -106,6 +106,28 @@ test("status bootstraps and redacts session handle", async () => {
   assert.equal(status.details.runtime.sessionAddress, "@p.a.raw-session");
 });
 
+test("status publishes a display-safe runtime snapshot", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_HANDLE=galexc-intercom\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-1", session_credential: "parle_ses_raw-session", session_handle: "raw-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-1", room_id: "room-1", agent_session_id: "as-1" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  const snapshot = JSON.parse(readFileSync(join(cwd, ".parle", "runtime", `${process.pid}.json`), "utf8"));
+  assert.equal(snapshot.schemaVersion, 1);
+  assert.equal(snapshot.state, "ready");
+  assert.equal(snapshot.agentSessionId, "as-1");
+  assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
+  assert.equal(snapshot.roomId, "room-1");
+  assert.equal(snapshot.roomHandle, "galexc-intercom");
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.3" });
+  assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
+});
+
 test("footer prefers alias route when session uses an alias", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_SESSION_ALIAS=parle-landing\nPARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async (url, init) => {

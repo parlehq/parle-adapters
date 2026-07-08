@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
+const PI_EXTENSION_VERSION = "0.1.3";
+const RUNTIME_SCHEMA_VERSION = 1;
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const DEFAULT_VERSION = "2026-07-07";
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
@@ -440,6 +442,85 @@ function preflightCredentialSink(cwd: string, updateGitignore: boolean) {
   chmodSync(probe, 0o600);
   unlinkSync(probe);
   if (updateGitignore) ensureCredentialsIgnored(cwd);
+}
+
+function runtimeDirPath(cwd: string): string {
+  return join(cwd, ".parle", "runtime");
+}
+
+function runtimeFilePath(cwd: string): string {
+  return join(runtimeDirPath(cwd), `${process.pid}.json`);
+}
+
+function processStartedAtIso(now = new Date()): string {
+  return new Date(now.getTime() - process.uptime() * 1000).toISOString();
+}
+
+function pidAlive(pid: number): boolean | undefined {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    return error?.code === "ESRCH" ? false : undefined;
+  }
+}
+
+function pruneRuntimeFiles(cwd: string, now = new Date()) {
+  const dir = runtimeDirPath(cwd);
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    if (name.startsWith(".") || !name.endsWith(".json")) continue;
+    const path = join(dir, name);
+    try {
+      const snapshot = JSON.parse(readFileSync(path, "utf8"));
+      if (snapshot?.pid === process.pid) continue;
+      const expiresAt = Date.parse(snapshot?.expiresAt || "");
+      const expired = !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
+      const dead = typeof snapshot?.pid === "number" && pidAlive(snapshot.pid) === false;
+      if (expired || dead) rmSync(path, { force: true });
+    } catch {
+      rmSync(path, { force: true });
+    }
+  }
+}
+
+function writeRuntimeFile(cwd: string, snapshot: Record<string, unknown>) {
+  const dir = runtimeDirPath(cwd);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const tmp = join(dir, `.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  writeFileSync(tmp, JSON.stringify(snapshot, null, 2) + "\n", { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, runtimeFilePath(cwd));
+}
+
+function removeRuntimeFile(cwd: string) {
+  rmSync(runtimeFilePath(cwd), { force: true });
+}
+
+function publishRuntimeState(ctx: any, cfg = resolveConfig(ctx?.cwd || process.cwd())) {
+  const cwd = ctx?.cwd || process.cwd();
+  try {
+    pruneRuntimeFiles(cwd);
+    const state = runtime.bootstrapped ? "ready" : runtime.lastError ? "failed" : "starting";
+    writeRuntimeFile(cwd, {
+      schemaVersion: RUNTIME_SCHEMA_VERSION,
+      pid: process.pid,
+      processStartedAt: processStartedAtIso(),
+      state,
+      sessionAddress: runtime.sessionAddress || null,
+      agentSessionId: runtime.agentSessionId || "",
+      roomId: runtime.roomId || cfg.roomId?.value || "",
+      roomHandle: cfg.roomHandle?.value,
+      updatedAt: new Date().toISOString(),
+      expiresAt: runtime.expiresAt || "",
+      ...(runtime.lastError ? { lastError: redactString(runtime.lastError) } : {}),
+      adapter: { name: "@parlehq/pi-extension", version: PI_EXTENSION_VERSION },
+    });
+  } catch {
+    // Runtime snapshots are display and liveness hints only; never break tools.
+  }
 }
 
 function writeCredentialFile(cwd: string, values: Record<string, string | undefined>) {
@@ -907,6 +988,7 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
   }
   runtime.lastError = undefined;
   setStatus(ctx, cfg);
+  publishRuntimeState(ctx, cfg);
 }
 
 async function ensureBootstrapped(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
@@ -924,7 +1006,9 @@ async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: strin
   stopWatcher(ctx);
   await endAgentSession(cfg, signal).catch((error) => {
     runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+    publishRuntimeState(ctx, cfg);
   });
+  removeRuntimeFile(ctx.cwd || process.cwd());
   await bootstrap(ctx, cfg, signal, true, alias);
   startWatcher(pi, ctx, cfg);
   return {
@@ -1470,6 +1554,7 @@ export default function parleExtension(pi: any) {
   pi.on("session_start", (_event: any, ctx: any) => {
     lastCtx = ctx;
     const cfg = resolveConfig(ctx.cwd || process.cwd());
+    pruneRuntimeFiles(ctx.cwd || process.cwd());
     setStatus(ctx, cfg);
     startWatcher(pi, ctx, cfg);
   });
@@ -1482,6 +1567,7 @@ export default function parleExtension(pi: any) {
       runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
     }).finally(() => clearTimeout(timer));
     stopWatcher(ctx);
+    removeRuntimeFile(ctx.cwd || process.cwd());
   });
 
   pi.registerCommand("parle-watch", {
@@ -1532,6 +1618,7 @@ export default function parleExtension(pi: any) {
           await ensureBootstrapped(ctx, cfg, signal);
         } catch (error) {
           runtime.lastError = error instanceof Error ? error.message : String(error);
+          publishRuntimeState(ctx, cfg);
         }
       }
       startWatcher(pi, ctx, resolveConfig(ctx.cwd || process.cwd()));
