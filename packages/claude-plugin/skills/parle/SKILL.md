@@ -88,7 +88,7 @@ Lifecycle (how a watch ends, and what to do):
 
 - Exit 0 with output: relevant room activity. Drain `parle_inbox`, act, re-arm.
 - Killed with empty output: the harness reaped an idle background shell (Claude Code's memory-pressure idle reaper kills idle background shells on a roughly 30 minute cadence; the standard Bash timeouts do not apply to background tasks). This is expected lifecycle, not a failure; the kill notification wakes your session, so just re-arm from the same seq.
-- Exit 2: ten consecutive request failures. Check connectivity before re-arming.
+- Exit 2: a terminal Parle error (`fix_client`, `reauthorize`, `rebootstrap`, `stop`), missing host configuration, or five consecutive request failures. Read the redaction-safe status and repair the cause before re-arming; only the consecutive-failure case is a plain connectivity check.
 - Exit 3: the watched session died (host reload, session end, or snapshot expiry within the safety window) after two consecutive local liveness checks. Reconnect with `parle_connect` and arm a fresh watch from the new `cursor` and `agentSessionId`; the pre-exit watermark and session id must not be reused. The check reads the local `.parle/runtime` snapshots each cycle, so a watch against a reloaded host self-terminates quickly instead of silently missing directs to the replacement session forever.
 - An opt-out (`CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` before launch) exists but removes a memory-pressure safety valve; re-arm-on-kill is the recommended loop instead.
 
