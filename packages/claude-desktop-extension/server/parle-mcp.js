@@ -31085,6 +31085,7 @@ var ERROR_REGISTRY = Object.fromEntries(Object.entries(entries).map(([code, entr
 
 // ../client/dist/format.js
 var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
+var CARD_RULE = "========================================";
 function nextTextFor(key) {
   if (!key)
     return DEFAULT_NEXT;
@@ -31119,7 +31120,7 @@ function line(label, value) {
   return `${label.padEnd(14, " ")}${value}`;
 }
 function formatCompactConnectionCard(input) {
-  const lines = [input.connectedLabel || "Connected to Parle", ""];
+  const lines = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
   const parsed = parseSessionAddress(input.sessionAddress);
   if (parsed) {
     lines.push(line("You are", `@${parsed.principal}`));
@@ -31133,7 +31134,7 @@ function formatCompactConnectionCard(input) {
   if (input.sessionAddress) {
     lines.push("", "Session Address:", input.sessionAddress);
   }
-  lines.push("", `Next: ${nextTextFor(input.next)}`);
+  lines.push("", `Next: ${nextTextFor(input.next)}`, CARD_RULE);
   return lines.join("\n");
 }
 function compactConnectionCardFromSummary(summary, opts = {}) {

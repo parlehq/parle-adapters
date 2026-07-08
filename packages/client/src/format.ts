@@ -19,6 +19,7 @@ export type ConnectionSummaryLike = {
 };
 
 const DEFAULT_NEXT = "open another session and send a message to this Session Address.";
+const CARD_RULE = "========================================";
 
 export function nextTextFor(key?: CompactConnectionNextKey | string): string {
   if (!key) return DEFAULT_NEXT;
@@ -54,7 +55,7 @@ function line(label: string, value: string): string {
 }
 
 export function formatCompactConnectionCard(input: CompactConnectionCardInput): string {
-  const lines: string[] = [input.connectedLabel || "Connected to Parle", ""];
+  const lines: string[] = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
   const parsed = parseSessionAddress(input.sessionAddress);
   if (parsed) {
     lines.push(line("You are", `@${parsed.principal}`));
@@ -66,7 +67,7 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   if (input.sessionAddress) {
     lines.push("", "Session Address:", input.sessionAddress);
   }
-  lines.push("", `Next: ${nextTextFor(input.next)}`);
+  lines.push("", `Next: ${nextTextFor(input.next)}`, CARD_RULE);
   return lines.join("\n");
 }
 

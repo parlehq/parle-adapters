@@ -42,6 +42,7 @@ When the user asks to connect (or coordination is about to start):
 Default compact response shape:
 
 ```text
+========================================
 Connected to Parle
 
 You are       @gilman
@@ -53,6 +54,7 @@ Session Address:
 @gilman.galexc.2avkwos36qa4kd5t
 
 Next: open another session and send a message to this Session Address.
+========================================
 ```
 
 `parle_status` is the full detail entrypoint for config provenance and runtime state. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.

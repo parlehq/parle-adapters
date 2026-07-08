@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 (2026-07-08)
+
+Bundled MCP refresh for compact connection card frame.
+
+- Refreshes the bundled MCP server so compact connection cards include plain CLI-safe rule lines.
+
 ## 0.5.3 (2026-07-08)
 
 Bundled MCP refresh for compact connection card support.

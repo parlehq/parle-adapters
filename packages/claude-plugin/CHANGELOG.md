@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.5.6 (2026-07-08)
+
+Compact connection card frame.
+
+- The compact connection card now renders with plain CLI-safe rule lines instead of relying on Markdown fencing in agent responses.
+
 ## 0.5.5 (2026-07-08)
 
 Compact connection card for Parle connect UX.
