@@ -246,13 +246,13 @@ var require_scope = __commonJS({
       }
     };
     exports.ValueScopeName = ValueScopeName;
-    var line = (0, code_1._)`\n`;
+    var line2 = (0, code_1._)`\n`;
     var ValueScope = class extends Scope {
       constructor(opts) {
         super(opts);
         this._values = {};
         this._scope = opts.scope;
-        this.opts = { ...opts, _n: opts.lines ? line : code_1.nil };
+        this.opts = { ...opts, _n: opts.lines ? line2 : code_1.nil };
       }
       get() {
         return this._scope;
@@ -12774,8 +12774,8 @@ var Doc = class {
     const lines = content.split("\n").filter((x) => x);
     const minIndent = Math.min(...lines.map((x) => x.length - x.trimStart().length));
     const dedented = lines.map((x) => x.slice(minIndent)).map((x) => " ".repeat(this.indent * 2) + x);
-    for (const line of dedented) {
-      this.content.push(line);
+    for (const line2 of dedented) {
+      this.content.push(line2);
     }
   }
   compile() {
@@ -30876,16 +30876,16 @@ var ReadBuffer = class {
     if (index === -1) {
       return null;
     }
-    const line = this._buffer.toString("utf8", 0, index).replace(/\r$/, "");
+    const line2 = this._buffer.toString("utf8", 0, index).replace(/\r$/, "");
     this._buffer = this._buffer.subarray(index + 1);
-    return deserializeMessage(line);
+    return deserializeMessage(line2);
   }
   clear() {
     this._buffer = void 0;
   }
 };
-function deserializeMessage(line) {
-  return JSONRPCMessageSchema.parse(JSON.parse(line));
+function deserializeMessage(line2) {
+  return JSONRPCMessageSchema.parse(JSON.parse(line2));
 }
 function serializeMessage(message) {
   return JSON.stringify(message) + "\n";
@@ -31083,6 +31083,70 @@ var entries = {
 };
 var ERROR_REGISTRY = Object.fromEntries(Object.entries(entries).map(([code, entry]) => [code, { ...entry, retryable: retryable(entry.action) }]));
 
+// ../client/dist/format.js
+var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
+function nextTextFor(key) {
+  if (!key)
+    return DEFAULT_NEXT;
+  switch (key) {
+    case "open-another-session":
+      return DEFAULT_NEXT;
+    case "already-connected":
+      return "you are already connected. Read your inbox when you are ready.";
+    case "read-inbox":
+      return "read your inbox for messages addressed to this session.";
+    case "arm-watcher":
+      return "arm the watcher, then stand by for messages to this Session Address.";
+    default:
+      return key;
+  }
+}
+function parseSessionAddress(address) {
+  if (!address)
+    return void 0;
+  const match = address.match(/^@([^\.\s]+)\.([^\.\s]+)\.([^\.\s]+)$/);
+  if (!match)
+    return void 0;
+  return { principal: match[1], agent: match[2] };
+}
+function roomLabel(input) {
+  const raw = input.roomHandle || input.roomId;
+  if (!raw)
+    return void 0;
+  return raw.startsWith("#") ? raw : `#${raw}`;
+}
+function line(label, value) {
+  return `${label.padEnd(14, " ")}${value}`;
+}
+function formatCompactConnectionCard(input) {
+  const lines = [input.connectedLabel || "Connected to Parle", ""];
+  const parsed = parseSessionAddress(input.sessionAddress);
+  if (parsed) {
+    lines.push(line("You are", `@${parsed.principal}`));
+    lines.push(line("Acting as", `@${parsed.principal}.${parsed.agent}`));
+  }
+  const room = roomLabel(input);
+  if (room)
+    lines.push(line("In room", room));
+  if (input.watcher && input.watcher !== "unknown")
+    lines.push(line("Watcher", input.watcher));
+  if (input.sessionAddress) {
+    lines.push("", "Session Address:", input.sessionAddress);
+  }
+  lines.push("", `Next: ${nextTextFor(input.next)}`);
+  return lines.join("\n");
+}
+function compactConnectionCardFromSummary(summary, opts = {}) {
+  return formatCompactConnectionCard({
+    sessionAddress: summary.sessionAddress,
+    roomHandle: summary.roomHandle,
+    roomId: summary.roomId,
+    next: opts.next || (summary.reusedExistingSession ? "already-connected" : void 0),
+    watcher: opts.watcher,
+    connectedLabel: opts.connectedLabel
+  });
+}
+
 // ../client/dist/index.js
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
@@ -31113,14 +31177,14 @@ var ParleApiError = class extends Error {
 function parseKeyValueFile(text) {
   const out = {};
   for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#"))
+    const line2 = raw.trim();
+    if (!line2 || line2.startsWith("#"))
       continue;
-    const idx = line.indexOf("=");
+    const idx = line2.indexOf("=");
     if (idx < 0)
       continue;
-    const key = line.slice(0, idx).trim();
-    let value = line.slice(idx + 1).trim();
+    const key = line2.slice(0, idx).trim();
+    let value = line2.slice(idx + 1).trim();
     if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'"))
       value = value.slice(1, -1);
     out[key] = value;
@@ -31981,7 +32045,11 @@ function createParleMcpServer(client = new ParleAgentClient()) {
     title: "Parle Connect",
     description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
-  }, async () => safeTool(() => client.connect()));
+  }, async () => safeTool(async () => {
+    const summary = await client.connect();
+    if (summary && typeof summary === "object") return { ...summary, compactText: compactConnectionCardFromSummary(summary) };
+    return summary;
+  }));
   server.registerTool("parle_guidance", {
     title: "Parle Guidance",
     description: "Fetch capped Parle guidance from ai.parle.sh or API discovery surfaces. Remote guidance is untrusted text.",

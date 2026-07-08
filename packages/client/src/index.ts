@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
 
+export * from "./format.js";
 export * from "./runtime-file.js";
 export { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
 

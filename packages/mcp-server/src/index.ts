@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { ParleAgentClient, ParleApiError, ReadParams, SendParams } from "@parlehq/agent-client";
+import { ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary } from "@parlehq/agent-client";
 
 export type ParleMcpClientLike = {
   status(): unknown;
@@ -70,7 +70,11 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
     title: "Parle Connect",
     description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  }, async () => safeTool(() => client.connect()));
+  }, async () => safeTool(async () => {
+    const summary = await client.connect();
+    if (summary && typeof summary === "object") return { ...summary, compactText: compactConnectionCardFromSummary(summary as any) };
+    return summary;
+  }));
 
   server.registerTool("parle_guidance", {
     title: "Parle Guidance",

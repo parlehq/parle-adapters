@@ -36,10 +36,26 @@ Permission note: these tools are namespaced as `mcp__plugin_parle-claude-plugin_
 When the user asks to connect (or coordination is about to start):
 
 1. If configuration may be missing, run `parle_setup`; otherwise go straight to `parle_connect`.
-2. `parle_connect` establishes or reuses the room session and returns the session address, `agentSessionId`, participant id, expiry, and cursor. Report the address and expiry to the user. The default address is ephemeral per process. Claim a named alias only when the user or workflow explicitly wants this process to own that role.
-3. Immediately arm the responsive watcher (next section) with the returned `cursor` and `agentSessionId`. Arming is part of connecting by default; stand by without a watcher only when the user explicitly asks.
+2. `parle_connect` establishes or reuses the room session and returns the session address, `agentSessionId`, participant id, expiry, cursor, and `compactText`. Keep the full tool result for internal watcher setup. Do not report UUIDs, cursor, expiry, backlog, or config provenance in the default operator-facing response unless the user asks for details.
+3. Immediately arm the responsive watcher (next section) with the returned `cursor` and `agentSessionId`. Arming is part of connecting by default; stand by without a watcher only when the user explicitly asks. After the background watcher task is actually started, reply with the compact card shape below and set `Watcher       on`. Do not say the watcher is on until the background task start is confirmed.
 
-`parle_status` is a pure read (config provenance + runtime state) and never connects. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
+Default compact response shape:
+
+```text
+Connected to Parle
+
+You are       @gilman
+Acting as     @gilman.galexc
+In room       #galexc-intercom
+Watcher       on
+
+Session Address:
+@gilman.galexc.2avkwos36qa4kd5t
+
+Next: open another session and send a message to this Session Address.
+```
+
+`parle_status` is the full detail entrypoint for config provenance and runtime state. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
 
 ## Tool posture
 

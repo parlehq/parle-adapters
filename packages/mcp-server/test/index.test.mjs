@@ -28,7 +28,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
   const fakeClient = {
     status: () => ({ ok: true }),
     setup: () => ({ ok: true }),
-    connect: async () => { calls.push(["connect"]); return { connected: true, sessionAddress: "@p.a.s1", agentSessionId: "as-1", cursor: 3 }; },
+    connect: async () => { calls.push(["connect"]); return { connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }; },
     guidance: async () => ({ ok: true }),
     readProjection: async (params) => { calls.push(["read", params]); return { messages: [], cursorAfter: 3 }; },
     readInbox: async () => ({ messages: [] }),
@@ -43,6 +43,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const connect = await client.callTool({ name: "parle_connect", arguments: {} });
     assert.equal(connect.structuredContent.connected, true);
     assert.equal(connect.structuredContent.agentSessionId, "as-1");
+    assert.match(connect.structuredContent.compactText, /Session Address:\n@p\.a\.s1/);
+    assert.match(connect.content[0].text, /\"agentSessionId\": \"as-1\"/);
     const read = await client.callTool({ name: "parle_read", arguments: { waitSeconds: 1 } });
     assert.equal(read.structuredContent.cursorAfter, 3);
     const send = await client.callTool({ name: "parle_send", arguments: { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" } });
