@@ -25,11 +25,16 @@ import {
   updateCursorFromMessages,
 } from "../dist/index.js";
 
-test("adapter DEFAULT_VERSION constants stay in lockstep", () => {
+test("adapter DEFAULT_VERSION constants stay in lockstep with the API fixture", () => {
   const clientSrc = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   const piSrc = readFileSync(new URL("../../pi-extension/src/index.ts", import.meta.url), "utf8");
+  const watchScript = readFileSync(new URL("../../claude-plugin/skills/parle/scripts/parle-watch.sh", import.meta.url), "utf8");
+  const apiVersion = JSON.parse(readFileSync(new URL("fixtures/api-version.json", import.meta.url), "utf8"));
+  assert.equal(DEFAULT_VERSION, apiVersion.current);
+  assert.equal(apiVersion.supported.includes(DEFAULT_VERSION), true);
   assert.match(clientSrc, new RegExp(`DEFAULT_VERSION = "${DEFAULT_VERSION}"`));
   assert.match(piSrc, new RegExp(`DEFAULT_VERSION = "${DEFAULT_VERSION}"`));
+  assert.match(watchScript, new RegExp(`PARLE_VERSION:=${DEFAULT_VERSION}`));
 });
 
 test("client boundary scan ignores prose and detects forbidden import specifiers", () => {
@@ -73,6 +78,15 @@ test("PARLE_VERSION is adapter-owned unless explicitly set in process env", () =
     assert.equal(envCfg.version.value, "from-env");
     assert.equal(envCfg.version.source, "env");
     assert.match(envCfg.warnings.join("\n"), /process environment/);
+    assert.doesNotMatch(envCfg.warnings.join("\n"), /Ignoring PARLE_VERSION from \.env/);
+    assert.doesNotMatch(envCfg.warnings.join("\n"), /Ignoring stale PARLE_VERSION from \.parle\/credentials/);
+
+    rmSync(join(cwd, ".env"));
+    rmSync(join(cwd, ".parle", "credentials"));
+    const cleanCfg = resolveConfig(cwd, {});
+    assert.equal(cleanCfg.version.value, "2026-07-07");
+    assert.equal(cleanCfg.version.source, "default");
+    assert.equal(cleanCfg.warnings.length, 0);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -164,6 +178,17 @@ test("requestJson sends low-cardinality client identity headers", async () => {
   await client.requestJson("/v/test");
   assert.equal(observed["Parle-Client-Name"], "@parlehq/test-adapter");
   assert.equal(observed["Parle-Client-Version"], "1.2.3");
+});
+
+test("unsupported version errors include source, default, and server versions", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token", PARLE_VERSION: "bad-version" },
+    fetch: async () => json({ error: { code: "unsupported_parle_version", message: "unsupported Parle-Version header", supported: ["2026-07-07"], current: "2026-07-07" } }, 400),
+  });
+  await assert.rejects(
+    () => client.requestJson("/v/test"),
+    /Sent Parle-Version bad-version from env; adapter default is 2026-07-07\. Server supports 2026-07-07\. Unset the stale PARLE_VERSION override or upgrade the adapter\./,
+  );
 });
 
 test("requestJson validates absolute URLs before sending bearer tokens", async () => {

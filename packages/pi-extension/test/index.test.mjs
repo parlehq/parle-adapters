@@ -206,6 +206,8 @@ test("parle_login starts email login without requiring raw request plumbing", as
 
 test("parle_login complete captures Set-Cookie, mints token, saves credentials, and redacts secrets", async () => {
   const cwd = tempProject();
+  mkdirSync(join(cwd, ".parle"));
+  writeFileSync(join(cwd, ".parle", "credentials"), "UNKNOWN_KEEP=keep-me\nPARLE_VERSION=stale-pin\n");
   const seen = [];
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
@@ -245,6 +247,7 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
   assert.match(credentials, /^PARLE_ROOM_ID=room-1$/m);
   assert.match(credentials, /^PARLE_AGENT_TOKEN_ID=tok-1$/m);
   assert.equal(credentials.includes("PARLE_VERSION="), false);
+  assert.match(credentials, /^UNKNOWN_KEEP=keep-me$/m);
   assert.equal(statSync(join(cwd, ".parle", "credentials")).mode & 0o777, 0o600);
   assert.match(readFileSync(join(cwd, ".gitignore"), "utf8"), /^\.parle\/credentials$/m);
 
