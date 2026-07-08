@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 (2026-07-07)
+
+Eager server spawn: `alwaysLoad: true` on the bundled MCP server (requires Claude Code 2.1.121+; older versions ignore the field).
+
+- Claude Code defers MCP servers by default (tool-search lazy loading), so the server process did not spawn until the first Parle tool call and the 0.4.0 eager session bootstrap never ran at session open: a fresh session showed `parle · off` until Parle was first used. `alwaysLoad` exempts the server from deferral, so the session exists and the statusline populates within seconds of session start, with no tool call needed. Trade-off: the eight Parle tool schemas now load into context up front.
+
 ## 0.5.0 (2026-07-07)
 
 Unread count in the statusline: inbound attention surfaced without draining (bundled artifact refresh; no MCP tool contract change).
