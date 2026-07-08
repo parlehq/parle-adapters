@@ -70,6 +70,14 @@ test("watcher bootstrap failure records status instead of escaping", async () =>
   assert.match(state.lastError, /unsupported Parle-Version/);
 });
 
+test("footer shows x when configured Parle cannot bootstrap", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_HANDLE=galexc-intercom\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=bad-version\n");
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "unsupported_version", message: "missing or unsupported Parle-Version header" } }), { status: 400 });
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  assert.equal(harness.statuses.at(-1).label, "parle x starting");
+});
+
 test("status bootstraps and redacts session handle", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async (url) => {

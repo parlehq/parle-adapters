@@ -1327,8 +1327,14 @@ function statusDetails(ctx: any) {
   };
 }
 
+function hasConnectionFailure(): boolean {
+  if (runtime.bootstrapped || runtime.sessionAddress) return false;
+  return Boolean(runtime.lastError || runtime.lastHttpStatus || runtime.lastErrorClass);
+}
+
 function shouldShowFooterError(): boolean {
   if (runtime.watcherState === "auth_expired" || runtime.watcherState === "session_expired" || runtime.watcherState === "disconnected") return true;
+  if (hasConnectionFailure()) return true;
   if (runtime.watcherState !== "backoff") return false;
   if ((runtime.consecutiveWatcherFailures || 0) >= FOOTER_FAILURE_THRESHOLD) return true;
   if (!runtime.lastWatcherErrorAt) return false;
