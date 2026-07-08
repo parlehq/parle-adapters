@@ -2,8 +2,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
+import { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
 
 export * from "./runtime-file.js";
+export { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
@@ -68,7 +70,10 @@ export type ClientOptions = {
   env?: Record<string, string | undefined>;
   fetch?: FetchLike;
   now?: () => Date;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   randomUUID?: () => string;
+  clientName?: string;
+  clientVersion?: string;
   // When set, the client publishes a display-safe per-pid runtime snapshot to
   // .parle/runtime/<pid>.json on every bootstrap state change (see runtime-file.ts)
   // and prunes provably stale sibling files at construction.
@@ -88,6 +93,7 @@ export type RequestOptions = {
   // is a parle_ses_ token that redactString would destroy). Never surface a
   // rawResponse payload; error paths stay redacted regardless.
   rawResponse?: boolean;
+  retry?: boolean;
 };
 
 export type ReadParams = {
@@ -136,14 +142,20 @@ export type SendDeliveryStatus = {
 export class ParleApiError extends Error {
   status?: number;
   code?: string;
+  action?: ErrorAction;
+  scope?: ErrorScope;
+  retryAfterMs?: number;
   retryable: boolean;
   details?: unknown;
 
-  constructor(message: string, options: { status?: number; code?: string; retryable?: boolean; details?: unknown } = {}) {
+  constructor(message: string, options: { status?: number; code?: string; action?: ErrorAction; scope?: ErrorScope; retryAfterMs?: number; retryable?: boolean; details?: unknown } = {}) {
     super(message);
     this.name = "ParleApiError";
     this.status = options.status;
     this.code = options.code;
+    this.action = options.action;
+    this.scope = options.scope;
+    this.retryAfterMs = options.retryAfterMs;
     this.retryable = options.retryable ?? false;
     this.details = options.details;
   }
@@ -211,6 +223,99 @@ function parseJsonMaybe(text: string): any {
   } catch {
     return {};
   }
+}
+
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.trunc(seconds * 1000);
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+function parseEnvelopeRetryAfterMs(errorObj: any, response: Response): number | undefined {
+  if (typeof errorObj?.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) && errorObj.retry_after_ms >= 0) return Math.trunc(errorObj.retry_after_ms);
+  if (typeof errorObj?.retry_after_seconds === "number" && Number.isFinite(errorObj.retry_after_seconds) && errorObj.retry_after_seconds >= 0) return Math.trunc(errorObj.retry_after_seconds * 1000);
+  return parseRetryAfterMs(response.headers.get("retry-after"));
+}
+
+function asErrorAction(value: unknown): ErrorAction | undefined {
+  return typeof value === "string" && (ERROR_ACTIONS as readonly string[]).includes(value) ? value as ErrorAction : undefined;
+}
+
+function asErrorScope(value: unknown): ErrorScope | undefined {
+  return typeof value === "string" && (ERROR_SCOPES as readonly string[]).includes(value) ? value as ErrorScope : undefined;
+}
+
+function defaultActionForStatus(status: number): ErrorAction {
+  if (status === 401) return "reauthorize";
+  if (status === 429) return "backoff";
+  if (status >= 500) return "retry_with_backoff";
+  return "stop";
+}
+
+function defaultScopeForStatus(status: number): ErrorScope {
+  if (status === 401) return "agent_token";
+  if (status === 429) return "rate_limit";
+  if (status >= 500) return "server";
+  return "request";
+}
+
+function actionRetryable(action: ErrorAction): boolean {
+  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
+}
+
+const REQUEST_RETRY_ATTEMPTS = 5;
+const REQUEST_RETRY_WINDOW_MS = 60_000;
+
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted || ms <= 0) return resolve();
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+function retryDelayMs(error: ParleApiError, attempt: number): number {
+  if (typeof error.retryAfterMs === "number" && Number.isFinite(error.retryAfterMs) && error.retryAfterMs >= 0) return Math.trunc(error.retryAfterMs);
+  if (error.action === "retry") return 250;
+  const base = Math.min(10_000, 1_000 * 2 ** Math.max(0, attempt - 1));
+  return Math.trunc(base * (0.8 + Math.random() * 0.4));
+}
+
+export function terminalStatusFor(error: ParleApiError): string {
+  switch (error.action) {
+    case "fix_client":
+      return "Parle stopped: client request is invalid; upgrade or repair the adapter.";
+    case "reauthorize":
+      return "Parle stopped: agent token is invalid or revoked; reauthorize the agent.";
+    case "rebootstrap":
+      return "Parle stopped: agent session is dead; reconnect with parle_connect and re-arm.";
+    case "backoff":
+      return `Parle paused: retry scheduled after ${formatDuration(error.retryAfterMs ?? 0)} (${error.code || "backoff"}).`;
+    case "stop":
+      return error.scope === "agent_session"
+        ? "Parle stopped: agent session could not be rebootstrapped; reauthorize or restart."
+        : "Parle stopped: client request is invalid; upgrade or repair the adapter.";
+    default:
+      return error.retryable ? `Parle paused: retry scheduled after ${formatDuration(error.retryAfterMs ?? 0)}.` : "Parle stopped: client request is invalid; upgrade or repair the adapter.";
+  }
+}
+
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "the server-provided delay";
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.ceil(ms / 1000);
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
 }
 
 export function redactString(input: string): string {
@@ -376,7 +481,10 @@ export class ParleAgentClient {
   readonly fetchImpl: FetchLike;
   readonly env: Record<string, string | undefined>;
   readonly now: () => Date;
+  readonly sleepImpl: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly randomUUID: () => string;
+  readonly clientName: string;
+  readonly clientVersion?: string;
   readonly publishRuntime?: { adapterName: string; adapterVersion?: string };
   runtime: RuntimeState = {
     bootstrapped: false,
@@ -391,6 +499,7 @@ export class ParleAgentClient {
   };
   private bootstrapGeneration = 0;
   private bootstrapInFlight: Promise<RuntimeState> | null = null;
+  private rebootstrapEpisode: { failedSessionHandle: string; attempted: boolean; healthySinceMs?: number; terminal?: boolean } | null = null;
   private consecutiveBootstrapFailures = 0;
   private unreadInFlight = false;
   private unreadPollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -401,8 +510,11 @@ export class ParleAgentClient {
     this.cfg = resolveConfig(this.cwd, this.env);
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => new Date());
+    this.sleepImpl = options.sleep || defaultSleep;
     this.randomUUID = options.randomUUID || randomUUID;
     this.publishRuntime = options.publishRuntime;
+    this.clientName = options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client";
+    this.clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     if (this.publishRuntime) {
       try {
         pruneRuntimeFiles(this.cwd, this.now());
@@ -472,11 +584,30 @@ export class ParleAgentClient {
   }
 
   async requestJson(pathOrUrl: string, options: RequestOptions = {}): Promise<any> {
+    const method = options.method || (options.body === undefined ? "GET" : "POST");
+    const retryableRequest = options.retry !== false && (method === "GET" || method === "HEAD" || Boolean(options.headers?.["Idempotency-Key"]));
+    const startedMs = this.now().getTime();
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.requestJsonOnce(pathOrUrl, options, method);
+      } catch (error: any) {
+        if (!(error instanceof ParleApiError) || !retryableRequest || !error.retryable || attempt >= REQUEST_RETRY_ATTEMPTS) throw error;
+        const elapsed = Math.max(0, this.now().getTime() - startedMs);
+        const delay = retryDelayMs(error, attempt);
+        if (elapsed + delay > REQUEST_RETRY_WINDOW_MS) throw error;
+        await this.sleepImpl(delay, options.signal);
+      }
+    }
+  }
+
+  private async requestJsonOnce(pathOrUrl: string, options: RequestOptions, method: string): Promise<any> {
     const url = requestUrl(this.cfg, pathOrUrl);
     assertSafeBase(url.origin, this.env);
     const headers: Record<string, string> = {
       Accept: "application/json",
       "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+      "Parle-Client-Name": this.clientName,
+      ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
       ...options.headers,
     };
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
@@ -490,11 +621,11 @@ export class ParleAgentClient {
     const signal = options.signal && timeout ? AbortSignal.any([options.signal, timeout]) : options.signal || timeout;
     let response: Response;
     try {
-      response = await this.fetchImpl(url, { method: options.method || (options.body === undefined ? "GET" : "POST"), headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal });
+      response = await this.fetchImpl(url, { method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal });
     } catch (error: any) {
       const name = typeof error?.name === "string" ? error.name : "";
       if (name === "AbortError" || name === "TimeoutError" || signal?.aborted) {
-        throw new ParleApiError("Parle API request timed out or was aborted", { code: "timeout", retryable: true });
+        throw new ParleApiError("Parle API request timed out or was aborted", { code: "timeout", action: "retry_with_backoff", scope: "server", retryable: true });
       }
       throw error;
     }
@@ -504,16 +635,20 @@ export class ParleAgentClient {
     const json = parseJsonMaybe(options.rawResponse ? rawText : text);
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json;
-      const code = redactedJson?.error?.code;
-      const msg = redactString(redactedJson?.error?.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      // @parle-interpretation parlehq/parle#431
-      // Replace status-class retry inference once API errors expose canonical retryability.
+      const errorObj = redactedJson?.error && typeof redactedJson.error === "object" ? redactedJson.error : {};
+      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
+      const registry = code ? ERROR_REGISTRY[code] : undefined;
+      const action = asErrorAction(errorObj.action) || registry?.action || defaultActionForStatus(response.status);
+      const scope = asErrorScope(errorObj.scope) || registry?.scope || defaultScopeForStatus(response.status);
+      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
+      const retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
+      const msg = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       let message = `Parle API ${response.status}: ${msg}`;
-      if (response.status === 401) {
+      if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
         if (hint) message += ` ${hint}`;
       }
-      throw new ParleApiError(message, { status: response.status, code, retryable: response.status >= 500 || response.status === 429, details: redactedJson });
+      throw new ParleApiError(message, { status: response.status, code, action, scope, retryAfterMs, retryable, details: redactedJson });
     }
     return json;
   }
@@ -584,6 +719,14 @@ export class ParleAgentClient {
   private sessionExpired(): boolean {
     const expiry = this.runtime.expiresAt ? new Date(this.runtime.expiresAt) : null;
     return expiry !== null && !Number.isNaN(expiry.getTime()) && expiry <= this.now();
+  }
+
+  private resetRebootstrapEpisodeIfHealthy(): void {
+    const episode = this.rebootstrapEpisode;
+    // A terminal session gets one repair attempt, then needs ten quiet minutes
+    // before a future failure can start a new episode.
+    if (!episode?.healthySinceMs) return;
+    if (this.now().getTime() - episode.healthySinceMs >= 10 * 60_000) this.rebootstrapEpisode = null;
   }
 
   // Non-throwing bootstrap for eager startup and status auto-connect. Returns
@@ -677,7 +820,7 @@ export class ParleAgentClient {
     this.unreadInFlight = true;
     try {
       const sinceSeq = this.runtime.cursor || 0;
-      const response = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, signal, timeoutMs: 10_000 });
+      const response = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, signal, timeoutMs: 10_000, retry: false });
       if ((this.runtime.cursor || 0) !== sinceSeq) return;
       const rows = Array.isArray(response.messages) ? response.messages : [];
       this.setUnread(rows.filter((row: any) => typeof row?.seq === "number" && row.seq > sinceSeq).length);
@@ -769,12 +912,39 @@ export class ParleAgentClient {
   }
 
   async withRebootstrap<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    this.resetRebootstrapEpisodeIfHealthy();
     await this.ensureBootstrapped(signal);
     try {
       return await fn();
     } catch (error: any) {
-      if (error?.status !== 401 && error?.status !== 404) throw error;
-      await this.bootstrap(signal, true);
+      if (!(error instanceof ParleApiError) || error.action !== "rebootstrap") throw error;
+      // Missing handles share one defensive bucket. In practice session terminal
+      // errors arrive only after a handle was presented.
+      const failedSessionHandle = this.runtime.sessionHandle || "<missing-session>";
+      const existing = this.rebootstrapEpisode;
+      if (existing?.failedSessionHandle === failedSessionHandle && (existing.attempted || existing.terminal)) {
+        if (this.bootstrapInFlight && !existing.terminal) {
+          await this.bootstrapInFlight;
+          return fn();
+        }
+        throw error;
+      }
+      this.rebootstrapEpisode = { failedSessionHandle, attempted: true };
+      this.runtime.bootstrapped = false;
+      this.runtime.sessionHandle = "";
+      this.runtime.bootstrapState = "starting";
+      this.publishRuntimeState();
+      try {
+        await this.bootstrap(signal, true);
+        this.rebootstrapEpisode = { failedSessionHandle, attempted: true, healthySinceMs: this.now().getTime() };
+      } catch (bootstrapError: any) {
+        if (bootstrapError instanceof ParleApiError && ["fix_client", "reauthorize", "stop"].includes(bootstrapError.action || "")) {
+          this.rebootstrapEpisode = { failedSessionHandle, attempted: true, terminal: true };
+          this.runtime.lastBootstrapError = terminalStatusFor(bootstrapError);
+          this.publishRuntimeState();
+        }
+        throw bootstrapError;
+      }
       return fn();
     }
   }
@@ -828,7 +998,7 @@ export class ParleAgentClient {
       }, signal);
     } catch (error: any) {
       if (error instanceof ParleApiError) {
-        return { ok: false, retryable: error.retryable, idempotencyKey: error.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
+        return { ok: false, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey: error.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
       }
       throw error;
     }

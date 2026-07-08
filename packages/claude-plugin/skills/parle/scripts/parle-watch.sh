@@ -15,7 +15,7 @@
 # any new room row wakes you (v1 behavior).
 #
 # Needs: PARLE_API_BASE, PARLE_ROOM_ID, PARLE_ROOM_AGENT_TOKEN, PARLE_VERSION
-# Exit:  0 = relevant activity past since_seq, 2 = repeated failures
+# Exit:  0 = relevant activity past since_seq, 2 = terminal or repeated failures
 #
 # Config self-loads from the same sources and precedence as the adapters
 # client: process env first, then ./.env, then ./.parle/credentials (relative
@@ -50,24 +50,71 @@ load_missing PARLE_VERSION
 : "${PARLE_API_BASE:=https://api.parle.sh}"
 : "${PARLE_VERSION:=2026-07-07}"
 if [ -z "${PARLE_ROOM_ID:-}" ] || [ -z "${PARLE_ROOM_AGENT_TOKEN:-}" ]; then
-  echo "parle-watch: PARLE_ROOM_ID / PARLE_ROOM_AGENT_TOKEN not found in env, ./.env, or ./.parle/credentials (run from the project directory)" >&2
+  echo "Parle stopped: required host configuration is missing. PARLE_ROOM_ID / PARLE_ROOM_AGENT_TOKEN not found in env, ./.env, or ./.parle/credentials (run from the project directory)" >&2
   exit 2
 fi
 
 fails=0
 while :; do
-  resp=$(curl -sf --max-time 40 \
+  tmp=$(mktemp "${TMPDIR:-/tmp}/parle-watch.XXXXXX") || exit 2
+  status=$(curl -sS --max-time 40 -o "$tmp" -w '%{http_code}' \
     "$PARLE_API_BASE/v/rooms/$PARLE_ROOM_ID/projection?since_seq=$since&wait=25" \
     -H "Authorization: Bearer $PARLE_ROOM_AGENT_TOKEN" \
-    -H "Parle-Version: $PARLE_VERSION") || resp=""
-  if [ -z "$resp" ]; then
-    fails=$((fails + 1))
-    if [ "$fails" -ge 10 ]; then
-      echo "parle-watch: $fails consecutive failures, giving up" >&2
-      exit 2
-    fi
-    sleep $((fails * 5))
-    continue
+    -H "Parle-Version: $PARLE_VERSION") || status="000"
+  resp=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+    action=$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    err = (json.load(sys.stdin).get("error") or {})
+except Exception:
+    err = {}
+print(err.get("action") or "network")
+print(err.get("code") or "")
+print(err.get("retry_after_ms") or "")
+')
+    err_action=$(printf '%s\n' "$action" | sed -n '1p')
+    err_code=$(printf '%s\n' "$action" | sed -n '2p')
+    retry_after_ms=$(printf '%s\n' "$action" | sed -n '3p')
+    case "$err_action" in
+      fix_client)
+        echo "Parle stopped: client request is invalid; upgrade or repair the adapter. ${err_code}" >&2
+        exit 2
+        ;;
+      reauthorize)
+        echo "Parle stopped: agent token is invalid or revoked; reauthorize the agent. ${err_code}" >&2
+        exit 2
+        ;;
+      rebootstrap)
+        echo "Parle stopped: agent session is dead; reconnect with parle_connect and re-arm. ${err_code}" >&2
+        exit 2
+        ;;
+      stop)
+        echo "Parle stopped: agent session could not be rebootstrapped; reauthorize or restart. ${err_code}" >&2
+        exit 2
+        ;;
+      backoff|retry_with_backoff|retry)
+        fails=$((fails + 1))
+        [ -n "$retry_after_ms" ] && sleep_secs=$(( (retry_after_ms + 999) / 1000 )) || sleep_secs=$((fails * 5))
+        if [ "$fails" -ge 5 ]; then
+          echo "parle-watch: retry budget exhausted after $fails failures" >&2
+          exit 2
+        fi
+        echo "Parle paused: retrying after ${sleep_secs}s (${err_code:-$err_action})." >&2
+        sleep "$sleep_secs"
+        continue
+        ;;
+      *)
+        fails=$((fails + 1))
+        if [ "$fails" -ge 5 ]; then
+          echo "parle-watch: $fails consecutive network failures, giving up" >&2
+          exit 2
+        fi
+        sleep $((fails * 5))
+        continue
+        ;;
+    esac
   fi
   fails=0
   out=$(printf '%s' "$resp" | python3 -c '

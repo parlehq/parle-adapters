@@ -11,13 +11,13 @@ It owns:
 - configuration parsing and source provenance
 - redaction and truncation
 - safe Parle host validation
-- request helpers with injectable fetch
+- request helpers with injectable fetch and low-cardinality client identity headers
 - setup diagnostics and guidance fetches
-- session bootstrap, 401 and session-404 re-bootstrap, heartbeat, and best-effort session end primitives
+- session bootstrap, terminal-error-aware rebootstrap episodes, heartbeat, and best-effort session end primitives
 - projection read, inbound read, affordances fetch, send, direct addressing, shared cursor helpers, and idempotency helpers
 - wake SSE stream handling, responsive-delivery drain with `wait=0`, ack helpers, and delivery dedupe state
 - structured delivery and moderation state
-- typed errors for adapters to render safely
+- typed errors with canonical `code`, `action`, `scope`, `retryable`, and `retryAfterMs` fields for adapters to render safely
 
 It must not import Pi, Claude, MCP SDK, Claude Desktop bundle code, or GalexC-specific code.
 

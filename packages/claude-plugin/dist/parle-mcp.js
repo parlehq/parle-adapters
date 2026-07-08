@@ -11201,9 +11201,9 @@ function assertNever(_x) {
 }
 function assert(_) {
 }
-function getEnumValues(entries) {
-  const numericValues = Object.values(entries).filter((v) => typeof v === "number");
-  const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
+function getEnumValues(entries2) {
+  const numericValues = Object.values(entries2).filter((v) => typeof v === "number");
+  const values = Object.entries(entries2).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
   return values;
 }
 function joinValues(array2, separator = "|") {
@@ -21663,18 +21663,18 @@ function _set(Class2, valueType, params) {
 }
 // @__NO_SIDE_EFFECTS__
 function _enum(Class2, values, params) {
-  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries2 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new Class2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...normalizeParams(params)
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _nativeEnum(Class2, entries, params) {
+function _nativeEnum(Class2, entries2, params) {
   return new Class2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...normalizeParams(params)
   });
 }
@@ -24565,17 +24565,17 @@ var ZodEnum2 = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   };
 });
 function _enum2(values, params) {
-  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries2 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new ZodEnum2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...util_exports.normalizeParams(params)
   });
 }
-function nativeEnum(entries, params) {
+function nativeEnum(entries2, params) {
   return new ZodEnum2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...util_exports.normalizeParams(params)
   });
 }
@@ -31026,6 +31026,63 @@ function pruneRuntimeFiles(cwd, now = /* @__PURE__ */ new Date()) {
   }
 }
 
+// ../client/dist/error-contract.js
+var ERROR_ACTIONS = [
+  "retry",
+  "retry_with_backoff",
+  "backoff",
+  "rebootstrap",
+  "reauthorize",
+  "fix_client",
+  "stop"
+];
+var ERROR_SCOPES = [
+  "request",
+  "agent_token",
+  "agent_session",
+  "room_access",
+  "moderation",
+  "rate_limit",
+  "server"
+];
+function retryable(action) {
+  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
+}
+var entries = {
+  malformed_request: { status: 400, action: "fix_client", scope: "request" },
+  unsupported_parle_version: { status: 400, action: "fix_client", scope: "request" },
+  payload_too_large: { status: 413, action: "fix_client", scope: "request" },
+  invalid_agent_token: { status: 401, action: "reauthorize", scope: "agent_token" },
+  invalid_agent_session: { status: 401, action: "rebootstrap", scope: "agent_session" },
+  agent_session_expired: { status: 401, action: "rebootstrap", scope: "agent_session" },
+  agent_session_ended: { status: 401, action: "rebootstrap", scope: "agent_session" },
+  agent_session_superseded: { status: 401, action: "rebootstrap", scope: "agent_session" },
+  participant_revoked: { status: 403, action: "stop", scope: "room_access" },
+  room_not_found: { status: 404, action: "stop", scope: "room_access" },
+  agent_session_mismatch: { status: 404, action: "stop", scope: "agent_session" },
+  moderation_pending: { status: 409, action: "retry_with_backoff", scope: "moderation" },
+  address_not_deliverable: { status: 422, action: "stop", scope: "room_access" },
+  delivery_ack_rejected: { status: 409, action: "stop", scope: "request" },
+  rate_limited: { status: 429, action: "backoff", scope: "rate_limit" },
+  server_error: { status: 500, action: "retry_with_backoff", scope: "server" },
+  service_unavailable: { status: 503, action: "retry_with_backoff", scope: "server" },
+  moderation_saturated: { status: 503, action: "backoff", scope: "rate_limit" },
+  participant_held_cap: { status: 503, action: "backoff", scope: "rate_limit" },
+  idempotency_conflict: { status: 409, action: "stop", scope: "request" },
+  validation_failed: { status: 422, action: "fix_client", scope: "request" },
+  csrf_rejected: { status: 403, action: "fix_client", scope: "request" },
+  already_member: { status: 409, action: "stop", scope: "room_access" },
+  forbidden: { status: 403, action: "stop", scope: "room_access" },
+  token_quota_exceeded: { status: 403, action: "stop", scope: "agent_token" },
+  step_up_required: { status: 403, action: "stop", scope: "request" },
+  link_conflict: { status: 409, action: "stop", scope: "request" },
+  too_many_steps: { status: 422, action: "fix_client", scope: "request" },
+  moderation_config_too_large: { status: 422, action: "fix_client", scope: "request" },
+  cursor_gap: { status: 409, action: "retry", scope: "request" },
+  stream_reset: { status: 409, action: "retry_with_backoff", scope: "server" }
+};
+var ERROR_REGISTRY = Object.fromEntries(Object.entries(entries).map(([code, entry]) => [code, { ...entry, retryable: retryable(entry.action) }]));
+
 // ../client/dist/index.js
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
@@ -31036,6 +31093,9 @@ var CONNECT_NEXT_GUIDANCE = "Report the session address and expiry, then arm res
 var ParleApiError = class extends Error {
   status;
   code;
+  action;
+  scope;
+  retryAfterMs;
   retryable;
   details;
   constructor(message, options = {}) {
@@ -31043,6 +31103,9 @@ var ParleApiError = class extends Error {
     this.name = "ParleApiError";
     this.status = options.status;
     this.code = options.code;
+    this.action = options.action;
+    this.scope = options.scope;
+    this.retryAfterMs = options.retryAfterMs;
     this.retryable = options.retryable ?? false;
     this.details = options.details;
   }
@@ -31111,6 +31174,97 @@ function parseJsonMaybe(text) {
   } catch {
     return {};
   }
+}
+function parseRetryAfterMs(header) {
+  if (!header)
+    return void 0;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0)
+    return Math.trunc(seconds * 1e3);
+  const dateMs = Date.parse(header);
+  if (!Number.isNaN(dateMs))
+    return Math.max(0, dateMs - Date.now());
+  return void 0;
+}
+function parseEnvelopeRetryAfterMs(errorObj, response) {
+  if (typeof errorObj?.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) && errorObj.retry_after_ms >= 0)
+    return Math.trunc(errorObj.retry_after_ms);
+  if (typeof errorObj?.retry_after_seconds === "number" && Number.isFinite(errorObj.retry_after_seconds) && errorObj.retry_after_seconds >= 0)
+    return Math.trunc(errorObj.retry_after_seconds * 1e3);
+  return parseRetryAfterMs(response.headers.get("retry-after"));
+}
+function asErrorAction(value) {
+  return typeof value === "string" && ERROR_ACTIONS.includes(value) ? value : void 0;
+}
+function asErrorScope(value) {
+  return typeof value === "string" && ERROR_SCOPES.includes(value) ? value : void 0;
+}
+function defaultActionForStatus(status) {
+  if (status === 401)
+    return "reauthorize";
+  if (status === 429)
+    return "backoff";
+  if (status >= 500)
+    return "retry_with_backoff";
+  return "stop";
+}
+function defaultScopeForStatus(status) {
+  if (status === 401)
+    return "agent_token";
+  if (status === 429)
+    return "rate_limit";
+  if (status >= 500)
+    return "server";
+  return "request";
+}
+function actionRetryable(action) {
+  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
+}
+var REQUEST_RETRY_ATTEMPTS = 5;
+var REQUEST_RETRY_WINDOW_MS = 6e4;
+function defaultSleep(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted || ms <= 0)
+      return resolve();
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+function retryDelayMs(error51, attempt) {
+  if (typeof error51.retryAfterMs === "number" && Number.isFinite(error51.retryAfterMs) && error51.retryAfterMs >= 0)
+    return Math.trunc(error51.retryAfterMs);
+  if (error51.action === "retry")
+    return 250;
+  const base = Math.min(1e4, 1e3 * 2 ** Math.max(0, attempt - 1));
+  return Math.trunc(base * (0.8 + Math.random() * 0.4));
+}
+function terminalStatusFor(error51) {
+  switch (error51.action) {
+    case "fix_client":
+      return "Parle stopped: client request is invalid; upgrade or repair the adapter.";
+    case "reauthorize":
+      return "Parle stopped: agent token is invalid or revoked; reauthorize the agent.";
+    case "rebootstrap":
+      return "Parle stopped: agent session is dead; reconnect with parle_connect and re-arm.";
+    case "backoff":
+      return `Parle paused: retry scheduled after ${formatDuration(error51.retryAfterMs ?? 0)} (${error51.code || "backoff"}).`;
+    case "stop":
+      return error51.scope === "agent_session" ? "Parle stopped: agent session could not be rebootstrapped; reauthorize or restart." : "Parle stopped: client request is invalid; upgrade or repair the adapter.";
+    default:
+      return error51.retryable ? `Parle paused: retry scheduled after ${formatDuration(error51.retryAfterMs ?? 0)}.` : "Parle stopped: client request is invalid; upgrade or repair the adapter.";
+  }
+}
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms <= 0)
+    return "the server-provided delay";
+  if (ms < 1e3)
+    return `${ms}ms`;
+  const seconds = Math.ceil(ms / 1e3);
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
 }
 function redactString(input) {
   return input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(parle_(?:agt|inv|ses)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>").replace(/\bprt_[A-Za-z0-9_./+=:-]+/g, "prt_<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
@@ -31226,7 +31380,10 @@ var ParleAgentClient = class {
   fetchImpl;
   env;
   now;
+  sleepImpl;
   randomUUID;
+  clientName;
+  clientVersion;
   publishRuntime;
   runtime = {
     bootstrapped: false,
@@ -31241,6 +31398,7 @@ var ParleAgentClient = class {
   };
   bootstrapGeneration = 0;
   bootstrapInFlight = null;
+  rebootstrapEpisode = null;
   consecutiveBootstrapFailures = 0;
   unreadInFlight = false;
   unreadPollTimer = null;
@@ -31250,8 +31408,11 @@ var ParleAgentClient = class {
     this.cfg = resolveConfig(this.cwd, this.env);
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => /* @__PURE__ */ new Date());
+    this.sleepImpl = options.sleep || defaultSleep;
     this.randomUUID = options.randomUUID || randomUUID;
     this.publishRuntime = options.publishRuntime;
+    this.clientName = options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client";
+    this.clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     if (this.publishRuntime) {
       try {
         pruneRuntimeFiles(this.cwd, this.now());
@@ -31316,11 +31477,31 @@ var ParleAgentClient = class {
     assertSafeBase(this.cfg.wakeBase.value || this.cfg.apiBase.value || DEFAULT_WAKE_BASE, this.env);
   }
   async requestJson(pathOrUrl, options = {}) {
+    const method = options.method || (options.body === void 0 ? "GET" : "POST");
+    const retryableRequest = options.retry !== false && (method === "GET" || method === "HEAD" || Boolean(options.headers?.["Idempotency-Key"]));
+    const startedMs = this.now().getTime();
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.requestJsonOnce(pathOrUrl, options, method);
+      } catch (error51) {
+        if (!(error51 instanceof ParleApiError) || !retryableRequest || !error51.retryable || attempt >= REQUEST_RETRY_ATTEMPTS)
+          throw error51;
+        const elapsed = Math.max(0, this.now().getTime() - startedMs);
+        const delay = retryDelayMs(error51, attempt);
+        if (elapsed + delay > REQUEST_RETRY_WINDOW_MS)
+          throw error51;
+        await this.sleepImpl(delay, options.signal);
+      }
+    }
+  }
+  async requestJsonOnce(pathOrUrl, options, method) {
     const url2 = requestUrl(this.cfg, pathOrUrl);
     assertSafeBase(url2.origin, this.env);
     const headers = {
       Accept: "application/json",
       "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+      "Parle-Client-Name": this.clientName,
+      ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
       ...options.headers
     };
     if (options.body !== void 0)
@@ -31338,11 +31519,11 @@ var ParleAgentClient = class {
     const signal = options.signal && timeout ? AbortSignal.any([options.signal, timeout]) : options.signal || timeout;
     let response;
     try {
-      response = await this.fetchImpl(url2, { method: options.method || (options.body === void 0 ? "GET" : "POST"), headers, body: options.body === void 0 ? void 0 : JSON.stringify(options.body), signal });
+      response = await this.fetchImpl(url2, { method, headers, body: options.body === void 0 ? void 0 : JSON.stringify(options.body), signal });
     } catch (error51) {
       const name = typeof error51?.name === "string" ? error51.name : "";
       if (name === "AbortError" || name === "TimeoutError" || signal?.aborted) {
-        throw new ParleApiError("Parle API request timed out or was aborted", { code: "timeout", retryable: true });
+        throw new ParleApiError("Parle API request timed out or was aborted", { code: "timeout", action: "retry_with_backoff", scope: "server", retryable: true });
       }
       throw error51;
     }
@@ -31352,15 +31533,21 @@ var ParleAgentClient = class {
     const json2 = parseJsonMaybe(options.rawResponse ? rawText : text);
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json2;
-      const code = redactedJson?.error?.code;
-      const msg = redactString(redactedJson?.error?.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      const errorObj = redactedJson?.error && typeof redactedJson.error === "object" ? redactedJson.error : {};
+      const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
+      const registry2 = code ? ERROR_REGISTRY[code] : void 0;
+      const action = asErrorAction(errorObj.action) || registry2?.action || defaultActionForStatus(response.status);
+      const scope = asErrorScope(errorObj.scope) || registry2?.scope || defaultScopeForStatus(response.status);
+      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
+      const retryable2 = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
+      const msg = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       let message = `Parle API ${response.status}: ${msg}`;
-      if (response.status === 401) {
+      if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
         if (hint)
           message += ` ${hint}`;
       }
-      throw new ParleApiError(message, { status: response.status, code, retryable: response.status >= 500 || response.status === 429, details: redactedJson });
+      throw new ParleApiError(message, { status: response.status, code, action, scope, retryAfterMs, retryable: retryable2, details: redactedJson });
     }
     return json2;
   }
@@ -31429,6 +31616,13 @@ var ParleAgentClient = class {
   sessionExpired() {
     const expiry = this.runtime.expiresAt ? new Date(this.runtime.expiresAt) : null;
     return expiry !== null && !Number.isNaN(expiry.getTime()) && expiry <= this.now();
+  }
+  resetRebootstrapEpisodeIfHealthy() {
+    const episode = this.rebootstrapEpisode;
+    if (!episode?.healthySinceMs)
+      return;
+    if (this.now().getTime() - episode.healthySinceMs >= 10 * 6e4)
+      this.rebootstrapEpisode = null;
   }
   // Non-throwing bootstrap for eager startup and status auto-connect. Returns
   // whether a bootstrap was attempted. Skips when already live, unconfigured,
@@ -31525,7 +31719,7 @@ var ParleAgentClient = class {
     this.unreadInFlight = true;
     try {
       const sinceSeq = this.runtime.cursor || 0;
-      const response = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, signal, timeoutMs: 1e4 });
+      const response = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, signal, timeoutMs: 1e4, retry: false });
       if ((this.runtime.cursor || 0) !== sinceSeq)
         return;
       const rows = Array.isArray(response.messages) ? response.messages : [];
@@ -31612,13 +31806,38 @@ var ParleAgentClient = class {
     };
   }
   async withRebootstrap(fn, signal) {
+    this.resetRebootstrapEpisodeIfHealthy();
     await this.ensureBootstrapped(signal);
     try {
       return await fn();
     } catch (error51) {
-      if (error51?.status !== 401 && error51?.status !== 404)
+      if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap")
         throw error51;
-      await this.bootstrap(signal, true);
+      const failedSessionHandle = this.runtime.sessionHandle || "<missing-session>";
+      const existing = this.rebootstrapEpisode;
+      if (existing?.failedSessionHandle === failedSessionHandle && (existing.attempted || existing.terminal)) {
+        if (this.bootstrapInFlight && !existing.terminal) {
+          await this.bootstrapInFlight;
+          return fn();
+        }
+        throw error51;
+      }
+      this.rebootstrapEpisode = { failedSessionHandle, attempted: true };
+      this.runtime.bootstrapped = false;
+      this.runtime.sessionHandle = "";
+      this.runtime.bootstrapState = "starting";
+      this.publishRuntimeState();
+      try {
+        await this.bootstrap(signal, true);
+        this.rebootstrapEpisode = { failedSessionHandle, attempted: true, healthySinceMs: this.now().getTime() };
+      } catch (bootstrapError) {
+        if (bootstrapError instanceof ParleApiError && ["fix_client", "reauthorize", "stop"].includes(bootstrapError.action || "")) {
+          this.rebootstrapEpisode = { failedSessionHandle, attempted: true, terminal: true };
+          this.runtime.lastBootstrapError = terminalStatusFor(bootstrapError);
+          this.publishRuntimeState();
+        }
+        throw bootstrapError;
+      }
       return fn();
     }
   }
@@ -31664,7 +31883,7 @@ var ParleAgentClient = class {
       }, signal);
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
-        return { ok: false, retryable: error51.retryable, idempotencyKey: error51.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error51.message) };
+        return { ok: false, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey: error51.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error51.message) };
       }
       throw error51;
     }
@@ -31759,7 +31978,7 @@ function createParleMcpServer(client = new ParleAgentClient()) {
   return server;
 }
 async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server" } });
+  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.0.0" } });
   const server = createParleMcpServer(client);
   installLifecycleHandlers(client);
   await server.connect(new StdioServerTransport());
@@ -31794,7 +32013,7 @@ async function safeTool(fn) {
   try {
     return toolResult(await fn());
   } catch (error51) {
-    const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, code: error51.code, status: error51.status, retryable: error51.retryable } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51) };
+    const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, code: error51.code, status: error51.status, action: error51.action, scope: error51.scope, retryable: error51.retryable, retryAfterMs: error51.retryAfterMs } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51) };
     return { ...toolResult(payload), isError: true };
   }
 }

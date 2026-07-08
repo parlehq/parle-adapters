@@ -110,7 +110,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 }
 
 export async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server" } });
+  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.0.0" } });
   const server = createParleMcpServer(client);
   installLifecycleHandlers(client);
   await server.connect(new StdioServerTransport());
@@ -154,7 +154,7 @@ async function safeTool(fn: () => Promise<unknown>): Promise<any> {
     return toolResult(await fn());
   } catch (error: any) {
     const payload = error instanceof ParleApiError
-      ? { ok: false, error: error.message, code: error.code, status: error.status, retryable: error.retryable }
+      ? { ok: false, error: error.message, code: error.code, status: error.status, action: error.action, scope: error.scope, retryable: error.retryable, retryAfterMs: error.retryAfterMs }
       : { ok: false, error: error instanceof Error ? error.message : String(error) };
     return { ...toolResult(payload), isError: true };
   }

@@ -1,0 +1,53 @@
+{
+  "actions": [
+    "retry",
+    "retry_with_backoff",
+    "backoff",
+    "rebootstrap",
+    "reauthorize",
+    "fix_client",
+    "stop"
+  ],
+  "scopes": [
+    "request",
+    "agent_token",
+    "agent_session",
+    "room_access",
+    "moderation",
+    "rate_limit",
+    "server"
+  ],
+  "registry": {
+    "address_not_deliverable": { "status": 422, "action": "stop", "scope": "room_access", "retryable": false },
+    "agent_session_ended": { "status": 401, "action": "rebootstrap", "scope": "agent_session", "retryable": false },
+    "agent_session_expired": { "status": 401, "action": "rebootstrap", "scope": "agent_session", "retryable": false },
+    "agent_session_mismatch": { "status": 404, "action": "stop", "scope": "agent_session", "retryable": false },
+    "agent_session_superseded": { "status": 401, "action": "rebootstrap", "scope": "agent_session", "retryable": false },
+    "already_member": { "status": 409, "action": "stop", "scope": "room_access", "retryable": false },
+    "csrf_rejected": { "status": 403, "action": "fix_client", "scope": "request", "retryable": false },
+    "cursor_gap": { "status": 409, "action": "retry", "scope": "request", "retryable": true },
+    "delivery_ack_rejected": { "status": 409, "action": "stop", "scope": "request", "retryable": false },
+    "forbidden": { "status": 403, "action": "stop", "scope": "room_access", "retryable": false },
+    "idempotency_conflict": { "status": 409, "action": "stop", "scope": "request", "retryable": false },
+    "invalid_agent_session": { "status": 401, "action": "rebootstrap", "scope": "agent_session", "retryable": false },
+    "invalid_agent_token": { "status": 401, "action": "reauthorize", "scope": "agent_token", "retryable": false },
+    "link_conflict": { "status": 409, "action": "stop", "scope": "request", "retryable": false },
+    "malformed_request": { "status": 400, "action": "fix_client", "scope": "request", "retryable": false },
+    "moderation_config_too_large": { "status": 422, "action": "fix_client", "scope": "request", "retryable": false },
+    "moderation_pending": { "status": 409, "action": "retry_with_backoff", "scope": "moderation", "retryable": true },
+    "moderation_saturated": { "status": 503, "action": "backoff", "scope": "rate_limit", "retryable": true },
+    "participant_held_cap": { "status": 503, "action": "backoff", "scope": "rate_limit", "retryable": true },
+    "participant_revoked": { "status": 403, "action": "stop", "scope": "room_access", "retryable": false },
+    "payload_too_large": { "status": 413, "action": "fix_client", "scope": "request", "retryable": false },
+    "rate_limited": { "status": 429, "action": "backoff", "scope": "rate_limit", "retryable": true },
+    "room_not_found": { "status": 404, "action": "stop", "scope": "room_access", "retryable": false },
+    "server_error": { "status": 500, "action": "retry_with_backoff", "scope": "server", "retryable": true },
+    "service_unavailable": { "status": 503, "action": "retry_with_backoff", "scope": "server", "retryable": true },
+    "step_up_required": { "status": 403, "action": "stop", "scope": "request", "retryable": false },
+    "stream_reset": { "status": 409, "action": "retry_with_backoff", "scope": "server", "retryable": true },
+    "token_quota_exceeded": { "status": 403, "action": "stop", "scope": "agent_token", "retryable": false },
+    "too_many_steps": { "status": 422, "action": "fix_client", "scope": "request", "retryable": false },
+    "unsupported_parle_version": { "status": 400, "action": "fix_client", "scope": "request", "retryable": false },
+    "validation_failed": { "status": 422, "action": "fix_client", "scope": "request", "retryable": false }
+  }
+}

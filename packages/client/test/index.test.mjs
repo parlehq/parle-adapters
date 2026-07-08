@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
 import {
+  ERROR_ACTIONS,
+  ERROR_REGISTRY,
+  ERROR_SCOPES,
   ParleAgentClient,
   addressingWarning,
   assertSafeBase,
@@ -17,6 +20,7 @@ import {
   redactString,
   resolveConfig,
   summarizeSendDelivery,
+  terminalStatusFor,
   updateCursorFromMessages,
 } from "../dist/index.js";
 
@@ -116,6 +120,21 @@ test("wrapped content compacts only exact same-response framing", () => {
   assert.equal(compactServerWrappedContent(content, preamble, "ABC"), "«FENCE BEGIN ABC»\nhello\n«FENCE END ABC»");
   assert.equal(compactServerWrappedContent(content, "wrong", "ABC"), content);
   assert.equal(compactServerWrappedContent(content.replace("trusted\n", "trusted\n\n"), preamble, "ABC"), content.replace("trusted\n", "trusted\n\n"));
+});
+
+test("requestJson sends low-cardinality client identity headers", async () => {
+  let observed;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    publishRuntime: { adapterName: "@parlehq/test-adapter", adapterVersion: "1.2.3" },
+    fetch: async (_url, init = {}) => {
+      observed = init.headers;
+      return json({ ok: true });
+    },
+  });
+  await client.requestJson("/v/test");
+  assert.equal(observed["Parle-Client-Name"], "@parlehq/test-adapter");
+  assert.equal(observed["Parle-Client-Version"], "1.2.3");
 });
 
 test("requestJson validates absolute URLs before sending bearer tokens", async () => {
@@ -232,7 +251,7 @@ test("read cursor advances only through returned capped messages", async () => {
   assert.equal(result.cursorAfter, 4);
 });
 
-test("401 rebootstrap retries once and preserves cursor", async () => {
+test("agent-session rebootstrap retries once and preserves cursor", async () => {
   let sessions = 0;
   let readAttempts = 0;
   const client = new ParleAgentClient({
@@ -244,7 +263,7 @@ test("401 rebootstrap retries once and preserves cursor", async () => {
       if (u.includes("/projection?wait=0")) return json({ watermark: 12, messages: [] });
       if (u.includes("/projection?since_seq=")) {
         readAttempts += 1;
-        return json({ error: { code: "unauthorized", message: "expired" } }, 401);
+        return json({ error: { code: "invalid_agent_session", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
       }
       return json({});
     },
@@ -255,7 +274,7 @@ test("401 rebootstrap retries once and preserves cursor", async () => {
   assert.equal(client.runtime.cursor, 12);
 });
 
-test("session 404 rebootstrap retries once and surfaces second 404", async () => {
+test("repeated agent-session terminal failure does not rebootstrap twice in one episode", async () => {
   let sessions = 0;
   let inboxAttempts = 0;
   const client = new ParleAgentClient({
@@ -267,18 +286,47 @@ test("session 404 rebootstrap retries once and surfaces second 404", async () =>
       if (u.includes("/projection?wait=0")) return json({ watermark: 21, messages: [] });
       if (u.includes("/inbound")) {
         inboxAttempts += 1;
-        return json({ error: { code: "session_not_found", message: "missing" } }, 404);
+        return json({ error: { code: "invalid_agent_session", message: "missing", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
       }
       return json({});
     },
   });
-  await assert.rejects(() => client.readInbox(), { status: 404 });
+  await assert.rejects(() => client.readInbox(), { status: 401 });
   assert.equal(sessions, 2);
   assert.equal(inboxAttempts, 2);
   assert.equal(client.runtime.cursor, 21);
 });
 
-test("affordances rebootstrap after session 404 and preserve cursor", async () => {
+test("concurrent terminal failures share one rebootstrap flight", async () => {
+  let sessions = 0;
+  let inboxAttempts = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) {
+        sessions += 1;
+        if (sessions === 2) await new Promise((resolve) => setTimeout(resolve, 5));
+        return json({ agent_session_id: `as-${sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
+      }
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection?wait=0")) return json({ watermark: 22, messages: [] });
+      if (u.includes("/inbound")) {
+        inboxAttempts += 1;
+        if (inboxAttempts <= 2) return json({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
+        return json({ watermark: 23, messages: [] });
+      }
+      return json({});
+    },
+  });
+  const [a, b] = await Promise.all([client.readInbox(), client.readInbox()]);
+  assert.equal(a.cursorAfter, 23);
+  assert.equal(b.cursorAfter, 23);
+  assert.equal(sessions, 2);
+  assert.equal(inboxAttempts, 4);
+});
+
+test("affordances rebootstrap after agent-session terminal error and preserve cursor", async () => {
   let sessions = 0;
   let affordanceAttempts = 0;
   const client = new ParleAgentClient({
@@ -290,7 +338,7 @@ test("affordances rebootstrap after session 404 and preserve cursor", async () =
       if (u.includes("/projection?wait=0")) return json({ watermark: 33, messages: [] });
       if (u.includes("/affordances")) {
         affordanceAttempts += 1;
-        if (affordanceAttempts === 1) return json({ error: { code: "session_not_found", message: "missing" } }, 404);
+        if (affordanceAttempts === 1) return json({ error: { code: "agent_session_expired", message: "missing", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
         return json({ affordances: [{ action: "send" }] });
       }
       return json({});
@@ -303,7 +351,7 @@ test("affordances rebootstrap after session 404 and preserve cursor", async () =
   assert.equal(client.runtime.cursor, 33);
 });
 
-test("send reuses generated idempotency key across session 404 rebootstrap", async () => {
+test("send reuses generated idempotency key across agent-session rebootstrap", async () => {
   let sessions = 0;
   let messageAttempts = 0;
   const messageKeys = [];
@@ -318,7 +366,7 @@ test("send reuses generated idempotency key across session 404 rebootstrap", asy
       if (u.includes("/messages")) {
         messageAttempts += 1;
         messageKeys.push(init.headers["Idempotency-Key"]);
-        if (messageAttempts === 1) return json({ error: { code: "session_not_found", message: "missing" } }, 404);
+        if (messageAttempts === 1) return json({ error: { code: "agent_session_superseded", message: "missing", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
         return json({ event_id: "evt-1", seq: 45 }, 201);
       }
       return json({});
@@ -343,12 +391,68 @@ test("send maps bootstrap setup errors into structured send failure", async () =
   assert.match(result.error, /PARLE_ROOM_AGENT_TOKEN is missing/);
 });
 
+test("shared error contract fixture matches vendored server registry snapshot", () => {
+  const golden = JSON.parse(readFileSync(new URL("../testdata/error-registry.golden.json", import.meta.url), "utf8"));
+  // Refresh after server registry changes by copying /openapi.json default error
+  // enum fields and internal/roomhttp/error_contract.go mappings into this file.
+  assert.deepEqual(ERROR_ACTIONS, golden.actions);
+  assert.deepEqual(ERROR_SCOPES, golden.scopes);
+  assert.deepEqual(ERROR_REGISTRY, golden.registry);
+});
+
+test("requestJson parses canonical error envelope action scope and retry delay", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async () => json({ error: { code: "rate_limited", message: "slow down", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 2500 } }, 429),
+  });
+  await assert.rejects(() => client.requestJson("/v/test", { retry: false }), (error) => {
+    assert.equal(error.code, "rate_limited");
+    assert.equal(error.action, "backoff");
+    assert.equal(error.scope, "rate_limit");
+    assert.equal(error.retryable, true);
+    assert.equal(error.retryAfterMs, 2500);
+    assert.match(terminalStatusFor(error), /retry scheduled after 3 seconds/);
+    return true;
+  });
+});
+
+test("requestJson uses Retry-After header when retry_after_ms is absent", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async () => new Response(JSON.stringify({ error: { code: "rate_limited", message: "slow down", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: null } }), { status: 429, headers: { "content-type": "application/json", "retry-after": "4" } }),
+  });
+  await assert.rejects(() => client.requestJson("/v/test", { retry: false }), (error) => {
+    assert.equal(error.retryAfterMs, 4000);
+    return true;
+  });
+});
+
+test("requestJson honors Retry-After before retrying retryable GET failures", async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(JSON.stringify({ error: { code: "rate_limited", message: "slow down", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: null } }), { status: 429, headers: { "content-type": "application/json", "retry-after": "2" } });
+      }
+      return json({ ok: true });
+    },
+    sleep: async (ms) => { sleeps.push(ms); },
+  });
+  const result = await client.requestJson("/v/test");
+  assert.deepEqual(result, { ok: true });
+  assert.equal(attempts, 2);
+  assert.deepEqual(sleeps, [2000]);
+});
+
 test("requestJson wraps fetch timeout as retryable ParleApiError", async () => {
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async () => { throw new DOMException("timed out", "TimeoutError"); },
   });
-  await assert.rejects(() => client.requestJson("/v/test"), (error) => {
+  await assert.rejects(() => client.requestJson("/v/test", { retry: false }), (error) => {
     assert.equal(error.name, "ParleApiError");
     assert.equal(error.code, "timeout");
     assert.equal(error.retryable, true);
@@ -360,6 +464,7 @@ test("retryable send errors return idempotency key for byte-identical retry", as
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     randomUUID: () => "idem-retry",
+    sleep: async () => {},
     fetch: async (url) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);

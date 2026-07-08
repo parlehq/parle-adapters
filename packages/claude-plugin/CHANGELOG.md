@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Terminal-error-aware client hard cut.
+
+- The shared client now parses Parle's canonical error envelope fields (`code`, `action`, `scope`, `retryable`, `retry_after_ms`) and exposes them on `ParleApiError` and MCP tool errors.
+- Live-session failures use `action=rebootstrap` and enter one single-flight rebootstrap episode instead of a generic 401 or 404 retry loop. A repeated terminal failure for the same dead session stops rather than minting indefinitely.
+- `parle-watch.sh` no longer uses `curl -f`; it preserves error bodies, honors terminal actions, respects retry delays for retryable errors, and prints redaction-safe stop statuses for missing config or terminal errors.
+
 ## 0.5.2 (2026-07-07)
 
 `parle-watch.sh` self-loads its configuration.
