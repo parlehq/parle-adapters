@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 (2026-07-07)
+
+Statusline setup skill and full-width display mode (no MCP tool contract change).
+
+- New `parle-statusline` skill: one invocation wires the segment into the user's `statusLine` settings with consent. Claude Code plugins cannot set the main statusline themselves (only `agent` and `subagentStatusLine` are plugin-settable), so an installer skill is the maximum "default" the platform allows.
+- `parle-statusline.mjs --full`: roomier variant for a dedicated statusline row. Single live session adds room handle and relative expiry (`parle ✓ @addr · room · expires in 23h`); multiple live sessions list all addresses explicitly labeled as cwd sessions (`parle ✓ 2 sessions in cwd: @a @b`) instead of hiding them, which stays honest because no single address is presented as this session's. Older helpers ignore the flag gracefully.
+- README documents that Claude Code renders each stdout line as its own statusline row, so the Parle segment can occupy a dedicated row that collapses when empty.
+
 ## 0.4.0 (2026-07-07)
 
 Invisible session UX: eager bootstrap, `parle_status` auto-connect, and a statusline surface (MCP tool contract change; bundled artifact refresh).

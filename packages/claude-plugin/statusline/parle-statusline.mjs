@@ -8,9 +8,15 @@
 // Display contract (cwd-scoped, NOT Claude-session-authoritative):
 //   exactly one live session  ->  "parle ✓ @principal.agent.session"
 //   multiple live sessions    ->  "parle ✓ N sessions" (never a specific
-//                                 address: it could be a sibling session's)
+//                                 address presented as yours: it could be a
+//                                 sibling session's)
 //   none live but configured  ->  "parle · off"
 //   not configured            ->  no output
+//
+// Pass --full for a roomier single-line variant (suited to a dedicated
+// statusline row): adds room handle and relative expiry, and for multiple
+// live sessions lists all addresses explicitly labeled as cwd sessions
+// (a labeled list is honest; a single bare address would read as yours).
 //
 // Wire it into your own statusline command, e.g. in settings.json:
 //   "statusLine": { "type": "command", "command": "my-statusline.sh" }
@@ -24,6 +30,8 @@ import { execFileSync } from "node:child_process";
 const SCHEMA_VERSION = 1;
 const EXPIRY_SKEW_MS = 30_000;
 const START_TIME_TOLERANCE_MS = 15_000;
+
+const FULL = process.argv.includes("--full");
 
 function main() {
   let cwd = process.cwd();
@@ -52,14 +60,36 @@ function main() {
     }
   }
   if (live.length === 1) {
-    process.stdout.write(`parle ✓ ${live[0].sessionAddress || live[0].roomHandle || "connected"}`);
+    const s = live[0];
+    const address = s.sessionAddress || s.roomHandle || "connected";
+    if (FULL) {
+      const parts = [`parle ✓ ${address}`];
+      if (s.roomHandle && s.sessionAddress) parts.push(s.roomHandle);
+      const expiry = relativeExpiry(Date.parse(s.expiresAt || ""), now);
+      if (expiry) parts.push(`expires ${expiry}`);
+      process.stdout.write(parts.join(" · "));
+    } else {
+      process.stdout.write(`parle ✓ ${address}`);
+    }
     return;
   }
   if (live.length > 1) {
-    process.stdout.write(`parle ✓ ${live.length} sessions`);
+    if (FULL) {
+      const addresses = live.map((s) => s.sessionAddress || "connected").join("  ");
+      process.stdout.write(`parle ✓ ${live.length} sessions in cwd: ${addresses}`);
+    } else {
+      process.stdout.write(`parle ✓ ${live.length} sessions`);
+    }
     return;
   }
   if (existsSync(join(cwd, ".parle", "credentials"))) process.stdout.write("parle · off");
+}
+
+function relativeExpiry(expiresAtMs, now) {
+  if (!Number.isFinite(expiresAtMs)) return null;
+  const minutes = Math.round((expiresAtMs - now) / 60_000);
+  if (minutes < 120) return `in ${minutes}m`;
+  return `in ${Math.round(minutes / 60)}h`;
 }
 
 // Skeptical reader gate: schema match, state ready, unexpired with skew, and

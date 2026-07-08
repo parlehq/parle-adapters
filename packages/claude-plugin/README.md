@@ -49,7 +49,11 @@ When configured, the MCP server connects the room agent session eagerly at start
 
 ### Statusline
 
+The `parle-statusline` skill wires everything below with one invocation (plugins cannot set the main `statusLine` setting themselves, so the skill performs the edit with your consent). Manual wiring:
+
 `statusline/parle-statusline.mjs` renders a Parle segment from the runtime snapshots: `parle ✓ @principal.agent.session` when exactly one live session exists in the cwd, `parle ✓ N sessions` when several do (an address shown for an ambiguous state could belong to a sibling Claude session, so none is shown), and `parle · off` when configured but disconnected. The display is cwd-scoped, not Claude-session-authoritative.
+
+Pass `--full` for a dedicated-row variant: a single live session adds room handle and relative expiry, and multiple live sessions list all addresses explicitly labeled as cwd sessions. Claude Code renders each stdout line of the statusline command as its own row, so emitting the Parle segment as its own line gives it full width and it collapses when empty.
 
 Wire it into your own statusline command, for example:
 

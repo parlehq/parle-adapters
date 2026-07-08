@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 
 const SCRIPT = new URL("../statusline/parle-statusline.mjs", import.meta.url).pathname;
 
-function run(cwd) {
-  const result = spawnSync(process.execPath, [SCRIPT], {
+function run(cwd, args = []) {
+  const result = spawnSync(process.execPath, [SCRIPT, ...args], {
     input: JSON.stringify({ workspace: { current_dir: cwd } }),
     encoding: "utf8",
     timeout: 10_000,
@@ -110,6 +110,31 @@ test("a live pid with a mismatched start time reads as reused, not live", { skip
   );
   try {
     assert.equal(run(cwd), "parle · off");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("full mode adds room and relative expiry for a single live session", () => {
+  const cwd = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid) });
+  try {
+    assert.equal(run(cwd, ["--full"]), "parle ✓ @gilman.galexc.abc123 · test-room · expires in 60m");
+    assert.doesNotMatch(run(cwd), /test-room/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("full mode lists all addresses for multiple live sessions, labeled as cwd sessions", () => {
+  const cwd = scaffold({
+    [`${process.pid}.json`]: liveSnapshot(process.pid),
+    [`${process.ppid}.json`]: liveSnapshot(process.ppid, { sessionAddress: "@gilman.galexc.other" }),
+  });
+  try {
+    const out = run(cwd, ["--full"]);
+    assert.match(out, /^parle ✓ 2 sessions in cwd: /);
+    assert.match(out, /@gilman\.galexc\.abc123/);
+    assert.match(out, /@gilman\.galexc\.other/);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
