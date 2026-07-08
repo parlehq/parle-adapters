@@ -586,6 +586,137 @@ test("wake hint drains responsive delivery without long polling", async () => {
   assert.equal(requested.some((u) => /responsive-delivery\?wait=(?!0)/.test(u)), false);
 });
 
+test("wake hint coalesces responsive delivery backlog into one follow-up", async () => {
+  const injected = [];
+  const acked = [];
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-batch", session_credential: "parle_ses_batch-session", session_handle: "batch-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.batch-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-batch" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery/ack")) {
+      acked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ last_acked_seq: acked.at(-1).seq, last_ack_event_id: acked.at(-1).event_id }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) {
+      return new Response(JSON.stringify({
+        watermark: 8,
+        delivery: { last_acked_seq: 0 },
+        messages: [
+          { seq: 7, event_id: "evt-batch-7", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "first" },
+          { seq: 8, event_id: "evt-batch-8", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "second" },
+        ],
+      }), { status: 200 });
+    }
+    throw new Error("unexpected " + u);
+  });
+
+  await harness.call("parle_status");
+  const cfg = __testing.resolveConfig(harness.cwd);
+  await __testing.handleWakeHint({ sendUserMessage: async (message) => injected.push(message) }, harness.ctx, cfg);
+
+  assert.equal(injected.length, 1);
+  assert.match(injected[0], /received 2 server-authenticated peer messages/);
+  assert.match(injected[0], /responsive delivery 1\/2/);
+  assert.match(injected[0], /responsive delivery 2\/2/);
+  assert.deepEqual(acked, [{ seq: 8, event_id: "evt-batch-8" }]);
+  assert.equal(__testing.runtimeState().lastInjectedSeq, 8);
+});
+
+test("wake hint silently acks rows already surfaced by manual inbox reads", async () => {
+  const injected = [];
+  const acked = [];
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-seen", session_credential: "parle_ses_seen-session", session_handle: "seen-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.seen-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-seen" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/inbound")) {
+      return new Response(JSON.stringify({ watermark: 9, messages: [{ seq: 9, event_id: "evt-seen", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "already read" }] }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery/ack")) {
+      acked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ last_acked_seq: 9, last_ack_event_id: "evt-seen" }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) {
+      return new Response(JSON.stringify({
+        watermark: 9,
+        delivery: { last_acked_seq: 0 },
+        messages: [{ seq: 9, event_id: "evt-seen", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "already read" }],
+      }), { status: 200 });
+    }
+    throw new Error("unexpected " + u);
+  });
+
+  await harness.call("parle_status");
+  const read = await harness.call("parle_inbox");
+  assert.equal(read.details.messages[0].event_id, "evt-seen");
+  const cfg = __testing.resolveConfig(harness.cwd);
+  await __testing.handleWakeHint({ sendUserMessage: async (message) => injected.push(message) }, harness.ctx, cfg);
+
+  assert.equal(injected.length, 0);
+  assert.deepEqual(acked, [{ seq: 9, event_id: "evt-seen" }]);
+  assert.equal(__testing.runtimeState().seenSuppressed, 1);
+  assert.equal(__testing.runtimeState().lastAckedSeq, 9);
+});
+
+test("wake hint acks seen and injected prefix only after successful injection", async () => {
+  const order = [];
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-prefix", session_credential: "parle_ses_prefix-session", session_handle: "prefix-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.prefix-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-prefix" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 6, messages: [{ seq: 6, event_id: "evt-prefix-6", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "seen" }] }), { status: 200 });
+    if (u.includes("/responsive-delivery/ack")) {
+      order.push(`ack:${JSON.parse(String(init.body)).seq}`);
+      return new Response(JSON.stringify({ last_acked_seq: 6, last_ack_event_id: "evt-prefix-6" }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 6, delivery: { last_acked_seq: 0 }, messages: [
+      { seq: 5, event_id: "evt-prefix-5", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "inject me" },
+      { seq: 6, event_id: "evt-prefix-6", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "seen" },
+    ] }), { status: 200 });
+    throw new Error("unexpected " + u);
+  });
+
+  await harness.call("parle_status");
+  await harness.call("parle_inbox");
+  const cfg = __testing.resolveConfig(harness.cwd);
+  await __testing.handleWakeHint({ sendUserMessage: async () => order.push("send") }, harness.ctx, cfg);
+
+  assert.deepEqual(order, ["send", "ack:6"]);
+  assert.equal(__testing.runtimeState().seenSuppressed, 1);
+  assert.equal(__testing.runtimeState().lastInjectedSeq, 5);
+  assert.equal(__testing.runtimeState().lastAckedSeq, 6);
+});
+
+test("advanceCursor false manual reads do not consume responsive delivery", async () => {
+  const injected = [];
+  const acked = [];
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-peek", session_credential: "parle_ses_peek-session", session_handle: "peek-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.peek-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-peek" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 9, messages: [{ seq: 9, event_id: "evt-peek", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "peeked" }] }), { status: 200 });
+    if (u.includes("/responsive-delivery/ack")) {
+      acked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ last_acked_seq: 9, last_ack_event_id: "evt-peek" }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 9, delivery: { last_acked_seq: 0 }, messages: [{ seq: 9, event_id: "evt-peek", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "peeked" }] }), { status: 200 });
+    throw new Error("unexpected " + u);
+  });
+
+  await harness.call("parle_status");
+  await harness.call("parle_inbox", { advanceCursor: false });
+  const cfg = __testing.resolveConfig(harness.cwd);
+  await __testing.handleWakeHint({ sendUserMessage: async (message) => injected.push(message) }, harness.ctx, cfg);
+
+  assert.equal(injected.length, 1);
+  assert.deepEqual(acked, [{ seq: 9, event_id: "evt-peek" }]);
+  assert.equal(__testing.runtimeState().seenSuppressed, undefined);
+});
+
 test("heartbeat 404 reboots the session before the watcher can wedge", async () => {
   let sessionCreates = 0;
   let heartbeatCalls = 0;
