@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.5.7 (2026-07-08)
+
+Watcher session-liveness: stale watches self-terminate after a host reload.
+
+- `parle-watch.sh` polls projection with the room agent token alone, so the server can never tell it that the agent session it filters on has died. A watcher that outlived a plugin reload or MCP server restart held its long-poll indefinitely, never matched directs addressed to the replacement session, and its eventual exit invited re-arming with a dead session id and stale watermark.
+- The script now checks the local `.parle/runtime/*.json` snapshots each cycle (the bundled MCP server already publishes `agentSessionId` there and removes the file on exit). When live snapshots exist and none carries the watched session id, the script exits 3 with reconnect-first guidance. No snapshots at all is indeterminate and the watch holds, so direct-HTTP sessions without runtime publishing are unaffected; `PARLE_WATCH_SESSION_LIVENESS=0` disables the check explicitly.
+- Liveness semantics mirror the client's `isLiveRuntimeSnapshot`: schema version 1, state `ready`, unexpired with 30s skew, writer pid alive (uncertain pid checks count as alive).
+- Skill lifecycle guidance documents exit 3: reconnect with `parle_connect` and arm a fresh watch from the new `cursor` and `agentSessionId`; never reuse the pre-exit values.
+
 ## 0.5.6 (2026-07-08)
 
 Compact connection card frame.

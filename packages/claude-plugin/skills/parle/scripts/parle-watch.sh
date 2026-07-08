@@ -14,8 +14,23 @@
 # author.agent_session_id on rows you authored in parle_read. Without it,
 # any new room row wakes you (v1 behavior).
 #
+# Session liveness: the projection poll authenticates with the room agent
+# token alone, so the server cannot tell this script that the session it
+# filters on has died (host reload, session end). When my_agent_session_id
+# is set, each cycle also checks the local .parle/runtime/*.json snapshots
+# the adapters publish: if live snapshots exist and none carries this id,
+# the session is gone and the script exits 3 instead of holding a watch
+# that can never match its directs again. No snapshots at all is
+# indeterminate (direct-HTTP sessions publish none) and the watch holds.
+# Set PARLE_WATCH_SESSION_LIVENESS=0 to disable the check when watching a
+# session that has no runtime snapshot while another adapter runs in the
+# same directory.
+#
 # Needs: PARLE_API_BASE, PARLE_ROOM_ID, PARLE_ROOM_AGENT_TOKEN
-# Exit:  0 = relevant activity past since_seq, 2 = terminal or repeated failures
+# Exit:  0 = relevant activity past since_seq, 2 = terminal or repeated
+#        failures, 3 = my_agent_session_id is no longer live on this host
+#        (reconnect with parle_connect and arm a fresh watch; do not re-arm
+#        with the old id or watermark)
 #
 # Config self-loads from the same sources and precedence as the adapters
 # client: process env first, then ./.env, then ./.parle/credentials (relative
@@ -61,8 +76,61 @@ if [ -z "${PARLE_ROOM_ID:-}" ] || [ -z "${PARLE_ROOM_AGENT_TOKEN:-}" ]; then
   exit 2
 fi
 
+# LIVE = a runtime snapshot for $me is live; DEAD = live snapshots exist but
+# none matches $me; UNKNOWN = no parseable snapshots (indeterminate, keep
+# watching). Mirrors isLiveRuntimeSnapshot in @parlehq/agent-client
+# (schemaVersion 1, state ready, unexpired with 30s skew, writer pid alive;
+# uncertain pid checks count as alive, matching the client's prune posture).
+session_liveness() {
+  [ -n "$me" ] || { echo LIVE; return; }
+  [ "${PARLE_WATCH_SESSION_LIVENESS:-1}" = "0" ] && { echo LIVE; return; }
+  [ -d ./.parle/runtime ] || { echo UNKNOWN; return; }
+  python3 - "$me" <<'PY' 2>/dev/null || echo UNKNOWN
+import calendar, glob, json, os, re, sys, time
+
+me = sys.argv[1]
+now = time.time()
+parsed_live = 0
+# ISO-8601 UTC as written by JS toISOString(); parsed portably because the
+# host python3 can be as old as 3.6 (no datetime.fromisoformat).
+ISO_UTC = re.compile(r"^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:[Zz]|\+00:00)$")
+for path in glob.glob("./.parle/runtime/*.json"):
+    try:
+        with open(path) as f:
+            snap = json.load(f)
+    except Exception:
+        continue
+    if not isinstance(snap, dict) or snap.get("schemaVersion") != 1 or snap.get("state") != "ready":
+        continue
+    match = ISO_UTC.match(str(snap.get("expiresAt", "")))
+    if not match:
+        continue
+    expires = calendar.timegm(time.strptime(match.group(1) + " " + match.group(2), "%Y-%m-%d %H:%M:%S"))
+    if expires <= now + 30:
+        continue
+    pid = snap.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        continue
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        continue
+    except Exception:
+        pass
+    parsed_live += 1
+    if snap.get("agentSessionId") == me:
+        print("LIVE")
+        sys.exit(0)
+print("DEAD" if parsed_live else "UNKNOWN")
+PY
+}
+
 fails=0
 while :; do
+  if [ "$(session_liveness)" = "DEAD" ]; then
+    echo "Parle stopped: agent session $me is no longer live on this host (host process reloaded or session ended). Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId. Do not re-arm with this session id or watermark." >&2
+    exit 3
+  fi
   tmp=$(mktemp "${TMPDIR:-/tmp}/parle-watch.XXXXXX") || exit 2
   status=$(curl -sS --max-time 40 -o "$tmp" -w '%{http_code}' \
     "$PARLE_API_BASE/v/rooms/$PARLE_ROOM_ID/projection?since_seq=$since&wait=25" \
