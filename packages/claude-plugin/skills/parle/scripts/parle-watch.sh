@@ -18,10 +18,10 @@
 # token alone, so the server cannot tell this script that the session it
 # filters on has died (host reload, session end). When my_agent_session_id
 # is set, each cycle also checks the local .parle/runtime/*.json snapshots
-# the adapters publish: if live snapshots exist and none carries this id,
-# the session is gone and the script exits 3 instead of holding a watch
-# that can never match its directs again. No snapshots at all is
-# indeterminate (direct-HTTP sessions publish none) and the watch holds.
+# the adapters publish: if live snapshots exist and none carries this id for
+# two consecutive checks, the session is gone and the script exits 3 instead
+# of holding a watch that can never match its directs again. No snapshots at
+# all is indeterminate (direct-HTTP sessions publish none) and the watch holds.
 # Set PARLE_WATCH_SESSION_LIVENESS=0 to disable the check when watching a
 # session that has no runtime snapshot while another adapter runs in the
 # same directory.
@@ -126,11 +126,19 @@ PY
 }
 
 fails=0
+dead_liveness=0
 while :; do
-  if [ "$(session_liveness)" = "DEAD" ]; then
-    echo "Parle stopped: agent session $me is no longer live on this host (host process reloaded or session ended). Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId. Do not re-arm with this session id or watermark." >&2
-    exit 3
+  liveness_state=$(session_liveness)
+  if [ "$liveness_state" = "DEAD" ]; then
+    dead_liveness=$((dead_liveness + 1))
+    if [ "$dead_liveness" -ge 2 ]; then
+      echo "Parle stopped: agent session $me is no longer live on this host (host process reloaded, session ended, or the prior runtime snapshot expired within the safety window). Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId. Do not re-arm with this session id or watermark." >&2
+      exit 3
+    fi
+    sleep 1
+    continue
   fi
+  dead_liveness=0
   tmp=$(mktemp "${TMPDIR:-/tmp}/parle-watch.XXXXXX") || exit 2
   status=$(curl -sS --max-time 40 -o "$tmp" -w '%{http_code}' \
     "$PARLE_API_BASE/v/rooms/$PARLE_ROOM_ID/projection?since_seq=$since&wait=25" \

@@ -83,6 +83,7 @@ test("watch exits 3 when live snapshots exist without the watched session", { sk
     const code = await watch.exited;
     assert.equal(code, 3);
     assert.match(watch.err(), /no longer live/);
+    assert.match(watch.err(), /safety window/);
     assert.match(watch.err(), /parle_connect/);
   } finally {
     server.close();
@@ -100,6 +101,20 @@ test("watch ignores expired snapshots of its session when deciding DEAD", { skip
     const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", "session-mine"]);
     const code = await watch.exited;
     assert.equal(code, 3);
+  } finally {
+    server.close();
+  }
+});
+
+test("watch survives one transient DEAD liveness cycle", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-"));
+  writeSnapshot(cwd, "session-other");
+  const server = await stubServer({ messages: [], watermark: 1 });
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", "session-mine"]);
+    await sleep(250);
+    writeSnapshot(cwd, "session-mine");
+    await assertStillWatching(watch);
   } finally {
     server.close();
   }

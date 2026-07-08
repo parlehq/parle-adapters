@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.5.8 (2026-07-08)
+
+Watcher liveness hardening.
+
+- Exit 3 now names snapshot expiry within the safety window as a possible stale-watch cause.
+- The watcher requires two consecutive local DEAD liveness checks before exiting, reducing reload-race false positives while still terminating stale watches quickly.
+
 ## 0.5.7 (2026-07-08)
 
 Watcher session-liveness: stale watches self-terminate after a host reload.
