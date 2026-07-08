@@ -81,6 +81,13 @@ test("PARLE_VERSION is adapter-owned unless explicitly set in process env", () =
     assert.doesNotMatch(envCfg.warnings.join("\n"), /Ignoring PARLE_VERSION from \.env/);
     assert.doesNotMatch(envCfg.warnings.join("\n"), /Ignoring stale PARLE_VERSION from \.parle\/credentials/);
 
+    // An env value equal to the adapter default is not an override: no warning,
+    // but provenance stays honest (env-snapshotting hosts hit this constantly).
+    const sameCfg = resolveConfig(cwd, { PARLE_VERSION: DEFAULT_VERSION });
+    assert.equal(sameCfg.version.value, DEFAULT_VERSION);
+    assert.equal(sameCfg.version.source, "env");
+    assert.doesNotMatch(sameCfg.warnings.join("\n"), /process environment/);
+
     rmSync(join(cwd, ".env"));
     rmSync(join(cwd, ".parle", "credentials"));
     const cleanCfg = resolveConfig(cwd, {});

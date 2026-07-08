@@ -31208,7 +31208,9 @@ function firstConfigValue(name, sources, fallback) {
 }
 function versionConfig(env, dotEnv, credentials, warnings) {
   if (env.PARLE_VERSION) {
-    warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+    if (env.PARLE_VERSION !== DEFAULT_VERSION) {
+      warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+    }
     return { value: env.PARLE_VERSION, source: "env" };
   }
   if (dotEnv.PARLE_VERSION)

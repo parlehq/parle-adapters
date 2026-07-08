@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.6 (2026-07-08)
+
+Bundled MCP refresh: no spurious PARLE_VERSION override warning.
+
+- The "overriding the adapter default" warning is suppressed when the process-env value equals the adapter default; provenance stays source env. Genuine overrides keep the warning.
+
 ## 0.5.5 (2026-07-08)
 
 Bundled MCP refresh so the compact connection card announces itself.

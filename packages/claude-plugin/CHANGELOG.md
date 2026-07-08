@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.5.11 (2026-07-08)
+
+No warning when PARLE_VERSION in the process env equals the adapter default (bundled artifact refresh).
+
+- versionConfig warned on source==env without comparing values, so hosts that snapshot .env into the environment (mise `[env] _.file`) carried a permanent "overriding the adapter default" warning for a value identical to the default. Overriding a value with itself is not an override: the warning is now suppressed when they match. Provenance stays `source: env` (honest; the value really does come from the environment and still shadows a future artifact-default bump, which is exactly when the warning returns). Genuine overrides keep the warning. Same fix applied to the Pi extension's pickVersion (0.1.4).
+
 ## 0.5.10 (2026-07-08)
 
 The compact connection card announces itself (bundled artifact refresh; no tool contract lock change, descriptions are not locked).

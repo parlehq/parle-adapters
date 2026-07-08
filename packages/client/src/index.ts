@@ -196,7 +196,12 @@ function firstConfigValue(name: string, sources: Array<{ name: string; values: R
 
 function versionConfig(env: Record<string, string | undefined>, dotEnv: Record<string, string>, credentials: Record<string, string>, warnings: string[]): ConfigValue {
   if (env.PARLE_VERSION) {
-    warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+    // An env value equal to the default is not an override; env-snapshotting
+    // hosts (mise .env injection) make that the normal state, and a permanent
+    // warning there trains readers to ignore warnings.
+    if (env.PARLE_VERSION !== DEFAULT_VERSION) {
+      warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+    }
     return { value: env.PARLE_VERSION, source: "env" };
   }
   if (dotEnv.PARLE_VERSION) warnings.push(`Ignoring PARLE_VERSION from .env (${dotEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);

@@ -210,7 +210,12 @@ function resolveConfig(cwd: string): ParleConfig {
 
   function pickVersion(): ConfigValue {
     if (process.env.PARLE_VERSION) {
-      warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${process.env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+      // Equal to the default is not an override; env-snapshotting hosts make
+      // source==env the normal state and a permanent warning trains readers
+      // to ignore warnings.
+      if (process.env.PARLE_VERSION !== DEFAULT_VERSION) {
+        warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${process.env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
+      }
       return { value: process.env.PARLE_VERSION, source: "env", key: "PARLE_VERSION" };
     }
     if (projectEnv.PARLE_VERSION) warnings.push(`Ignoring PARLE_VERSION from project .env (${projectEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
