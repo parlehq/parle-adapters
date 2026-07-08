@@ -37,7 +37,7 @@ When the user asks to connect (or coordination is about to start):
 
 1. If configuration may be missing, run `parle_setup`; otherwise go straight to `parle_connect`.
 2. `parle_connect` establishes or reuses the room session and returns the session address, `agentSessionId`, participant id, expiry, cursor, and `compactText`. Keep the full tool result for internal watcher setup. Do not report UUIDs, cursor, expiry, backlog, or config provenance in the default operator-facing response unless the user asks for details.
-3. Immediately arm the responsive watcher (next section) with the returned `cursor` and `agentSessionId`. Arming is part of connecting by default; stand by without a watcher only when the user explicitly asks. After the background watcher task is actually started, reply with the compact card shape below and set `Watcher       on`. Do not say the watcher is on until the background task start is confirmed.
+3. Immediately arm the responsive watcher (next section) with the returned `cursor` and `agentSessionId`. Arming is part of connecting by default; stand by without a watcher only when the user explicitly asks. After the background watcher task is actually started, reply with the compact card shape below. Take `compactText` and insert `Watcher       on` after the `In room` line once the watcher task is confirmed started. Do not say the watcher is on until the background task start is confirmed.
 
 Default compact response shape:
 

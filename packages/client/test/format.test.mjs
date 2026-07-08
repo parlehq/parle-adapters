@@ -76,7 +76,7 @@ In room       #room-one
 Session Address:
 @p.a.s1
 
-Next: you are already connected. Read your inbox when you are ready.`);
+Next: read your inbox when you are ready.`);
 });
 
 test("compact formatter guards address parsing and next text", () => {

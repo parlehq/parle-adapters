@@ -26,7 +26,7 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
     case "open-another-session":
       return DEFAULT_NEXT;
     case "already-connected":
-      return "you are already connected. Read your inbox when you are ready.";
+      return "read your inbox when you are ready.";
     case "read-inbox":
       return "read your inbox for messages addressed to this session.";
     case "arm-watcher":
