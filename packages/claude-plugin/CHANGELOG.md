@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.10 (2026-07-08)
+
+The compact connection card announces itself (bundled artifact refresh; no tool contract lock change, descriptions are not locked).
+
+- The 0.5.8 card shipped as a silent `compactText` field: the connect result's `next` hint still opened with pre-card wording ("report the session address and expiry") and neither the tool description nor the hint said to render the card, so agents without local standing guidance paraphrased the summary instead of showing it. Instruction now lives at the point of use: the `parle_connect` tool description names `compactText` as the standard card to render verbatim, and the connect `next` hint leads with rendering it (with the skill's arm-watcher-first refinement noted) before the responsive-delivery steps.
+- Lazily established session blocks on reads and sends carry no `compactText`, so they keep the address-and-expiry wording via a separate `SESSION_ESTABLISHED_NEXT_GUIDANCE` export instead of inheriting card instructions that would point at a missing field.
+- Considered and deferred: a card on `parle_status` (diagnostic surface; the skill already tells agents not to dump provenance) and `compactText` on lazy session blocks (adds a card render to every read/send path; revisit if paraphrase drift shows up there too).
+
 ## 0.5.9 (2026-07-08)
 
 Watcher lifecycle doc correction.

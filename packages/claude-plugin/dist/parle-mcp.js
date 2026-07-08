@@ -31154,7 +31154,8 @@ var DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
 var DEFAULT_VERSION = "2026-07-07";
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
-var CONNECT_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
+var CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds.";
+var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
 var ParleApiError = class extends Error {
   status;
   code;
@@ -31903,7 +31904,7 @@ var ParleAgentClient = class {
       agentSessionId: this.runtime.agentSessionId,
       participantId: this.runtime.participantId,
       expiresAt: this.runtime.expiresAt,
-      next: CONNECT_NEXT_GUIDANCE
+      next: SESSION_ESTABLISHED_NEXT_GUIDANCE
     };
   }
   async withRebootstrap(fn, signal) {
@@ -32044,7 +32045,7 @@ function createParleMcpServer(client = new ParleAgentClient()) {
   }, async () => toolResult(client.setup()));
   server.registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async () => safeTool(async () => {
     const summary = await client.connect();

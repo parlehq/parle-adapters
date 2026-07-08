@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.5 (2026-07-08)
+
+Bundled MCP refresh so the compact connection card announces itself.
+
+- The `parle_connect` tool description now names `compactText` as the standard card to render verbatim, and the connect result's `next` hint leads with rendering it before the responsive-delivery steps. Lazy session blocks keep the address-and-expiry wording (they carry no card).
+
 ## 0.5.4 (2026-07-08)
 
 Bundled MCP refresh for compact connection card frame.

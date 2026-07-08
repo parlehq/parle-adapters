@@ -557,6 +557,7 @@ test("connect bootstraps once, returns factual summary, and reuses live sessions
   assert.equal(first.heldBacklogCount, 2);
   assert.equal(first.roomHandle, "room-handle");
   assert.match(first.next, /arm responsive delivery/);
+  assert.match(first.next, /^Render compactText verbatim/);
   const second = await client.connect();
   assert.equal(second.reusedExistingSession, true);
   assert.equal(sessions, 1);
@@ -599,6 +600,8 @@ test("implicit bootstrap attaches session block to the triggering call only", as
   assert.equal(first.session.sessionAddress, "@p.a.s1");
   assert.equal(first.session.agentSessionId, "as-1");
   assert.match(first.session.next, /arm responsive delivery/);
+  // Lazy session blocks carry no compactText, so their guidance must not point at one.
+  assert.doesNotMatch(first.session.next, /compactText/);
   const second = await client.readInbox();
   assert.equal(Object.hasOwn(second, "session"), false);
   const sent = await client.send({ body: "hello" });

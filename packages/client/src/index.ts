@@ -17,7 +17,11 @@ export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything
 
 // @parle-interpretation parlehq/parle#433
 // Canonical connect guidance pending server-authored text in discovery surfaces.
-export const CONNECT_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
+// The connect result carries compactText (added by hosts that render cards, e.g.
+// the MCP server); lazily established session blocks do not, so they keep the
+// address-and-expiry wording.
+export const CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds.";
+export const SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
 
 export type FetchLike = typeof fetch;
 
@@ -944,7 +948,7 @@ export class ParleAgentClient {
       agentSessionId: this.runtime.agentSessionId,
       participantId: this.runtime.participantId,
       expiresAt: this.runtime.expiresAt,
-      next: CONNECT_NEXT_GUIDANCE,
+      next: SESSION_ESTABLISHED_NEXT_GUIDANCE,
     };
   }
 

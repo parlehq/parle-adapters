@@ -68,7 +68,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 
   server.registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async () => safeTool(async () => {
     const summary = await client.connect();
