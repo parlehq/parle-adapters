@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
 import { join } from "node:path";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.3";
+const PI_EXTENSION_VERSION = "0.1.5";
 const RUNTIME_SCHEMA_VERSION = 1;
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const DEFAULT_VERSION = "2026-07-07";
@@ -76,6 +76,8 @@ type RuntimeState = {
   lastEligibleSeq?: number;
   lastInjectedSeq?: number;
   lastAckedSeq?: number;
+  pendingResponsiveCount?: number;
+  lastBufferedSeq?: number;
   lastEmptyWakeAt?: string;
   lastHeldBacklogAt?: string;
   lastWatcherErrorAt?: string;
@@ -155,6 +157,9 @@ const injectedKeys = new Set<string>();
 const injectedKeyOrder: string[] = [];
 const seenKeys = new Set<string>();
 const seenKeyOrder: string[] = [];
+type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; ackThrough?: any };
+const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
+let responsiveFlushRunning = false;
 
 function parseBoolEnabled(raw: string | undefined): boolean {
   return raw !== "0";
@@ -925,7 +930,9 @@ async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: Abor
     setStatus(ctx, cfg);
     return;
   }
-  await injectResponsiveMessages(pi, ctx, cfg, messages, typeof delivery?.preamble === "string" ? delivery.preamble : undefined, signal);
+  const responsePreamble = typeof delivery?.preamble === "string" ? delivery.preamble : undefined;
+  await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal);
+  await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   runtime.watcherState = "watching";
   setStatus(ctx, cfg);
 }
@@ -1316,9 +1323,25 @@ function recordWatcherError(error: any) {
   runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
 }
 
-async function injectResponsiveMessages(pi: any, ctx: any, cfg: ParleConfig, messages: any[], responsePreamble?: string, signal?: AbortSignal) {
-  const pending: Array<{ key: string; message: any }> = [];
-  let lastHandled: any | undefined;
+function isPiIdle(ctx: any): boolean {
+  return typeof ctx?.isIdle === "function" ? ctx.isIdle() : true;
+}
+
+function updatePendingResponsiveState() {
+  runtime.pendingResponsiveCount = pendingResponsiveMessages.length;
+}
+
+function clearPendingResponsiveMessages() {
+  pendingResponsiveMessages.length = 0;
+  responsiveFlushRunning = false;
+  updatePendingResponsiveState();
+}
+
+async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any[], responsePreamble?: string, signal?: AbortSignal) {
+  let ackablePrefix: any | undefined;
+  let blockedByPending = pendingResponsiveMessages.length > 0;
+  let lastPending = pendingResponsiveMessages.at(-1);
+  const pendingKeys = new Set(pendingResponsiveMessages.map((item) => item.key));
   for (const message of messages) {
     if (signal?.aborted) break;
     const key = deliveryKey(message);
@@ -1333,32 +1356,51 @@ async function injectResponsiveMessages(pi: any, ctx: any, cfg: ParleConfig, mes
     if (injectedKeys.has(key) || seenKeys.has(key)) {
       if (seenKeys.has(key) && !injectedKeys.has(key)) runtime.seenSuppressed = (runtime.seenSuppressed || 0) + 1;
       else runtime.duplicateSuppressed = (runtime.duplicateSuppressed || 0) + 1;
-      lastHandled = message;
+      if (!blockedByPending) ackablePrefix = message;
+      else if (lastPending) lastPending.ackThrough = message;
       continue;
     }
-    const nextMessages = [...pending.map((item) => item.message), message];
-    if (pending.length > 0 && !promptFitsResponsiveBatch(nextMessages, responsePreamble)) break;
-    pending.push({ key, message });
-    lastHandled = message;
+    blockedByPending = true;
+    if (pendingKeys.has(key)) continue;
+    const pending = { key, message, responsePreamble };
+    pendingResponsiveMessages.push(pending);
+    lastPending = pending;
+    pendingKeys.add(key);
+    runtime.lastEligibleSeq = typeof message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, message.seq) : runtime.lastEligibleSeq;
+    runtime.lastBufferedSeq = typeof message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, message.seq) : runtime.lastBufferedSeq;
   }
-  if (pending.length > 0) {
-    runtime.watcherState = "injecting";
-    for (const item of pending) {
-      runtime.lastEligibleSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, item.message.seq) : runtime.lastEligibleSeq;
-    }
-    setStatus(ctx, cfg);
-    await pi.sendUserMessage(inboundBatchPrompt(pending.map((item) => item.message), responsePreamble), { deliverAs: "followUp" });
-    for (const item of pending) {
-      rememberInjectedKey(item.key);
-      runtime.lastInjectedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastInjectedSeq || 0, item.message.seq) : runtime.lastInjectedSeq;
-    }
-  }
-  if (lastHandled) await ackResponsiveMessage(cfg, lastHandled, signal);
+  updatePendingResponsiveState();
+  if (ackablePrefix) await ackResponsiveMessage(cfg, ackablePrefix, signal);
   setStatus(ctx, cfg);
 }
 
-async function injectResponsiveMessage(pi: any, ctx: any, cfg: ParleConfig, message: any, responsePreamble?: string, signal?: AbortSignal) {
-  await injectResponsiveMessages(pi, ctx, cfg, [message], responsePreamble, signal);
+async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
+  if (responsiveFlushRunning || pendingResponsiveMessages.length === 0 || !isPiIdle(ctx)) return;
+  responsiveFlushRunning = true;
+  try {
+    const first = pendingResponsiveMessages[0];
+    const batch: PendingResponsiveMessage[] = [];
+    for (const item of pendingResponsiveMessages) {
+      if (item.responsePreamble !== first.responsePreamble) break;
+      const candidate = [...batch.map((entry) => entry.message), item.message];
+      if (batch.length > 0 && !promptFitsResponsiveBatch(candidate, first.responsePreamble)) break;
+      batch.push(item);
+    }
+    if (batch.length === 0) return;
+    runtime.watcherState = "injecting";
+    setStatus(ctx, cfg);
+    await pi.sendUserMessage(inboundBatchPrompt(batch.map((item) => item.message), first.responsePreamble));
+    for (const item of batch) {
+      rememberInjectedKey(item.key);
+      runtime.lastInjectedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastInjectedSeq || 0, item.message.seq) : runtime.lastInjectedSeq;
+    }
+    pendingResponsiveMessages.splice(0, batch.length);
+    updatePendingResponsiveState();
+    await ackResponsiveMessage(cfg, batch.at(-1)!.ackThrough || batch.at(-1)!.message, signal);
+  } finally {
+    responsiveFlushRunning = false;
+    setStatus(ctx, cfg);
+  }
 }
 
 async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal, runId: number) {
@@ -1463,6 +1505,8 @@ function statusDetails(ctx: any) {
       lastEligibleSeq: runtime.lastEligibleSeq,
       lastInjectedSeq: runtime.lastInjectedSeq,
       lastAckedSeq: runtime.lastAckedSeq,
+      pendingResponsiveCount: runtime.pendingResponsiveCount,
+      lastBufferedSeq: runtime.lastBufferedSeq,
       lastEmptyWakeAt: runtime.lastEmptyWakeAt,
       lastHeldBacklogAt: runtime.lastHeldBacklogAt,
       lastWatcherErrorAt: runtime.lastWatcherErrorAt,
@@ -1522,6 +1566,8 @@ export const __testing = {
   maybeHeartbeatAgentSession,
   startWatcher,
   handleWakeHint,
+  queueResponsiveMessages,
+  flushPendingResponsiveMessages,
   parseSSEBlocks,
   resolveConfig,
   useSessionAlias,
@@ -1534,6 +1580,7 @@ export const __testing = {
     injectedKeyOrder.length = 0;
     seenKeys.clear();
     seenKeyOrder.length = 0;
+    clearPendingResponsiveMessages();
     watcherAbort?.abort();
     watcherAbort = undefined;
     watcherLoopRunning = false;
@@ -1548,6 +1595,7 @@ function setStatus(ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
     let label = "parle x setup";
     if (!cfg.enabled) label = "parle off";
     else if (shouldShowFooterError()) label = runtime.sessionAddress ? `parle x ${runtime.sessionAddress}` : footerErrorLabel();
+    else if (runtime.sessionAddress && pendingResponsiveMessages.length > 0) label = `parle ◷ ${pendingResponsiveMessages.length} ${runtime.sessionAddress}`;
     else if (runtime.sessionAddress) label = `parle ✓ ${runtime.sessionAddress}`;
     else if (cfg.roomId?.value && cfg.agentToken?.value) label = `parle ✓ ${cfg.roomHandle?.value || "ready"}`;
     ui.setStatus(EXTENSION_ID, label);
@@ -1564,6 +1612,17 @@ export default function parleExtension(pi: any) {
     startWatcher(pi, ctx, cfg);
   });
 
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
+    lastCtx = ctx;
+    const cfg = resolveConfig(ctx.cwd || process.cwd());
+    try {
+      await flushPendingResponsiveMessages(pi, ctx, cfg);
+    } catch (error: any) {
+      recordWatcherError(error);
+      setStatus(ctx, cfg);
+    }
+  });
+
   pi.on("session_shutdown", (_event: any, ctx: any) => {
     const cfg = resolveConfig(ctx.cwd || process.cwd());
     const controller = new AbortController();
@@ -1572,6 +1631,7 @@ export default function parleExtension(pi: any) {
       runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
     }).finally(() => clearTimeout(timer));
     stopWatcher(ctx);
+    clearPendingResponsiveMessages();
     removeRuntimeFile(ctx.cwd || process.cwd());
   });
 

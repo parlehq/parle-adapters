@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/pi-extension",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "pi": {
@@ -9,7 +9,7 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-coding-agent": ">=0.80.4 <0.81.0",
     "typebox": "*"
   },
   "scripts": {

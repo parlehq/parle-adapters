@@ -77,7 +77,7 @@ The extension registers these Pi tools:
 
 `parle_read` and `parle_inbox` accept `waitSeconds` for explicit one-shot manual waits. Do not use `waitSeconds` to build a watcher loop.
 
-It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery?wait=0` only after wake hints.
+It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery?wait=0` only after wake hints. While Pi is busy, direct messages remain in the adapter's local pending buffer and the footer shows their count. At `agent_settled`, the adapter injects one ordered batch and then acknowledges it to Parle. This avoids Pi's generic queued-input UI without changing Parle delivery semantics.
 
 ## Trust note
 

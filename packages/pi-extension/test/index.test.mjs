@@ -124,7 +124,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.3" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.5" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -643,6 +643,45 @@ test("wake hint coalesces responsive delivery backlog into one follow-up", async
   assert.match(injected[0], /responsive delivery 2\/2/);
   assert.deepEqual(acked, [{ seq: 8, event_id: "evt-batch-8" }]);
   assert.equal(__testing.runtimeState().lastInjectedSeq, 8);
+});
+
+test("busy Pi buffers responsive rows until settled, then injects one batch", async () => {
+  const injected = [];
+  const acked = [];
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-settled", session_credential: "parle_ses_settled-session", session_handle: "settled-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.settled-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-settled" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery/ack")) {
+      acked.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ last_acked_seq: acked.at(-1).seq }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { last_acked_seq: 0 }, messages: [] }), { status: 200 });
+    throw new Error("unexpected " + u);
+  });
+  await harness.call("parle_status");
+  const cfg = __testing.resolveConfig(harness.cwd);
+  let idle = false;
+  harness.ctx.isIdle = () => idle;
+  const pi = { sendUserMessage: async (message) => injected.push(message) };
+  const messages = [
+    { seq: 7, event_id: "evt-settled-7", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "first" },
+    { seq: 8, event_id: "evt-settled-8", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "second" },
+  ];
+
+  await __testing.queueResponsiveMessages(harness.ctx, cfg, messages);
+  await __testing.flushPendingResponsiveMessages(pi, harness.ctx, cfg);
+  assert.equal(injected.length, 0);
+  assert.deepEqual(acked, []);
+  assert.equal(__testing.runtimeState().pendingResponsiveCount, 2);
+
+  idle = true;
+  await __testing.flushPendingResponsiveMessages(pi, harness.ctx, cfg);
+  assert.equal(injected.length, 1);
+  assert.match(injected[0], /received 2 server-authenticated peer messages/);
+  assert.deepEqual(acked, [{ seq: 8, event_id: "evt-settled-8" }]);
+  assert.equal(__testing.runtimeState().pendingResponsiveCount, 0);
 });
 
 test("wake hint silently acks rows already surfaced by manual inbox reads", async () => {
