@@ -38,10 +38,9 @@ export function renderConformanceData(versionFixture, tokenClassesFixture) {
     "  redaction_pattern: string;",
     "  redact_with: string;",
     "  description: string;",
-    "  examples: Array<{ input: string; expected: string }>;",
     "};",
     "",
-    `export const CONFORMANCE_TOKEN_CLASSES: ConformanceTokenClass[] = ${JSON.stringify(tokens.token_classes, null, 2)};`,
+    `export const CONFORMANCE_TOKEN_CLASSES: ConformanceTokenClass[] = ${JSON.stringify(tokens.token_classes.map(({ examples, ...token }) => token), null, 2)};`,
     "",
   ].join("\n");
 }

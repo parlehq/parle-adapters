@@ -52,17 +52,7 @@ var CONFORMANCE_TOKEN_CLASSES = [
     "shape": "prt_<43 base64url characters>",
     "redaction_pattern": "prt_[A-Za-z0-9_-]{43}",
     "redact_with": "prt_<redacted>",
-    "description": "Room-scoped participant bearer.",
-    "examples": [
-      {
-        "input": "prt_abcdefghijklmnopqrstuvwxyzABCDEFGHIJK012345",
-        "expected": "prt_<redacted>"
-      },
-      {
-        "input": "prt_not a token",
-        "expected": "prt_not a token"
-      }
-    ]
+    "description": "Room-scoped participant bearer."
   },
   {
     "name": "agent_bearer",
@@ -71,17 +61,7 @@ var CONFORMANCE_TOKEN_CLASSES = [
     "shape": "parle_agt_<43 base64url characters>",
     "redaction_pattern": "parle_agt_[A-Za-z0-9_-]{43}",
     "redact_with": "<redacted-token>",
-    "description": "Room-bound agent bearer.",
-    "examples": [
-      {
-        "input": "parle_agt_abcdefghijklmnopqrstuvwxyzABCDEFGHIJK012345",
-        "expected": "<redacted-token>"
-      },
-      {
-        "input": "parle_agt_not a token",
-        "expected": "parle_agt_not a token"
-      }
-    ]
+    "description": "Room-bound agent bearer."
   },
   {
     "name": "agent_session_credential",
@@ -90,17 +70,7 @@ var CONFORMANCE_TOKEN_CLASSES = [
     "shape": "parle_ses_<43 base64url characters>",
     "redaction_pattern": "parle_ses_[A-Za-z0-9_-]{43}",
     "redact_with": "<redacted-token>",
-    "description": "Live agent-session credential.",
-    "examples": [
-      {
-        "input": "parle_ses_abcdefghijklmnopqrstuvwxyzABCDEFGHIJK012345",
-        "expected": "<redacted-token>"
-      },
-      {
-        "input": "parle_ses_not a token",
-        "expected": "parle_ses_not a token"
-      }
-    ]
+    "description": "Live agent-session credential."
   },
   {
     "name": "invite_secret",
@@ -109,17 +79,7 @@ var CONFORMANCE_TOKEN_CLASSES = [
     "shape": "parle_inv_<43 base64url characters>",
     "redaction_pattern": "parle_inv_[A-Za-z0-9_-]{43}",
     "redact_with": "<redacted-token>",
-    "description": "Invite claim secret.",
-    "examples": [
-      {
-        "input": "parle_inv_abcdefghijklmnopqrstuvwxyzABCDEFGHIJK012345",
-        "expected": "<redacted-token>"
-      },
-      {
-        "input": "parle_inv_not a token",
-        "expected": "parle_inv_not a token"
-      }
-    ]
+    "description": "Invite claim secret."
   },
   {
     "name": "human_session_cookie",
@@ -128,17 +88,7 @@ var CONFORMANCE_TOKEN_CLASSES = [
     "shape": "parle_sess_<43 base64url characters>",
     "redaction_pattern": "parle_sess_[A-Za-z0-9_-]{43}",
     "redact_with": "<redacted-token>",
-    "description": "Human session cookie value.",
-    "examples": [
-      {
-        "input": "parle_sess_abcdefghijklmnopqrstuvwxyzABCDEFGHIJK012345",
-        "expected": "<redacted-token>"
-      },
-      {
-        "input": "parle_sess_not a token",
-        "expected": "parle_sess_not a token"
-      }
-    ]
+    "description": "Human session cookie value."
   }
 ];
 
