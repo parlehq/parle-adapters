@@ -1,8 +1,3 @@
-// MIRRORED FILE. packages/client/src/profiles.ts and
-// packages/pi-extension/src/profiles.ts must stay byte-identical: the Pi
-// harness loads pi-extension straight from source under jiti with no
-// workspace node_modules, so pi-extension cannot import @parlehq/agent-client.
-// A pi-extension test enforces the parity. Edit both copies together.
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";

@@ -3,6 +3,9 @@ dist/
 !packages/claude-plugin/dist/
 packages/claude-plugin/dist/*
 !packages/claude-plugin/dist/parle-mcp.js
+!packages/pi-extension/dist/
+packages/pi-extension/dist/*
+!packages/pi-extension/dist/index.js
 packages/claude-desktop-extension/out/
 coverage/
 .env

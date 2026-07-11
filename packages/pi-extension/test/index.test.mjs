@@ -98,14 +98,11 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
 });
 
-test("extension stays standalone-loadable: no workspace imports, profiles mirror intact", () => {
-  const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  // The Pi harness loads src/index.ts under jiti with no workspace
-  // node_modules; a @parlehq/* import breaks every deployed checkout.
-  assert.doesNotMatch(src, /from "@parlehq\//);
-  const mirror = readFileSync(new URL("../src/profiles.ts", import.meta.url), "utf8");
-  const canonical = readFileSync(new URL("../../client/src/profiles.ts", import.meta.url), "utf8");
-  assert.equal(mirror, canonical, "packages/pi-extension/src/profiles.ts must stay byte-identical to packages/client/src/profiles.ts");
+test("deployed entrypoint is the committed bundle", () => {
+  // The Pi harness loads the committed dist bundle in deployed checkouts
+  // (no installs, no builds there); check-pi-artifact.mjs gates freshness.
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.deepEqual(manifest.pi.extensions, ["./dist/index.js"]);
 });
 
 test("status leaves profile unset when the catalog has no default section", async () => {
@@ -173,7 +170,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.10" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.11" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
