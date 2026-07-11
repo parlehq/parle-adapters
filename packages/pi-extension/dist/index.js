@@ -180,6 +180,9 @@ function formatVersionErrorHint(cfg, errorObj) {
   const action = cfg.version.source === "default" ? "Upgrade the adapter." : "Unset the stale PARLE_VERSION override or upgrade the adapter.";
   return ` Sent Parle-Version ${sent} from ${cfg.version.source}; adapter default is ${DEFAULT_VERSION}.${server} ${action}`;
 }
+function redactString(input) {
+  return input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(parle_(?:agt|inv|ses)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>").replace(/\bprt_[A-Za-z0-9_./+=:-]+/g, "prt_<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
+}
 function summarizeSendDelivery(details) {
   const moderation = details?.moderation;
   if (!moderation || typeof moderation !== "object")
@@ -207,7 +210,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.14";
+var PI_EXTENSION_VERSION = "0.1.15";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var DEFAULT_VERSION2 = "2026-07-07";
@@ -340,9 +343,6 @@ function redactedValue(value) {
     secret: value.secret === true,
     warning: value.warning
   };
-}
-function redactString(input) {
-  return input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(parle_(?:agt|inv|ses)_[A-Za-z0-9_./+=:-]+)/g, "<redacted-token>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
 }
 function truncateText(text, limitBytes) {
   const bytes = Buffer.byteLength(text, "utf8");

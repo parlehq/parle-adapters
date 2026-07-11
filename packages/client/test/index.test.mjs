@@ -121,6 +121,8 @@ test("secret values and protocol headers are redacted", () => {
   assert.deepEqual(redactedSecretValue({ source: "env", value: "opaque-token" }), { source: "env", configured: true, value: "<redacted>" });
   const text = "Bearer abc.def Idempotency-Key: idem-1 Parle-Agent-Session=s1 parle_inv_secret parle_agt_secret prt_secret";
   assert.equal(redactString(text), "Bearer <redacted> Idempotency-Key: <redacted> Parle-Agent-Session=<redacted> <redacted-token> <redacted-token> prt_<redacted>");
+  assert.equal(redactString("Cookie: __Host-parle_session=abc123; theme=dark"), "Cookie: __Host-parle_session=<redacted>; theme=dark");
+  assert.equal(redactString("session parle_ses_abc123 expired"), "session <redacted-token> expired");
 });
 
 test("wait clamp is bounded and integral", () => {
