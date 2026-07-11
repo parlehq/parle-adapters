@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -29,11 +29,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const ALLOWED_KEYS = new Set(["room_id", "agent_token", "agent_token_id", "api_base", "wake_base"]);
 
 function assertSafeCatalog(path: string): void {
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new ProfileConfigError(`Parle profile catalog must be a regular file: ${path}`);
-  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) {
-    throw new ProfileConfigError(`Parle profile catalog must be mode 0600: ${path}. Run chmod 600 ${path}`);
-  }
+  const link = lstatSync(path);
+  const stat = link.isSymbolicLink() ? statSync(path) : link;
+  if (!stat.isFile()) throw new ProfileConfigError(`Parle profile catalog must be a regular file: ${path}`);
+  if (process.platform !== "win32" && stat.uid !== process.getuid?.()) throw new ProfileConfigError(`Parle profile catalog must be owned by the current user: ${path}`);
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) console.warn(`Parle warning: profile catalog should be mode 0600: ${path}`);
 }
 
 export function parseProfiles(text: string, path = PROFILE_CATALOG_PATH): Map<string, CredentialProfile> {

@@ -22,3 +22,33 @@ It owns:
 It must not import Pi, Claude, MCP SDK, Claude Desktop bundle code, or GalexC-specific code.
 
 Adapters own host-specific registration, schemas, lifecycle hooks, UI text, and guidance strings.
+
+## Credential profiles
+
+Keep room-bound credentials once in `~/.parle/profiles`, a personal UTF-8 INI catalog:
+
+```ini
+[default]
+room_id = 019f...
+agent_token = parle_agt_...
+
+[galexc-intercom]
+room_id = 019f...
+agent_token = parle_agt_...
+agent_token_id = 019f...
+api_base = https://api.parle.sh
+```
+
+Profile labels are local names only. `room_id` is the stable room target. The
+agent token establishes the durable agent identity, so profiles do not store an
+agent ID, handle, or live agent-session credential.
+
+Set `PARLE_PROFILE=galexc-intercom` in process environment or a project `.env`.
+Profile mode is atomic: direct room, token, room-handle, API-base, or wake-base
+configuration is a setup error rather than an override. If no explicit profile
+or direct binding exists, an optional `[default]` profile is selected.
+
+Profiles accept only `room_id`, `agent_token`, `agent_token_id`, `api_base`, and
+`wake_base`. The endpoint defaults to production when omitted. The catalog is
+validated before connecting and errors never expose credential values. Rotate a
+token by replacing it in the profile, then restart processes that loaded it.
