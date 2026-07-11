@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/pi-extension",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "pi": {
@@ -16,9 +16,6 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test test/*.test.mjs"
-  },
-  "dependencies": {
-    "@parlehq/agent-client": "workspace:*"
   },
   "devDependencies": {
     "jiti": "^2.7.0",

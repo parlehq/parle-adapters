@@ -63,9 +63,6 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: '>=0.80.4 <0.81.0'
         version: 0.80.5(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
-      '@parlehq/agent-client':
-        specifier: workspace:*
-        version: link:../client
     devDependencies:
       jiti:
         specifier: ^2.7.0
