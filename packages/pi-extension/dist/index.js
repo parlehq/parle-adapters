@@ -154,6 +154,23 @@ function loadProfile(name, path = PROFILE_CATALOG_PATH) {
 
 // ../client/dist/index.js
 var READ_LIMIT_BYTES = 256 * 1024;
+function parseKeyValueFile(text) {
+  const out = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#"))
+      continue;
+    const idx = line.indexOf("=");
+    if (idx < 0)
+      continue;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+    if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'"))
+      value = value.slice(1, -1);
+    out[key] = value;
+  }
+  return out;
+}
 function summarizeSendDelivery(details) {
   const moderation = details?.moderation;
   if (!moderation || typeof moderation !== "object")
@@ -181,7 +198,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.12";
+var PI_EXTENSION_VERSION = "0.1.13";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var DEFAULT_VERSION = "2026-07-07";
@@ -218,17 +235,7 @@ function parseBoolEnabled(raw) {
 }
 function readKeyValueFile(path) {
   if (!existsSync2(path)) return {};
-  const out = {};
-  for (const rawLine of readFileSync2(path, "utf8").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#") || !line.includes("=")) continue;
-    const idx = line.indexOf("=");
-    const key = line.slice(0, idx).trim();
-    let value = line.slice(idx + 1).trim();
-    if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);
-    out[key] = value;
-  }
-  return out;
+  return parseKeyValueFile(readFileSync2(path, "utf8"));
 }
 function firstConfigValue(candidates) {
   return candidates.find((candidate) => candidate && candidate.value !== "");

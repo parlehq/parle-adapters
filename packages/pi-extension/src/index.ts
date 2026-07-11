@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath, summarizeSendDelivery, type CredentialProfile } from "@parlehq/agent-client";
+import { catalogGitExposureWarning, loadProfile, parseKeyValueFile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath, summarizeSendDelivery, type CredentialProfile } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.12";
+const PI_EXTENSION_VERSION = "0.1.13";
 const RUNTIME_SCHEMA_VERSION = 1;
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const DEFAULT_VERSION = "2026-07-07";
@@ -171,17 +171,7 @@ function parseBoolEnabled(raw: string | undefined): boolean {
 
 function readKeyValueFile(path: string): Record<string, string> {
   if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#") || !line.includes("=")) continue;
-    const idx = line.indexOf("=");
-    const key = line.slice(0, idx).trim();
-    let value = line.slice(idx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-    out[key] = value;
-  }
-  return out;
+  return parseKeyValueFile(readFileSync(path, "utf8"));
 }
 
 function homeDir(): string {

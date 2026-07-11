@@ -98,6 +98,12 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
 });
 
+test("Pi delegates .env parsing to the agent client", () => {
+  const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(source, /parseKeyValueFile[^\n]*from "@parlehq\/agent-client"/);
+  assert.match(source, /return parseKeyValueFile\(readFileSync\(path, "utf8"\)\);/);
+});
+
 test("deployed entrypoint is the committed bundle", () => {
   // The Pi harness loads the committed dist bundle in deployed checkouts
   // (no installs, no builds there); check-pi-artifact.mjs gates freshness.
@@ -172,7 +178,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.12" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.13" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 

@@ -97,8 +97,10 @@ test("PARLE_VERSION is adapter-owned unless explicitly set in process env", () =
   }
 });
 
-test("key value parser handles quotes and comments", () => {
-  assert.deepEqual(parseKeyValueFile("# hi\nA=1\nB=\"two\"\n"), { A: "1", B: "two" });
+test("key value parser preserves the adapter config-file contract", () => {
+  assert.deepEqual(parseKeyValueFile("# hi\n A = 1 \nB=\"two\"\nC='three'\nD=left=right\nE=\nA=last\nnot-a-pair\n"), {
+    A: "last", B: "two", C: "three", D: "left=right", E: "",
+  });
 });
 
 test("safe base rejects non-Parle hosts unless loopback opt-in is set", () => {
