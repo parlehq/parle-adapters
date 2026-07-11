@@ -11,6 +11,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 
 const built = buildSync({
+  // Pin the working directory: esbuild writes cwd-relative path comments
+  // into the bundle, so without this the gate result depends on where the
+  // script is invoked from (package dir vs repo root).
+  absWorkingDir: root,
   entryPoints: [resolve(root, "src/index.ts")],
   bundle: true,
   platform: "node",
