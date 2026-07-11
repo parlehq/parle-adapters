@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { loadProfile, parseProfiles, profileCatalogHasProfile, profileCatalogPath, type CredentialProfile } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.7";
+const PI_EXTENSION_VERSION = "0.1.8";
 const RUNTIME_SCHEMA_VERSION = 1;
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const DEFAULT_VERSION = "2026-07-07";
@@ -601,15 +601,17 @@ function assertProfileLabel(label: string): void {
   }
 }
 
-function ensureProfileDirectory(path: string): void {
+function ensureProfileDirectory(path: string): string {
   const dir = dirname(path);
-  if (existsSync(dir)) {
-    const stat = lstatSync(dir);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Refusing to write Parle profiles because ${dir} is not a regular directory.`);
-  } else {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-  }
-  chmodSync(dir, 0o700);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const link = lstatSync(dir);
+  if (!link.isSymbolicLink() && !link.isDirectory()) throw new Error(`Refusing to write Parle profiles because ${dir} is not a regular directory.`);
+  const writeDir = link.isSymbolicLink() ? realpathSync(dir) : dir;
+  const target = statSync(writeDir);
+  if (!target.isDirectory()) throw new Error(`Refusing to write Parle profiles because ${dir} does not resolve to a regular directory.`);
+  if (process.platform !== "win32" && target.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${dir} does not resolve to a directory owned by the current user.`);
+  chmodSync(writeDir, 0o700);
+  return writeDir;
 }
 
 function safeProfileWritePath(path: string): string {
@@ -651,9 +653,9 @@ function renderedProfileSection(profile: CredentialProfile): string {
 function preflightProfileSink(label: string, force: boolean): { path: string; writePath: string; exists: boolean; priorAgentTokenId?: string } {
   assertProfileLabel(label);
   const path = profileCatalogPath(process.env);
-  ensureProfileDirectory(path);
-  const writePath = safeProfileWritePath(path);
-  const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const writeDir = ensureProfileDirectory(path);
+  const writePath = safeProfileWritePath(join(writeDir, basename(path)));
+  const text = existsSync(writePath) ? readFileSync(writePath, "utf8") : "";
   const profiles = text ? parseProfiles(text, path) : new Map<string, CredentialProfile>();
   const exists = Boolean(profileSectionRange(text, label));
   if (exists && !force) throw new Error(`Parle profile ${label} already exists in ${path}. Pass force=true to replace only that profile.`);
@@ -666,7 +668,7 @@ function preflightProfileSink(label: string, force: boolean): { path: string; wr
 
 function writeProfile(profile: CredentialProfile, force: boolean): { path: string; replaced: boolean; priorAgentTokenId?: string } {
   const preflight = preflightProfileSink(profile.name, force);
-  const original = existsSync(preflight.path) ? readFileSync(preflight.path, "utf8") : "";
+  const original = existsSync(preflight.writePath) ? readFileSync(preflight.writePath, "utf8") : "";
   const range = profileSectionRange(original, profile.name);
   const section = renderedProfileSection(profile);
   let updated: string;

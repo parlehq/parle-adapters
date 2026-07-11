@@ -161,7 +161,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.7" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.8" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -353,6 +353,27 @@ test("parle_login validates labels and requires force before replacing a profile
   assert.equal(updated.slice(0, prefix.length), prefix);
   assert.equal(updated.slice(-suffix.length), suffix);
   assert.match(updated, /\[target\]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_new\nagent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1f\n/);
+});
+
+test("parle_login writes profiles through an owned directory symlink", async () => {
+  const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
+  const targetDir = join(process.env.HOME, "profile-store");
+  mkdirSync(targetDir, { recursive: true });
+  symlinkSync(targetDir, join(process.env.HOME, ".parle"));
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "one" }] }), { status: 200 });
+    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
+    if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_dir_symlink" }), { status: 201 });
+    throw new Error("unexpected " + u);
+  };
+
+  const result = await installHarness(cwd).call("parle_login", { action: "mint-from-session", profile: "linked-dir", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
+
+  assert.equal(result.details.profile, "linked-dir");
+  assert.equal(lstatSync(join(process.env.HOME, ".parle")).isSymbolicLink(), true);
+  assert.match(readFileSync(join(targetDir, "profiles"), "utf8"), /^\[linked-dir\]$/m);
+  assert.equal(statSync(join(targetDir, "profiles")).mode & 0o777, 0o600);
 });
 
 test("parle_login atomically updates an owned symlink profile catalog", async () => {
