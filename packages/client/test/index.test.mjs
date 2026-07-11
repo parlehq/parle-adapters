@@ -36,7 +36,10 @@ test("adapter DEFAULT_VERSION constants stay in lockstep with the API fixture", 
   assert.equal(DEFAULT_VERSION, apiVersion.current);
   assert.equal(apiVersion.supported.includes(DEFAULT_VERSION), true);
   assert.match(clientSrc, new RegExp(`DEFAULT_VERSION = "${DEFAULT_VERSION}"`));
-  assert.match(piSrc, new RegExp(`DEFAULT_VERSION = "${DEFAULT_VERSION}"`));
+  // Pi holds lockstep by construction: it imports the client constant instead
+  // of pinning its own literal.
+  assert.match(piSrc, /DEFAULT_VERSION[^\n]*from "@parlehq\/agent-client"/);
+  assert.doesNotMatch(piSrc, /const DEFAULT_VERSION =/);
   assert.match(watchScript, /--parle-watch/);
   assert.match(mcpSrc, /PARLE_VERSION: config\.version\.value/);
 });

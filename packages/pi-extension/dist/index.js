@@ -153,6 +153,7 @@ function loadProfile(name, path = PROFILE_CATALOG_PATH) {
 }
 
 // ../client/dist/index.js
+var DEFAULT_API_BASE = "https://api.parle.sh";
 var DEFAULT_VERSION = "2026-07-07";
 var READ_LIMIT_BYTES = 256 * 1024;
 function parseKeyValueFile(text) {
@@ -210,10 +211,8 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.15";
+var PI_EXTENSION_VERSION = "0.1.16";
 var RUNTIME_SCHEMA_VERSION2 = 1;
-var DEFAULT_API_BASE = "https://api.parle.sh";
-var DEFAULT_VERSION2 = "2026-07-07";
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
 var OPENAPI_URL = "https://api.parle.sh/openapi.json";
@@ -271,13 +270,13 @@ function resolveConfig(cwd) {
   }
   function pickVersion() {
     if (process.env.PARLE_VERSION) {
-      if (process.env.PARLE_VERSION !== DEFAULT_VERSION2) {
-        warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${process.env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION2}. Use this only for staging or rollback.`);
+      if (process.env.PARLE_VERSION !== DEFAULT_VERSION) {
+        warnings.push(`PARLE_VERSION is explicitly set in the process environment to ${process.env.PARLE_VERSION}, overriding the adapter default ${DEFAULT_VERSION}. Use this only for staging or rollback.`);
       }
       return { value: process.env.PARLE_VERSION, source: "env", key: "PARLE_VERSION" };
     }
-    if (projectEnv.PARLE_VERSION) warnings.push(`Ignoring PARLE_VERSION from project .env (${projectEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION2}. Use process env only for advanced version overrides.`);
-    return { value: DEFAULT_VERSION2, source: "default", key: "PARLE_VERSION" };
+    if (projectEnv.PARLE_VERSION) warnings.push(`Ignoring PARLE_VERSION from project .env (${projectEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
+    return { value: DEFAULT_VERSION, source: "default", key: "PARLE_VERSION" };
   }
   const directBindingKeys = ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN", "PARLE_AGENT_TOKEN_ID", "PARLE_ROOM_HANDLE", "PARLE_API_BASE", "PARLE_WAKE_BASE"];
   const directValues = directBindingKeys.flatMap((key) => {
@@ -662,7 +661,7 @@ function chooseInventoryItem(items, idKey, handleKey, label, requestedId, reques
 async function humanJson(cfg, path, cookie, options = {}) {
   const headers = {
     Accept: "application/json",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION2,
+    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
     Cookie: cookie
   };
   let body;
@@ -694,7 +693,7 @@ async function parleLogin(ctx, cfg, params, signal) {
     if (!params.email) throw new Error("parle_login start requires email.");
     const response = await fetch(new URL("/v/auth/email/start", cfg.apiBase.value), {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "Parle-Version": cfg.version.value || DEFAULT_VERSION2 },
+      headers: { Accept: "application/json", "Content-Type": "application/json", "Parle-Version": cfg.version.value || DEFAULT_VERSION },
       body: JSON.stringify({ email: params.email }),
       signal
     });
@@ -714,7 +713,7 @@ async function parleLogin(ctx, cfg, params, signal) {
     preflightProfileSink(profileName, params.force === true, catalogPath);
     const response = await fetch(new URL("/v/auth/email/complete", cfg.apiBase.value), {
       method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json", "Parle-Version": cfg.version.value || DEFAULT_VERSION2 },
+      headers: { Accept: "application/json", "Content-Type": "application/json", "Parle-Version": cfg.version.value || DEFAULT_VERSION },
       body: JSON.stringify({ email: params.email, code: params.code }),
       signal
     });
@@ -797,7 +796,7 @@ async function parleRequest(cfg, params, signal, runtimeSession) {
   }
   const headers = {
     Accept: "application/json, text/plain, */*",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION2,
+    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
     ...params.headers || {}
   };
   let body;
@@ -841,7 +840,7 @@ async function requestJson(cfg, path, options = {}) {
   assertRuntimeConfig(cfg);
   const headers = {
     Accept: "application/json",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION2,
+    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
     Authorization: `Bearer ${cfg.agentToken.value}`
   };
   if (options.session && runtime.sessionHandle) headers["Parle-Agent-Session"] = runtime.sessionHandle;
@@ -935,7 +934,7 @@ async function fetchWakeStream(cfg, signal) {
   assertRuntimeConfig(cfg);
   const headers = {
     Accept: "text/event-stream",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION2,
+    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
     Authorization: `Bearer ${cfg.agentToken.value}`
   };
   if (runtime.sessionHandle) headers["Parle-Agent-Session"] = runtime.sessionHandle;

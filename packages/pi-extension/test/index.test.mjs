@@ -104,6 +104,13 @@ test("Pi delegates version error hints to the agent client", () => {
   assert.doesNotMatch(source, /function formatVersionErrorHint/);
 });
 
+test("Pi shares wire defaults with the agent client", () => {
+  const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(source, /DEFAULT_API_BASE, DEFAULT_VERSION[^\n]*from "@parlehq\/agent-client"/);
+  assert.doesNotMatch(source, /const DEFAULT_API_BASE =/);
+  assert.doesNotMatch(source, /const DEFAULT_VERSION =/);
+});
+
 test("Pi delegates secret redaction to the agent client", () => {
   const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.match(source, /redactString[^\n]*from "@parlehq\/agent-client"/);
@@ -190,7 +197,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.15" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.16" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
