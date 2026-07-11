@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
-import { loadProfile, profileCatalogPath, type CredentialProfile } from "./profiles.js";
+import { loadProfile, profileCatalogExists, profileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export * from "./format.js";
 export * from "./runtime-file.js";
 export { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
-export { PROFILE_CATALOG_PATH, ProfileConfigError, loadProfile, parseProfiles, profileCatalogPath, type CredentialProfile } from "./profiles.js";
+export { PROFILE_CATALOG_PATH, ProfileConfigError, loadProfile, parseProfiles, profileCatalogExists, profileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
@@ -221,15 +221,22 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
     { name: ".parle/credentials", values: credentials },
   ];
   const warnings: string[] = [];
-  const profileSelector = firstConfigValue("PARLE_PROFILE", sources);
+  const directBindingKeys = ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN", "PARLE_AGENT_TOKEN_ID", "PARLE_ROOM_HANDLE", "PARLE_API_BASE", "PARLE_WAKE_BASE"];
+  const directValues = directBindingKeys.map((key) => firstConfigValue(key, sources)).filter((value) => value.value);
+  const explicitProfile = firstConfigValue("PARLE_PROFILE", sources);
+  const catalogPath = profileCatalogPath(env);
+  const profileSelector = explicitProfile.value
+    ? explicitProfile
+    : directValues.length === 0 && profileCatalogExists(catalogPath)
+      ? { value: "default", source: "profile_catalog" }
+      : explicitProfile;
   let profile: CredentialProfile | undefined;
   if (profileSelector.value) {
-    const conflicts = ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN", "PARLE_AGENT_TOKEN_ID", "PARLE_ROOM_HANDLE", "PARLE_API_BASE", "PARLE_WAKE_BASE"]
-      .map((key) => firstConfigValue(key, sources))
-      .filter((value) => value.value)
-      .map((value) => `${value.source}`);
-    if (conflicts.length) throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
-    profile = loadProfile(profileSelector.value, profileCatalogPath(env));
+    if (directValues.length) {
+      const conflicts = directValues.map((value) => `${value.source}`);
+      throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
+    }
+    profile = loadProfile(profileSelector.value, catalogPath);
   }
   const profileValue = (name: string, value: string | undefined): ConfigValue | undefined => value === undefined ? undefined : { value, source: `profile:${profile!.name}` };
   const cfg: ParleConfig = {

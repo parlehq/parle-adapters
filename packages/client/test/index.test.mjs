@@ -796,3 +796,18 @@ test("profile rejects direct room-binding configuration", () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("default profile is selected when no explicit binding is configured", () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-default-profile-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-default-profile-project-"));
+  try {
+    mkdirSync(join(home, ".parle"), { mode: 0o700 });
+    writeFileSync(join(home, ".parle", "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_default_token\n", { mode: 0o600 });
+    const cfg = resolveConfig(cwd, { HOME: home });
+    assert.equal(cfg.profile?.value, "default");
+    assert.equal(cfg.agentToken?.value, "parle_agt_default_token");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
