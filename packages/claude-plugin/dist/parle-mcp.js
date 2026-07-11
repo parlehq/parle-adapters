@@ -32275,8 +32275,10 @@ function resolveWatcherEnvironment(cwd = process.cwd(), env = process.env, onWar
   if (!roomId || !agentToken) {
     throw new Error("required host configuration is missing. Set PARLE_PROFILE or PARLE_ROOM_ID / PARLE_ROOM_AGENT_TOKEN in env, ./.env, or ./.parle/credentials (run from the project directory)");
   }
+  const childEnv = { ...env };
+  delete childEnv.PARLE_PROFILE;
   return {
-    ...env,
+    ...childEnv,
     PARLE_API_BASE: config2.apiBase.value,
     PARLE_WAKE_BASE: config2.wakeBase.value,
     PARLE_VERSION: config2.version.value,
