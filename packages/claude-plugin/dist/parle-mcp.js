@@ -31095,6 +31095,10 @@ function profileCatalogPath(env = process.env) {
   const home = env.HOME || env.USERPROFILE || homedir();
   return join2(home, ".parle", "profiles");
 }
+function profileCatalogPaths(cwd = process.cwd(), env = process.env) {
+  const paths = [profileCatalogPath(env), join2(cwd, ".parle", "profiles")];
+  return [...new Set(paths)];
+}
 var ProfileConfigError = class extends Error {
   constructor(message) {
     super(message);
@@ -31159,21 +31163,36 @@ function parseProfiles(text, path = PROFILE_CATALOG_PATH) {
   return profiles;
 }
 function profileCatalogHasProfile(name, path = PROFILE_CATALOG_PATH) {
-  if (!existsSync(path))
-    return false;
-  assertSafeCatalog(path);
-  return parseProfiles(readFileSync2(path, "utf8"), path).has(name);
+  const paths = Array.isArray(path) ? path : [path];
+  for (const candidate of paths) {
+    if (!existsSync(candidate))
+      continue;
+    assertSafeCatalog(candidate);
+    if (parseProfiles(readFileSync2(candidate, "utf8"), candidate).has(name))
+      return true;
+  }
+  return false;
 }
 function loadProfile(name, path = PROFILE_CATALOG_PATH) {
-  if (!existsSync(path))
-    throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create it with [${name}], room_id, and agent_token.`);
-  assertSafeCatalog(path);
-  const profiles = parseProfiles(readFileSync2(path, "utf8"), path);
-  const profile = profiles.get(name);
-  if (profile)
-    return profile;
-  const available = [...profiles.keys()].join(", ") || "none";
-  throw new ProfileConfigError(`Parle profile ${name} was not found in ${path}. Available profiles: ${available}`);
+  const paths = Array.isArray(path) ? path : [path];
+  const seenCatalogs = [];
+  const availableProfiles = [];
+  for (const candidate of paths) {
+    if (!existsSync(candidate))
+      continue;
+    seenCatalogs.push(candidate);
+    assertSafeCatalog(candidate);
+    const profiles = parseProfiles(readFileSync2(candidate, "utf8"), candidate);
+    const profile = profiles.get(name);
+    if (profile)
+      return profile;
+    availableProfiles.push(...profiles.keys());
+  }
+  if (seenCatalogs.length === 0) {
+    throw new ProfileConfigError(`Parle profile catalog is missing: ${paths.join(", ")}. Create one with [${name}], room_id, and agent_token.`);
+  }
+  const available = [...new Set(availableProfiles)].join(", ") || "none";
+  throw new ProfileConfigError(`Parle profile ${name} was not found in ${seenCatalogs.join(", ")}. Available profiles: ${available}`);
 }
 
 // ../client/dist/format.js
@@ -31336,7 +31355,7 @@ function versionConfig(env, dotEnv, credentials, warnings) {
   if (dotEnv.PARLE_VERSION)
     warnings.push(`Ignoring PARLE_VERSION from .env (${dotEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
   if (credentials.PARLE_VERSION)
-    warnings.push(`Ignoring stale PARLE_VERSION from .parle/credentials (${credentials.PARLE_VERSION}); remove it. The adapter default is ${DEFAULT_VERSION}.`);
+    warnings.push(`Ignoring stale PARLE_VERSION from .parle/credentials (${credentials.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
   return { value: DEFAULT_VERSION, source: "default" };
 }
 function resolveConfig(cwd = process.cwd(), env = process.env) {
@@ -31351,15 +31370,15 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
   const directBindingKeys = ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN", "PARLE_AGENT_TOKEN_ID", "PARLE_ROOM_HANDLE", "PARLE_API_BASE", "PARLE_WAKE_BASE"];
   const directValues = directBindingKeys.map((key) => firstConfigValue(key, sources)).filter((value) => value.value);
   const explicitProfile = firstConfigValue("PARLE_PROFILE", sources);
-  const catalogPath = profileCatalogPath(env);
-  const profileSelector = explicitProfile.value ? explicitProfile : directValues.length === 0 && profileCatalogHasProfile("default", catalogPath) ? { value: "default", source: "profile_catalog" } : explicitProfile;
+  const catalogPaths = profileCatalogPaths(cwd, env);
+  const profileSelector = explicitProfile.value ? explicitProfile : directValues.length === 0 && profileCatalogHasProfile("default", catalogPaths) ? { value: "default", source: "profile_catalog" } : explicitProfile;
   let profile;
   if (profileSelector.value) {
     if (directValues.length) {
       const conflicts = directValues.map((value) => `${value.source}`);
       throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
     }
-    profile = loadProfile(profileSelector.value, catalogPath);
+    profile = loadProfile(profileSelector.value, catalogPaths);
   }
   const profileValue = (name, value) => value === void 0 ? void 0 : { value, source: `profile:${profile.name}` };
   const cfg = {
@@ -31666,7 +31685,7 @@ var ParleAgentClient = class {
       missing.push("PARLE_ROOM_ID");
     if (!this.cfg.agentToken?.value)
       missing.push("PARLE_ROOM_AGENT_TOKEN");
-    const note = missing.length ? "Set missing configuration in env, .env, or .parle/credentials (checked in that order; disk token rotations can be reloaded once during bootstrap recovery)." : this.runtime.bootstrapped ? "Parle configuration is present and this process holds a session." : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
+    const note = missing.length ? "Set PARLE_PROFILE (a ~/.parle/profiles section) or direct configuration in env or .env (checked in that order; disk token rotations can be reloaded once during bootstrap recovery)." : this.runtime.bootstrapped ? "Parle configuration is present and this process holds a session." : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
     const staleToken = this.staleTokenHint();
     return { ok: missing.length === 0 && !staleToken, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...staleToken ? { warning: staleToken } : {} };
   }
@@ -31677,7 +31696,7 @@ var ParleAgentClient = class {
     const current = this.cfg.agentToken?.value;
     if (!current)
       return void 0;
-    for (const rel of [".env", join3(".parle", "credentials")]) {
+    for (const rel of [".env", ".parle/credentials"]) {
       try {
         const onDisk = readKeyValueFile(join3(this.cwd, rel))["PARLE_ROOM_AGENT_TOKEN"];
         if (onDisk === void 0 || onDisk === "")

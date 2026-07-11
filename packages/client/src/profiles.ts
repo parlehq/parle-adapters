@@ -9,6 +9,11 @@ export function profileCatalogPath(env: Record<string, string | undefined> = pro
   return join(home, ".parle", "profiles");
 }
 
+export function profileCatalogPaths(cwd = process.cwd(), env: Record<string, string | undefined> = process.env): string[] {
+  const paths = [profileCatalogPath(env), join(cwd, ".parle", "profiles")];
+  return [...new Set(paths)];
+}
+
 export type CredentialProfile = {
   name: string;
   roomId: string;
@@ -71,22 +76,37 @@ export function parseProfiles(text: string, path = PROFILE_CATALOG_PATH): Map<st
   return profiles;
 }
 
-export function profileCatalogExists(path = PROFILE_CATALOG_PATH): boolean {
-  return existsSync(path);
+export function profileCatalogExists(path: string | string[] = PROFILE_CATALOG_PATH): boolean {
+  const paths = Array.isArray(path) ? path : [path];
+  return paths.some((candidate) => existsSync(candidate));
 }
 
-export function profileCatalogHasProfile(name: string, path = PROFILE_CATALOG_PATH): boolean {
-  if (!existsSync(path)) return false;
-  assertSafeCatalog(path);
-  return parseProfiles(readFileSync(path, "utf8"), path).has(name);
+export function profileCatalogHasProfile(name: string, path: string | string[] = PROFILE_CATALOG_PATH): boolean {
+  const paths = Array.isArray(path) ? path : [path];
+  for (const candidate of paths) {
+    if (!existsSync(candidate)) continue;
+    assertSafeCatalog(candidate);
+    if (parseProfiles(readFileSync(candidate, "utf8"), candidate).has(name)) return true;
+  }
+  return false;
 }
 
-export function loadProfile(name: string, path = PROFILE_CATALOG_PATH): CredentialProfile {
-  if (!existsSync(path)) throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create it with [${name}], room_id, and agent_token.`);
-  assertSafeCatalog(path);
-  const profiles = parseProfiles(readFileSync(path, "utf8"), path);
-  const profile = profiles.get(name);
-  if (profile) return profile;
-  const available = [...profiles.keys()].join(", ") || "none";
-  throw new ProfileConfigError(`Parle profile ${name} was not found in ${path}. Available profiles: ${available}`);
+export function loadProfile(name: string, path: string | string[] = PROFILE_CATALOG_PATH): CredentialProfile {
+  const paths = Array.isArray(path) ? path : [path];
+  const seenCatalogs: string[] = [];
+  const availableProfiles: string[] = [];
+  for (const candidate of paths) {
+    if (!existsSync(candidate)) continue;
+    seenCatalogs.push(candidate);
+    assertSafeCatalog(candidate);
+    const profiles = parseProfiles(readFileSync(candidate, "utf8"), candidate);
+    const profile = profiles.get(name);
+    if (profile) return profile;
+    availableProfiles.push(...profiles.keys());
+  }
+  if (seenCatalogs.length === 0) {
+    throw new ProfileConfigError(`Parle profile catalog is missing: ${paths.join(", ")}. Create one with [${name}], room_id, and agent_token.`);
+  }
+  const available = [...new Set(availableProfiles)].join(", ") || "none";
+  throw new ProfileConfigError(`Parle profile ${name} was not found in ${seenCatalogs.join(", ")}. Available profiles: ${available}`);
 }

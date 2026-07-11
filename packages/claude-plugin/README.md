@@ -40,13 +40,13 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js
 Configure Parle with a personal profile by setting `PARLE_PROFILE` in the Claude environment or project `.env`:
 
 ```ini
-# ~/.parle/profiles (0600)
+# ~/.parle/profiles or ./.parle/profiles (0600)
 [work]
 room_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e
 agent_token = parle_agt_...
 ```
 
-The MCP server and bundled watcher both use the shared client's atomic profile semantics. `PARLE_PROFILE` conflicts with direct room-binding values. With no explicit binding, a `[default]` section is selected when present. A catalog with no `[default]` does not select another profile implicitly. Direct `PARLE_API_BASE`, `PARLE_ROOM_ID`, and `PARLE_ROOM_AGENT_TOKEN` configuration remains supported. `.mcp.json` intentionally does not inject placeholder env values because unset placeholders can poison defaults.
+The MCP server and bundled watcher both use the shared client's atomic profile semantics. `PARLE_PROFILE` conflicts with direct room-binding values. Profiles are resolved from `~/.parle/profiles` first, then `./.parle/profiles`. With no explicit binding, a `[default]` section is selected when present. A catalog with no `[default]` does not select another profile implicitly. Direct `PARLE_API_BASE`, `PARLE_ROOM_ID`, and `PARLE_ROOM_AGENT_TOKEN` configuration remains supported. `.mcp.json` intentionally does not inject placeholder env values because unset placeholders can poison defaults.
 
 Config sources resolve in strict precedence: process environment, then `<cwd>/.env`, then `<cwd>/.parle/credentials`. The MCP process loads once at server start. The standalone watcher resolves again through the bundled Node shared resolver on every invocation, including each manual re-arm. `PARLE_VERSION` is adapter-owned: persisted values are ignored with a warning and only process environment can override the default. The plugin never writes these files. A token rotated on disk after MCP launch requires a Claude Code session restart, while the next watcher re-arm reads the current profile. The watcher passes the resolved token only through child environment; it never places it in argv, stdout, logs, or temporary files.
 

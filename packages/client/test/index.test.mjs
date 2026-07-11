@@ -786,6 +786,40 @@ test("profile selects an atomic room binding from the personal catalog", () => {
   }
 });
 
+test("profile falls back to project-local catalog", () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-profile-project-fallback-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-profile-project-fallback-"));
+  try {
+    mkdirSync(join(cwd, ".parle"), { mode: 0o700 });
+    writeFileSync(join(cwd, ".parle", "profiles"), "[local]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_project_token\n", { mode: 0o600 });
+    writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=local\n");
+    const cfg = resolveConfig(cwd, { HOME: home });
+    assert.equal(cfg.profile?.value, "local");
+    assert.equal(cfg.agentToken?.value, "parle_agt_project_token");
+    assert.equal(cfg.agentToken?.source, "profile:local");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("personal profile catalog wins over project-local catalog", () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-profile-precedence-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-profile-precedence-project-"));
+  try {
+    mkdirSync(join(home, ".parle"), { mode: 0o700 });
+    mkdirSync(join(cwd, ".parle"), { mode: 0o700 });
+    writeFileSync(join(home, ".parle", "profiles"), "[shared]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_personal_token\n", { mode: 0o600 });
+    writeFileSync(join(cwd, ".parle", "profiles"), "[shared]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_project_token\n", { mode: 0o600 });
+    writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=shared\n");
+    const cfg = resolveConfig(cwd, { HOME: home });
+    assert.equal(cfg.agentToken?.value, "parle_agt_personal_token");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("profile rejects direct room-binding configuration", () => {
   const home = mkdtempSync(join(tmpdir(), "parle-profile-conflict-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-profile-conflict-project-"));

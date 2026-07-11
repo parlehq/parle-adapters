@@ -18,7 +18,7 @@ claude plugin marketplace add parlehq/parle-agent-adapters
 claude plugin install parle-claude-plugin@parlehq
 ```
 
-This adds native `parle_*` tools through a bundled MCP server plus a `parle` skill. Configure a `PARLE_PROFILE` backed by `~/.parle/profiles`, or use direct `PARLE_*` values through process env, a `.env` in the working directory, or `.parle/credentials`. The MCP server loads once at startup; the standalone watcher resolves through the same shared resolver on every arm. Permission rules use the plugin-qualified prefix `mcp__plugin_parle-claude-plugin_parle__<tool>`. See [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for details.
+This adds native `parle_*` tools through a bundled MCP server plus a `parle` skill. Configure a `PARLE_PROFILE` backed by `~/.parle/profiles` or fallback project-local `./.parle/profiles`, or use direct `PARLE_*` values through process env, a `.env` in the working directory, or `.parle/credentials`. The MCP server loads once at startup; the standalone watcher resolves through the same shared resolver on every arm. Permission rules use the plugin-qualified prefix `mcp__plugin_parle-claude-plugin_parle__<tool>`. See [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for details.
 
 ## Run the MCP server in other hosts
 

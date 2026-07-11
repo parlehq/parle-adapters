@@ -25,7 +25,7 @@ Adapters own host-specific registration, schemas, lifecycle hooks, UI text, and 
 
 ## Credential profiles
 
-Keep room-bound credentials once in `~/.parle/profiles`, a personal UTF-8 INI catalog:
+Keep room-bound credentials in a UTF-8 INI profile catalog. The resolver checks `~/.parle/profiles` first, then falls back to project-local `./.parle/profiles`:
 
 ```ini
 [default]
@@ -44,12 +44,13 @@ agent token establishes the durable agent identity, so profiles do not store an
 agent ID, handle, or live agent-session credential.
 
 Set `PARLE_PROFILE=galexc-intercom` in process environment or a project `.env`.
-Profile mode is atomic: direct room, token, room-handle, API-base, or wake-base
-configuration is a setup error rather than an override. `PARLE_PROFILE` may
-come from process environment, project `.env`, or project `.parle/credentials`
-in that precedence order. If no explicit profile or direct binding exists,
-`[default]` is selected only when that section exists; a catalog of named
-profiles alone leaves profile selection unset.
+Use `.env` as selector and non-secret configuration only; keep room-bound tokens
+in a profile catalog. Profile mode is atomic: direct room, token, room-handle,
+API-base, or wake-base configuration is a setup error rather than an override.
+If no explicit profile or direct binding exists, `[default]` is selected only
+when that section exists in either catalog; a catalog of named profiles alone
+leaves profile selection unset. When the same profile name exists in both
+catalogs, the personal catalog wins.
 
 Profiles accept only `room_id`, `agent_token`, `agent_token_id`, `api_base`, and
 `wake_base`. The endpoint defaults to production when omitted. The catalog is

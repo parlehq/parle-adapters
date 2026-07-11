@@ -21,7 +21,7 @@ MCP v1 tools:
 
 ## Configuration
 
-The stdio server uses the shared client resolver. It supports direct process env, project `.env`, and project `.parle/credentials` configuration, plus atomic `PARLE_PROFILE` bindings from `~/.parle/profiles`. An explicit profile cannot be mixed with direct room-binding values. With no explicit binding, `[default]` is selected when present.
+The stdio server uses the shared client resolver. It supports direct process env, project `.env`, and project `.parle/credentials` configuration, plus atomic `PARLE_PROFILE` bindings from `~/.parle/profiles` with fallback to `./.parle/profiles`. An explicit profile cannot be mixed with direct room-binding values. With no explicit binding, `[default]` is selected when present.
 
 The bundled Claude watcher launcher is also hosted in this artifact. Every watcher start resolves configuration afresh, then passes the agent token only in the worker child environment. The request helper constructs authentication inside Node, so the token is never placed in argv, stdout, logs, or temporary files.
 
