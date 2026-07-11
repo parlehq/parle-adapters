@@ -45,8 +45,11 @@ agent ID, handle, or live agent-session credential.
 
 Set `PARLE_PROFILE=galexc-intercom` in process environment or a project `.env`.
 Profile mode is atomic: direct room, token, room-handle, API-base, or wake-base
-configuration is a setup error rather than an override. If no explicit profile
-or direct binding exists, an optional `[default]` profile is selected.
+configuration is a setup error rather than an override. `PARLE_PROFILE` may
+come from process environment, project `.env`, or project `.parle/credentials`
+in that precedence order. If no explicit profile or direct binding exists,
+`[default]` is selected only when that section exists; a catalog of named
+profiles alone leaves profile selection unset.
 
 Profiles accept only `room_id`, `agent_token`, `agent_token_id`, `api_base`, and
 `wake_base`. The endpoint defaults to production when omitted. The catalog is

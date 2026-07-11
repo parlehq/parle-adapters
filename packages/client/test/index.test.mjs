@@ -797,6 +797,22 @@ test("profile rejects direct room-binding configuration", () => {
   }
 });
 
+test("catalog without a default profile does not create an implicit selector", () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-no-default-profile-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-no-default-profile-project-"));
+  try {
+    mkdirSync(join(home, ".parle"), { mode: 0o700 });
+    writeFileSync(join(home, ".parle", "profiles"), "[work]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_work_token\n", { mode: 0o600 });
+    const cfg = resolveConfig(cwd, { HOME: home });
+    assert.equal(cfg.profile, undefined);
+    assert.equal(cfg.roomId?.value, undefined);
+    assert.equal(cfg.agentToken?.value, undefined);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("default profile is selected when no explicit binding is configured", () => {
   const home = mkdtempSync(join(tmpdir(), "parle-default-profile-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-default-profile-project-"));

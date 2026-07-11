@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -96,6 +96,19 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
 });
 
+test("status leaves profile unset when the catalog has no default section", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  mkdirSync(join(process.env.HOME, ".parle"), { recursive: true });
+  writeFileSync(join(process.env.HOME, ".parle", "profiles"), "[work]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_work\n", { mode: 0o600 });
+  globalThis.fetch = async () => { throw new Error("offline test"); };
+
+  const status = await installHarness(cwd).call("parle_status");
+
+  assert.equal(status.details.profile, undefined);
+  assert.equal(status.details.roomId.set, false);
+  assert.equal(status.details.agentToken.set, false);
+});
+
 test("watcher bootstrap failure records status instead of escaping", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=bad-version\n");
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "unsupported_version", message: "missing or unsupported Parle-Version header" } }), { status: 400 });
@@ -148,7 +161,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.6" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.7" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -313,7 +326,7 @@ test("parle_login validates labels and requires force before replacing a profile
   const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
   const catalogDir = join(process.env.HOME, ".parle");
   mkdirSync(catalogDir, { recursive: true });
-  const original = "# prefix\r\n[keep]\r\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a20\r\nagent_token = parle_agt_keep\r\n[target]\r\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a21\r\nagent_token = parle_agt_old\r\n[tail]\r\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a22\r\nagent_token = parle_agt_tail\r\n";
+  const original = "# prefix\r\n[keep]\r\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a20\r\nagent_token = parle_agt_keep\r\n[target]\r\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a21\r\nagent_token = parle_agt_old\r\nagent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a23\r\n[tail]\r\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a22\r\nagent_token = parle_agt_tail\r\n";
   writeFileSync(join(catalogDir, "profiles"), original, { mode: 0o600 });
   let called = false;
   globalThis.fetch = async (url, init = {}) => {
@@ -333,12 +346,39 @@ test("parle_login validates labels and requires force before replacing a profile
   const result = await harness.call("parle_login", { action: "mint-from-session", profile: "target", force: true, roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
   assert.equal(result.details.profile, "target");
   assert.equal(result.details.profileReplaced, true);
+  assert.equal(result.details.prior_agent_token_id, "019f2946-aef5-77ad-a41d-747ce0fd6a23");
   const updated = readFileSync(join(catalogDir, "profiles"), "utf8");
   const prefix = original.slice(0, original.indexOf("[target]"));
   const suffix = original.slice(original.indexOf("[tail]"));
   assert.equal(updated.slice(0, prefix.length), prefix);
   assert.equal(updated.slice(-suffix.length), suffix);
   assert.match(updated, /\[target\]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_new\nagent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1f\n/);
+});
+
+test("parle_login atomically updates an owned symlink profile catalog", async () => {
+  const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  const targetDir = join(process.env.HOME, "profile-store");
+  mkdirSync(catalogDir, { recursive: true });
+  mkdirSync(targetDir, { recursive: true });
+  const target = join(targetDir, "profiles");
+  writeFileSync(target, "[keep]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a20\nagent_token = parle_agt_keep\n", { mode: 0o600 });
+  symlinkSync(target, join(catalogDir, "profiles"));
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "one" }] }), { status: 200 });
+    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
+    if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_symlink" }), { status: 201 });
+    throw new Error("unexpected " + u);
+  };
+
+  const result = await installHarness(cwd).call("parle_login", { action: "mint-from-session", profile: "linked", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
+
+  assert.equal(result.details.profile, "linked");
+  assert.equal(lstatSync(join(catalogDir, "profiles")).isSymbolicLink(), true);
+  assert.match(readFileSync(target, "utf8"), /^\[linked\]$/m);
+  assert.match(readFileSync(join(catalogDir, "profiles"), "utf8"), /^\[keep\]$/m);
+  assert.equal(statSync(target).mode & 0o777, 0o600);
 });
 
 test("parle_login preserves session cookie when room or agent selection is ambiguous", async () => {

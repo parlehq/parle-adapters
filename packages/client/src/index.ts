@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
-import { loadProfile, profileCatalogExists, profileCatalogPath, type CredentialProfile } from "./profiles.js";
+import { loadProfile, profileCatalogHasProfile, profileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export * from "./format.js";
 export * from "./runtime-file.js";
 export { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
-export { PROFILE_CATALOG_PATH, ProfileConfigError, loadProfile, parseProfiles, profileCatalogExists, profileCatalogPath, type CredentialProfile } from "./profiles.js";
+export { PROFILE_CATALOG_PATH, ProfileConfigError, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
@@ -227,7 +227,7 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
   const catalogPath = profileCatalogPath(env);
   const profileSelector = explicitProfile.value
     ? explicitProfile
-    : directValues.length === 0 && profileCatalogExists(catalogPath)
+    : directValues.length === 0 && profileCatalogHasProfile("default", catalogPath)
       ? { value: "default", source: "profile_catalog" }
       : explicitProfile;
   let profile: CredentialProfile | undefined;

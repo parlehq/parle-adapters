@@ -75,6 +75,12 @@ export function profileCatalogExists(path = PROFILE_CATALOG_PATH): boolean {
   return existsSync(path);
 }
 
+export function profileCatalogHasProfile(name: string, path = PROFILE_CATALOG_PATH): boolean {
+  if (!existsSync(path)) return false;
+  assertSafeCatalog(path);
+  return parseProfiles(readFileSync(path, "utf8"), path).has(name);
+}
+
 export function loadProfile(name: string, path = PROFILE_CATALOG_PATH): CredentialProfile {
   if (!existsSync(path)) throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create it with [${name}], room_id, and agent_token.`);
   assertSafeCatalog(path);

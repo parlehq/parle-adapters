@@ -40,8 +40,10 @@ An explicit profile is atomic. `PARLE_PROFILE` conflicts with direct
 `PARLE_ROOM_ID`, `PARLE_ROOM_AGENT_TOKEN`, `PARLE_AGENT_TOKEN_ID`,
 `PARLE_ROOM_HANDLE`, `PARLE_API_BASE`, or `PARLE_WAKE_BASE` configuration in
 process environment, project `.env`, or project `.parle/credentials`. Remove the
-direct values rather than mixing them with a profile. If no profile or direct
-binding is set and the catalog exists, `[default]` is selected.
+direct values rather than mixing them with a profile. `PARLE_PROFILE` follows
+that same source precedence. If no profile or direct binding is set, `[default]`
+is selected only when that section exists. A catalog containing only named
+profiles does not implicitly select one.
 
 Direct configuration remains supported with precedence of process environment,
 project `.env`, then project `.parle/credentials`:
@@ -52,13 +54,22 @@ PARLE_ROOM_AGENT_TOKEN=...
 ```
 
 For a returning account, use `parle_login` instead of raw `parle_request` calls.
-It sends the email code, captures the human session cookie in the gitignored
-project `.parle/credentials`, mints a room-bound agent token, and atomically
-writes the selected profile to `~/.parle/profiles` with `0600` permissions.
-`profile` defaults to `default`. Labels are 1 to 64 characters, start with a
-letter or number, and contain only letters, numbers, dot, underscore, or hyphen.
-Replacing an existing section requires `force: true`; unrelated catalog bytes
-are preserved exactly.
+It sends the email code, persists the human session cookie in the gitignored
+project `.parle/credentials` for later `mint-from-session` calls, mints a
+room-bound agent token, and atomically writes the selected profile to
+`~/.parle/profiles` with `0600` permissions. Because complete and mint operations
+handle plaintext credentials, `writeCredentials: false` is rejected. `profile`
+defaults to `default`. Labels are 1 to 64 characters, start with a letter or
+number, and contain only letters, numbers, dot, underscore, or hyphen. Replacing
+an existing section requires `force: true`; the result includes the prior
+`agent_token_id` when the section had one, and unrelated catalog bytes are
+preserved exactly. A catalog symlink is supported when both the link and its
+regular-file target are owned by the current user.
+
+Room and agent selectors may be passed directly as `roomId` or `roomHandle` and
+`agentId` or `agentHandle`. When omitted, login uses the corresponding resolved
+`PARLE_*` values with process environment, project `.env`, then project
+`.parle/credentials` precedence.
 
 Optional configuration:
 

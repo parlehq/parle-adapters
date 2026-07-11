@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { loadProfile, parseProfiles, profileCatalogExists, profileCatalogPath, type CredentialProfile } from "@parlehq/agent-client";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { loadProfile, parseProfiles, profileCatalogHasProfile, profileCatalogPath, type CredentialProfile } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.6";
+const PI_EXTENSION_VERSION = "0.1.7";
 const RUNTIME_SCHEMA_VERSION = 1;
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const DEFAULT_VERSION = "2026-07-07";
@@ -236,7 +236,7 @@ function resolveConfig(cwd: string): ParleConfig {
   });
   const explicitProfile = firstConfigValue(sourceCandidates("PARLE_PROFILE"));
   const catalogPath = profileCatalogPath(process.env);
-  const profileSelector = explicitProfile || (directValues.length === 0 && profileCatalogExists(catalogPath)
+  const profileSelector = explicitProfile || (directValues.length === 0 && profileCatalogHasProfile("default", catalogPath)
     ? { value: "default", source: "profile_catalog" as const, key: "PARLE_PROFILE" }
     : undefined);
   let profile: CredentialProfile | undefined;
@@ -602,7 +602,7 @@ function assertProfileLabel(label: string): void {
 }
 
 function ensureProfileDirectory(path: string): void {
-  const dir = join(path, "..");
+  const dir = dirname(path);
   if (existsSync(dir)) {
     const stat = lstatSync(dir);
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Refusing to write Parle profiles because ${dir} is not a regular directory.`);
@@ -612,11 +612,16 @@ function ensureProfileDirectory(path: string): void {
   chmodSync(dir, 0o700);
 }
 
-function assertSafeProfilePath(path: string): void {
-  if (!existsSync(path)) return;
-  const stat = lstatSync(path);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`Refusing to write Parle profiles because ${path} is not a regular file.`);
-  if (process.platform !== "win32" && stat.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${path} is not owned by the current user.`);
+function safeProfileWritePath(path: string): string {
+  if (!existsSync(path)) return path;
+  const link = lstatSync(path);
+  if (process.platform !== "win32" && link.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${path} is not owned by the current user.`);
+  if (!link.isSymbolicLink() && !link.isFile()) throw new Error(`Refusing to write Parle profiles because ${path} is not a regular file.`);
+  const writePath = link.isSymbolicLink() ? realpathSync(path) : path;
+  const target = statSync(writePath);
+  if (!target.isFile()) throw new Error(`Refusing to write Parle profiles because ${path} does not resolve to a regular file.`);
+  if (process.platform !== "win32" && target.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${path} does not resolve to a file owned by the current user.`);
+  return writePath;
 }
 
 function profileSectionRange(text: string, label: string): { start: number; end: number } | undefined {
@@ -643,23 +648,23 @@ function renderedProfileSection(profile: CredentialProfile): string {
   ].filter(Boolean).join("\n") + "\n";
 }
 
-function preflightProfileSink(label: string, force: boolean): { path: string; exists: boolean } {
+function preflightProfileSink(label: string, force: boolean): { path: string; writePath: string; exists: boolean; priorAgentTokenId?: string } {
   assertProfileLabel(label);
   const path = profileCatalogPath(process.env);
   ensureProfileDirectory(path);
-  assertSafeProfilePath(path);
+  const writePath = safeProfileWritePath(path);
   const text = existsSync(path) ? readFileSync(path, "utf8") : "";
-  if (text) parseProfiles(text, path);
+  const profiles = text ? parseProfiles(text, path) : new Map<string, CredentialProfile>();
   const exists = Boolean(profileSectionRange(text, label));
   if (exists && !force) throw new Error(`Parle profile ${label} already exists in ${path}. Pass force=true to replace only that profile.`);
-  const probe = join(path, `../.profiles-write-test-${process.pid}`);
+  const probe = join(dirname(writePath), `.profiles-write-test-${process.pid}`);
   writeFileSync(probe, "ok\n", { mode: 0o600 });
   chmodSync(probe, 0o600);
   unlinkSync(probe);
-  return { path, exists };
+  return { path, writePath, exists, priorAgentTokenId: profiles.get(label)?.agentTokenId };
 }
 
-function writeProfile(profile: CredentialProfile, force: boolean): { path: string; replaced: boolean } {
+function writeProfile(profile: CredentialProfile, force: boolean): { path: string; replaced: boolean; priorAgentTokenId?: string } {
   const preflight = preflightProfileSink(profile.name, force);
   const original = existsSync(preflight.path) ? readFileSync(preflight.path, "utf8") : "";
   const range = profileSectionRange(original, profile.name);
@@ -672,17 +677,17 @@ function writeProfile(profile: CredentialProfile, force: boolean): { path: strin
     updated = original + separator + section;
   }
   parseProfiles(updated, preflight.path);
-  const tempPath = join(preflight.path, `../.profiles.${process.pid}.${Date.now()}.tmp`);
+  const tempPath = join(dirname(preflight.writePath), `.profiles.${process.pid}.${Date.now()}.tmp`);
   try {
     writeFileSync(tempPath, updated, { mode: 0o600 });
     chmodSync(tempPath, 0o600);
-    renameSync(tempPath, preflight.path);
-    chmodSync(preflight.path, 0o600);
+    renameSync(tempPath, preflight.writePath);
+    chmodSync(preflight.writePath, 0o600);
   } catch (error) {
     try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {}
     throw error;
   }
-  return { path: preflight.path, replaced: preflight.exists };
+  return { path: preflight.path, replaced: preflight.exists, priorAgentTokenId: preflight.priorAgentTokenId };
 }
 
 function getSetCookieHeaders(headers: Headers): string[] {
@@ -814,7 +819,7 @@ async function parleLogin(ctx: any, cfg: ParleConfig, params: ParleLoginParams, 
   const roomId = params.roomId || (params.roomHandle ? undefined : cfg.roomId?.value);
   const roomHandle = params.roomHandle || (params.roomId ? undefined : cfg.roomHandle?.value);
   const agentId = params.agentId || (params.agentHandle ? undefined : cfg.agentId?.value || existingCredentials.PARLE_AGENT_ID);
-  const agentHandle = params.agentHandle || (params.agentId ? undefined : existingCredentials.PARLE_AGENT_HANDLE);
+  const agentHandle = params.agentHandle || (params.agentId ? undefined : cfg.agentHandle?.value || existingCredentials.PARLE_AGENT_HANDLE);
   const room = chooseInventoryItem(rooms, "room_id", "room_handle", "room", roomId, roomHandle);
   const agent = chooseInventoryItem(agents, "agent_id", "agent_handle", "agent", agentId, agentHandle);
   if (!room || !agent) {
@@ -834,7 +839,7 @@ async function parleLogin(ctx: any, cfg: ParleConfig, params: ParleLoginParams, 
   });
   const token = tokenBody?.token;
   if (!token) throw new Error("Parle token mint succeeded without returning a plaintext token; local credentials were not updated with an agent token.");
-  let profileWrite: { path: string; replaced: boolean } | undefined;
+  let profileWrite: { path: string; replaced: boolean; priorAgentTokenId?: string } | undefined;
   if (writeCredentials) {
     writeCredentialFile(cwd, { PARLE_SESSION_COOKIE: sessionCookie });
     profileWrite = writeProfile({
@@ -852,6 +857,7 @@ async function parleLogin(ctx: any, cfg: ParleConfig, params: ParleLoginParams, 
     wroteCredentials: writeCredentials,
     profile: profileName,
     profileReplaced: profileWrite?.replaced,
+    prior_agent_token_id: profileWrite?.replaced ? profileWrite.priorAgentTokenId : undefined,
     profilePath: profileWrite?.path,
     gitignoreUpdated: updateGitignore,
     room: { room_id: room.room_id, room_handle: room.room_handle },
@@ -1854,18 +1860,18 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_login",
     label: "Parle Login",
-    description: "First-class Parle email login and local credential bootstrap. Complete captures Set-Cookie, mints a room-bound agent token, and atomically writes a named 0600 profile in ~/.parle/profiles. Existing profiles require force=true. Secrets are never returned in tool output.",
+    description: "First-class Parle email login and local credential bootstrap. Complete persists the human session cookie in project .parle/credentials, mints a room-bound agent token, and atomically writes a named 0600 profile in ~/.parle/profiles. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Secrets are never returned in tool output.",
     parameters: Type.Object({
       action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete", "mint-from-session"] })),
       email: Type.Optional(Type.String()),
       code: Type.Optional(Type.String()),
-      roomId: Type.Optional(Type.String()),
-      roomHandle: Type.Optional(Type.String()),
-      agentId: Type.Optional(Type.String()),
-      agentHandle: Type.Optional(Type.String()),
-      writeCredentials: Type.Optional(Type.Boolean()),
+      roomId: Type.Optional(Type.String({ description: "Room selector. Overrides resolved PARLE_ROOM_ID." })),
+      roomHandle: Type.Optional(Type.String({ description: "Room selector. Overrides resolved PARLE_ROOM_HANDLE." })),
+      agentId: Type.Optional(Type.String({ description: "Agent selector. Overrides resolved PARLE_AGENT_ID." })),
+      agentHandle: Type.Optional(Type.String({ description: "Agent selector. Overrides resolved PARLE_AGENT_HANDLE." })),
+      writeCredentials: Type.Optional(Type.Boolean({ description: "Must remain true for complete and mint-from-session so plaintext credentials are durably recovered." })),
       updateGitignore: Type.Optional(Type.Boolean()),
-      profile: Type.Optional(Type.String({ description: "Safe local profile label. Defaults to default." })),
+      profile: Type.Optional(Type.String({ description: "Safe local profile label.", default: "default" })),
       force: Type.Optional(Type.Boolean({ description: "Required to replace an existing profile section." })),
       reason: Type.Optional(Type.String()),
     }),
