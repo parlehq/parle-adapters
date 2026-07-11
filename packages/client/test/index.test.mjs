@@ -483,6 +483,13 @@ test("requestJson parses canonical error envelope action scope and retry delay",
   });
 });
 
+test("rebootstrap guidance names a replacement session and distinguishes bearer reauthorization", () => {
+  assert.match(terminalStatusFor({ action: "rebootstrap" }), /replacement with the still-valid agent token/);
+  const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(source, /expiry ends only this session incarnation/);
+  assert.match(source, /Reauthorize only when the agent token is invalid or revoked/);
+});
+
 test("requestJson uses Retry-After header when retry_after_ms is absent", async () => {
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },

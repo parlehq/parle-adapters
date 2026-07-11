@@ -22,8 +22,8 @@ export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything
 // The connect result carries compactText (added by hosts that render cards, e.g.
 // the MCP server); lazily established session blocks do not, so they keep the
 // address-and-expiry wording.
-export const CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds.";
-export const SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Do not poll with waitSeconds.";
+export const CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds.";
+export const SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds.";
 
 export type FetchLike = typeof fetch;
 
@@ -354,7 +354,7 @@ export function terminalStatusFor(error: ParleApiError): string {
     case "reauthorize":
       return "Parle stopped: agent token is invalid or revoked; reauthorize the agent.";
     case "rebootstrap":
-      return "Parle stopped: agent session is dead; reconnect with parle_connect and re-arm.";
+      return "Parle stopped: this agent session ended; parle_connect can create a replacement with the still-valid agent token, then re-arm.";
     case "backoff":
       return `Parle paused: retry scheduled after ${formatDuration(error.retryAfterMs ?? 0)} (${error.code || "backoff"}).`;
     case "stop":
