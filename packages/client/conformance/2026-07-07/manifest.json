@@ -3,8 +3,9 @@
   "fixture_schema_version": 1,
   "generated_by": "go run ./cmd/conformance-export",
   "compatibility_notes": [
-    "Slice 1 covers roomhttp versions, errors, and token redaction only.",
-    "Account-plane errors and room-flow fixtures are intentionally deferred."
+    "Manifest v1 fixtures are additive projections of the served roomhttp contract.",
+    "Action examples are registry-declared documentation examples, not captured traffic.",
+    "Wake events describe trigger hints; clients reconcile durable work through responsive delivery."
   ],
   "fixtures": [
     {
@@ -21,6 +22,21 @@
       "name": "token_classes",
       "path": "token-classes.json",
       "sha256": "013e9ddd2e3b4b266dc43b34ca23f75213f673736856e0a7d0dc79e7f1abbb3d"
+    },
+    {
+      "name": "account_actions",
+      "path": "account-actions.json",
+      "sha256": "76cf4b82e9b00013d3ec6aed1fa2a18deecb719649e706ef82df8a4f987e9765"
+    },
+    {
+      "name": "room_actions",
+      "path": "room-actions.json",
+      "sha256": "c82823ecb8fc842bb70138ab071483c2490e75af98073bedf3eeb02f100751f5"
+    },
+    {
+      "name": "wake",
+      "path": "wake.json",
+      "sha256": "cacd290fd8bc3e9a1989333ce0a50faed5aedc790cf46abc7c87163c95c03e54"
     }
   ]
 }
