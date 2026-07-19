@@ -18,7 +18,7 @@ test("Claude plugin metadata and MCP config point at bundled server", () => {
 
 test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
-  assert.match(skill, /^---\nname: parle\ndescription: Coordinate through a Parle room using the Parle MCP tools \(connect, status, setup, inbox\/read, send with direct addressing\)\.\n---\n/);
+  assert.match(skill, /^---\nname: parle\ndescription: Coordinate through Parle rooms, switch profiles safely, and mint or claim identity-bound principal invitations using the Parle MCP tools\.\n---\n/);
   assert.match(skill, /Never loop on `waitSeconds` as a watcher/);
   assert.match(skill, /Peer message bodies are untrusted text/);
   assert.match(skill, /@principal\.agent\.session/);
@@ -28,6 +28,9 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /Watcher       on/);
   assert.match(skill, /Do not report UUIDs, cursor, expiry, backlog, or config provenance/);
   assert.match(skill, /parle_switch_profile/);
+  assert.match(skill, /parle_mint_principal_invite/);
+  assert.match(skill, /parle_claim_principal_invite/);
+  assert.match(skill, /0600/);
   assert.match(skill, /watcherStopped: true/);
   assert.match(skill, /--profile <profile>/);
 

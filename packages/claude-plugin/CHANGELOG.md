@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.5.22 (2026-07-19)
+
+Identity-bound principal invitation handoff.
+
+- Add matching MCP tools to mint an ordinary principal-seat invite and preview or complete it through the authenticated recipient's human session.
+- Keep the one-time secret and code out of model-visible arguments and results by using an atomic owner-only `0600` handoff file.
+
 ## 0.5.21 (2026-07-19)
 
 Shared-room responsive watcher authentication.

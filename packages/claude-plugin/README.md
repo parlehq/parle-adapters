@@ -58,6 +58,12 @@ When configured, the MCP server connects the room agent session eagerly at start
 
 `parle_switch_profile` performs an ephemeral prepare-then-commit switch between named profiles. Because Claude Code owns the sibling watcher task, the tool requires `watcherStopped: true`; the bundled skill captures the old watcher identity, verifies the task is stopped, switches, and re-arms with the returned `--profile`, cursor, and agent-session arguments. The watcher launcher resolves that target once and freezes its concrete binding into the private worker environment. Failed preparation leaves the old MCP session intact so the skill can re-arm it.
 
+### Principal invitations
+
+`parle_mint_principal_invite` mints one identity-bound ordinary principal seat using the configured human session. It requires the immutable target principal UUID and a handle label. The one-time secret and code never enter MCP output: the shared client atomically writes them to a private `0600` handoff file and returns only safe admission facts and its path.
+
+Transfer the file itself through a private out-of-band channel. The recipient saves it under the resolved private Parle invite directory (`~/.parle/invites/<invite-id>.json` by default), uses `parle_claim_principal_invite` with action `preview`, reviews the server-authored terms, then uses action `complete` with explicit confirmation. Successful completion deletes the recipient copy by default. Generic human-session requests remain unsupported.
+
 ### Statusline
 
 The `parle-statusline` skill wires everything below with one invocation (plugins cannot set the main `statusLine` setting themselves, so the skill performs the edit with your consent). Manual wiring:

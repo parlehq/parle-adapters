@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type CredentialProfile } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type ClaimPrincipalInviteParams, type CredentialProfile, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.22";
+const PI_EXTENSION_VERSION = "0.1.23";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -133,6 +133,9 @@ type ParleAddOwnAgentSeatParams = {
   confirmMutation?: boolean;
   reason?: string;
 };
+
+type ParleMintPrincipalInviteParams = MintPrincipalInviteParams;
+type ParleClaimPrincipalInviteParams = ClaimPrincipalInviteParams;
 
 type ParleRequestParams = {
   method?: string;
@@ -331,6 +334,11 @@ function truncateText(text: string, limitBytes: number): TruncatedText {
   const truncatedBuffer = Buffer.from(text, "utf8").subarray(0, limitBytes);
   const truncatedText = truncatedBuffer.toString("utf8").replace(/\uFFFD$/u, "");
   return { text: truncatedText, bytes, returnedBytes: Buffer.byteLength(truncatedText, "utf8"), truncated: true };
+}
+
+function accountClient(cwd: string): ParleAccountClient {
+  const env = activeProfileOverride ? { ...process.env, PARLE_PROFILE: activeProfileOverride } : process.env;
+  return new ParleAccountClient({ cwd, env });
 }
 
 function assertEnabled(cfg: ParleConfig) {
@@ -1693,7 +1701,7 @@ function statusDetails(ctx: any) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat"],
+      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_mint_principal_invite", "parle_claim_principal_invite"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -2026,9 +2034,43 @@ export default function parleExtension(pi: any) {
   });
 
   pi.registerTool({
+    name: "parle_mint_principal_invite",
+    label: "Parle Mint Principal Invite",
+    description: "Mint one ordinary principal-seat invite through the fixed human-session room endpoint. The immutable principal UUID is authoritative; principalHandle is a human-facing confirmation label. The one-time secret and code are written atomically to a private 0600 handoff file and never returned. Transfer that file out of band.",
+    parameters: Type.Object({
+      roomId: Type.String({ description: "Shared room UUID." }),
+      principalId: Type.String({ description: "Immutable UUID of the principal being invited." }),
+      principalHandle: Type.String({ description: "Expected human-facing principal handle used as a confirmation label." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm minting the identity-bound ordinary-member invite." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for minting the invite." })),
+    }),
+    async execute(_id, params: ParleMintPrincipalInviteParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).mintPrincipalInvite(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_claim_principal_invite",
+    label: "Parle Claim Principal Invite",
+    description: "Preview or complete one principal-seat invite from a private local 0600 handoff file directly inside the resolved Parle invite directory. The capability never appears in parameters or results. Preview before complete; complete requires explicit confirmation and deletes the recipient copy after success by default.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["preview", "complete"] }),
+      handoffPath: Type.String({ description: "Absolute path to the owner-owned, non-symlink, mode-0600 handoff file inside the resolved private Parle invite directory." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true only for complete." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation only for complete." })),
+      deleteHandoffOnSuccess: Type.Optional(Type.Boolean({ description: "Delete the recipient handoff copy after confirmed success. Defaults to true." })),
+    }),
+    async execute(_id, params: ParleClaimPrincipalInviteParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).claimPrincipalInvite(params, signal));
+    },
+  });
+
+  pi.registerTool({
     name: "parle_request",
     label: "Parle Request",
-    description: "Generic guarded request to allowlisted Parle URLs with redaction, response caps, agent-token or unauthenticated auth modes, and mutation confirmation. Human-session auth is intentionally unsupported here; use typed account-plane tools such as parle_login, parle_create_room, and parle_add_own_agent_seat. Prefer parle_send for message submits because it supplies Idempotency-Key and direct addressing correctly.",
+    description: "Generic guarded request to allowlisted Parle URLs with redaction, response caps, agent-token or unauthenticated auth modes, and mutation confirmation. Human-session auth is intentionally unsupported here; use typed account-plane tools such as parle_login, parle_create_room, parle_add_own_agent_seat, parle_mint_principal_invite, and parle_claim_principal_invite. Prefer parle_send for message submits because it supplies Idempotency-Key and direct addressing correctly.",
     parameters: Type.Object({
       method: Type.Optional(Type.String()),
       path: Type.Optional(Type.String()),

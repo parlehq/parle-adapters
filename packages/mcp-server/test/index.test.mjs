@@ -12,9 +12,11 @@ import { createParleMcpServer, isDirectRun, resolveWatcherEnvironment } from "..
 
 const expectedTools = [
   "parle_affordances",
+  "parle_claim_principal_invite",
   "parle_connect",
   "parle_guidance",
   "parle_inbox",
+  "parle_mint_principal_invite",
   "parle_read",
   "parle_send",
   "parle_setup",
@@ -74,7 +76,11 @@ test("in-memory server maps read, send, and errors through fake client", async (
     send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", roomHandle: "target-room" }; },
   };
-  const server = createParleMcpServer(fakeClient);
+  const fakeAccount = {
+    mintPrincipalInvite: async (params) => { calls.push(["mint-invite", params]); return { inviteId: "invite-1", handoffPath: "/private/invite.json" }; },
+    claimPrincipalInvite: async (params) => { calls.push(["claim-invite", params]); return { action: params.action, roomId: "room-1" }; },
+  };
+  const server = createParleMcpServer(fakeClient, fakeAccount);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "parle-mcp-unit", version: "0.0.0" }, { capabilities: {} });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -95,7 +101,18 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const switched = await client.callTool({ name: "parle_switch_profile", arguments: { profile: "target", watcherStopped: true } });
     assert.equal(switched.structuredContent.roomHandle, "target-room");
     assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target"]);
-    assert.deepEqual(calls, [["connect"], ["read", { waitSeconds: 1 }], ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }], ["switch", "target"]]);
+    const minted = await client.callTool({ name: "parle_mint_principal_invite", arguments: { roomId: "room-1", principalId: "principal-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" } });
+    assert.equal(minted.structuredContent.handoffPath, "/private/invite.json");
+    const previewed = await client.callTool({ name: "parle_claim_principal_invite", arguments: { action: "preview", handoffPath: "/private/invite.json" } });
+    assert.equal(previewed.structuredContent.action, "preview");
+    assert.deepEqual(calls, [
+      ["connect"],
+      ["read", { waitSeconds: 1 }],
+      ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
+      ["switch", "target"],
+      ["mint-invite", { roomId: "room-1", principalId: "principal-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" }],
+      ["claim-invite", { action: "preview", handoffPath: "/private/invite.json" }],
+    ]);
   } finally {
     await client.close();
     await server.close();
@@ -273,7 +290,7 @@ test("parle_status works against minimal fake clients without lifecycle methods"
   }
 });
 
-test("stdio server lists the nine v1 tools and setup works without secrets", async () => {
+test("stdio server lists the eleven tools and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],

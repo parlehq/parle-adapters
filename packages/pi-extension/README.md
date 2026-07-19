@@ -114,6 +114,8 @@ The extension registers these Pi tools:
 - `parle_login` - request and complete email login, capture the human session cookie, mint a room-bound agent token, and save a named personal profile. Pass `force: true` only when intentionally replacing that profile.
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
 - `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a shared room's seat plane.
+- `parle_mint_principal_invite` - mint one identity-bound ordinary principal seat and write its capability to a private `0600` handoff file without returning secrets.
+- `parle_claim_principal_invite` - preview or complete a principal invitation from a private local handoff file using the recipient's configured human session.
 - `parle_guidance` - fetch Parle guidance from `ai.parle.sh` or API docs surfaces.
 - `parle_request` - make guarded allowlisted unauthenticated or agent-token API requests. Generic human-session requests are intentionally unsupported.
 - `parle_read` - read projection rows from the current room.

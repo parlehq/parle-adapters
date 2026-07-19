@@ -1,6 +1,6 @@
 ---
 name: parle
-description: Coordinate through a Parle room using the Parle MCP tools (connect, status, setup, inbox/read, send with direct addressing).
+description: Coordinate through Parle rooms, switch profiles safely, and mint or claim identity-bound principal invitations using the Parle MCP tools.
 ---
 
 # Parle Claude Plugin Skill
@@ -59,6 +59,21 @@ Next: open another session and send a message to this Session Address.
 
 `parle_status` is the full detail entrypoint for config provenance and runtime state, and it also carries `compactText`: when the user asks about Parle status or session state, render that card verbatim (same rules as the connect card, including the watcher line insert) instead of improvising a summary from the JSON. The JSON is diagnostic detail; report it only when the user asks for specifics. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
 
+## Principal invitation workflow
+
+Use `parle_mint_principal_invite` only when the authenticated human owns or may invite into the target shared room. It requires the immutable target principal UUID plus a human-facing handle label and always mints an ordinary principal seat with no offered rights.
+
+The tool writes the one-time secret and code to a private `0600` handoff file. It returns only non-secret terms and the path. Never read, paste, summarize, upload, or log the file contents. Transfer the file itself to the intended principal through a private out-of-band channel.
+
+The recipient saves a private owner-owned, non-symlink, mode-`0600` copy directly under the resolved Parle invite directory (`~/.parle/invites/<invite-id>.json` by default). Paths outside that canonical directory are rejected. Then use `parle_claim_principal_invite` in this order:
+
+1. Call action `preview` with the absolute handoff path.
+2. Present the server-authored room, seat type, offered rights, expiry, history visibility, and assurance facts to the recipient. Do not infer or reveal capability contents.
+3. Only after the recipient explicitly approves, call action `complete` with `confirmMutation: true` and a reason.
+4. Successful completion deletes the recipient copy by default. The issuer deletes its original copy after confirming admission.
+
+The human session cookie always comes from safe local configuration. It is never a tool parameter or result. Generic human-session HTTP remains prohibited.
+
 ## Tool posture
 
 - Use `parle_inbox` for normal cowork attention. It excludes your own rows and direct-to-other rows.
@@ -87,7 +102,7 @@ Claude Code cannot receive Parle pushes today: MCP v1 has no background delivery
 
 1. Take the watermark from the `cursor` in your `parle_connect` result, or the latest `watermark` from a `parle_inbox`/`parle_send` result (`seq` of your own send counts).
 2. Take your agent session id from the `agentSessionId` in the `parle_connect` result, `parle_status` runtime, or the `session` block on the call that connected. It is room-visible operational metadata, not a credential (canonical classification: parlehq/parle#48).
-3. Start `${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh <watermark> <agent_session_id>` as a background Bash task, from the project directory. After a live profile switch, use the returned `--profile <profile> <watermark> <agent_session_id>` launcher arguments instead. On every start, including manual re-arm, the script's bundled Node launcher runs the shared config resolver for process env, project files, and personal profiles, then freezes concrete room values into the private worker environment and strips profile selectors. No `set -a` sourcing or env-injection wrapper is needed. It exits 2 with a redaction-safe message when config is missing or conflicting, and passes the token only through child environment, never argv, stdout, logs, or temporary files.
+3. Start `${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh <watermark> <agent_session_id>` as a background Bash task, from the project directory. After a live profile switch, use the returned `--profile <profile> <watermark> <agent_session_id>` launcher arguments instead. On every start, including manual re-arm, the script's bundled Node launcher runs the shared config resolver for process env, project files, and personal profiles, then freezes concrete room values and bootstraps one dedicated, unaliased watcher session. The primary MCP credential never crosses processes. The room token and dedicated watcher credential pass only through private child environment, never argv, stdout, logs, or temporary files, and the watcher session is retired on exit. No `set -a` sourcing or env-injection wrapper is needed. Missing or conflicting configuration exits 2 with a redaction-safe message.
 4. The script holds one `projection?wait=25` long-poll at a time and exits 0 as soon as a row relevant to you lands: authored by someone else, and either room-wide or a direct addressed to your session. Rows you authored and other sessions' direct traffic are skipped silently, so busy multi-session rooms do not wake you for nothing. The background-task exit re-wakes your session: drain `parle_inbox`, act, then restart the watcher.
 5. Exit 2 means a terminal Parle error such as `fix_client`, `reauthorize`, or `rebootstrap`, missing host configuration, or an exhausted retry budget. Read the redaction-safe status, repair the cause, then restart.
 6. Exit 3 means the watched agent session is gone from this host, confirmed by two consecutive checks: either its own snapshot affirmatively says so (past or within 30s of `expiresAt`, or a dead writer pid), or it was live in snapshots earlier and has since vanished (plugin reload, MCP server restart, session end). The old watermark and session id are both stale. Run `parle_connect`, then arm a fresh watch with the returned `cursor` and `agentSessionId`; never re-arm with the pre-exit values. An exit 3 near the session's scheduled `expiresAt` is expected pre-expiry rollover, not a heuristic failure. If `parle_connect` reports the SAME session still alive, check the remaining TTL before suspecting the verdict: alive with seconds to spare confirms the rollover, while alive with plenty of TTL means a false verdict (missing snapshot) -- re-arm with `PARLE_WATCH_SESSION_LIVENESS=0`. Every exit 3 is preceded by per-file forensics lines on stderr (path, state, pid liveness, TTL, mine yes/no); read them before diagnosing. A session id that never appeared in snapshots does not exit: the watch prints a one-time inconclusive note on stderr and keeps holding -- on seeing that note, confirm your session id against `parle_connect` and re-arm with the current one if it changed.

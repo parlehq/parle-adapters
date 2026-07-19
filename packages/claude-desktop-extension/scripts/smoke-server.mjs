@@ -19,9 +19,11 @@ try {
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
     "parle_affordances",
+    "parle_claim_principal_invite",
     "parle_connect",
     "parle_guidance",
     "parle_inbox",
+    "parle_mint_principal_invite",
     "parle_read",
     "parle_send",
     "parle_setup",

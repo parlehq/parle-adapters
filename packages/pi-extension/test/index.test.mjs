@@ -202,7 +202,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.22" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.23" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -553,6 +553,27 @@ test("parle_add_own_agent_seat fails closed before fetch for invalid IDs, confir
   assert.equal(called, false);
 });
 
+test("principal invite tools expose the shared private-handoff workflow", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const stateDir = join(process.env.HOME, ".parle");
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(stateDir, "profiles"), "[default]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_fixture\n", { mode: 0o600 });
+  writeFileSync(join(stateDir, "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
+  const secret = `parle_inv_${"z".repeat(43)}`;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://api.parle.sh/v/rooms/019f7b46-178f-7a5a-9f7b-b4af2e045261/invites");
+    assert.deepEqual(JSON.parse(init.body), { seat_type: "principal", target: { kind: "principal", principal_id: "019f3894-bb87-726a-8deb-17d367054426" } });
+    return new Response(JSON.stringify({ invite_id: "019f7c00-0000-7000-8000-000000000010", room_id: "019f7b46-178f-7a5a-9f7b-b4af2e045261", secret, code: "ABCDEFGHIJ", seat_type: "principal", target_principal_id: "019f3894-bb87-726a-8deb-17d367054426", target_display: { handle: "kljensen", display_name: "Kyle Jensen" }, offered_rights: [], ttl_seconds: 604800 }), { status: 201 });
+  };
+  const harness = installHarness(cwd);
+  const result = await harness.call("parle_mint_principal_invite", { roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261", principalId: "019f3894-bb87-726a-8deb-17d367054426", principalHandle: "kljensen", confirmMutation: true, reason: "Invite Kyle" });
+  assert.equal(result.details.targetHandle, "kljensen");
+  assert.equal(existsSync(result.details.handoffPath), true);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.deepEqual(Object.keys(harness.tools.parle_mint_principal_invite.parameters.properties).sort(), ["confirmMutation", "principalHandle", "principalId", "reason", "roomId"]);
+  assert.deepEqual(Object.keys(harness.tools.parle_claim_principal_invite.parameters.properties).sort(), ["action", "confirmMutation", "deleteHandoffOnSuccess", "handoffPath", "reason"]);
+});
+
 test("generic parle_request honestly excludes human-session auth", async () => {
   const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async () => new Response("{}", { status: 200 });
@@ -562,7 +583,7 @@ test("generic parle_request honestly excludes human-session auth", async () => {
 
   const status = await harness.call("parle_status");
   assert.equal(status.details.humanSession.genericRequest, "unsupported");
-  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_login", "parle_create_room", "parle_add_own_agent_seat"]);
+  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_mint_principal_invite", "parle_claim_principal_invite"]);
 });
 
 test("parle_login starts email login without requiring raw request plumbing", async () => {

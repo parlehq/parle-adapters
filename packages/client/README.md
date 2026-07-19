@@ -58,3 +58,9 @@ validated before connecting and errors never expose credential values. Rotate a
 token by replacing it in the profile, then restart processes that loaded it.
 
 `ParleAgentClient.switchProfile(name)` validates and bootstraps the target on scratch state before synchronously adopting its room session, cursor, and canonical room handle. Preparation failure leaves the old session intact; successful adoption retires the old session best-effort and returns `watcherRestartRequired: true` for the host adapter to satisfy. Selection is process-local and never edits environment or profile files. Live switching refuses `PARLE_SESSION_ALIAS` because scratch preparation must not supersede an active named route; restart the host with the target profile in that case.
+
+## Human account-plane invitations
+
+`ParleAccountClient` provides shared principal-invitation mint and claim mechanics. It resolves the human session only from safe local configuration, fixes mint to an immutable principal UUID and an ordinary principal seat, and keeps generic human-session HTTP closed.
+
+Mint atomically writes the one-time secret and code beneath the resolved Parle state directory as an owner-only `0600` handoff file. Results contain only non-secret admission facts and the path. Claim accepts only an absolute owner-owned, non-symlink, bounded, mode-`0600` file. Preview preserves it; complete deletes the recipient copy after confirmed success by default. Handoff content never selects the API host or local session source.

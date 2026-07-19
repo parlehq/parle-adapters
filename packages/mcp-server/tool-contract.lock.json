@@ -6,6 +6,21 @@
     },
     "input": []
   },
+  "parle_claim_principal_invite": {
+    "title": "Parle Claim Principal Invite",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "confirmMutation",
+      "deleteHandoffOnSuccess",
+      "handoffPath",
+      "reason"
+    ]
+  },
   "parle_connect": {
     "title": "Parle Connect",
     "annotations": {
@@ -34,6 +49,21 @@
       "limitMessages",
       "sinceSeq",
       "waitSeconds"
+    ]
+  },
+  "parle_mint_principal_invite": {
+    "title": "Parle Mint Principal Invite",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "confirmMutation",
+      "principalHandle",
+      "principalId",
+      "reason",
+      "roomId"
     ]
   },
   "parle_read": {

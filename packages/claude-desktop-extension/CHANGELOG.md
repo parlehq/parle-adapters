@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.14 (2026-07-19)
+
+Bundled MCP refresh with identity-bound principal invitation mint, private handoff, preview, and claim tools.
+
 ## 0.5.13 (2026-07-19)
 
 Bundled MCP refresh with authenticated dedicated watcher sessions for shared-room projection reads. Desktop remains tools-only and does not launch the Claude Code watcher.
