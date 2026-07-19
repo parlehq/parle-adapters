@@ -292,7 +292,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.20";
+var PI_EXTENSION_VERSION = "0.1.21";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -610,7 +610,7 @@ function publishRuntimeState(ctx, cfg = resolveConfig(ctx?.cwd || process.cwd())
       sessionAddress: runtime.sessionAddress || null,
       agentSessionId: runtime.agentSessionId || "",
       roomId: runtime.roomId || cfg.roomId?.value || "",
-      roomHandle: cfg.roomHandle?.value,
+      roomHandle: runtime.roomHandle || cfg.roomHandle?.value,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
       expiresAt: runtime.expiresAt || "",
       ...runtime.lastError ? { lastError: redactString(runtime.lastError) } : {},
@@ -1196,6 +1196,7 @@ async function bootstrap(ctx, cfg, signal, preserveCursor = false, aliasOverride
   state.roomId = cfg.roomId.value;
   const entry = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId.value)}/participants`, { method: "POST", session: true, signal }, state);
   state.participantId = String(entry.participant_id || "");
+  state.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : cfg.roomHandle?.value;
   state.bootstrapped = true;
   if (preserveCursor && typeof previousCursor === "number") {
     state.cursor = previousCursor;
@@ -1278,6 +1279,7 @@ async function switchProfile(pi, ctx, profile, signal) {
     sessionAddress: runtime.sessionAddress,
     agentSessionId: runtime.agentSessionId,
     participantId: runtime.participantId,
+    roomHandle: runtime.roomHandle,
     expiresAt: runtime.expiresAt,
     cursor: runtime.cursor,
     ephemeral: true,
@@ -1725,6 +1727,7 @@ function statusDetails(ctx) {
       expiresAt: runtime.expiresAt,
       participantId: runtime.participantId,
       roomId: runtime.roomId,
+      roomHandle: runtime.roomHandle,
       cursor: runtime.cursor,
       lastError: runtime.lastError,
       watcherState: runtime.watcherState,
@@ -1821,11 +1824,12 @@ function setStatus(ctx, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   try {
     const ui = ctx?.ui;
     if (!ui?.setStatus) return;
+    const connectedLabel = runtime.roomHandle ? `#${runtime.roomHandle}` : runtime.roomId ? `#room-${runtime.roomId.slice(0, 8)}` : "parle";
     let label = "parle x setup";
     if (!cfg.enabled) label = "parle off";
-    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `parle x ${runtime.sessionAddress}` : footerErrorLabel();
-    else if (runtime.sessionAddress && pendingResponsiveMessages.length > 0) label = `parle \u25F7 ${pendingResponsiveMessages.length} ${runtime.sessionAddress}`;
-    else if (runtime.sessionAddress) label = `parle \u2713 ${runtime.sessionAddress}`;
+    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `${connectedLabel} x ${runtime.sessionAddress}` : footerErrorLabel();
+    else if (runtime.sessionAddress && pendingResponsiveMessages.length > 0) label = `${connectedLabel} \u25F7 ${pendingResponsiveMessages.length} ${runtime.sessionAddress}`;
+    else if (runtime.sessionAddress) label = `${connectedLabel} \u2713 ${runtime.sessionAddress}`;
     else if (cfg.roomId?.value && cfg.agentToken?.value) label = `parle \u2713 ${cfg.roomHandle?.value || "ready"}`;
     ui.setStatus(EXTENSION_ID, label);
   } catch {

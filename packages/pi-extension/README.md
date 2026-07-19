@@ -127,6 +127,8 @@ Profile switches are ephemeral. `parle_switch_profile` validates and prepares th
 
 It also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery?wait=0` only after wake hints. While Pi is busy, direct messages remain in the adapter's local pending buffer and the footer shows their count. At `agent_settled`, the adapter injects one ordered batch and then acknowledges it to Parle. This avoids Pi's generic queued-input UI without changing Parle delivery semantics.
 
+After room entry succeeds, the footer uses the canonical handle returned by Parle, for example `#galexc-kyleops ✓ @principal.agent.session`, instead of the generic `parle` label. A connected handleless room uses an honest short-ID fallback such as `#room-019f7b46`; setup and pre-connection states retain the explicit Parle label.
+
 ## Trust note
 
 Pi extensions run with local process permissions. Install this only from the trusted `parlehq/parle-adapters` source or a reviewed fork.

@@ -181,6 +181,7 @@ test("status bootstraps and redacts session handle", async () => {
   const status = await harness.call("parle_status");
   assert.equal(status.details.runtime.sessionHandle, "<redacted>");
   assert.equal(status.details.runtime.sessionAddress, "@p.a.raw-session");
+  assert.equal(harness.statuses.at(-1).label, "#room-room-1 ✓ @p.a.raw-session");
 });
 
 test("status publishes a display-safe runtime snapshot", async () => {
@@ -201,7 +202,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.20" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.21" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -213,7 +214,7 @@ test("footer prefers alias route when session uses an alias", async () => {
       assert.equal(JSON.parse(String(init.body)).alias, "parle-landing");
       return new Response(JSON.stringify({ agent_session_id: "as-alias", session_credential: "parle_ses_alias-session", session_handle: "raw-session", alias: "parle-landing", generation: 2, expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
     }
-    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias", room_id: "room-1", agent_session_id: "as-alias" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias", room_id: "room-1", room_handle: "actual-room", agent_session_id: "as-alias" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
     throw new Error("unexpected " + u);
   };
@@ -222,7 +223,8 @@ test("footer prefers alias route when session uses an alias", async () => {
   assert.equal(status.details.runtime.sessionAddress, "@p.a.parle-landing");
   assert.equal(status.details.runtime.sessionAlias, "parle-landing");
   assert.equal(status.details.runtime.sessionGeneration, 2);
-  assert.equal(harness.statuses.at(-1).label, "parle ✓ @p.a.parle-landing");
+  assert.equal(status.details.runtime.roomHandle, "actual-room");
+  assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
 });
 
 test("parle_session_alias moves runtime without persistent config", async () => {
@@ -237,7 +239,7 @@ test("parle_session_alias moves runtime without persistent config", async () => 
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `raw-${sessionCreates}`, alias, generation: alias ? 3 : 0, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/end")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
-    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias-tool", room_id: "room-1" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias-tool", room_id: "room-1", room_handle: "actual-room" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 9, messages: [] }), { status: 200 });
     throw new Error("unexpected " + u);
   };
@@ -248,7 +250,7 @@ test("parle_session_alias moves runtime without persistent config", async () => 
   assert.equal(result.details.alias, "parle-landing");
   assert.equal(result.details.generation, 3);
   assert.equal(__testing.resolveConfig(cwd).sessionAlias.value, "");
-  assert.equal(harness.statuses.at(-1).label, "parle ✓ @p.a.parle-landing");
+  assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
 });
 
 test("parle_switch_profile prepares the target before atomically replacing room state", async () => {
@@ -270,8 +272,8 @@ test("parle_switch_profile prepares the target before atomically replacing room 
       order.push("target-session");
       return new Response(JSON.stringify({ agent_session_id: "as-target", session_credential: "parle_ses_target", session_handle: "target", expires_at: "later", address: "@p.a.target" }), { status: 201 });
     }
-    if (u.endsWith(`/v/rooms/${oldRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-old" }), { status: 201 });
-    if (u.endsWith(`/v/rooms/${newRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-target" }), { status: 201 });
+    if (u.endsWith(`/v/rooms/${oldRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-old", room_handle: "old-room" }), { status: 201 });
+    if (u.endsWith(`/v/rooms/${newRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-target", room_handle: "target-room" }), { status: 201 });
     if (u.includes(`/v/rooms/${oldRoom}/inbound`)) return new Response(JSON.stringify({ watermark: 7, messages: [{ seq: 7, event_id: "same-event", participant_id: "old-peer", content: "old room" }] }), { status: 200 });
     if (u.includes(`/v/rooms/${oldRoom}/projection`)) return new Response(JSON.stringify({ watermark: 5, messages: [] }), { status: 200 });
     if (u.includes(`/v/rooms/${newRoom}/projection`)) {
@@ -300,6 +302,7 @@ test("parle_switch_profile prepares the target before atomically replacing room 
   assert.equal(switched.details.roomId, newRoom);
   assert.equal(switched.details.cursor, 42);
   assert.equal(switched.details.sessionAddress, "@p.a.target");
+  assert.equal(switched.details.roomHandle, "target-room");
   assert.equal(switched.details.ephemeral, true);
   assert.ok(order.indexOf("target-ready") < order.indexOf("old-ended"));
   const status = await harness.call("parle_status");
@@ -307,6 +310,8 @@ test("parle_switch_profile prepares the target before atomically replacing room 
   assert.equal(status.details.profile.source, "runtime_profile");
   assert.equal(status.details.roomId.value, newRoom);
   assert.equal(status.details.runtime.roomId, newRoom);
+  assert.equal(status.details.runtime.roomHandle, "target-room");
+  assert.equal(harness.statuses.at(-1).label, "#target-room ✓ @p.a.target");
   const affordances = await harness.call("parle_affordances");
   assert.equal(affordances.details.affordances[0].action, "post_message");
   await __testing.handleWakeHint(harness.pi, harness.ctx, __testing.resolveConfig(cwd));

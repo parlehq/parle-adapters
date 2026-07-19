@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { DEFAULT_API_BASE, DEFAULT_VERSION, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type CredentialProfile } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.20";
+const PI_EXTENSION_VERSION = "0.1.21";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -68,6 +68,7 @@ type RuntimeState = {
   expiresAt?: string;
   participantId?: string;
   roomId?: string;
+  roomHandle?: string;
   cursor?: number;
   bootstrapped: boolean;
   lastError?: string;
@@ -517,7 +518,7 @@ function publishRuntimeState(ctx: any, cfg = resolveConfig(ctx?.cwd || process.c
       sessionAddress: runtime.sessionAddress || null,
       agentSessionId: runtime.agentSessionId || "",
       roomId: runtime.roomId || cfg.roomId?.value || "",
-      roomHandle: cfg.roomHandle?.value,
+      roomHandle: runtime.roomHandle || cfg.roomHandle?.value,
       updatedAt: new Date().toISOString(),
       expiresAt: runtime.expiresAt || "",
       ...(runtime.lastError ? { lastError: redactString(runtime.lastError) } : {}),
@@ -1133,6 +1134,7 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
   state.roomId = cfg.roomId!.value;
   const entry = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/participants`, { method: "POST", session: true, signal }, state);
   state.participantId = String(entry.participant_id || "");
+  state.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : cfg.roomHandle?.value;
   state.bootstrapped = true;
   if (preserveCursor && typeof previousCursor === "number") {
     state.cursor = previousCursor;
@@ -1217,6 +1219,7 @@ async function switchProfile(pi: any, ctx: any, profile: string, signal?: AbortS
     sessionAddress: runtime.sessionAddress,
     agentSessionId: runtime.agentSessionId,
     participantId: runtime.participantId,
+    roomHandle: runtime.roomHandle,
     expiresAt: runtime.expiresAt,
     cursor: runtime.cursor,
     ephemeral: true,
@@ -1703,6 +1706,7 @@ function statusDetails(ctx: any) {
       expiresAt: runtime.expiresAt,
       participantId: runtime.participantId,
       roomId: runtime.roomId,
+      roomHandle: runtime.roomHandle,
       cursor: runtime.cursor,
       lastError: runtime.lastError,
       watcherState: runtime.watcherState,
@@ -1800,11 +1804,16 @@ function setStatus(ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   try {
     const ui = ctx?.ui;
     if (!ui?.setStatus) return;
+    const connectedLabel = runtime.roomHandle
+      ? `#${runtime.roomHandle}`
+      : runtime.roomId
+        ? `#room-${runtime.roomId.slice(0, 8)}`
+        : "parle";
     let label = "parle x setup";
     if (!cfg.enabled) label = "parle off";
-    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `parle x ${runtime.sessionAddress}` : footerErrorLabel();
-    else if (runtime.sessionAddress && pendingResponsiveMessages.length > 0) label = `parle ◷ ${pendingResponsiveMessages.length} ${runtime.sessionAddress}`;
-    else if (runtime.sessionAddress) label = `parle ✓ ${runtime.sessionAddress}`;
+    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `${connectedLabel} x ${runtime.sessionAddress}` : footerErrorLabel();
+    else if (runtime.sessionAddress && pendingResponsiveMessages.length > 0) label = `${connectedLabel} ◷ ${pendingResponsiveMessages.length} ${runtime.sessionAddress}`;
+    else if (runtime.sessionAddress) label = `${connectedLabel} ✓ ${runtime.sessionAddress}`;
     else if (cfg.roomId?.value && cfg.agentToken?.value) label = `parle ✓ ${cfg.roomHandle?.value || "ready"}`;
     ui.setStatus(EXTENSION_ID, label);
   } catch {}
