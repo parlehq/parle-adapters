@@ -268,7 +268,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.18";
+var PI_EXTENSION_VERSION = "0.1.19";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -786,6 +786,40 @@ async function parleCreateRoom(cfg, params, signal) {
     room_handle: response.room_handle,
     kind: response.kind,
     seat_id: response.seat_id
+  };
+}
+function validateUUID(raw, label) {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value) || value === "00000000-0000-0000-0000-000000000000") {
+    throw new Error(`parle_add_own_agent_seat ${label} must be a non-zero UUID.`);
+  }
+  return value;
+}
+async function parleAddOwnAgentSeat(cfg, params, signal) {
+  assertEnabled(cfg);
+  assertSafeBase(cfg.apiBase.value);
+  if (params.confirmMutation !== true || !params.reason?.trim()) {
+    throw new Error("parle_add_own_agent_seat requires confirmMutation=true and a reason for POST /v/rooms/{roomID}/seats.");
+  }
+  const roomId = validateUUID(params.roomId, "roomId");
+  const agentId = validateUUID(params.agentId, "agentId");
+  const sessionCookie = cfg.sessionCookie?.value;
+  if (!sessionCookie) {
+    throw new Error(`parle_add_own_agent_seat requires PARLE_SESSION_COOKIE in env or .env, or a session file at ${sessionCookieFilePath(cfg.profilesPath.value)} (written by parle_login complete).`);
+  }
+  const response = await humanJson(cfg, `/v/rooms/${encodeURIComponent(roomId)}/seats`, sessionCookie, {
+    method: "POST",
+    body: { agent_id: agentId },
+    signal
+  });
+  if (typeof response.seat_id !== "string" || response.agent_id !== agentId || typeof response.admitted_at !== "string") {
+    throw new Error("Parle own-agent seat admission succeeded without the expected seat_id, agent_id, and admitted_at.");
+  }
+  return {
+    room_id: roomId,
+    seat_id: response.seat_id,
+    agent_id: response.agent_id,
+    admitted_at: response.admitted_at
   };
 }
 async function parleLogin(ctx, cfg, params, signal) {
@@ -1565,7 +1599,7 @@ function statusDetails(ctx) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_login", "parle_create_room"],
+      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -1847,9 +1881,26 @@ function parleExtension(pi) {
     }
   });
   pi.registerTool({
+    name: "parle_add_own_agent_seat",
+    label: "Parle Add Own Agent Seat",
+    description: "Admit one of the authenticated principal's own durable agents onto a shared room's seat plane through the fixed POST /v/rooms/{roomID}/seats human-session endpoint. The session cookie is read only from resolved local configuration and never accepted or returned. This operation does not mint tokens, enter the room, or invite another principal.",
+    parameters: Type.Object({
+      roomId: Type.String({ description: "Shared room UUID." }),
+      agentId: Type.String({ description: "UUID of an unrevoked durable agent owned by the authenticated principal." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm the fixed own-agent seat admission mutation." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for admitting the agent." }))
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      const details = await parleAddOwnAgentSeat(cfg, params, signal);
+      return formatResult(details);
+    }
+  });
+  pi.registerTool({
     name: "parle_request",
     label: "Parle Request",
-    description: "Generic guarded request to allowlisted Parle URLs with redaction, response caps, agent-token or unauthenticated auth modes, and mutation confirmation. Human-session auth is intentionally unsupported here; use typed account-plane tools such as parle_login and parle_create_room. Prefer parle_send for message submits because it supplies Idempotency-Key and direct addressing correctly.",
+    description: "Generic guarded request to allowlisted Parle URLs with redaction, response caps, agent-token or unauthenticated auth modes, and mutation confirmation. Human-session auth is intentionally unsupported here; use typed account-plane tools such as parle_login, parle_create_room, and parle_add_own_agent_seat. Prefer parle_send for message submits because it supplies Idempotency-Key and direct addressing correctly.",
     parameters: Type.Object({
       method: Type.Optional(Type.String()),
       path: Type.Optional(Type.String()),
