@@ -1,4 +1,18 @@
 {
+  "parle_accept_room_invitation": {
+    "title": "Accept Parle Room Invitation",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "confirmMutation",
+      "invitation",
+      "reason"
+    ]
+  },
   "parle_affordances": {
     "title": "Parle Affordances",
     "annotations": {
@@ -29,6 +43,24 @@
       "openWorldHint": true
     },
     "input": []
+  },
+  "parle_connect_own_agent": {
+    "title": "Connect Own Agent to Parle Room",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "agentHandle",
+      "agentId",
+      "confirmMutation",
+      "createAgentHandle",
+      "invitation",
+      "profileLabel",
+      "reason"
+    ]
   },
   "parle_guidance": {
     "title": "Parle Guidance",

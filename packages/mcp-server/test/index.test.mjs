@@ -11,9 +11,11 @@ import { ParleAgentClient } from "@parlehq/agent-client";
 import { createParleMcpServer, isDirectRun, resolveWatcherEnvironment } from "../dist/index.js";
 
 const expectedTools = [
+  "parle_accept_room_invitation",
   "parle_affordances",
   "parle_claim_principal_invite",
   "parle_connect",
+  "parle_connect_own_agent",
   "parle_guidance",
   "parle_inbox",
   "parle_mint_principal_invite",
@@ -290,7 +292,7 @@ test("parle_status works against minimal fake clients without lifecycle methods"
   }
 });
 
-test("stdio server lists the eleven tools and setup works without secrets", async () => {
+test("stdio server lists the thirteen tools and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],

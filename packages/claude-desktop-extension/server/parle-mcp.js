@@ -31075,6 +31075,7 @@ var entries = {
   validation_failed: { status: 422, action: "fix_client", scope: "request" },
   csrf_rejected: { status: 403, action: "fix_client", scope: "request" },
   already_member: { status: 409, action: "stop", scope: "room_access" },
+  approval_expired: { status: 409, action: "stop", scope: "request" },
   forbidden: { status: 403, action: "stop", scope: "room_access" },
   token_quota_exceeded: { status: 409, action: "stop", scope: "agent_token" },
   step_up_required: { status: 403, action: "stop", scope: "request" },
@@ -31248,7 +31249,7 @@ function loadProfile(name, path = PROFILE_CATALOG_PATH) {
 
 // ../client/dist/account.js
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { chmodSync as chmodSync2, existsSync as existsSync2, linkSync, lstatSync as lstatSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync3, realpathSync, statSync as statSync2, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync3, realpathSync, renameSync as renameSync2, statSync as statSync2, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename, dirname as dirname2, isAbsolute as isAbsolute2, join as join3 } from "node:path";
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var MAX_RESPONSE_BYTES = 64 * 1024;
@@ -31368,7 +31369,7 @@ function resolveAccountConfig(cwd, env) {
   }
   const apiBase = assertSafeBase(configuredApiBase || DEFAULT_API_BASE, env);
   const version2 = env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION;
-  return { apiBase, version: version2, sessionCookie, stateDir: dirname2(catalogPath) };
+  return { apiBase, version: version2, sessionCookie, stateDir: dirname2(catalogPath), catalogPath };
 }
 function validateUUID(raw, label) {
   const value = raw.trim().toLowerCase();
@@ -31415,6 +31416,116 @@ function assertStringArray(raw, label) {
   if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string"))
     throw new Error(`Parle response ${label} is invalid.`);
   return raw;
+}
+var PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+function parseInvitationLocator(raw, config2) {
+  const value = raw.trim();
+  if (UUID_RE2.test(value))
+    return validateUUID(value, "invitation");
+  let locator;
+  try {
+    locator = new URL(value);
+  } catch {
+    throw new Error("invitation must be an invite UUID or canonical Parle invitation URL.");
+  }
+  if (locator.origin !== config2.apiBase || locator.username || locator.password || locator.search || locator.hash) {
+    throw new Error("Invitation URL must use the configured canonical Parle API origin and contain no credentials, query, or fragment.");
+  }
+  const match = locator.pathname.match(/^\/(?:join|v\/room-invitations)\/([0-9a-f-]+)\/?$/i);
+  if (!match)
+    throw new Error("Invitation URL path is not a canonical Parle invitation locator.");
+  return validateUUID(match[1], "invitation locator");
+}
+function validateProfileLabel(raw) {
+  const value = raw.trim();
+  if (!PROFILE_LABEL_RE.test(value))
+    throw new Error("profileLabel must be 1 to 64 characters using letters, numbers, dot, underscore, or hyphen.");
+  return value;
+}
+function ensureProfileSink(path) {
+  const directory = dirname2(path);
+  mkdirSync2(directory, { recursive: true, mode: 448 });
+  const dir = lstatSync2(directory);
+  if (dir.isSymbolicLink() || !dir.isDirectory())
+    throw new Error(`Parle profile directory must be a real directory: ${directory}`);
+  if (process.platform !== "win32" && dir.uid !== process.getuid?.())
+    throw new Error(`Parle profile directory must be owned by the current user: ${directory}`);
+  if (process.platform !== "win32")
+    chmodSync2(directory, 448);
+  if (existsSync2(path))
+    safeFile(path, "Parle profile catalog", true);
+  const writePath = existsSync2(path) && lstatSync2(path).isSymbolicLink() ? realpathSync(path) : path;
+  const original = existsSync2(writePath) ? readFileSync3(writePath, "utf8") : "";
+  if (original)
+    parseProfiles(original, path);
+  const probe = join3(directory, `.profiles-write-test-${process.pid}`);
+  try {
+    writeFileSync2(probe, "ok\n", { mode: 384, flag: "wx" });
+  } finally {
+    try {
+      unlinkSync(probe);
+    } catch {
+    }
+  }
+  return { writePath, original };
+}
+function renderProfile(profile) {
+  return [
+    `[${profile.name}]`,
+    `room_id = ${profile.roomId}`,
+    `agent_token = ${profile.agentToken}`,
+    profile.agentTokenId ? `agent_token_id = ${profile.agentTokenId}` : void 0,
+    profile.apiBase && profile.apiBase !== DEFAULT_API_BASE ? `api_base = ${profile.apiBase}` : void 0,
+    profile.wakeBase && profile.wakeBase !== DEFAULT_API_BASE ? `wake_base = ${profile.wakeBase}` : void 0
+  ].filter(Boolean).join("\n") + "\n";
+}
+function publishNewProfile(path, original, profile) {
+  const lockPath = `${path}.lock`;
+  let lock;
+  try {
+    lock = openSync(lockPath, "wx", 384);
+    const current = existsSync2(path) ? readFileSync3(path, "utf8") : "";
+    if (current !== original)
+      throw new Error("Parle profile catalog changed after preflight. No credential was published.");
+    const profiles = current ? parseProfiles(current, path) : /* @__PURE__ */ new Map();
+    if (profiles.has(profile.name))
+      throw new Error(`Parle profile ${profile.name} already exists. No existing profile is replaced by this workflow.`);
+    const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
+    const updated = current + separator + renderProfile(profile);
+    parseProfiles(updated, path);
+    const temp = join3(dirname2(path), `.profiles.${process.pid}.${Date.now()}.tmp`);
+    try {
+      writeFileSync2(temp, updated, { mode: 384, flag: "wx" });
+      if (process.platform !== "win32")
+        chmodSync2(temp, 384);
+      renameSync2(temp, path);
+      if (process.platform !== "win32")
+        chmodSync2(path, 384);
+    } finally {
+      try {
+        if (existsSync2(temp))
+          unlinkSync(temp);
+      } catch {
+      }
+    }
+  } finally {
+    if (lock !== void 0)
+      closeSync(lock);
+    try {
+      if (existsSync2(lockPath))
+        unlinkSync(lockPath);
+    } catch {
+    }
+  }
+}
+function publicAgents(raw) {
+  if (!Array.isArray(raw))
+    throw new Error("Parle agents response is invalid.");
+  return raw.map((item) => ({
+    agentId: validateUUID(String(item?.agent_id || ""), "agent_id"),
+    agentHandle: validateHandle(String(item?.agent_handle || "")),
+    ...typeof item?.display_name === "string" ? { displayName: item.display_name } : {}
+  }));
 }
 var ParleAccountClient = class {
   cwd;
@@ -31466,96 +31577,41 @@ var ParleAccountClient = class {
     const principalId = validateUUID(params.principalId, "principalId");
     const principalHandle = validateHandle(params.principalHandle);
     const config2 = this.config();
-    const directory = inviteDirectory(config2, true);
-    const probe = join3(directory, `.write-test.${process.pid}.${Date.now()}`);
-    try {
-      writeFileSync2(probe, "ok\n", { mode: 384, flag: "wx" });
-    } finally {
-      try {
-        if (existsSync2(probe))
-          unlinkSync(probe);
-      } catch {
-      }
-    }
     const response = await this.request(config2, `/v/rooms/${encodeURIComponent(roomId)}/invites`, {
       method: "POST",
-      body: { seat_type: "principal", target: { kind: "principal", principal_id: principalId } },
+      body: { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_id: principalId } },
       signal
     });
     const inviteId = validateUUID(String(response.invite_id || ""), "response invite_id");
     const responseRoomId = validateUUID(String(response.room_id || ""), "response room_id");
     const targetPrincipalId = validateUUID(String(response.target_principal_id || ""), "response target_principal_id");
-    const secret = String(response.secret || "");
-    const code = String(response.code || "");
-    if (responseRoomId !== roomId || targetPrincipalId !== principalId || response.seat_type !== "principal")
-      throw new Error("Parle invite response did not match the requested immutable principal admission.");
-    if (!INVITE_SECRET_RE.test(secret) || !INVITE_CODE_RE.test(code))
-      throw new Error("Parle invite response did not contain a valid one-time capability.");
+    if (responseRoomId !== roomId || targetPrincipalId !== principalId || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
+      throw new Error("Parle invite response did not match the requested immutable target-session principal admission.");
+    }
+    if (response.secret || response.code)
+      throw new Error("Parle target-session invite response unexpectedly contained capability authority material.");
     const offeredRights = assertStringArray(response.offered_rights, "offered_rights");
     if (offeredRights.length !== 0)
       throw new Error("Parle invite response unexpectedly offered elevated room rights.");
-    const ttlSeconds = Number(response.ttl_seconds);
-    if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 7 * 24 * 60 * 60)
-      throw new Error("Parle invite response ttl_seconds is invalid.");
     const display = normalizeTargetDisplay(response.target_display);
     const resolvedHandle = validateHandle(display.handle);
     if (resolvedHandle !== principalHandle)
       throw new Error("Parle invite response target handle did not match the requested confirmation label.");
-    const createdAt = this.now();
-    const handoff = {
-      schemaVersion: 1,
-      kind: "parle-principal-invite",
-      apiVersion: config2.version,
+    const claimUrl = String(response.claim_url || "");
+    if (parseInvitationLocator(claimUrl, config2) !== inviteId)
+      throw new Error("Parle invite response did not contain a canonical locator URL.");
+    return {
       inviteId,
       roomId,
-      secret,
-      code,
+      claimMode: "target_session",
+      claimUrl,
       seatType: "principal",
       targetPrincipalId,
       targetHandle: resolvedHandle,
       offeredRights: [],
-      createdAt: createdAt.toISOString(),
-      expiresAt: new Date(createdAt.getTime() + ttlSeconds * 1e3).toISOString()
-    };
-    const handoffPath = join3(directory, `${inviteId}.json`);
-    if (existsSync2(handoffPath))
-      throw new Error(`Parle invite handoff already exists: ${handoffPath}`);
-    const temporary = join3(directory, `.invite.${process.pid}.${Date.now()}.tmp`);
-    let published = false;
-    try {
-      writeFileSync2(temporary, `${JSON.stringify(handoff, null, 2)}
-`, { mode: 384, flag: "wx" });
-      if (process.platform !== "win32")
-        chmodSync2(temporary, 384);
-      linkSync(temporary, handoffPath);
-      published = true;
-    } catch (error51) {
-      if (!published) {
-        try {
-          if (existsSync2(temporary))
-            unlinkSync(temporary);
-        } catch {
-        }
-      }
-      throw error51;
-    } finally {
-      try {
-        if (existsSync2(temporary))
-          unlinkSync(temporary);
-      } catch {
-      }
-    }
-    return {
-      inviteId,
-      roomId,
-      seatType: "principal",
-      targetPrincipalId,
-      targetHandle: handoff.targetHandle,
-      offeredRights: [],
-      expiresAt: handoff.expiresAt,
-      handoffPath,
-      sensitive: true,
-      next: "Transfer the private 0600 handoff file to the intended principal through a secure out-of-band channel. Do not read or paste its contents into chat, logs, or tool parameters."
+      expiresAt: response.expires_at,
+      sensitive: false,
+      next: "Share the ordinary locator URL out of band. Possession grants no authority; only the authenticated immutable target principal can preview or accept it."
     };
   }
   readHandoff(path, config2) {
@@ -31664,6 +31720,280 @@ var ParleAccountClient = class {
       ...warnings.length ? { warnings } : {},
       ...cleanupWarning ? { cleanupWarning } : {},
       next: "The principal now holds an ordinary direct seat. Agent seating and room-bound agent credentials are separate follow-up actions."
+    };
+  }
+  async invitationStatus(config2, invitation, signal) {
+    const inviteId = parseInvitationLocator(invitation, config2);
+    const response = await this.request(config2, `/v/room-invitations/${encodeURIComponent(inviteId)}`, { signal });
+    if (validateUUID(String(response.invite_id || ""), "response invite_id") !== inviteId)
+      throw new Error("Parle invitation response did not match the requested locator.");
+    const roomId = validateUUID(String(response.room_id || ""), "response room_id");
+    const state = String(response.state || "");
+    if (!["pending", "accepted", "membership_ended"].includes(state) || response.seat_type !== "principal")
+      throw new Error("Parle invitation response has invalid terms.");
+    const offeredRights = assertStringArray(response.offered_rights, "offered_rights");
+    if (offeredRights.length !== 0)
+      throw new Error("Parle invitation unexpectedly offers elevated room rights.");
+    return {
+      inviteId,
+      roomId,
+      roomHandle: typeof response.room_handle === "string" ? validateHandle(response.room_handle) : void 0,
+      state,
+      inviterPrincipalId: validateUUID(String(response.inviter_principal_id || ""), "response inviter_principal_id"),
+      inviterHandle: typeof response.inviter_handle === "string" ? response.inviter_handle : void 0,
+      seatType: "principal",
+      offeredRights,
+      historyVisible: response.history_visible === true,
+      expiresAt: response.expires_at,
+      acceptedAt: response.accepted_at || void 0,
+      principalSeatActive: response.principal_seat_active === true
+    };
+  }
+  async acceptRoomInvitation(params, signal) {
+    if (params.action !== "preview" && params.action !== "accept")
+      throw new Error('parle_accept_room_invitation action must be "preview" or "accept".');
+    if (params.action === "accept" && (params.confirmMutation !== true || !params.reason?.trim()))
+      throw new Error("parle_accept_room_invitation accept requires confirmMutation=true and a reason.");
+    const config2 = this.config();
+    const status = await this.invitationStatus(config2, params.invitation, signal);
+    if (params.action === "preview") {
+      return {
+        action: "preview",
+        ...status,
+        principal: status.state,
+        next: status.state === "pending" ? "Review these server-authored terms, then accept with explicit confirmation." : status.state === "accepted" ? "The principal seat is active. Preview agent connection as the separate next action." : "This invitation was accepted previously, but its membership has ended."
+      };
+    }
+    if (status.state === "membership_ended")
+      throw new Error("This invitation was accepted previously, but its principal membership has ended.");
+    const response = await this.request(config2, `/v/room-invitations/${encodeURIComponent(status.inviteId)}/accept`, { method: "POST", body: {}, signal });
+    const responseRoomId = validateUUID(String(response.room_id || ""), "accept room_id");
+    if (responseRoomId !== status.roomId || response.state !== "seated")
+      throw new Error("Parle accepted the invitation but returned inconsistent admission facts.");
+    return {
+      action: "accept",
+      inviteId: status.inviteId,
+      roomId: status.roomId,
+      roomHandle: status.roomHandle,
+      seatId: validateUUID(String(response.seat_id || ""), "accept seat_id"),
+      participantId: validateUUID(String(response.participant_id || ""), "accept participant_id"),
+      principal: "accepted",
+      agent: "needs_selection",
+      seat: "missing",
+      credential: "missing",
+      connection: "profile_ready",
+      next: "The direct principal seat is active and usable. Preview parle_connect_own_agent to select exactly one durable agent."
+    };
+  }
+  async connectOwnAgent(params, signal) {
+    if (params.action !== "preview" && params.action !== "complete")
+      throw new Error('parle_connect_own_agent action must be "preview" or "complete".');
+    if (params.action === "complete" && (params.confirmMutation !== true || !params.reason?.trim()))
+      throw new Error("parle_connect_own_agent complete requires confirmMutation=true and a reason.");
+    if (params.agentId && params.createAgentHandle)
+      throw new Error("agentId and createAgentHandle are mutually exclusive.");
+    if (params.agentHandle && params.createAgentHandle)
+      throw new Error("agentHandle and createAgentHandle are mutually exclusive.");
+    const config2 = this.config();
+    const invitation = await this.invitationStatus(config2, params.invitation, signal);
+    if (invitation.state !== "accepted" || !invitation.principalSeatActive) {
+      return {
+        action: params.action,
+        inviteId: invitation.inviteId,
+        roomId: invitation.roomId,
+        principal: invitation.state,
+        agent: "needs_selection",
+        seat: "missing",
+        credential: "missing",
+        connection: "profile_ready",
+        next: invitation.state === "pending" ? "Accept the principal invitation first." : "The principal membership has ended and cannot connect an agent."
+      };
+    }
+    const listed = await this.request(config2, "/v/agents", { signal });
+    const agents = publicAgents(listed.agents);
+    let selected = params.agentId ? agents.find((agent) => agent.agentId === validateUUID(params.agentId, "agentId")) : void 0;
+    if (params.agentId && !selected)
+      throw new Error("agentId is not an active durable agent owned by the authenticated principal.");
+    if (!selected && params.agentHandle) {
+      const handle = validateHandle(params.agentHandle);
+      selected = agents.find((agent) => agent.agentHandle === handle);
+      if (!selected)
+        throw new Error("agentHandle is not an active durable agent owned by the authenticated principal.");
+    }
+    if (!selected && !params.createAgentHandle && agents.length === 1)
+      selected = agents[0];
+    const proposedCreateHandle = params.createAgentHandle ? validateHandle(params.createAgentHandle) : void 0;
+    if (!selected && !proposedCreateHandle) {
+      return {
+        action: "preview",
+        inviteId: invitation.inviteId,
+        roomId: invitation.roomId,
+        roomHandle: invitation.roomHandle,
+        principal: "accepted",
+        agent: "needs_selection",
+        agents,
+        seat: "missing",
+        credential: "missing",
+        connection: "host_restart_required",
+        next: agents.length === 0 ? "Choose an explicit createAgentHandle, then preview again." : "Choose one agentId or agentHandle, then preview again."
+      };
+    }
+    if (params.action === "preview" && !selected) {
+      return {
+        action: "preview",
+        inviteId: invitation.inviteId,
+        roomId: invitation.roomId,
+        roomHandle: invitation.roomHandle,
+        principal: "accepted",
+        agent: "selected",
+        proposedCreateHandle,
+        agents,
+        seat: "missing",
+        credential: "missing",
+        connection: "host_restart_required",
+        next: "Review the deliberate new-agent handle, then complete with explicit confirmation."
+      };
+    }
+    if (params.action === "preview" && selected) {
+      const room2 = await this.request(config2, `/v/rooms/${encodeURIComponent(invitation.roomId)}`, { signal });
+      const agentSeats2 = Array.isArray(room2?.roster?.agent_seats) ? room2.roster.agent_seats : [];
+      const activeSeat = agentSeats2.find((item) => item?.agent_id === selected.agentId);
+      const tokensResponse2 = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { signal });
+      const tokens2 = Array.isArray(tokensResponse2.tokens) ? tokensResponse2.tokens : [];
+      const profiles2 = existsSync2(config2.catalogPath) ? parseProfiles(readFileSync3(config2.catalogPath, "utf8"), config2.catalogPath) : /* @__PURE__ */ new Map();
+      const activeTokenIds2 = new Set(tokens2.filter((token) => token?.agent_id === selected.agentId && token?.room_id === invitation.roomId && token?.revoked_at == null && Array.isArray(token?.scopes) && token.scopes.includes("participate")).map((token) => token.agent_token_id));
+      const compatible2 = [...profiles2.values()].find((profile) => profile.roomId === invitation.roomId && profile.agentTokenId && activeTokenIds2.has(profile.agentTokenId));
+      return {
+        action: "preview",
+        inviteId: invitation.inviteId,
+        roomId: invitation.roomId,
+        roomHandle: invitation.roomHandle,
+        principal: "accepted",
+        agent: "selected",
+        selectedAgent: selected,
+        agents,
+        seat: activeSeat ? "active" : "missing",
+        ...activeSeat ? { seatId: validateUUID(String(activeSeat.seat_id || ""), "seat_id") } : {},
+        credential: compatible2 ? "profile_ready" : "missing",
+        connection: compatible2 ? "profile_ready" : "host_restart_required",
+        ...compatible2 ? { profile: compatible2.name } : {},
+        next: compatible2 ? "The exact agent already has a proven compatible profile. Confirm complete to return the ready binding without minting another credential." : "Review the immutable agent selection and missing steps, then complete with explicit confirmation."
+      };
+    }
+    let agentState = "selected";
+    if (!selected) {
+      const created = await this.request(config2, "/v/agents", { method: "POST", body: { agent_handle: proposedCreateHandle }, signal });
+      selected = { agentId: validateUUID(String(created.agent_id || ""), "created agent_id"), agentHandle: validateHandle(String(created.agent_handle || "")), ...typeof created.display_name === "string" ? { displayName: created.display_name } : {} };
+      if (selected.agentHandle !== proposedCreateHandle)
+        throw new Error("Created agent did not match the confirmed handle.");
+      agentState = "created";
+    }
+    const room = await this.request(config2, `/v/rooms/${encodeURIComponent(invitation.roomId)}`, { signal });
+    const agentSeats = Array.isArray(room?.roster?.agent_seats) ? room.roster.agent_seats : [];
+    let seat = agentSeats.find((item) => item?.agent_id === selected.agentId);
+    if (!seat) {
+      const admitted = await this.request(config2, `/v/rooms/${encodeURIComponent(invitation.roomId)}/seats`, { method: "POST", body: { agent_id: selected.agentId }, signal });
+      if (validateUUID(String(admitted.agent_id || ""), "admitted agent_id") !== selected.agentId)
+        throw new Error("Parle admitted an unexpected agent.");
+      seat = { seat_id: validateUUID(String(admitted.seat_id || ""), "admitted seat_id"), agent_id: selected.agentId };
+    }
+    const tokensResponse = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { signal });
+    const tokens = Array.isArray(tokensResponse.tokens) ? tokensResponse.tokens : [];
+    const catalogPath = config2.catalogPath;
+    const profiles = existsSync2(catalogPath) ? parseProfiles(readFileSync3(catalogPath, "utf8"), catalogPath) : /* @__PURE__ */ new Map();
+    const activeTokenIds = new Set(tokens.filter((token) => token?.agent_id === selected.agentId && token?.room_id === invitation.roomId && token?.revoked_at == null && Array.isArray(token?.scopes) && token.scopes.includes("participate")).map((token) => token.agent_token_id));
+    const compatible = [...profiles.values()].find((profile) => profile.roomId === invitation.roomId && profile.agentTokenId && activeTokenIds.has(profile.agentTokenId));
+    if (compatible) {
+      return {
+        action: "complete",
+        inviteId: invitation.inviteId,
+        roomId: invitation.roomId,
+        principal: "accepted",
+        agent: agentState,
+        selectedAgent: selected,
+        seat: "active",
+        seatId: validateUUID(String(seat.seat_id || ""), "seat_id"),
+        credential: "profile_ready",
+        connection: "profile_ready",
+        profile: compatible.name,
+        next: "Use the host adapter's existing safe profile-switch lifecycle to connect."
+      };
+    }
+    const roomHandle = invitation.roomHandle;
+    if (!roomHandle && !params.profileLabel)
+      throw new Error("Parle did not provide a canonical room handle. Supply an explicit profileLabel.");
+    let profileName = params.profileLabel ? validateProfileLabel(params.profileLabel) : roomHandle;
+    if (profiles.has(profileName)) {
+      if (params.profileLabel)
+        throw new Error(`Parle profile ${profileName} already exists with an unproven binding. Choose a new profileLabel.`);
+      const alternate = validateProfileLabel(`${roomHandle}-${selected.agentHandle}`);
+      if (profiles.has(alternate))
+        throw new Error(`Both preferred profile labels are occupied. Supply an explicit unused profileLabel.`);
+      profileName = alternate;
+    }
+    const sink = ensureProfileSink(catalogPath);
+    let tokenResponse;
+    try {
+      tokenResponse = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { method: "POST", body: { room_id: invitation.roomId }, signal });
+    } catch (error51) {
+      if (!error51?.status || error51.status >= 500) {
+        return {
+          action: "complete",
+          inviteId: invitation.inviteId,
+          roomId: invitation.roomId,
+          principal: "accepted",
+          agent: agentState,
+          selectedAgent: selected,
+          recoveryAgentId: selected.agentId,
+          seat: "active",
+          credential: "outcome_unknown",
+          connection: "host_restart_required",
+          next: "Token mint outcome is unknown. Do not retry. Inspect safe token metadata for recoveryAgentId and follow Parle recovery issue #451."
+        };
+      }
+      throw error51;
+    }
+    const candidateTokenId = optionalUUID(tokenResponse.agent_token_id);
+    const revokeMintedToken = async () => {
+      if (!candidateTokenId)
+        return false;
+      try {
+        const revoked = await this.fetchImpl(new URL(`/v/agents/${encodeURIComponent(selected.agentId)}/tokens/${encodeURIComponent(candidateTokenId)}`, config2.apiBase), {
+          method: "DELETE",
+          headers: { Accept: "application/json", "Parle-Version": config2.version, Cookie: config2.sessionCookie }
+        });
+        return revoked.ok;
+      } catch {
+        return false;
+      }
+    };
+    let agentTokenId;
+    let agentToken;
+    try {
+      agentTokenId = validateUUID(String(tokenResponse.agent_token_id || ""), "agent_token_id");
+      agentToken = String(tokenResponse.token || "");
+      if (!/^parle_agt_\S{16,512}$/.test(agentToken) || validateUUID(String(tokenResponse.agent_id || ""), "token agent_id") !== selected.agentId || validateUUID(String(tokenResponse.room_id || ""), "token room_id") !== invitation.roomId) {
+        throw new Error("Parle token response did not match the confirmed room and agent.");
+      }
+      publishNewProfile(sink.writePath, sink.original, { name: profileName, roomId: invitation.roomId, agentToken, agentTokenId, apiBase: config2.apiBase });
+    } catch (error51) {
+      const cleaned = await revokeMintedToken();
+      const safeMessage = scrub(String(error51?.message || error51), [config2.sessionCookie, String(tokenResponse?.token || "")]);
+      throw new Error(`${safeMessage} Credential cleanup ${cleaned ? "succeeded" : "could not be confirmed"}; inspect safe token metadata before retrying.`);
+    }
+    return {
+      action: "complete",
+      inviteId: invitation.inviteId,
+      roomId: invitation.roomId,
+      principal: "accepted",
+      agent: agentState,
+      selectedAgent: selected,
+      seat: "active",
+      seatId: validateUUID(String(seat.seat_id || ""), "seat_id"),
+      credential: "profile_ready",
+      connection: "profile_ready",
+      profile: profileName,
+      next: "Use the host adapter's existing safe profile-switch lifecycle to connect."
     };
   }
 };
@@ -32799,7 +33129,7 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.10" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.11" });
   server.registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -32853,7 +33183,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
   }));
   server.registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
-    description: "Mint one identity-bound ordinary principal-seat invite through the fixed human-session endpoint. The session cookie comes only from safe local configuration. The one-time capability is written to a private 0600 handoff file and never returned; transfer that file out of band.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Returns a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it.",
     inputSchema: {
       roomId: external_exports.string(),
       principalId: external_exports.string(),
@@ -32875,6 +33205,32 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
     },
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
   }, async (params) => safeTool(() => accountClient.claimPrincipalInvite(params)));
+  server.registerTool("parle_accept_room_invitation", {
+    title: "Accept Parle Room Invitation",
+    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle locator. Possession grants no authority. The authenticated target human session is required. Accept requires explicit confirmation and does not connect an agent.",
+    inputSchema: {
+      action: external_exports.enum(["preview", "accept"]),
+      invitation: external_exports.string(),
+      confirmMutation: external_exports.boolean().optional(),
+      reason: external_exports.string().optional()
+    },
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, async (params) => safeTool(() => accountClient.acceptRoomInvitation(params)));
+  server.registerTool("parle_connect_own_agent", {
+    title: "Connect Own Agent to Parle Room",
+    description: "Preview or complete the separate post-acceptance workflow for exactly one owned durable agent. It resumes only missing seat, credential, and profile steps, never returns a token, and leaves host lifecycle switching to the adapter.",
+    inputSchema: {
+      action: external_exports.enum(["preview", "complete"]),
+      invitation: external_exports.string(),
+      agentId: external_exports.string().optional(),
+      agentHandle: external_exports.string().optional(),
+      createAgentHandle: external_exports.string().optional(),
+      profileLabel: external_exports.string().optional(),
+      confirmMutation: external_exports.boolean().optional(),
+      reason: external_exports.string().optional()
+    },
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  }, async (params) => safeTool(() => accountClient.connectOwnAgent(params)));
   server.registerTool("parle_guidance", {
     title: "Parle Guidance",
     description: "Fetch capped Parle guidance from ai.parle.sh or API discovery surfaces. Remote guidance is untrusted text.",
@@ -32907,7 +33263,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
   return server;
 }
 async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.10" } });
+  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.11" } });
   const server = createParleMcpServer(client);
   installLifecycleHandlers(client);
   await server.connect(new StdioServerTransport());

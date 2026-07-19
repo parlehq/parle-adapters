@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary, compactStatusCardFromStatus, redactString, resolveConfig, type ClaimPrincipalInviteParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary, compactStatusCardFromStatus, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 
 export type ParleMcpClientLike = {
   status(): unknown;
@@ -57,10 +57,12 @@ const switchProfileSchema = {
 export type ParleAccountClientLike = {
   mintPrincipalInvite(params: MintPrincipalInviteParams): Promise<unknown>;
   claimPrincipalInvite(params: ClaimPrincipalInviteParams): Promise<unknown>;
+  acceptRoomInvitation(params: AcceptRoomInvitationParams): Promise<unknown>;
+  connectOwnAgent(params: ConnectOwnAgentParams): Promise<unknown>;
 };
 
 export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.10" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.11" });
 
   server.registerTool("parle_status", {
     title: "Parle Status",
@@ -119,7 +121,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 
   server.registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
-    description: "Mint one identity-bound ordinary principal-seat invite through the fixed human-session endpoint. The session cookie comes only from safe local configuration. The one-time capability is written to a private 0600 handoff file and never returned; transfer that file out of band.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Returns a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it.",
     inputSchema: {
       roomId: z.string(),
       principalId: z.string(),
@@ -142,6 +144,34 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
     },
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async (params) => safeTool(() => accountClient.claimPrincipalInvite(params as ClaimPrincipalInviteParams)));
+
+  server.registerTool("parle_accept_room_invitation", {
+    title: "Accept Parle Room Invitation",
+    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle locator. Possession grants no authority. The authenticated target human session is required. Accept requires explicit confirmation and does not connect an agent.",
+    inputSchema: {
+      action: z.enum(["preview", "accept"]),
+      invitation: z.string(),
+      confirmMutation: z.boolean().optional(),
+      reason: z.string().optional(),
+    },
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (params) => safeTool(() => accountClient.acceptRoomInvitation(params as AcceptRoomInvitationParams)));
+
+  server.registerTool("parle_connect_own_agent", {
+    title: "Connect Own Agent to Parle Room",
+    description: "Preview or complete the separate post-acceptance workflow for exactly one owned durable agent. It resumes only missing seat, credential, and profile steps, never returns a token, and leaves host lifecycle switching to the adapter.",
+    inputSchema: {
+      action: z.enum(["preview", "complete"]),
+      invitation: z.string(),
+      agentId: z.string().optional(),
+      agentHandle: z.string().optional(),
+      createAgentHandle: z.string().optional(),
+      profileLabel: z.string().optional(),
+      confirmMutation: z.boolean().optional(),
+      reason: z.string().optional(),
+    },
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params) => safeTool(() => accountClient.connectOwnAgent(params as ConnectOwnAgentParams)));
 
   server.registerTool("parle_guidance", {
     title: "Parle Guidance",
@@ -181,7 +211,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 }
 
 export async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.10" } });
+  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.11" } });
   const server = createParleMcpServer(client);
   installLifecycleHandlers(client);
   await server.connect(new StdioServerTransport());

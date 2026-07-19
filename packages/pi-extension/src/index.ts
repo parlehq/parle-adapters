@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type ClaimPrincipalInviteParams, type CredentialProfile, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.23";
+const PI_EXTENSION_VERSION = "0.1.24";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -136,6 +136,8 @@ type ParleAddOwnAgentSeatParams = {
 
 type ParleMintPrincipalInviteParams = MintPrincipalInviteParams;
 type ParleClaimPrincipalInviteParams = ClaimPrincipalInviteParams;
+type ParleAcceptRoomInvitationParams = AcceptRoomInvitationParams;
+type ParleConnectOwnAgentParams = ConnectOwnAgentParams;
 
 type ParleRequestParams = {
   method?: string;
@@ -1701,7 +1703,7 @@ function statusDetails(ctx: any) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_mint_principal_invite", "parle_claim_principal_invite"],
+      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -2036,7 +2038,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_mint_principal_invite",
     label: "Parle Mint Principal Invite",
-    description: "Mint one ordinary principal-seat invite through the fixed human-session room endpoint. The immutable principal UUID is authoritative; principalHandle is a human-facing confirmation label. The one-time secret and code are written atomically to a private 0600 handoff file and never returned. Transfer that file out of band.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. The immutable principal UUID is authoritative and principalHandle is a confirmation label. Returns a non-secret canonical locator for out-of-band sharing; possession grants no authority.",
     parameters: Type.Object({
       roomId: Type.String({ description: "Shared room UUID." }),
       principalId: Type.String({ description: "Immutable UUID of the principal being invited." }),
@@ -2064,6 +2066,42 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleClaimPrincipalInviteParams, signal, _update, ctx) {
       lastCtx = ctx;
       return formatResult(await accountClient(ctx.cwd || process.cwd()).claimPrincipalInvite(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_accept_room_invitation",
+    label: "Accept Parle Room Invitation",
+    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle locator. Possession grants no authority. The authenticated target human session is required. Accept does not connect an agent.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["preview", "accept"] }),
+      invitation: Type.String({ description: "Invitation UUID or canonical Parle locator URL." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true only for accept." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation only for accept." })),
+    }),
+    async execute(_id, params: ParleAcceptRoomInvitationParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).acceptRoomInvitation(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_connect_own_agent",
+    label: "Connect Own Agent to Parle Room",
+    description: "Preview or complete the separate post-acceptance workflow for exactly one owned durable agent. It resumes only missing seat, credential, and profile steps, never returns a token, and leaves profile switching to the host lifecycle.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["preview", "complete"] }),
+      invitation: Type.String({ description: "Accepted invitation UUID or canonical Parle locator URL." }),
+      agentId: Type.Optional(Type.String({ description: "Exact owned durable-agent UUID." })),
+      agentHandle: Type.Optional(Type.String({ description: "Exact owned durable-agent handle." })),
+      createAgentHandle: Type.Optional(Type.String({ description: "Deliberate handle for a new durable agent when none is selected." })),
+      profileLabel: Type.Optional(Type.String({ description: "Explicit unused local profile label when canonical choices conflict." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true only for complete." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation only for complete." })),
+    }),
+    async execute(_id, params: ParleConnectOwnAgentParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).connectOwnAgent(params, signal));
     },
   });
 

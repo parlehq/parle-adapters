@@ -16,7 +16,7 @@
     {
       "name": "error_registry",
       "path": "error-registry.json",
-      "sha256": "b0bec76631b1ab058f61d33c543f4248ce2bc6a85293eb4a9b3213703fce1ffe"
+      "sha256": "997ad5b0653222d62b335a32d9f1398a38ebcd75c52073a2d5198a1e59fdc1da"
     },
     {
       "name": "token_classes",
@@ -26,12 +26,12 @@
     {
       "name": "account_actions",
       "path": "account-actions.json",
-      "sha256": "76cf4b82e9b00013d3ec6aed1fa2a18deecb719649e706ef82df8a4f987e9765"
+      "sha256": "09ba9d5fa7812aebdaa17174ff7aa009d402accbe352e6d0ce9ff27d0c005285"
     },
     {
       "name": "room_actions",
       "path": "room-actions.json",
-      "sha256": "c82823ecb8fc842bb70138ab071483c2490e75af98073bedf3eeb02f100751f5"
+      "sha256": "519f8ec267dc82f47dc2730e464738231ccb053c129eda3416a08d6ea606bb09"
     },
     {
       "name": "wake",

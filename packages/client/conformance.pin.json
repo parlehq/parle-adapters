@@ -1,14 +1,14 @@
 {
-  "core_ref": "c547052832bdce6f544becbc785fe706070e3f31",
+  "core_ref": "fb49f9d7773f6917b076c9ce52213ce9cbc140dd",
   "parle_version": "2026-07-07",
   "fixture_schema_version": 1,
   "files": {
     "version.json": "8686be6f56d44a9ba3863de4b0075fe946e8372fe52f6a52e62409abfd56e0a3",
-    "error-registry.json": "b0bec76631b1ab058f61d33c543f4248ce2bc6a85293eb4a9b3213703fce1ffe",
+    "error-registry.json": "997ad5b0653222d62b335a32d9f1398a38ebcd75c52073a2d5198a1e59fdc1da",
     "token-classes.json": "013e9ddd2e3b4b266dc43b34ca23f75213f673736856e0a7d0dc79e7f1abbb3d",
-    "account-actions.json": "76cf4b82e9b00013d3ec6aed1fa2a18deecb719649e706ef82df8a4f987e9765",
-    "room-actions.json": "c82823ecb8fc842bb70138ab071483c2490e75af98073bedf3eeb02f100751f5",
+    "account-actions.json": "09ba9d5fa7812aebdaa17174ff7aa009d402accbe352e6d0ce9ff27d0c005285",
+    "room-actions.json": "519f8ec267dc82f47dc2730e464738231ccb053c129eda3416a08d6ea606bb09",
     "wake.json": "cacd290fd8bc3e9a1989333ce0a50faed5aedc790cf46abc7c87163c95c03e54",
-    "manifest.json": "eebfe6c843ca57417790fd2d3e7b83019475427352a2bb77d786e1556ee63bb3"
+    "manifest.json": "4b9db13cd94a068c5da1e0c799df28e96e1a2586a936508702a339b6b2f3bbe3"
   }
 }

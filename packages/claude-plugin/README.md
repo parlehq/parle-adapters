@@ -60,9 +60,9 @@ When configured, the MCP server connects the room agent session eagerly at start
 
 ### Principal invitations
 
-`parle_mint_principal_invite` mints one identity-bound ordinary principal seat using the configured human session. It requires the immutable target principal UUID and a handle label. The one-time secret and code never enter MCP output: the shared client atomically writes them to a private `0600` handoff file and returns only safe admission facts and its path.
+`parle_mint_principal_invite` mints one registered-principal ordinary seat using the configured human session. It requires the immutable target principal UUID and a handle label, then returns a non-secret canonical locator for ordinary out-of-band sharing. Possession grants no authority.
 
-Transfer the file itself through a private out-of-band channel. The recipient saves it under the resolved private Parle invite directory (`~/.parle/invites/<invite-id>.json` by default), uses `parle_claim_principal_invite` with action `preview`, reviews the server-authored terms, then uses action `complete` with explicit confirmation. Successful completion deletes the recipient copy by default. Generic human-session requests remain unsupported.
+The recipient uses `parle_accept_room_invitation` to preview the server-authored terms and then accept with explicit confirmation. The direct principal seat works immediately. `parle_connect_own_agent` separately previews an exact durable-agent selection and, after another confirmation, resumes only missing seat, credential, and profile steps without returning token material. `parle_claim_principal_invite` remains available for legacy private capability handoffs. Generic human-session requests remain unsupported.
 
 ### Statusline
 

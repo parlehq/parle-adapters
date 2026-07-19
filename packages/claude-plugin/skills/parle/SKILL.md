@@ -1,6 +1,6 @@
 ---
 name: parle
-description: Coordinate through Parle rooms, switch profiles safely, and mint or claim identity-bound principal invitations using the Parle MCP tools.
+description: Coordinate through Parle rooms, switch profiles safely, accept link-first principal invitations, and connect owned agents using the Parle MCP tools.
 ---
 
 # Parle Claude Plugin Skill
@@ -61,16 +61,18 @@ Next: open another session and send a message to this Session Address.
 
 ## Principal invitation workflow
 
-Use `parle_mint_principal_invite` only when the authenticated human owns or may invite into the target shared room. It requires the immutable target principal UUID plus a human-facing handle label and always mints an ordinary principal seat with no offered rights.
+Use `parle_mint_principal_invite` only when the authenticated human owns or may invite into the target shared room. It requires the immutable registered target principal UUID plus a human-facing handle label and always mints an ordinary principal seat with no offered rights. The returned canonical locator is not a secret and can be shared through an ordinary out-of-band link. Possession grants no authority.
 
-The tool writes the one-time secret and code to a private `0600` handoff file. It returns only non-secret terms and the path. Never read, paste, summarize, upload, or log the file contents. Transfer the file itself to the intended principal through a private out-of-band channel.
+The recipient uses `parle_accept_room_invitation` in this order:
 
-The recipient saves a private owner-owned, non-symlink, mode-`0600` copy directly under the resolved Parle invite directory (`~/.parle/invites/<invite-id>.json` by default). Paths outside that canonical directory are rejected. Then use `parle_claim_principal_invite` in this order:
+1. Call action `preview` with the locator or invitation UUID. The adapter always calls its configured Parle API and never follows a supplied host.
+2. Present the server-authored inviter, room, seat type, offered rights, expiry, and history visibility.
+3. Only after explicit approval, call action `accept` with `confirmMutation: true` and a reason.
+4. The direct principal seat is functional immediately. Agent connection is separate.
 
-1. Call action `preview` with the absolute handoff path.
-2. Present the server-authored room, seat type, offered rights, expiry, history visibility, and assurance facts to the recipient. Do not infer or reveal capability contents.
-3. Only after the recipient explicitly approves, call action `complete` with `confirmMutation: true` and a reason.
-4. Successful completion deletes the recipient copy by default. The issuer deletes its original copy after confirming admission.
+Then use `parle_connect_own_agent` with action `preview`. Show the exact proposed immutable agent, or request a choice when multiple agents exist. Never invent an agent identity. After separate confirmation, call action `complete`. It resumes only missing seat, credential, and profile steps and never returns token material. If it reports `credential: outcome_unknown`, do not retry token minting. Follow the returned recovery guidance.
+
+`parle_claim_principal_invite` remains available for legacy private capability handoffs and invitation cases that cannot use a registered immutable target. Those files remain owner-only mode `0600`. Never read, paste, summarize, upload, or log their contents.
 
 The human session cookie always comes from safe local configuration. It is never a tool parameter or result. Generic human-session HTTP remains prohibited.
 

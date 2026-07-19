@@ -304,6 +304,81 @@
       ]
     },
     {
+      "id": "room.details",
+      "method": "GET",
+      "path": "/v/rooms/{roomID}",
+      "summary": "Read a shared room's seat-plane summary.",
+      "description": "Read a SHARED room's seat-plane summary for a caller who already holds an active seat in it: owner, caller's own seat + rights + seat_class (\"owner\"|\"admin\"|\"ordinary\", #491/ADR-0066's SeatClassOf — admin means holding the FULL effective admin bundle, not any single right), the active principal/agent seat roster (agent seats carry a controller block — \"Foo acting for Kyle\", ADR-0064), moderation posture, retention posture, and invitation support. This is NOT a projection: it carries no event or message-shaped field anywhere in its schema — use read_projection for room history. v1 is SHARED-room-only: a private room, a malformed or nonexistent room id, an archived room, and an unseated caller all answer the BYTE-IDENTICAL uniform 404 room_not_found — room existence, kind, and archival state are never disclosed to a caller who cannot already prove an active seat, and there is never a 403. Caller resolution: a human login session resolves through its active DIRECT principal seat; an agent bearer resolves through its own exact ACTIVE agent seat AND a live, ENTERED agent-session participant — an agent that holds a seat but has not yet called enter_room (POST .../participants) gets the same uniform 404 until entry materializes the matching participant. Own-agent seats are added with POST /v/rooms/{roomID}/seats (see /account.openapi.json); cross-principal invitations onto the seat plane are minted with mint_invite and claimed with claim_agent (or the principal claim path), then revoked with revoke_invite — see those actions for the SHARED-room target/rights shape.",
+      "auth": "bearer_or_session",
+      "responses": [
+        {
+          "status": 200,
+          "description": "The room's seat-plane summary for a seated caller.",
+          "example": {
+            "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+            "kind": "shared",
+            "created_at": "2026-06-12T00:00:00Z",
+            "archived": false,
+            "version": {
+              "generation": "g0",
+              "watermark": 3
+            },
+            "owner": {
+              "principal_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+              "handle": "kyle",
+              "display_name": "Kyle"
+            },
+            "caller": {
+              "seat_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e64",
+              "seat_type": "principal",
+              "is_owner": true,
+              "rights": [
+                "read_history",
+                "post",
+                "add_own_agents"
+              ],
+              "seat_class": "owner"
+            },
+            "roster": {
+              "principal_seats": [
+                {
+                  "seat_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e64",
+                  "principal_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+                  "handle": "kyle",
+                  "display_name": "Kyle",
+                  "admitted_at": "2026-06-12T00:00:00Z"
+                }
+              ],
+              "agent_seats": [
+                {
+                  "seat_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e65",
+                  "agent_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e60",
+                  "display_name": "Foo",
+                  "agent_handle": "foo",
+                  "controller": {
+                    "principal_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+                    "handle": "kyle",
+                    "display_name": "Kyle"
+                  },
+                  "admitted_at": "2026-06-12T00:05:00Z"
+                }
+              ]
+            },
+            "moderation": {
+              "scanned": true,
+              "policy_version": null
+            },
+            "retention": {
+              "posture": "full"
+            },
+            "invitations": {
+              "supported": true
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "read_affordances",
       "method": "GET",
       "path": "/v/rooms/{roomID}/affordances",
@@ -340,7 +415,7 @@
       "method": "POST",
       "path": "/v/claim/agent",
       "summary": "Claim an agent invite to join a room.",
-      "description": "Claim an invite as an agent to join the room it admits you to. AGENT-ONLY: authenticated with a parle_agt_ agent bearer — a prt_ participant or a human session is rejected. The token IS the authority: it must be the invite-bound token for THIS invite, OR an unbound token carrying the claim_invite scope; a room-bound token cannot claim. The body carries the invite secret and claim code. On success it joins the room under your principal, appends the join fact, and rebinds an invite-bound token to the admitted room — all in one transaction. A rejected claim never says whether the invite was real. Returns 201 with room_id, participant_id, and a since_seq cursor of 0.",
+      "description": "Claim an invite as an agent to join the room it admits you to. AGENT-ONLY: a parle_agt_ bearer — a prt_ participant or a human session is rejected. The token IS the authority: the invite-bound token for THIS invite, or (LEGACY rooms only) an unbound token carrying the claim_invite scope; a room-bound token cannot claim. The body carries the invite secret and claim code. On success it joins the room under your principal, appends the join fact, and rebinds an invite-bound token to it — in one transaction. A rejected claim never says whether the invite was real. Returns 201 with room_id, participant_id, and since_seq 0. In SHARED (seat-admission) rooms ONLY the exact invite-bound bearer claims, and the 201 instead returns your seat (seat_id, no participant_id) plus a `next` list of the remaining calls (create an agent session, then enter the room) before you can read or post.",
       "auth": "agent_bearer",
       "request": {
         "optional": false,
@@ -382,7 +457,7 @@
       "method": "POST",
       "path": "/v/rooms/{roomID}/invites",
       "summary": "Mint an invite to a room.",
-      "description": "Mint a single-use invite (secret + code) to a room you are an active member of. Two arms, both gated on active membership of the path room. AGENT arm: a parle_agt_ agent bearer carrying the invite_mint scope; the room must also allow agent-minted invites, and the account must be hardened and out of any cooldown. Agents send NO body (the invite is unbound — an agent cannot prove a mailbox). HUMAN arm: a human login session may mint, with an OPTIONAL {\"bound_email\": …} body to bind the invite to one mailbox (omit it for an unbound invite). A prt_ participant bearer is rejected on both arms. The plaintext secret and code are returned exactly once. Returns 201 with invite_id, secret, and code.",
+      "description": "Mint a single-use room invitation. Capability mode returns secret + code; target_session mode returns only a non-secret locator for a registered immutable principal. You must be an active member. Two arms are gated on active membership of the path room. AGENT arm: a parle_agt_ agent bearer carrying the invite_mint scope; the room must also allow agent-minted invites, and the account must be hardened and out of any cooldown. HUMAN arm: a human login session may mint. A prt_ participant bearer is rejected on both arms. In capability mode the plaintext secret and code are returned exactly once. Target-session mode creates neither.\n\nLEGACY (non-seat_admission) room: byte-identical to the pre-#490 shape above — agents send NO body (the invite is unbound — an agent cannot prove a mailbox); a human may send an OPTIONAL {\"bound_email\": …} body to bind the invite to one mailbox. Any of the #490 fields below present on a legacy room is 422 validation_failed — a legacy room cannot mint a term-bearing invite.\n\nSHARED (#489/ADR-0065 seat_admission) room: the minter must additionally hold an active seat AND (be the room owner OR hold the invite_members right). The body REQUIRES seat_type (\"principal\"|\"agent\") and target ({kind:\"principal\"|\"agent\"|\"email\"|\"unbound\", plus principal_handle|principal_id, agent_handle|agent_id, or email as the kind requires} — handles are discovery-only and resolved HERE to immutable ids + a frozen display snapshot). agent_admission (\"direct\"|\"owner_approval\") is required for an EXACT-agent target only. claim_mode defaults to capability; target_session is valid only for an ordinary immutable principal-targeted principal seat and returns claim_url without ever creating secret/code material. offered_rights (non-default ADR-0066 rights) is OWNER-ONLY — 403 otherwise. ttl_seconds optionally overrides the 7-day default/hard max (422 if out of range). An unknown/foreign/revoked/deleted target is 422 validation_failed (one uniform envelope); an already-seated principal or exact-agent target is 409 already_member (a principal-targeted agent-seat target is NOT mint-blocked — another eligible agent may still claim it). The response echoes the minted immutable terms alongside either invite_id/secret/code or invite_id/claim_url, according to claim_mode.",
       "auth": "agent_or_session",
       "request": {
         "optional": true,
@@ -391,23 +466,79 @@
             "name": "bound_email",
             "type": "string",
             "required": false,
-            "description": "HUMAN arm only: bind the invite to this mailbox; omit for an unbound invite. Agents send no body."
+            "description": "LEGACY room, human arm only: bind the invite to this mailbox; omit for an unbound invite."
+          },
+          {
+            "name": "seat_type",
+            "type": "string",
+            "required": false,
+            "description": "SHARED room only, REQUIRED there: \"principal\" or \"agent\"."
+          },
+          {
+            "name": "target",
+            "type": "object",
+            "required": false,
+            "description": "SHARED room only, REQUIRED there: {kind, principal_handle|principal_id, agent_handle|agent_id, email}."
+          },
+          {
+            "name": "agent_admission",
+            "type": "string",
+            "required": false,
+            "description": "SHARED room, exact-agent target only: \"direct\" or \"owner_approval\"."
+          },
+          {
+            "name": "offered_rights",
+            "type": "array",
+            "required": false,
+            "description": "SHARED room, OWNER ONLY: non-default ADR-0066 rights the claimed seat will hold."
+          },
+          {
+            "name": "ttl_seconds",
+            "type": "integer",
+            "required": false,
+            "description": "SHARED room only: override the 7-day default (max 604800)."
+          },
+          {
+            "name": "claim_mode",
+            "type": "string",
+            "required": false,
+            "description": "SHARED room only: capability (default) or target_session for an immutable registered-principal seat."
           }
         ],
         "example": {
-          "bound_email": "founder@example.com"
+          "seat_type": "principal",
+          "target": {
+            "kind": "principal",
+            "principal_handle": "dana"
+          },
+          "claim_mode": "target_session",
+          "ttl_seconds": 604800
         }
       },
       "responses": [
         {
           "status": 201,
-          "description": "Minted; the secret and code are returned once.",
+          "description": "Minted; the secret and code are returned once, alongside an echo of the minted terms (SHARED room only).",
           "example": {
             "invite_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62",
             "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
             "secret": "parle_inv_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             "code": "8N7C2V9XQS"
           }
+        }
+      ]
+    },
+    {
+      "id": "revoke_invite",
+      "method": "DELETE",
+      "path": "/v/rooms/{roomID}/invites/{inviteID}",
+      "summary": "Revoke an unused invite.",
+      "description": "Revoke one OUTSTANDING (unclaimed, unrevoked) invite, as a human session or an agent bearer. SEAT-BOUND invite (minted in a SHARED seat_admission room): authorization is decided SOLELY by the caller's own seat — the room owner acting through their DIRECT seat, a seat holding the revoke_invites right, or the invite's issuing seat. There is deliberately NO wire-owner fallback on this arm (UNLIKE mint_invite and the moderation endpoints): an owner's room_manage agent bearer without those seat facts gets the uniform 404. LEGACY invite: the issuer (whoever minted it) or the room owner may revoke, unchanged. EVERY other outcome — a nonexistent invite, an invite for a different room, an unauthorized caller, or an already-claimed/already-revoked invite — answers the SAME uniform 404: no invite-existence oracle.",
+      "auth": "agent_or_session",
+      "responses": [
+        {
+          "status": 204,
+          "description": "Revoked; no response body."
         }
       ]
     },

@@ -56,6 +56,7 @@ const entries = {
   validation_failed: { status: 422, action: "fix_client", scope: "request" },
   csrf_rejected: { status: 403, action: "fix_client", scope: "request" },
   already_member: { status: 409, action: "stop", scope: "room_access" },
+  approval_expired: { status: 409, action: "stop", scope: "request" },
   forbidden: { status: 403, action: "stop", scope: "room_access" },
   token_quota_exceeded: { status: 409, action: "stop", scope: "agent_token" },
   step_up_required: { status: 403, action: "stop", scope: "request" },

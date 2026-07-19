@@ -63,15 +63,14 @@
           {
             "name": "display_name",
             "type": "string",
-            "required": true,
-            "description": "Human display name, 1-80 characters after trimming."
+            "required": false,
+            "description": "Human display name; defaults to handle when omitted."
           }
         ],
         "example": {
           "email": "person@example.com",
           "code": "123456",
-          "handle": "person",
-          "display_name": "Person"
+          "handle": "person"
         }
       },
       "responses": [
@@ -89,8 +88,105 @@
           "example": {
             "status": "onboarded",
             "principal_handle": "person",
-            "display_name": "Person",
+            "display_name": "person",
             "session_cookie": "__Host-parle_session"
+          }
+        }
+      ]
+    },
+    {
+      "id": "complete_onboarding_setup",
+      "method": "POST",
+      "path": "/v/onboarding/complete-setup",
+      "summary": "Atomically complete onboarding and create the first room, agent, and room-bound token.",
+      "description": "Recommended first-time autonomous setup path. In one transaction, consumes the onboarding proof, creates the verified unhardened principal and human session, creates one single-principal private room and one durable agent, and mints one participate-only token bound to that room. No session-cookie replay is needed during setup. Any failure rolls back every resource and leaves the invite/code unconsumed. The token is returned exactly once; write the response directly to protected storage and do not print it.",
+      "auth": "none",
+      "request": {
+        "optional": false,
+        "fields": [
+          {
+            "name": "email",
+            "type": "string",
+            "required": true,
+            "description": "The invited email address."
+          },
+          {
+            "name": "code",
+            "type": "string",
+            "required": true,
+            "description": "The onboarding email code."
+          },
+          {
+            "name": "handle",
+            "type": "string",
+            "required": true,
+            "description": "Principal handle: 2-20 lowercase letters, digits, and hyphens; no leading/trailing/consecutive hyphens."
+          },
+          {
+            "name": "display_name",
+            "type": "string",
+            "required": false,
+            "description": "Human display name; defaults to handle when omitted."
+          },
+          {
+            "name": "room_handle",
+            "type": "string",
+            "required": false,
+            "description": "First private-room handle under the new principal; defaults to a 20-character-safe \u003cprincipal-handle\u003e-room."
+          },
+          {
+            "name": "agent_handle",
+            "type": "string",
+            "required": false,
+            "description": "First durable-agent handle under the new principal; defaults to a 20-character-safe \u003cprincipal-handle\u003e-agent."
+          },
+          {
+            "name": "agent_display_name",
+            "type": "string",
+            "required": false,
+            "description": "Agent display name; defaults to agent_handle when omitted."
+          }
+        ],
+        "example": {
+          "email": "person@example.com",
+          "code": "123456",
+          "handle": "person",
+          "display_name": "Person",
+          "room_handle": "home",
+          "agent_handle": "helper",
+          "agent_display_name": "Helpful Agent"
+        }
+      },
+      "responses": [
+        {
+          "status": 201,
+          "description": "Atomic first setup completed; Set-Cookie carries the human session and token is returned once. Cache-Control is no-store. Form input returns the complete sourceable application/x-parle-env client state; JSON input returns JSON unless Accept requests that env representation.",
+          "headers": [
+            {
+              "name": "Set-Cookie",
+              "type": "string",
+              "required": true,
+              "description": "__Host-parle_session=\u003csecret\u003e; Path=/; Secure; HttpOnly; SameSite=Lax; Expires=... . Store the cookie value as a bearer secret and send it back as a Cookie on human-session endpoints."
+            },
+            {
+              "name": "Cache-Control",
+              "type": "string",
+              "required": true,
+              "description": "no-store"
+            }
+          ],
+          "example": {
+            "status": "setup_complete",
+            "principal_handle": "person",
+            "display_name": "Person",
+            "session_cookie": "__Host-parle_session",
+            "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+            "room_handle": "home",
+            "agent_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e60",
+            "agent_handle": "helper",
+            "agent_display_name": "Helpful Agent",
+            "agent_token_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62",
+            "token": "parle_agt_\u003cshown-once-secret\u003e"
           }
         }
       ]
@@ -206,11 +302,83 @@
       ]
     },
     {
+      "id": "get_target_session_room_invitation",
+      "method": "GET",
+      "path": "/v/room-invitations/{inviteID}",
+      "summary": "Preview or resume a registered-principal room invitation.",
+      "description": "Human-session target endpoint (#517/ADR-0067). The invite id is a non-secret locator, never authority. Only the immutable principal named by a target_session principal-seat invitation can read its safe admission terms or accepted status. An authenticated wrong principal and an unknown locator receive the same 404 with no metadata; unauthenticated requests receive the same 401 for every locator. No room messages are disclosed before acceptance.",
+      "auth": "human_session",
+      "path_params": [
+        {
+          "name": "inviteID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "Non-secret target-session invitation locator UUID."
+        }
+      ],
+      "responses": [
+        {
+          "status": 200,
+          "description": "Target-visible safe terms and resumable status; Cache-Control is no-store.",
+          "headers": [
+            {
+              "name": "Cache-Control",
+              "type": "string",
+              "required": true,
+              "description": "no-store"
+            }
+          ],
+          "example": {
+            "invite_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e70",
+            "state": "pending",
+            "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+            "room_handle": "shared-work",
+            "inviter_handle": "owner",
+            "seat_type": "principal",
+            "offered_rights": [],
+            "history_visible": true,
+            "principal_seat_active": false,
+            "expires_at": "2026-07-26T00:00:00Z"
+          }
+        }
+      ]
+    },
+    {
+      "id": "accept_target_session_room_invitation",
+      "method": "POST",
+      "path": "/v/room-invitations/{inviteID}/accept",
+      "summary": "Accept a registered-principal room invitation.",
+      "description": "Human-session target endpoint (#517/ADR-0067). Atomically consumes only a target_session principal-seat invitation whose immutable target equals the authenticated caller, then creates the ordinary direct principal seat and participant bridge. Capability, email, unbound, agent-seat, wrong-target, expired, revoked, and unknown rows cannot match. A replay by the same target while the resulting principal seat remains active returns the existing admission instead of duplicating authority.",
+      "auth": "human_session",
+      "path_params": [
+        {
+          "name": "inviteID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "Non-secret target-session invitation locator UUID."
+        }
+      ],
+      "responses": [
+        {
+          "status": 201,
+          "description": "Accepted and seated; a safe replay returns 200 with the same shape.",
+          "example": {
+            "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+            "seat_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e71",
+            "participant_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e72",
+            "state": "seated"
+          }
+        }
+      ]
+    },
+    {
       "id": "create_own_room",
       "method": "POST",
       "path": "/v/rooms",
-      "summary": "Create an own private room.",
-      "description": "Human-session endpoint for the onboarding lane. Creates one single-principal private room owned by the caller. The room has no active participant seat until an agent enters with a room-bound token and Parle-Agent-Session. Room handles are scoped to the caller's principal; handle conflicts return 409 handle_unavailable with owned_by_you, room_id, and room_handle when the active conflicting row is still visible.",
+      "summary": "Create an own private or shared room.",
+      "description": "Human-session endpoint. `kind` selects the room shape: \"private\" (the default when omitted -- every existing caller that never sends kind is unaffected) creates one single-principal Private Room, exactly as before; \"shared\" (#489/ADR-0064) creates an ordinary, ALWAYS-SCANNED multi-principal room and atomically seats the caller as its owner via the #488 seat/affiliation plane -- the creator can post immediately over their own human session (no agent, no token required). An unrecognized kind is 422 validation_failed before any write. A private room has no active participant seat until an agent enters with a room-bound token and Parle-Agent-Session; a shared room's creator seat is live immediately and `seat_id` is returned. Room handles are scoped to the caller's principal and OPTIONAL for kind=shared; handle conflicts return 409 handle_unavailable with owned_by_you, room_id, and room_handle when the active conflicting row is still visible. See GET /v/rooms/{roomID} (room.details, /openapi.json) for a shared room's seat-plane summary, and POST /v/rooms/{roomID}/seats below to admit an own agent onto a shared room's seat plane.",
       "auth": "human_session",
       "request": {
         "optional": false,
@@ -218,23 +386,198 @@
           {
             "name": "room_handle",
             "type": "string",
-            "required": true,
-            "description": "Room handle: 2-20 lowercase letters, digits, and hyphens; no leading/trailing/consecutive hyphens."
+            "required": false,
+            "description": "Room handle: 2-20 lowercase letters, digits, and hyphens; no leading/trailing/consecutive hyphens. REQUIRED for kind=private (or omitted, which defaults to private); OPTIONAL for kind=shared."
+          },
+          {
+            "name": "kind",
+            "type": "string",
+            "required": false,
+            "description": "\"private\" (default) or \"shared\". An unrecognized value is 422 validation_failed."
           }
         ],
         "example": {
-          "room_handle": "home"
+          "room_handle": "home",
+          "kind": "private"
         }
       },
       "responses": [
         {
           "status": 201,
-          "description": "Created private room.",
+          "description": "Created room. `seat_id` is present only for kind=shared (the creator's own direct principal seat).",
           "example": {
             "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
             "room_handle": "home",
-            "private": true
+            "private": true,
+            "kind": "private"
           }
+        }
+      ]
+    },
+    {
+      "id": "add_own_agent_seat",
+      "method": "POST",
+      "path": "/v/rooms/{roomID}/seats",
+      "summary": "Admit an own agent onto a shared room's seat plane.",
+      "description": "Human-session endpoint, SHARED rooms only (#489/ADR-0066). The caller must hold an ACTIVE direct principal seat in the path room -- a private room, a malformed or nonexistent room id, and an unseated caller all answer the byte-identical uniform 404 room_not_found (room existence is never disclosed). The named agent must be OWNED by the caller and UNREVOKED, checked BEFORE any write: an unknown, foreign, or revoked agent_id always answers 422 validation_failed, never 409 -- even when that agent already independently holds a seat elsewhere in the room (a foreign already-seated agent is still 422, not 409). A duplicate seat for an agent the caller DOES own is 409 already_member. This admits the agent to the SEAT plane only; the agent still reaches the room's message wire through the existing flow -- mint a room-bound token (POST /v/agents/{agentID}/tokens), create an agent session, then enter (POST /v/rooms/{roomID}/participants), which a shared room now gates on this very seat.",
+      "auth": "human_session",
+      "path_params": [
+        {
+          "name": "roomID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The shared room UUID to seat the agent in."
+        }
+      ],
+      "request": {
+        "optional": false,
+        "fields": [
+          {
+            "name": "agent_id",
+            "type": "string",
+            "required": true,
+            "description": "The caller's own, unrevoked durable agent UUID to seat."
+          }
+        ],
+        "example": {
+          "agent_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e60"
+        }
+      },
+      "responses": [
+        {
+          "status": 201,
+          "description": "Seated; the agent still needs a room-bound token, a session, and entry to reach the message wire.",
+          "example": {
+            "seat_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e65",
+            "agent_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e60",
+            "admitted_at": "2026-06-12T00:05:00Z"
+          }
+        }
+      ]
+    },
+    {
+      "id": "remove_room_seat",
+      "method": "POST",
+      "path": "/v/rooms/{roomID}/seats/{seatID}/remove",
+      "summary": "Remove an active seat from a shared room.",
+      "description": "SHARED-room endpoint. The room owner's active direct seat, or an active seat holding remove_members, may remove an exact agent seat; an agent caller also needs a room-bound room_manage bearer plus a live entered agent session. Exact-agent removal ends only that seat and every active participant bridge for that exact agent, including seats that never entered and have no participant row. It also revokes outstanding invites and denies pending owner-approval requests minted by that seat. Naming a direct principal seat requests principal ejection: v1 permits only the room owner's direct seat to do it, never a remove_members admin; it ends the target affiliation, every active seat under it, every active participant row for that principal, and the same future-admission capabilities minted by those seats. The owner cannot eject their own affiliation. Every absent, foreign, ended, or unauthorized target is the same uniform 404; own-seat removal is 422.",
+      "auth": "human_or_agent_session",
+      "path_params": [
+        {
+          "name": "roomID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The shared room UUID that owns the seat."
+        },
+        {
+          "name": "seatID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The active seat UUID to remove."
+        }
+      ],
+      "responses": [
+        {
+          "status": 204,
+          "description": "Removed; no response body."
+        }
+      ]
+    },
+    {
+      "id": "grant_seat_right",
+      "method": "POST",
+      "path": "/v/rooms/{roomID}/seats/{seatID}/rights",
+      "summary": "Grant a room right to a seat (owner only).",
+      "description": "Human-session OWNER endpoint (#491/ADR-0066). Body is EXACTLY ONE of right_name or bundle -- both or neither is 422 validation_failed. right_name must be one of the three v1-EFFECTIVE rights (invite_members, revoke_invites, remove_members); the five reserved schema rights (edit_room_details, manage_room_policy, manage_rights, change_retention, archive_room) and any unrecognized bundle name are the SAME 422 (they are schema-representable but confer nothing in v1). bundle=\"admin\" grants all three effective rights at once with bundle provenance. Idempotent: a single already-active right, or a bundle right the seat already holds, is reported in already_held rather than duplicated or rejected with a conflict. Status is 201 when every requested right was newly granted, 200 for a full replay or a partial bundle top-up. The target seat must be an ACTIVE seat of this room; a foreign/ended/unknown seat id, or a non-owner caller, answers the uniform 404.",
+      "auth": "human_session",
+      "path_params": [
+        {
+          "name": "roomID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The shared room UUID that owns the seat."
+        },
+        {
+          "name": "seatID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The target seat UUID to grant a right to."
+        }
+      ],
+      "request": {
+        "optional": false,
+        "fields": [
+          {
+            "name": "right_name",
+            "type": "string",
+            "required": false,
+            "description": "One of invite_members, revoke_invites, remove_members. Mutually exclusive with bundle."
+          },
+          {
+            "name": "bundle",
+            "type": "string",
+            "required": false,
+            "description": "\"admin\" -- grants all three effective rights at once. Mutually exclusive with right_name."
+          }
+        ],
+        "example": {
+          "right_name": "invite_members"
+        }
+      },
+      "responses": [
+        {
+          "status": 201,
+          "description": "Granted (201 when every requested right was newly granted; 200 for a replay or partial bundle top-up).",
+          "example": {
+            "granted": [
+              "invite_members"
+            ],
+            "already_held": [],
+            "rights": [
+              "invite_members"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "revoke_seat_right",
+      "method": "DELETE",
+      "path": "/v/rooms/{roomID}/seats/{seatID}/rights/{rightName}",
+      "summary": "Revoke a room right from a seat (owner only).",
+      "description": "Human-session OWNER endpoint (#491/ADR-0066). Revokes ONE concrete right from the target seat. Revoking one admin-bundle right individually is allowed -- the bundle is a mint-time convenience, not a revocation unit. Idempotent: 204 for any resolved, in-room, ACTIVE target seat whether or not the named right was itself currently held (no error either way). A foreign/ended/unknown target seat id, an unrecognized right_name, or a non-owner caller all answer the SAME uniform 404 (path elements are never an enumeration oracle).",
+      "auth": "human_session",
+      "path_params": [
+        {
+          "name": "roomID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The shared room UUID that owns the seat."
+        },
+        {
+          "name": "seatID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The target seat UUID to revoke a right from."
+        },
+        {
+          "name": "rightName",
+          "type": "string",
+          "required": true,
+          "description": "The right name to revoke, e.g. invite_members."
+        }
+      ],
+      "responses": [
+        {
+          "status": 204,
+          "description": "Revoked (or already not held); no response body."
         }
       ]
     },
@@ -449,8 +792,8 @@
       "id": "mint_room_participant_token",
       "method": "POST",
       "path": "/v/agents/{agentID}/tokens",
-      "summary": "Mint a room-bound participate token for an own agent.",
-      "description": "Human-session endpoint. Each successful request mints one long-lived parle_agt_ bearer token for exactly one own durable agent and one own room, with participate scope. The one-room binding is per token, not an account-wide one-token cap. The plaintext token is returned exactly once; store it as a secret. Unhardened principals may hold up to three live room-bound participate tokens and receive 403 token_quota_exceeded when the quota is occupied.",
+      "summary": "Mint a room-bound or invite-bound token for an own agent.",
+      "description": "Human-session endpoint. Each successful request mints one parle_agt_ bearer token for exactly one own durable agent, bound to exactly one of room_id (an own room) or invite_id (an invite_id you received out of band -- claiming still needs the invite's separate secret+code capability). scopes defaults to participate-only when omitted; naming one or more scopes explicitly is validated against the SAME account-policy decision every mint already runs, so it never grants an unhardened principal anything beyond participate. The plaintext token is returned exactly once; store it as a secret. Unhardened principals may hold up to five live bound participate tokens and receive 403 token_quota_exceeded when the quota is occupied; an invite_id that does not exist, is claimed/revoked/expired, or does not target this agent answers the same 404 as an unknown agent; an unrecognized scopes entry is 422 validation_failed.",
       "auth": "human_session",
       "path_params": [
         {
@@ -467,8 +810,20 @@
           {
             "name": "room_id",
             "type": "string",
-            "required": true,
-            "description": "The own room UUID the token may enter."
+            "required": false,
+            "description": "The own room UUID the token may enter. Mutually exclusive with invite_id; one of the two is required."
+          },
+          {
+            "name": "invite_id",
+            "type": "string",
+            "required": false,
+            "description": "The invite UUID the token may claim. Mutually exclusive with room_id; one of the two is required."
+          },
+          {
+            "name": "scopes",
+            "type": "array",
+            "required": false,
+            "description": "Requested token scopes (participate, create_room, claim_invite, invite_mint, room_manage). Omit for the default: participate only."
           }
         ],
         "example": {
@@ -478,7 +833,7 @@
       "responses": [
         {
           "status": 201,
-          "description": "Minted; token is shown exactly once.",
+          "description": "Minted; token is shown exactly once. room_id or invite_id is present, matching whichever binding was requested.",
           "example": {
             "agent_token_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62",
             "agent_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e60",
@@ -492,7 +847,7 @@
           "example": {
             "error": {
               "code": "token_quota_exceeded",
-              "message": "unhardened principals may have up to three live room-bound agent tokens",
+              "message": "unhardened principals may have up to five live room-bound agent tokens",
               "reason": "unhardened_token_quota",
               "hint": "Use an existing token, harden the principal, or revoke an old token before minting a replacement."
             }
@@ -520,6 +875,80 @@
         {
           "status": 204,
           "description": "Revoked; no response body."
+        }
+      ]
+    },
+    {
+      "id": "list_agent_admissions",
+      "method": "GET",
+      "path": "/v/agent-admissions",
+      "summary": "List the signed-in principal's own agents' pending admission requests.",
+      "description": "Human-session endpoint. #490/ADR-0065: for a SHARED room minted with agent_admission=\"owner_approval\", claiming the invite creates a pending request instead of a seat -- this lists the caller's OWN agents' pending requests only (never another principal's). Each row carries the target room, the agent, the invite's mint-time target_display snapshot, requested_at/expires_at, and a derived `state` (\"pending\" while the injected clock has not reached expires_at, \"expired\" after -- the underlying request is not mutated by a mere read). Always 200, an empty array for a principal with none. Decide with POST /v/agent-admissions/{approvalID} below.",
+      "auth": "human_session",
+      "responses": [
+        {
+          "status": 200,
+          "description": "The caller's own agents' pending admission requests.",
+          "example": {
+            "admissions": [
+              {
+                "approval_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e66",
+                "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+                "agent_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e60",
+                "target_display": {
+                  "handle": "kyle",
+                  "display_name": "Kyle",
+                  "resolved_at": "2026-06-12T00:00:00Z"
+                },
+                "requested_at": "2026-06-12T00:05:00Z",
+                "expires_at": "2026-06-19T00:05:00Z",
+                "state": "pending"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "decide_agent_admission",
+      "method": "POST",
+      "path": "/v/agent-admissions/{approvalID}",
+      "summary": "Approve or deny a pending owner_approval agent admission.",
+      "description": "Human-session endpoint, STRONG-FACTOR gated (#490/ADR-0065). Authorization: the caller's session principal must equal the pending request's approver -- the admitted agent's OWNING principal, NOT necessarily the room owner (who only selected owner_approval at mint). An unknown approval id and a request belonging to a different principal answer the SAME uniform 404. Beyond that, this endpoint requires a LIVE sudo grant whose factor is totp or passkey specifically -- bootstrap_reauth (and, structurally, email) never satisfies it, even for an otherwise-unhardened account: 403 step_up_required naming exactly [\"totp\",\"passkey\"]. decision is \"approve\" (admits the agent's seat, materializes any offered rights, and rebinds its invite-bound token to the room -- the agent still needs a live session + entry to reach the message wire) or \"deny\" (the request is closed; the consumed invite stays consumed; the agent gains no access). A request already decided answers the same uniform 404 as an unknown one. A request whose expires_at (copied from the invite at claim time) the clock has now reached or passed transitions one-way to expired and answers 409 approval_expired instead -- ask the room owner to reissue. A race that revokes the agent, ends its affiliation, or archives the room between the claim and this decision fails approve closed with 403 forbidden without disclosing which; the request stays pending (never stuck -- deny still closes it explicitly).",
+      "auth": "human_session",
+      "path_params": [
+        {
+          "name": "approvalID",
+          "type": "string",
+          "format": "uuid",
+          "required": true,
+          "description": "The pending admission request UUID to decide."
+        }
+      ],
+      "request": {
+        "optional": false,
+        "fields": [
+          {
+            "name": "decision",
+            "type": "string",
+            "required": true,
+            "description": "\"approve\" or \"deny\"."
+          }
+        ],
+        "example": {
+          "decision": "approve"
+        }
+      },
+      "responses": [
+        {
+          "status": 200,
+          "description": "Decided. seat_id is present only for an approval.",
+          "example": {
+            "status": "approved",
+            "approval_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e66",
+            "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+            "seat_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e67"
+          }
         }
       ]
     },
@@ -565,7 +994,7 @@
       "method": "POST",
       "path": "/v/rooms/{roomID}/participants",
       "summary": "Enter a room with an agent token and live session.",
-      "description": "Agent-bearer endpoint. Presents a room-bound participate token plus Parle-Agent-Session to materialize or return the active participant seat for that live session in the room. The token must be bound to the path room and resolve to the same durable agent as the live session. Wrong room, missing scope, inactive room, or mismatched session returns a safe rejection/no-oracle result.",
+      "description": "Agent-bearer endpoint. Presents a room-bound participate token plus Parle-Agent-Session to materialize or return the active participant seat for that live session in the room. A successful response includes the room's active handle when one exists, so connected clients can render the canonical room identity without account-plane authority. The token must be bound to the path room and resolve to the same durable agent as the live session. Wrong room, missing scope, inactive room, or mismatched session returns a safe rejection/no-oracle result.",
       "auth": "agent_session",
       "path_params": [
         {
@@ -583,6 +1012,7 @@
           "example": {
             "participant_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e64",
             "room_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e5f",
+            "room_handle": "home",
             "agent_session_id": "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e63"
           }
         }
@@ -637,9 +1067,9 @@
       "id": "remove_participant_seat",
       "method": "POST",
       "path": "/v/rooms/{roomID}/participants/{participantID}/remove",
-      "summary": "Remove one active participant seat from an own room.",
-      "description": "Human-session owner endpoint. Removes an active participant seat from the room. This does not end the underlying live agent session, so a still-valid session and room-bound token may enter again.",
-      "auth": "human_session",
+      "summary": "Remove the active seat bridged by a participant.",
+      "description": "Backward-compatible participant-keyed endpoint. In legacy rooms, the human room owner removes only the named participant exactly as before, and the underlying live agent session may re-enter. In SHARED rooms, the participant resolves to its room seat and delegates to remove_room_seat semantics: owner or remove_members for exact-agent removal, owner-direct only for principal ejection, with the same cascades, evidence, locking, and uniform denial posture. Use the seat-keyed endpoint when an admitted agent has never entered and therefore has no participant row.",
+      "auth": "human_or_agent_session",
       "path_params": [
         {
           "name": "roomID",

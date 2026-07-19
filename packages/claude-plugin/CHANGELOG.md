@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.23 (2026-07-19)
+
+Link-first registered-principal invitations and guided agent connection.
+
+- Mint non-secret target-session locators whose possession grants no authority.
+- Add separate target-only preview and acceptance plus resumable exact-agent seating, credential custody, and profile publication tools.
+- Retain private capability handoff claims for legacy and off-platform cases.
+
 ## 0.5.22 (2026-07-19)
 
 Identity-bound principal invitation handoff.
