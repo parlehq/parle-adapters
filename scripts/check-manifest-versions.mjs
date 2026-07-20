@@ -11,6 +11,22 @@ const checks = [
   },
 ];
 
+const runtimeChecks = [
+  {
+    sourcePath: 'packages/pi-extension/src/index.ts',
+    packagePath: 'packages/pi-extension/package.json',
+    patterns: [/const PI_EXTENSION_VERSION = "([^"]+)";/],
+  },
+  {
+    sourcePath: 'packages/mcp-server/src/index.ts',
+    packagePath: 'packages/mcp-server/package.json',
+    patterns: [
+      /new McpServer\(\{ name: "parle-mcp-server", version: "([^"]+)" \}\)/,
+      /adapterName: "@parlehq\/mcp-server", adapterVersion: "([^"]+)"/,
+    ],
+  },
+];
+
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'));
 }
@@ -28,6 +44,22 @@ for (const check of checks) {
     console.error(
       `${check.manifestPath} version ${manifest.version} does not match ${check.packagePath} version ${packageJson.version}`,
     );
+  }
+}
+
+for (const check of runtimeChecks) {
+  const [source, packageJson] = await Promise.all([
+    readFile(check.sourcePath, 'utf8'),
+    readJson(check.packagePath),
+  ]);
+  for (const pattern of check.patterns) {
+    const match = source.match(pattern);
+    if (!match || match[1] !== packageJson.version) {
+      failed = true;
+      console.error(
+        `${check.sourcePath} runtime version ${match?.[1] || '<missing>'} does not match ${check.packagePath} version ${packageJson.version}`,
+      );
+    }
   }
 }
 

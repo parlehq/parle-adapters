@@ -32524,18 +32524,23 @@ var ParleAccountClient = class {
     if (params.confirmMutation !== true || !params.reason?.trim())
       throw new Error("parle_mint_principal_invite requires confirmMutation=true and a reason.");
     const roomId = validateUUID(params.roomId, "roomId");
-    const principalId = validateUUID(params.principalId, "principalId");
+    const principalId = params.principalId === void 0 ? void 0 : validateUUID(params.principalId, "principalId");
     const principalHandle = validateHandle(params.principalHandle);
+    const target = {
+      kind: "principal",
+      principal_handle: principalHandle,
+      ...principalId ? { principal_id: principalId } : {}
+    };
     const config2 = this.config();
     const response = await this.request(config2, `/v/rooms/${encodeURIComponent(roomId)}/invites`, {
       method: "POST",
-      body: { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_id: principalId } },
+      body: { claim_mode: "target_session", seat_type: "principal", target },
       signal
     });
     const inviteId = validateUUID(String(response.invite_id || ""), "response invite_id");
     const responseRoomId = validateUUID(String(response.room_id || ""), "response room_id");
     const targetPrincipalId = validateUUID(String(response.target_principal_id || ""), "response target_principal_id");
-    if (responseRoomId !== roomId || targetPrincipalId !== principalId || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
+    if (responseRoomId !== roomId || principalId && targetPrincipalId !== principalId || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
       throw new Error("Parle invite response did not match the requested immutable target-session principal admission.");
     }
     if (response.secret || response.code)
@@ -34079,7 +34084,7 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.13" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.14" });
   server.registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -34143,10 +34148,10 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
   }, async (params) => safeTool(() => accountClient.hardenAccount(params)));
   server.registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Returns a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Pass a principal handle for server-side resolution and immutable binding at mint time, or optionally include a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
     inputSchema: {
       roomId: external_exports.string(),
-      principalId: external_exports.string(),
+      principalId: external_exports.string().optional(),
       principalHandle: external_exports.string(),
       confirmMutation: external_exports.boolean().optional(),
       reason: external_exports.string().optional()
@@ -34223,7 +34228,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
   return server;
 }
 async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.13" } });
+  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.14" } });
   const server = createParleMcpServer(client);
   installLifecycleHandlers(client);
   await server.connect(new StdioServerTransport());

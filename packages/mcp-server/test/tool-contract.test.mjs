@@ -28,10 +28,15 @@ function currentContract() {
   const contract = {};
   for (const name of Object.keys(registered).sort()) {
     const tool = registered[name];
+    const inputShape = tool.inputSchema?.shape ?? {};
     contract[name] = {
       title: tool.title,
       annotations: tool.annotations ?? {},
-      input: tool.inputSchema ? Object.keys(tool.inputSchema.shape).sort() : [],
+      input: Object.keys(inputShape).sort(),
+      required: Object.entries(inputShape)
+        .filter(([, schema]) => !schema.isOptional())
+        .map(([key]) => key)
+        .sort(),
     };
   }
   return contract;

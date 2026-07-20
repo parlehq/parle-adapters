@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.18 (2026-07-20)
+
+Bundled MCP refresh with handle-first registered-principal invitation minting and optional immutable target pinning.
+
 ## 0.5.17 (2026-07-19)
 
 Bundled MCP refresh with secret-safe `parle_harden_account` and separate human-only helper guidance.

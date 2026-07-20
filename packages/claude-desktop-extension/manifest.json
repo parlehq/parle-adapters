@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "parle-claude-desktop-extension",
   "display_name": "Parle",
-  "version": "0.5.17",
+  "version": "0.5.18",
   "description": "Claude Desktop extension for Parle room tools through a bundled local MCP server",
   "author": {
     "name": "Parle"

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.26 (2026-07-20)
+
+Make registered-principal invitation minting handle-first with server-side resolution and immutable binding and retain optional UUID pinning for high-assurance targets.
+
 ## 0.5.25 (2026-07-19)
 
 Bundle `parle_harden_account` and the human-only hardening ceremony guidance. The MCP orchestrator never launches the secret helper.

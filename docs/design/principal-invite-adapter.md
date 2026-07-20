@@ -29,7 +29,7 @@ Adapters never emulate this by generating and hiding a capability.
 
 ### Mint
 
-`parle_mint_principal_invite` accepts a room UUID, immutable principal UUID, confirmation handle, and explicit mutation confirmation. It submits:
+`parle_mint_principal_invite` accepts a room UUID, registered principal handle, and explicit mutation confirmation. By default it submits the handle for server-side resolution and immutable binding at mint time:
 
 ```json
 {
@@ -37,12 +37,14 @@ Adapters never emulate this by generating and hiding a capability.
   "seat_type": "principal",
   "target": {
     "kind": "principal",
-    "principal_id": "019f3894-bb87-726a-8deb-17d367054426"
+    "principal_handle": "arothaus"
   }
 }
 ```
 
-It returns a server-authored canonical locator and safe admission facts. It rejects any target-session response containing secret or code material.
+A caller that already holds a trusted immutable principal UUID may optionally supply it for a high-assurance exact target; the handle then remains the expected human-facing response label. This does not change confirmation or authorization requirements.
+
+The tool returns the server-authored resolved identity snapshot, canonical locator, and safe admission facts. It rejects a mismatched exact ID or handle and any target-session response containing secret or code material.
 
 A definite human account-policy 403 may include the core API's coarse `reason` and `unlock`. L1 accepts only the pinned safe pairs for `unhardened`, `cooldown`, and `account_restricted`, preserves them as structured error fields, and renders an actionable scrubbed message for harnesses. It never retries the mutation. Unknown or mismatched hints are ignored rather than reflected into model-visible output.
 

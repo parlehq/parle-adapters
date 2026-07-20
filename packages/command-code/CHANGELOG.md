@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Refresh the shared MCP artifact with handle-first registered-principal invitation minting and optional immutable target pinning.
+
 ## 0.1.6
 
 - Refresh the shared MCP artifact with secret-safe `parle_harden_account`; the human helper remains separately launched.

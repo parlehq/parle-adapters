@@ -64,7 +64,7 @@ The bundled MCP server exposes `parle_harden_account`. It accepts no secret or p
 
 ### Principal invitations
 
-`parle_mint_principal_invite` mints one registered-principal ordinary seat using the configured human session. It requires the immutable target principal UUID and a handle label, then returns a non-secret canonical locator for ordinary out-of-band sharing. Possession grants no authority.
+`parle_mint_principal_invite` mints one registered-principal ordinary seat using the configured human session. It accepts the registered principal handle for server-side resolution and immutable binding at mint time, with an optional previously trusted principal UUID for a high-assurance exact target. It returns the resolved identity snapshot and a non-secret canonical locator for ordinary out-of-band sharing. Possession grants no authority.
 
 The recipient uses `parle_accept_room_invitation` to preview the server-authored terms and then accept with explicit confirmation. The direct principal seat works immediately. `parle_connect_own_agent` separately previews an exact durable-agent selection and, after another confirmation, resumes only missing seat, credential, and profile steps without returning token material. `parle_claim_principal_invite` remains available for legacy private capability handoffs. Generic human-session requests remain unsupported.
 

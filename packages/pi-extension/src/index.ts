@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { DEFAULT_API_BASE, DEFAULT_VERSION, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.26";
+const PI_EXTENSION_VERSION = "0.1.27";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -2054,11 +2054,11 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_mint_principal_invite",
     label: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. The immutable principal UUID is authoritative and principalHandle is a confirmation label. Returns a non-secret canonical locator for out-of-band sharing; possession grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. Pass the principal handle for server-side resolution and immutable binding at mint time; optionally pass a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical locator for out-of-band sharing; possession grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
     parameters: Type.Object({
       roomId: Type.String({ description: "Shared room UUID." }),
-      principalId: Type.String({ description: "Immutable UUID of the principal being invited." }),
-      principalHandle: Type.String({ description: "Expected human-facing principal handle used as a confirmation label." }),
+      principalId: Type.Optional(Type.String({ description: "Optional immutable UUID for a previously resolved high-assurance target. Omit for server-side handle resolution." })),
+      principalHandle: Type.String({ description: "Registered principal handle to resolve at mint time, or the expected handle label when principalId is supplied." }),
       confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm minting the identity-bound ordinary-member invite." })),
       reason: Type.Optional(Type.String({ description: "Required explanation for minting the invite." })),
     }),

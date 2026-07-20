@@ -115,7 +115,7 @@ The extension registers these Pi tools:
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
 - `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a shared room's seat plane.
 - `parle_harden_account` - perform one typed account-hardening transition without accepting a secret or path. The human separately runs `parle-hardening-secret` on a controlling TTY; it is never auto-launched.
-- `parle_mint_principal_invite` - mint one registered-principal ordinary seat and return a non-secret canonical locator. Possession grants no authority.
+- `parle_mint_principal_invite` - mint one registered-principal ordinary seat with server-side handle resolution and immutable binding, optionally pin a previously trusted principal UUID, and return the resolved snapshot plus a non-secret canonical locator. Possession grants no authority.
 - `parle_accept_room_invitation` - preview or accept the locator as its immutable authenticated target.
 - `parle_connect_own_agent` - separately preview and complete exact-agent seating, credential custody, and profile publication.
 - `parle_claim_principal_invite` - preview or complete a legacy capability invitation from a private local handoff file.

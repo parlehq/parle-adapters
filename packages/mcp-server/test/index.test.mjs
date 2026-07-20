@@ -46,7 +46,6 @@ test("account-tool errors preserve actionable invitation denial fields", async (
   try {
     const result = await client.callTool({ name: "parle_mint_principal_invite", arguments: {
       roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261",
-      principalId: "019f3894-bb87-726a-8deb-17d367054426",
       principalHandle: "kljensen",
       confirmMutation: true,
       reason: "Invite Kyle",
@@ -137,7 +136,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target"]);
     const hardening = await client.callTool({ name: "parle_harden_account", arguments: { action: "status" } });
     assert.equal(hardening.structuredContent.state, "needs_password");
-    const minted = await client.callTool({ name: "parle_mint_principal_invite", arguments: { roomId: "room-1", principalId: "principal-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" } });
+    const minted = await client.callTool({ name: "parle_mint_principal_invite", arguments: { roomId: "room-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" } });
     assert.equal(minted.structuredContent.handoffPath, "/private/invite.json");
     const previewed = await client.callTool({ name: "parle_claim_principal_invite", arguments: { action: "preview", handoffPath: "/private/invite.json" } });
     assert.equal(previewed.structuredContent.action, "preview");
@@ -147,7 +146,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
       ["switch", "target"],
       ["harden-account", { action: "status" }],
-      ["mint-invite", { roomId: "room-1", principalId: "principal-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" }],
+      ["mint-invite", { roomId: "room-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" }],
       ["claim-invite", { action: "preview", handoffPath: "/private/invite.json" }],
     ]);
   } finally {

@@ -38,7 +38,7 @@ function response(json, status = 200) {
   return new Response(JSON.stringify(json), { status, headers: { "Content-Type": "application/json" } });
 }
 
-test("principal invite mint returns a non-secret target-session locator", async () => {
+test("principal invite mint resolves a handle and returns a non-secret target-session locator", async () => {
   const f = fixture();
   const calls = [];
   try {
@@ -60,13 +60,22 @@ test("principal invite mint returns a non-secret target-session locator", async 
         }, 201);
       },
     });
-    const result = await client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "KLJENSEN", confirmMutation: true, reason: "Invite Kyle" });
+    const result = await client.mintPrincipalInvite({ roomId: ROOM_ID, principalHandle: "KLJENSEN", confirmMutation: true, reason: "Invite Kyle" });
     assert.equal(result.targetPrincipalId, PRINCIPAL_ID);
     assert.equal(result.targetHandle, "kljensen");
     assert.equal(result.claimUrl, `http://127.0.0.1:8787/join/${INVITE_ID}`);
     assert.equal(result.sensitive, false);
     assert.equal(JSON.stringify(result).includes("secret"), false);
-    assert.deepEqual(calls[0].body, { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_id: PRINCIPAL_ID } });
+    assert.deepEqual(calls[0].body, { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen" } });
+
+    await client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "Invite exact Kyle" });
+    assert.deepEqual(calls[1].body, { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen", principal_id: PRINCIPAL_ID } });
+
+    await assert.rejects(
+      client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: "", principalHandle: "kljensen", confirmMutation: true, reason: "Reject an empty exact target" }),
+      /principalId must be a non-zero UUID/,
+    );
+    assert.equal(calls.length, 2);
     assert.equal(existsSync(join(f.home, ".parle", "invites")), false);
   } finally { f.cleanup(); }
 });

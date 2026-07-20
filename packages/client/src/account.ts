@@ -29,7 +29,7 @@ export type AccountClientOptions = {
 
 export type MintPrincipalInviteParams = {
   roomId: string;
-  principalId: string;
+  principalId?: string;
   principalHandle: string;
   confirmMutation?: boolean;
   reason?: string;
@@ -382,18 +382,23 @@ export class ParleAccountClient {
   async mintPrincipalInvite(params: MintPrincipalInviteParams, signal?: AbortSignal) {
     if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_mint_principal_invite requires confirmMutation=true and a reason.");
     const roomId = validateUUID(params.roomId, "roomId");
-    const principalId = validateUUID(params.principalId, "principalId");
+    const principalId = params.principalId === undefined ? undefined : validateUUID(params.principalId, "principalId");
     const principalHandle = validateHandle(params.principalHandle);
+    const target = {
+      kind: "principal",
+      principal_handle: principalHandle,
+      ...(principalId ? { principal_id: principalId } : {}),
+    };
     const config = this.config();
     const response = await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/invites`, {
       method: "POST",
-      body: { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_id: principalId } },
+      body: { claim_mode: "target_session", seat_type: "principal", target },
       signal,
     });
     const inviteId = validateUUID(String(response.invite_id || ""), "response invite_id");
     const responseRoomId = validateUUID(String(response.room_id || ""), "response room_id");
     const targetPrincipalId = validateUUID(String(response.target_principal_id || ""), "response target_principal_id");
-    if (responseRoomId !== roomId || targetPrincipalId !== principalId || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
+    if (responseRoomId !== roomId || (principalId && targetPrincipalId !== principalId) || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
       throw new Error("Parle invite response did not match the requested immutable target-session principal admission.");
     }
     if (response.secret || response.code) throw new Error("Parle target-session invite response unexpectedly contained capability authority material.");

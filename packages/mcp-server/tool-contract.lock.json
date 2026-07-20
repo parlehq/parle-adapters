@@ -11,6 +11,10 @@
       "confirmMutation",
       "invitation",
       "reason"
+    ],
+    "required": [
+      "action",
+      "invitation"
     ]
   },
   "parle_affordances": {
@@ -18,7 +22,8 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "input": []
+    "input": [],
+    "required": []
   },
   "parle_claim_principal_invite": {
     "title": "Parle Claim Principal Invite",
@@ -33,6 +38,10 @@
       "deleteHandoffOnSuccess",
       "handoffPath",
       "reason"
+    ],
+    "required": [
+      "action",
+      "handoffPath"
     ]
   },
   "parle_connect": {
@@ -42,7 +51,8 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "input": []
+    "input": [],
+    "required": []
   },
   "parle_connect_own_agent": {
     "title": "Connect Own Agent to Parle Room",
@@ -60,6 +70,10 @@
       "invitation",
       "profileLabel",
       "reason"
+    ],
+    "required": [
+      "action",
+      "invitation"
     ]
   },
   "parle_guidance": {
@@ -69,7 +83,8 @@
     },
     "input": [
       "target"
-    ]
+    ],
+    "required": []
   },
   "parle_harden_account": {
     "title": "Parle Harden Account",
@@ -82,6 +97,9 @@
       "action",
       "confirmMutation",
       "reason"
+    ],
+    "required": [
+      "action"
     ]
   },
   "parle_inbox": {
@@ -94,7 +112,8 @@
       "limitMessages",
       "sinceSeq",
       "waitSeconds"
-    ]
+    ],
+    "required": []
   },
   "parle_mint_principal_invite": {
     "title": "Parle Mint Principal Invite",
@@ -109,6 +128,10 @@
       "principalId",
       "reason",
       "roomId"
+    ],
+    "required": [
+      "principalHandle",
+      "roomId"
     ]
   },
   "parle_read": {
@@ -121,7 +144,8 @@
       "limitMessages",
       "sinceSeq",
       "waitSeconds"
-    ]
+    ],
+    "required": []
   },
   "parle_send": {
     "title": "Parle Send",
@@ -134,6 +158,9 @@
       "body",
       "idempotencyKey",
       "to"
+    ],
+    "required": [
+      "body"
     ]
   },
   "parle_setup": {
@@ -141,7 +168,8 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "input": []
+    "input": [],
+    "required": []
   },
   "parle_status": {
     "title": "Parle Status",
@@ -152,7 +180,8 @@
     },
     "input": [
       "inspect"
-    ]
+    ],
+    "required": []
   },
   "parle_switch_profile": {
     "title": "Switch Parle Profile",
@@ -162,6 +191,10 @@
       "openWorldHint": true
     },
     "input": [
+      "profile",
+      "watcherStopped"
+    ],
+    "required": [
       "profile",
       "watcherStopped"
     ]

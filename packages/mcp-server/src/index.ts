@@ -63,7 +63,7 @@ export type ParleAccountClientLike = {
 };
 
 export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.13" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.14" });
 
   server.registerTool("parle_status", {
     title: "Parle Status",
@@ -133,10 +133,10 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 
   server.registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Returns a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Pass a principal handle for server-side resolution and immutable binding at mint time, or optionally include a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
     inputSchema: {
       roomId: z.string(),
-      principalId: z.string(),
+      principalId: z.string().optional(),
       principalHandle: z.string(),
       confirmMutation: z.boolean().optional(),
       reason: z.string().optional(),
@@ -223,7 +223,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 }
 
 export async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.13" } });
+  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.14" } });
   const server = createParleMcpServer(client);
   installLifecycleHandlers(client);
   await server.connect(new StdioServerTransport());
