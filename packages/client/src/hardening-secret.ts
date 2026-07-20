@@ -3,7 +3,7 @@ import qrcode from "qrcode-terminal";
 import { ParleHardeningClient } from "./hardening.js";
 
 const COMMANDS = new Set(["password", "bootstrap-proof", "totp-code", "show-provisioning-qr", "ack-recovery-stored"]);
-const RECORDING_ENV = ["ASCIINEMA_REC", "ASCIINEMA_CONFIG_HOME", "SCRIPT", "SCRIPT_COMMAND", "TMUX", "STY", "TERMINAL_RECORDING", "RECORDING"];
+const RECORDING_ENV = ["ASCIINEMA_REC", "ASCIINEMA_CONFIG_HOME", "SCRIPT", "SCRIPT_COMMAND", "TMUX", "STY", "ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID", "TERMINAL_RECORDING", "RECORDING"];
 const SECRET_ENV = /(?:PASSWORD|SECRET|TOTP|OTP|RECOVERY|PROOF)/i;
 
 function rejectUnsafeInvocation(): string {
@@ -29,6 +29,7 @@ function prompt(question: string, secret: boolean): Promise<string> {
     const done = (error?: Error) => {
       input.off("data", onData);
       try { input.setRawMode(false); } catch {}
+      input.pause();
       if (error) reject(error);
       else resolve(Buffer.concat(chars).toString("utf8"));
       for (const chunk of chars) chunk.fill(0);
@@ -65,7 +66,7 @@ async function hidden(question: string): Promise<Buffer> {
 }
 
 async function password(client: ParleHardeningClient): Promise<void> {
-  const mode = (await prompt("Password mode (set/change): ", false)).trim().toLowerCase();
+  const mode = (await prompt("Type set for a new password or change to replace one (input hidden; do not enter the password yet): ", true)).trim().toLowerCase();
   if (mode !== "set" && mode !== "change") throw new Error("Password mode must be set or change.");
   const next = await hidden("New password: ");
   const repeat = await hidden("Repeat new password: ");

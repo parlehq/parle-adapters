@@ -235,6 +235,13 @@ test("documented source-checkout helper invocation resolves the reviewed entrypo
   assert.doesNotMatch(text, /command not found|MODULE_NOT_FOUND|ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL/);
 });
 
+test("helper hides mode selection, releases stdin, and rejects Zellij environments", () => {
+  const source = readFileSync(new URL("../src/hardening-secret.ts", import.meta.url), "utf8");
+  assert.match(source, /do not enter the password yet[^\n]+true\)/);
+  assert.match(source, /input\.pause\(\)/);
+  for (const key of ["ZELLIJ", "ZELLIJ_SESSION_NAME", "ZELLIJ_PANE_ID"]) assert.match(source, new RegExp(`"${key}"`));
+});
+
 test("expired sudo refreshes without repeating the password mutation", async () => {
   const f = fixture();
   let passwords = 0;
