@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary, compactStatusCardFromStatus, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { CommandCodeWakeBridge } from "./command-code-bridge.js";
 
 export type ParleMcpClientLike = {
   status(): unknown;
@@ -63,7 +64,7 @@ export type ParleAccountClientLike = {
 };
 
 export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.15" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.16" });
 
   server.registerTool("parle_status", {
     title: "Parle Status",
@@ -223,23 +224,39 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 }
 
 export async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.15" } });
+  const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
+  const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.16" } });
+  if (commandCodeHost) {
+    client.switchProfile = async () => {
+      throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
+    };
+  }
+  const commandCodeBridge = commandCodeHost ? new CommandCodeWakeBridge(client) : undefined;
+  if (commandCodeBridge) {
+    const baseStatus = client.status.bind(client);
+    client.status = () => ({ ...baseStatus(), commandCodeBridge: commandCodeBridge.status() });
+  }
   const server = createParleMcpServer(client);
-  installLifecycleHandlers(client);
+  installLifecycleHandlers(client, commandCodeBridge);
   await server.connect(new StdioServerTransport());
   // Eager background bootstrap: the session exists (and the runtime snapshot is
   // published) before the first tool call. No-op when unconfigured; failures
   // are recorded on runtime state and retried per the backoff policy.
-  void client.ensureReadySafe();
+  void client.ensureReadySafe().then(async () => {
+    if (commandCodeBridge && client.runtime.bootstrapped) await commandCodeBridge.start();
+  }).catch((error) => {
+    console.error(`Parle Command Code wake bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
+  });
 }
 
-function installLifecycleHandlers(client: ParleAgentClient) {
+function installLifecycleHandlers(client: ParleAgentClient, commandCodeBridge?: CommandCodeWakeBridge) {
   let ending = false;
   const shutdown = () => {
     if (ending) return;
     ending = true;
     const timer = setTimeout(() => process.exit(0), 2000);
-    void client.endSession().catch(() => {}).finally(() => {
+    void commandCodeBridge?.stop().catch(() => {}).then(() => client.endSession()).catch(() => {}).finally(() => {
       clearTimeout(timer);
       process.exit(0);
     });

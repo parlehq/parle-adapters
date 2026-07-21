@@ -39,6 +39,8 @@ Runtime-publishing clients also observe the self-excluding inbound surface past 
 
 `parle_read` and `parle_inbox` may expose short `waitSeconds` values for explicit one-shot waits. They must not be documented or implemented as background watcher loops. Responsive delivery watchers use `/v/agent/wake` SSE and then drain `responsive-delivery?wait=0`.
 
+When `PARLE_HOST_ADAPTER=command-code`, the stdio process disables unread-count polling and starts the Command Code wake bridge. The bridge queues responsive rows in memory and exposes only server-framed delivery content over an owner-only Unix socket. Command Code hooks bind that bridge to one Command Code session, lease pending rows, inject them through supported hook output, and commit before Parle ack. The socket never carries credentials.
+
 This package owns:
 
 - stdio MCP server entrypoint and future `bin`

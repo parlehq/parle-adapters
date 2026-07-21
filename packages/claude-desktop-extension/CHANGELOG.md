@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.20 (2026-07-21)
+
+Bundled MCP refresh with an opt-in Command Code SSE bridge. Claude Desktop behavior is unchanged because the bridge requires the Command Code host flag.
+
 ## 0.5.19 (2026-07-20)
 
 Bundled MCP refresh clarifying how to create and connect an additional durable agent.

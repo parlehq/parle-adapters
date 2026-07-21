@@ -217,6 +217,19 @@ export type SendDeliveryStatus = {
   nextStep?: string;
 };
 
+export type ResponsiveDeliveryMessage = {
+  seq: number;
+  event_id: string;
+  [key: string]: unknown;
+};
+
+export function responsiveDeliveryKey(message: unknown): string | undefined {
+  const seq = (message as any)?.seq;
+  const eventId = (message as any)?.event_id;
+  if (!Number.isInteger(seq) || seq < 0 || typeof eventId !== "string" || eventId.length === 0) return undefined;
+  return `${seq}:${eventId}`;
+}
+
 export class ParleApiError extends Error {
   status?: number;
   code?: string;
@@ -1215,6 +1228,64 @@ export class ParleAgentClient {
       }
       return fn();
     }
+  }
+
+  async openWakeStream(signal?: AbortSignal): Promise<Response> {
+    return this.withRebootstrap(async () => {
+      this.assertConfigured();
+      const url = wakeUrl(this.cfg);
+      const headers: Record<string, string> = {
+        Accept: "text/event-stream",
+        "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+        "Parle-Client-Name": this.clientName,
+        ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
+        Authorization: `Bearer ${this.cfg.agentToken!.value}`,
+        "Parle-Agent-Session": this.runtime.sessionHandle,
+      };
+      let response: Response;
+      try {
+        response = await this.fetchImpl(url, { method: "GET", headers, signal });
+      } catch (error: any) {
+        if (error?.name === "AbortError" || signal?.aborted) throw error;
+        throw new ParleApiError("Parle wake stream could not be opened", { code: "network_error", action: "retry_with_backoff", scope: "server", retryable: true });
+      }
+      this.runtime.lastHttpStatus = response.status;
+      if (response.ok) return response;
+
+      const rawText = await response.text().catch(() => "");
+      const text = redactString(rawText);
+      const json = parseJsonMaybe(text);
+      const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
+      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
+      const registry = code ? ERROR_REGISTRY[code] : undefined;
+      const action = asErrorAction(errorObj.action) || registry?.action || defaultActionForStatus(response.status);
+      const scope = asErrorScope(errorObj.scope) || registry?.scope || defaultScopeForStatus(response.status);
+      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
+      const retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
+      const message = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json });
+    }, signal);
+  }
+
+  async drainResponsiveDelivery(signal?: AbortSignal): Promise<any> {
+    return this.withRebootstrap(
+      () => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/responsive-delivery?wait=0`, { session: true, signal, retry: false }),
+      signal,
+    );
+  }
+
+  async ackResponsiveDelivery(message: ResponsiveDeliveryMessage, signal?: AbortSignal): Promise<any> {
+    if (!responsiveDeliveryKey(message)) throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
+    return this.withRebootstrap(
+      () => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/responsive-delivery/ack`, {
+        method: "POST",
+        session: true,
+        signal,
+        retry: false,
+        body: { seq: message.seq, event_id: message.event_id },
+      }),
+      signal,
+    );
   }
 
   async readProjection(params: ReadParams = {}, signal?: AbortSignal) {

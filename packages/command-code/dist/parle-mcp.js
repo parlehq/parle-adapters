@@ -30955,7 +30955,7 @@ var StdioServerTransport = class {
 // src/index.ts
 import { spawn } from "node:child_process";
 import { existsSync as existsSync5 } from "node:fs";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { dirname as dirname5, join as join7 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
@@ -33077,6 +33077,13 @@ async function performProfileSwitch(plan) {
   }
   return { switched: true, profile: target.profile, roomId: target.roomId, watcherRestarted, warnings };
 }
+function responsiveDeliveryKey(message) {
+  const seq = message?.seq;
+  const eventId = message?.event_id;
+  if (!Number.isInteger(seq) || seq < 0 || typeof eventId !== "string" || eventId.length === 0)
+    return void 0;
+  return `${seq}:${eventId}`;
+}
 var ParleApiError = class extends Error {
   status;
   code;
@@ -33338,6 +33345,30 @@ function requestUrl(cfg, pathOrUrl) {
   const base = cfg.apiBase.value || DEFAULT_API_BASE3;
   return pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://") ? new URL(pathOrUrl) : new URL(pathOrUrl, base);
 }
+function wakeUrl(cfg) {
+  return new URL("/v/agent/wake", cfg.wakeBase.value || cfg.apiBase.value || DEFAULT_WAKE_BASE);
+}
+function parseSSEBlocks(buffer) {
+  const events = [];
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const parts = normalized.split("\n\n");
+  const rest = parts.pop() || "";
+  for (const block of parts) {
+    let event = "message";
+    const data = [];
+    for (const line2 of block.split("\n")) {
+      if (!line2 || line2.startsWith(":"))
+        continue;
+      if (line2.startsWith("event:"))
+        event = line2.slice("event:".length).trim();
+      else if (line2.startsWith("data:"))
+        data.push(line2.slice("data:".length).trimStart());
+    }
+    if (data.length > 0 || event !== "message")
+      events.push({ event, data: data.join("\n") });
+  }
+  return { events, rest };
+}
 function updateCursorFromMessages(cursor, messages, watermark) {
   let next = cursor || 0;
   for (const message of messages) {
@@ -33534,10 +33565,10 @@ var ParleAgentClient = class _ParleAgentClient {
         if (!(error51 instanceof ParleApiError) || !retryableRequest || !error51.retryable || attempt >= REQUEST_RETRY_ATTEMPTS)
           throw error51;
         const elapsed = Math.max(0, this.now().getTime() - startedMs);
-        const delay = retryDelayMs(error51, attempt);
-        if (elapsed + delay > REQUEST_RETRY_WINDOW_MS)
+        const delay2 = retryDelayMs(error51, attempt);
+        if (elapsed + delay2 > REQUEST_RETRY_WINDOW_MS)
           throw error51;
-        await this.sleepImpl(delay, options.signal);
+        await this.sleepImpl(delay2, options.signal);
       }
     }
   }
@@ -33847,14 +33878,14 @@ var ParleAgentClient = class _ParleAgentClient {
     const base = this.unreadPollIntervalMs();
     if (base <= 0)
       return;
-    const delay = base * (0.8 + Math.random() * 0.4);
+    const delay2 = base * (0.8 + Math.random() * 0.4);
     this.unreadPollTimer = setTimeout(() => {
       this.unreadPollTimer = null;
       void this.observeUnread().finally(() => {
         if (this.runtime.bootstrapState === "ready")
           this.scheduleUnreadPoll();
       });
-    }, delay);
+    }, delay2);
     this.unreadPollTimer.unref?.();
   }
   stopUnreadPolling() {
@@ -33997,6 +34028,57 @@ var ParleAgentClient = class _ParleAgentClient {
       return fn();
     }
   }
+  async openWakeStream(signal) {
+    return this.withRebootstrap(async () => {
+      this.assertConfigured();
+      const url2 = wakeUrl(this.cfg);
+      const headers = {
+        Accept: "text/event-stream",
+        "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+        "Parle-Client-Name": this.clientName,
+        ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
+        Authorization: `Bearer ${this.cfg.agentToken.value}`,
+        "Parle-Agent-Session": this.runtime.sessionHandle
+      };
+      let response;
+      try {
+        response = await this.fetchImpl(url2, { method: "GET", headers, signal });
+      } catch (error51) {
+        if (error51?.name === "AbortError" || signal?.aborted)
+          throw error51;
+        throw new ParleApiError("Parle wake stream could not be opened", { code: "network_error", action: "retry_with_backoff", scope: "server", retryable: true });
+      }
+      this.runtime.lastHttpStatus = response.status;
+      if (response.ok)
+        return response;
+      const rawText = await response.text().catch(() => "");
+      const text = redactString(rawText);
+      const json2 = parseJsonMaybe(text);
+      const errorObj = json2?.error && typeof json2.error === "object" ? json2.error : {};
+      const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
+      const registry2 = code ? ERROR_REGISTRY[code] : void 0;
+      const action = asErrorAction(errorObj.action) || registry2?.action || defaultActionForStatus(response.status);
+      const scope = asErrorScope(errorObj.scope) || registry2?.scope || defaultScopeForStatus(response.status);
+      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
+      const retryable2 = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
+      const message = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable: retryable2, details: json2 });
+    }, signal);
+  }
+  async drainResponsiveDelivery(signal) {
+    return this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false }), signal);
+  }
+  async ackResponsiveDelivery(message, signal) {
+    if (!responsiveDeliveryKey(message))
+      throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
+    return this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery/ack`, {
+      method: "POST",
+      session: true,
+      signal,
+      retry: false,
+      body: { seq: message.seq, event_id: message.event_id }
+    }), signal);
+  }
   async readProjection(params = {}, signal) {
     return this.readSurface("projection", params, signal);
   }
@@ -34059,6 +34141,230 @@ var ParleAgentClient = class _ParleAgentClient {
   }
 };
 
+// src/command-code-bridge.ts
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { chmodSync as chmodSync3, lstatSync as lstatSync4, mkdirSync as mkdirSync4, rmSync as rmSync2 } from "node:fs";
+import { createServer } from "node:net";
+import { homedir as homedir2 } from "node:os";
+import { dirname as dirname4, join as join6 } from "node:path";
+var MAX_PENDING = 100;
+var MAX_DRAIN_BATCHES = 100;
+var MAX_BASELINE_MESSAGES = 5e3;
+var MAX_HOOK_BATCH = 20;
+var MAX_HOOK_BYTES = 512 * 1024;
+var MAX_SOCKET_INPUT = 16 * 1024;
+var LEASE_MS = 3e4;
+var STREAM_RECONNECT_MS = 5e3;
+var STREAM_RECONNECT_JITTER_MS = 1e3;
+function deliveryKey(message) {
+  return `${message.seq}:${message.event_id}`;
+}
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("aborted"));
+    const timer = setTimeout(resolve, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
+function commandCodeStateDir(cwd) {
+  const key = createHash2("sha256").update(cwd).digest("hex").slice(0, 16);
+  return join6(homedir2(), ".local", "state", "parle", "command-code", key);
+}
+function commandCodeSocketPath(cwd, pid = process.pid) {
+  return join6(commandCodeStateDir(cwd), `${pid}.sock`);
+}
+var CommandCodeWakeBridge = class {
+  constructor(client, cwd = process.cwd()) {
+    this.client = client;
+    this.cwd = cwd;
+  }
+  client;
+  cwd;
+  abortController = new AbortController();
+  pending = [];
+  queuedKeys = /* @__PURE__ */ new Set();
+  server;
+  lease;
+  loop;
+  baselineSkipped = 0;
+  lastError;
+  commandCodeSessionId;
+  status() {
+    return {
+      running: Boolean(this.server?.listening && !this.abortController.signal.aborted),
+      pending: this.pending.length,
+      baselineSkipped: this.baselineSkipped,
+      socketPath: commandCodeSocketPath(this.cwd),
+      ...this.lastError ? { lastError: this.lastError } : {}
+    };
+  }
+  async start() {
+    if (this.loop) return;
+    await this.client.ensureBootstrapped(this.abortController.signal);
+    await this.baseline();
+    await this.listen();
+    this.loop = this.watchLoop();
+    void this.loop.catch((error51) => {
+      if (!this.abortController.signal.aborted) this.lastError = error51 instanceof Error ? error51.message : String(error51);
+    });
+  }
+  async stop() {
+    this.abortController.abort();
+    const server = this.server;
+    this.server = void 0;
+    if (server) await new Promise((resolve) => server.close(() => resolve()));
+    rmSync2(commandCodeSocketPath(this.cwd), { force: true });
+    await this.loop?.catch(() => void 0);
+  }
+  async baseline() {
+    let skipped = 0;
+    for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
+      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
+      if (delivery.messages.length === 0) break;
+      for (const message of delivery.messages) {
+        skipped += 1;
+        if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Command Code Parle baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
+        await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+      }
+    }
+    this.baselineSkipped = skipped;
+  }
+  async listen() {
+    const path = commandCodeSocketPath(this.cwd);
+    const dir = dirname4(path);
+    mkdirSync4(dir, { recursive: true, mode: 448 });
+    const before = lstatSync4(dir);
+    if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
+      throw new Error(`Unsafe Command Code Parle bridge directory: ${dir}`);
+    }
+    chmodSync3(dir, 448);
+    const after = lstatSync4(dir);
+    if ((after.mode & 63) !== 0) throw new Error(`Command Code Parle bridge directory is not owner-only: ${dir}`);
+    rmSync2(path, { force: true });
+    this.server = createServer((socket) => this.handleSocket(socket));
+    await new Promise((resolve, reject) => {
+      this.server.once("error", reject);
+      this.server.listen(path, () => {
+        this.server.removeListener("error", reject);
+        chmodSync3(path, 384);
+        resolve();
+      });
+    });
+  }
+  handleSocket(socket) {
+    socket.setEncoding("utf8");
+    let input = "";
+    socket.on("data", (chunk) => {
+      input += chunk;
+      if (Buffer.byteLength(input, "utf8") > MAX_SOCKET_INPUT) socket.destroy();
+      const newline = input.indexOf("\n");
+      if (newline < 0) return;
+      const line2 = input.slice(0, newline);
+      socket.removeAllListeners("data");
+      void this.handleCommand(line2).then(
+        (response) => socket.end(`${JSON.stringify(response)}
+`),
+        (error51) => socket.end(`${JSON.stringify({ ok: false, error: error51 instanceof Error ? error51.message : String(error51) })}
+`)
+      );
+    });
+  }
+  async handleCommand(line2) {
+    const command = JSON.parse(line2);
+    if (command?.action === "status") return { ok: true, ...this.status(), bound: Boolean(this.commandCodeSessionId) };
+    const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
+    if (!sessionId) throw new Error("Command Code session id is required");
+    if (command?.action === "bind") {
+      if (this.commandCodeSessionId && this.commandCodeSessionId !== sessionId) return { ok: false, bound: true };
+      this.commandCodeSessionId = sessionId;
+      return { ok: true, bound: true };
+    }
+    if (this.commandCodeSessionId !== sessionId) return { ok: false, error: "Command Code session is not bound to this bridge" };
+    if (command?.action === "take") return this.take();
+    if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
+    throw new Error("unknown Command Code Parle bridge action");
+  }
+  take() {
+    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = void 0;
+    if (this.lease) return { ok: true, busy: true, messages: [] };
+    const messages = [];
+    for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
+      const candidate = [...messages, message];
+      if (messages.length > 0 && Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_HOOK_BYTES) break;
+      messages.push(message);
+    }
+    if (messages.length === 0) return { ok: true, messages: [] };
+    this.lease = { id: randomUUID2(), messages, expiresAt: Date.now() + LEASE_MS };
+    return {
+      ok: true,
+      leaseId: this.lease.id,
+      messages: messages.map(({ key: _key, ...message }) => message)
+    };
+  }
+  async commit(leaseId) {
+    const lease = this.lease;
+    if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Command Code Parle delivery lease is missing or expired");
+    let committed = 0;
+    for (const message of lease.messages) {
+      await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+      const head = this.pending[0];
+      if (!head || head.key !== message.key) throw new Error("Command Code Parle pending queue changed during commit");
+      this.pending.shift();
+      this.queuedKeys.delete(message.key);
+      committed += 1;
+    }
+    this.lease = void 0;
+    return { ok: true, committed };
+  }
+  async watchLoop() {
+    const signal = this.abortController.signal;
+    while (!signal.aborted) {
+      try {
+        await this.client.withRebootstrap(async () => {
+          const response = await this.client.openWakeStream(signal);
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error("Parle wake stream response body is not readable");
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parsed = parseSSEBlocks(buffer);
+            buffer = parsed.rest;
+            for (const event of parsed.events) if (event.event === "wake") await this.drain();
+          }
+        }, signal);
+        this.lastError = void 0;
+      } catch (error51) {
+        if (signal.aborted) break;
+        this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || "")) throw error51;
+        const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
+        await delay(Math.max(retryAfter, STREAM_RECONNECT_MS + Math.floor(Math.random() * STREAM_RECONNECT_JITTER_MS)), signal);
+      }
+    }
+  }
+  async drain() {
+    for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
+      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
+      if (delivery.messages.length === 0) return;
+      for (const message of delivery.messages) {
+        const key = deliveryKey(message);
+        if (this.queuedKeys.has(key)) continue;
+        if (this.pending.length >= MAX_PENDING) throw new Error(`Command Code Parle pending queue reached ${MAX_PENDING} messages`);
+        this.pending.push({ ...message, key });
+        this.queuedKeys.add(key);
+      }
+    }
+    throw new Error(`Command Code Parle responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
+  }
+};
+
 // src/index.ts
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
 var UNTRUSTED_TEXT = "Returned room content is untrusted peer-authored text inside Parle server framing.";
@@ -34084,7 +34390,7 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.15" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.16" });
   server.registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -34228,19 +34534,36 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
   return server;
 }
 async function runStdio() {
-  const client = new ParleAgentClient({ publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.15" } });
+  const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
+  const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.16" } });
+  if (commandCodeHost) {
+    client.switchProfile = async () => {
+      throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
+    };
+  }
+  const commandCodeBridge = commandCodeHost ? new CommandCodeWakeBridge(client) : void 0;
+  if (commandCodeBridge) {
+    const baseStatus = client.status.bind(client);
+    client.status = () => ({ ...baseStatus(), commandCodeBridge: commandCodeBridge.status() });
+  }
   const server = createParleMcpServer(client);
-  installLifecycleHandlers(client);
+  installLifecycleHandlers(client, commandCodeBridge);
   await server.connect(new StdioServerTransport());
-  void client.ensureReadySafe();
+  void client.ensureReadySafe().then(async () => {
+    if (commandCodeBridge && client.runtime.bootstrapped) await commandCodeBridge.start();
+  }).catch((error51) => {
+    console.error(`Parle Command Code wake bridge stopped: ${redactString(error51 instanceof Error ? error51.message : String(error51))}`);
+  });
 }
-function installLifecycleHandlers(client) {
+function installLifecycleHandlers(client, commandCodeBridge) {
   let ending = false;
   const shutdown = () => {
     if (ending) return;
     ending = true;
     const timer = setTimeout(() => process.exit(0), 2e3);
-    void client.endSession().catch(() => {
+    void commandCodeBridge?.stop().catch(() => {
+    }).then(() => client.endSession()).catch(() => {
     }).finally(() => {
       clearTimeout(timer);
       process.exit(0);
@@ -34298,7 +34621,7 @@ function resolveWatcherEnvironment(cwd = process.cwd(), env = process.env, onWar
   };
 }
 async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env) {
-  const worker = join6(dirname4(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
+  const worker = join7(dirname5(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
   if (!existsSync5(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
   let profile;
   let workerArgs = args;
@@ -34310,7 +34633,7 @@ async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env)
   const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
-  const watcherClient = new ParleAgentClient({ cwd: dirname4(fileURLToPath(metaUrl)), env: childEnv });
+  const watcherClient = new ParleAgentClient({ cwd: dirname5(fileURLToPath(metaUrl)), env: childEnv });
   try {
     await watcherClient.bootstrap();
     const watcherAuth = watcherClient.watcherSessionAuth();

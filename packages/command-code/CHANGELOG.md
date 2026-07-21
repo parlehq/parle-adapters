@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9
+
+- Add adapter-owned SSE responsive delivery through the shared MCP process and supported Command Code hooks.
+- Drain only `responsive-delivery?wait=0`, lease hook batches before ack, preserve server framing, bind each bridge to one Command Code session, and keep credentials inside the MCP process.
+- Require Command Code 0.52.3 or newer and preserve unrelated user MCP and hook settings during installation.
+- Document the remaining host boundary: a fully idle Command Code TUI cannot start a new turn until Command Code exposes an asynchronous injection API.
+
 ## 0.1.8
 
 - Refresh the shared MCP artifact with explicit guidance for creating and connecting an additional durable agent.

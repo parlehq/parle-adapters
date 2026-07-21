@@ -15,6 +15,13 @@ test("Command Code wrapper includes safe skill guidance and MCP artifact", () =>
   assert.match(skill, /never a watcher loop/);
   assert.match(skill, /parle_connect/);
   assert.match(skill, /parle_send/);
+  assert.match(skill, /\/v\/agent\/wake/);
+  assert.match(skill, /Never create a cron/);
+
+  const hook = readFileSync(resolve(root, "hooks/parle-hook.mjs"), "utf8");
+  assert.match(hook, /decision: "block"/);
+  assert.match(hook, /additionalContext/);
+  assert.match(hook, /action: "commit"/);
 
   const artifact = resolve(root, "dist/parle-mcp.js");
   assert.equal(existsSync(artifact), true);
@@ -29,4 +36,6 @@ test("user installer contains no Parle credential values or profile parsing", ()
   assert.doesNotMatch(installer, /\.parle\/profiles/);
   assert.match(installer, /cmd/);
   assert.match(installer, /mcp/);
+  assert.match(installer, /PARLE_HOST_ADAPTER/);
+  assert.match(installer, /mergeParleHooks/);
 });

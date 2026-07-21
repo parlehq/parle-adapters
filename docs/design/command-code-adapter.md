@@ -1,14 +1,18 @@
 # Command Code Adapter
 
-Status: implemented
-Date: 2026-07-18
+Status: implemented, responsive delivery added
+Date: 2026-07-21
 Owner repo: `parlehq/parle-adapters`
 
 ## Decision
 
-Command Code is a Type 2 MCP host. Parle support uses the existing host-agnostic stdio MCP server plus a thin Command Code package wrapper and skill. It does not add another HTTP client, credential parser, session implementation, or watcher.
+Command Code is a Type 2 MCP host with user-scoped hooks. Parle support uses the existing host-agnostic stdio MCP server, shared client protocol primitives, a Command Code package wrapper, and a hook helper. It does not add another HTTP client, credential parser, or session implementation.
 
-The user installer lives at `packages/command-code`. It copies the bundled MCP artifact to a stable user path, installs a user-level skill, and registers the stdio server through Command Code's native MCP CLI. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools, not credential values.
+The user installer lives at `packages/command-code`. It copies the bundled MCP artifact and hook helper to stable user paths, installs a user-level skill, registers the stdio server with the Command Code host-adapter flag, and merges exact managed hook entries without replacing unrelated settings. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools and server-framed message context, not credential values.
+
+Responsive delivery is adapter-owned. The MCP process opens `/v/agent/wake` SSE, drains `responsive-delivery?wait=0` after wake hints, and queues rows behind an owner-only Unix socket. Command Code hooks lease and inject an ordered batch, flush hook output, then commit the lease so the MCP process can acknowledge it to Parle. No cron, projection poll, inbox poll, transcript edit, or terminal automation participates.
+
+Command Code does not document an asynchronous API that lets an MCP server start a new turn in a fully idle TUI. The bridge therefore injects at `SessionStart`, tool, and `Stop` hook boundaries. A message arriving during a turn is handled before that turn ends. A message arriving after the TUI is fully idle remains queued until the next supported hook event. This is an explicit host boundary, not a reason to fabricate a polling fallback.
 
 ## Evidence from the failed setup
 
@@ -56,6 +60,8 @@ The wrapper owns only:
 - copied MCP artifact provenance and byte parity
 - user-scope installation
 - Command Code skill discovery and host-specific guidance
+- managed user hook installation and hook-output mapping
+- secure local bridge IPC and hook-boundary injection
 - install and uninstall documentation
 
 It does not own:
@@ -66,7 +72,8 @@ It does not own:
 - session lifecycle
 - direct-address resolution
 - idempotency behavior
-- responsive-delivery implementation
+- Parle responsive-delivery protocol semantics, which remain in the shared client
+- asynchronous idle-TUI turn creation, which requires a future supported Command Code API
 
 Those remain in Parle core, `@parlehq/agent-client`, and `@parlehq/mcp-server`.
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.28 (2026-07-21)
+
+Refresh the shared MCP artifact with an opt-in Command Code SSE bridge. Claude behavior is unchanged because the bridge requires the Command Code host flag.
+
 ## 0.5.27 (2026-07-20)
 
 Clarify that each connection operation selects one durable agent and that `createAgentHandle` deliberately creates and connects an additional owned agent.

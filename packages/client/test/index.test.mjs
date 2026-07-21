@@ -23,6 +23,7 @@ import {
   redactedSecretValue,
   redactString,
   resolveConfig,
+  responsiveDeliveryKey,
   summarizeSendDelivery,
   terminalStatusFor,
   updateCursorFromMessages,
@@ -223,6 +224,51 @@ test("SSE parser ignores keepalives and preserves partial block", () => {
   const parsed = parseSSEBlocks(": keepalive\n\nevent: wake\ndata: {\"room_id\":\"r1\"}\n\npartial");
   assert.deepEqual(parsed.events, [{ event: "wake", data: "{\"room_id\":\"r1\"}" }]);
   assert.equal(parsed.rest, "partial");
+});
+
+test("responsive delivery key rejects malformed rows", () => {
+  assert.equal(responsiveDeliveryKey({ seq: 4, event_id: "evt-4" }), "4:evt-4");
+  assert.equal(responsiveDeliveryKey({ seq: -1, event_id: "evt" }), undefined);
+  assert.equal(responsiveDeliveryKey({ seq: 1 }), undefined);
+});
+
+test("wake, zero-wait drain, and ack stay in shared client primitives", async () => {
+  const calls = [];
+  const client = new ParleAgentClient({
+    env: {
+      PARLE_API_BASE: "http://localhost:3000",
+      PARLE_WAKE_BASE: "http://localhost:3001",
+      PARLE_ALLOW_INSECURE_LOCAL: "1",
+      PARLE_ROOM_ID: "room-1",
+      PARLE_ROOM_AGENT_TOKEN: "opaque-token",
+    },
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/v/agent/wake")) return new Response("event: wake\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
+      return Response.json({ ok: true, messages: [] });
+    },
+  });
+  Object.assign(client.runtime, {
+    bootstrapped: true,
+    bootstrapState: "ready",
+    sessionHandle: "session-secret",
+    agentSessionId: "session-id",
+    roomId: "room-1",
+    expiresAt: "2999-01-01T00:00:00Z",
+  });
+
+  const stream = await client.openWakeStream();
+  assert.equal(await stream.text(), "event: wake\ndata: {}\n\n");
+  await client.drainResponsiveDelivery();
+  await client.ackResponsiveDelivery({ seq: 8, event_id: "evt-8" });
+
+  assert.equal(calls[0].url, "http://localhost:3001/v/agent/wake");
+  assert.equal(calls[0].init.headers.Accept, "text/event-stream");
+  assert.equal(calls[0].init.headers["Parle-Agent-Session"], "session-secret");
+  assert.equal(calls[1].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery?wait=0");
+  assert.equal(calls[2].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery/ack");
+  assert.deepEqual(JSON.parse(calls[2].init.body), { seq: 8, event_id: "evt-8" });
+  assert.equal(calls[2].init.method, "POST");
 });
 
 test("cursor math advances from messages or watermark", () => {
