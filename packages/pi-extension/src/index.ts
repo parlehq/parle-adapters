@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.28";
+const PI_EXTENSION_VERSION = "0.1.29";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -953,6 +953,8 @@ async function requestJson(cfg: ParleConfig, path: string, options: { method?: s
   const headers: Record<string, string> = {
     Accept: "application/json",
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
+    "Parle-Client-Name": "@parlehq/pi-extension",
+    "Parle-Client-Version": PI_EXTENSION_VERSION,
     Authorization: `Bearer ${cfg.agentToken!.value}`,
   };
   if (options.session && state.sessionHandle) headers["Parle-Agent-Session"] = state.sessionHandle;
@@ -984,10 +986,25 @@ async function requestJson(cfg: ParleConfig, path: string, options: { method?: s
     const json = parseJsonMaybe(text);
     if (!response.ok) {
       const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
+      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
+      const registry = code ? ERROR_REGISTRY[code] : undefined;
+      const action = typeof errorObj.action === "string" && (ERROR_ACTIONS as readonly string[]).includes(errorObj.action)
+        ? errorObj.action as ErrorAction
+        : registry?.action;
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
+      const retryAfterMs = typeof errorObj.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms)
+        ? Math.max(0, Math.trunc(errorObj.retry_after_ms))
+        : Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.trunc(retryAfterSeconds * 1000)) : undefined;
       const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text);
-      const versionHint = response.status === 400 && /version/i.test(`${errorObj.code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
+      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
       const err: any = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
       err.status = response.status;
+      err.code = code;
+      err.action = action;
+      err.scope = typeof errorObj.scope === "string" ? errorObj.scope : registry?.scope;
+      err.retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : registry?.retryable;
+      err.retryAfterMs = retryAfterMs;
       throw err;
     }
     return json ?? {};
@@ -1273,7 +1290,7 @@ async function withRebootstrap<T>(ctx: any, cfg: ParleConfig, fn: () => Promise<
   try {
     return await fn();
   } catch (error: any) {
-    if (error?.status !== 401 && error?.status !== 404) throw error;
+    if (error?.action !== "rebootstrap") throw error;
     const hadBaseline = Boolean(runtime.baselineAt);
     await bootstrap(ctx, cfg, signal, true);
     if (hadBaseline && !cfg.sessionAlias?.value) await baselineResponsiveDelivery(ctx, cfg, signal);
@@ -1534,6 +1551,18 @@ function recordWatcherError(error: any) {
   runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
 }
 
+function terminalWatcherState(error: any): WatcherState | undefined {
+  if (error?.action === "reauthorize") return "auth_expired";
+  if (error?.action === "stop" || error?.action === "fix_client") return "disconnected";
+  return undefined;
+}
+
+function watcherRetryDelayMs(error: any): number {
+  return typeof error?.retryAfterMs === "number" && Number.isFinite(error.retryAfterMs)
+    ? Math.max(0, Math.trunc(error.retryAfterMs))
+    : jitteredBackoffMs();
+}
+
 function isPiIdle(ctx: any): boolean {
   return typeof ctx?.isIdle === "function" ? ctx.isIdle() : true;
 }
@@ -1634,15 +1663,17 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       } catch (error: any) {
         if (signal.aborted) break;
         recordWatcherError(error);
-        runtime.watcherState = error?.status === 401 ? "auth_expired" : error?.status === 404 ? "session_expired" : "backoff";
+        const terminalState = terminalWatcherState(error);
+        runtime.watcherState = terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
         setStatus(ctx, cfg);
-        await sleep(jitteredBackoffMs(), signal).catch(() => undefined);
+        if (terminalState) break;
+        await sleep(watcherRetryDelayMs(error), signal).catch(() => undefined);
       }
     }
   } catch (error: any) {
     if (!signal.aborted) {
       recordWatcherError(error);
-      runtime.watcherState = error?.status === 401 ? "auth_expired" : error?.status === 404 ? "session_expired" : "backoff";
+      runtime.watcherState = terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       setStatus(ctx, cfg);
     }
   } finally {
@@ -1650,7 +1681,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       watcherLoopRunning = false;
       if (signal.aborted) {
         runtime.watcherState = "disconnected";
-      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff") {
+      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "disconnected") {
         runtime.watcherState = "off";
       }
       setStatus(ctx, cfg);
@@ -1788,6 +1819,8 @@ export const __testing = {
   inboundPrompt,
   summarizeSendDelivery,
   maybeHeartbeatAgentSession,
+  terminalWatcherState,
+  watcherRetryDelayMs,
   startWatcher,
   handleWakeHint,
   queueResponsiveMessages,

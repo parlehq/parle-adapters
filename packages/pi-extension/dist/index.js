@@ -4,6 +4,15 @@ import { chmodSync as chmodSync2, existsSync as existsSync4, lstatSync as lstatS
 import { basename as basename2, dirname as dirname4, join as join4 } from "node:path";
 
 // ../client/dist/error-contract.js
+var ERROR_ACTIONS = [
+  "retry",
+  "retry_with_backoff",
+  "backoff",
+  "rebootstrap",
+  "reauthorize",
+  "fix_client",
+  "stop"
+];
 function retryable(action) {
   return action === "retry" || action === "retry_with_backoff" || action === "backoff";
 }
@@ -1999,7 +2008,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.28";
+var PI_EXTENSION_VERSION = "0.1.29";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -2723,6 +2732,8 @@ async function requestJson(cfg, path, options = {}, state = runtime) {
   const headers = {
     Accept: "application/json",
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
+    "Parle-Client-Name": "@parlehq/pi-extension",
+    "Parle-Client-Version": PI_EXTENSION_VERSION,
     Authorization: `Bearer ${cfg.agentToken.value}`
   };
   if (options.session && state.sessionHandle) headers["Parle-Agent-Session"] = state.sessionHandle;
@@ -2754,10 +2765,21 @@ async function requestJson(cfg, path, options = {}, state = runtime) {
     const json = parseJsonMaybe(text);
     if (!response.ok) {
       const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
+      const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
+      const registry = code ? ERROR_REGISTRY[code] : void 0;
+      const action = typeof errorObj.action === "string" && ERROR_ACTIONS.includes(errorObj.action) ? errorObj.action : registry?.action;
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
+      const retryAfterMs = typeof errorObj.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) ? Math.max(0, Math.trunc(errorObj.retry_after_ms)) : Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.trunc(retryAfterSeconds * 1e3)) : void 0;
       const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text);
-      const versionHint = response.status === 400 && /version/i.test(`${errorObj.code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
+      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
       const err = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
       err.status = response.status;
+      err.code = code;
+      err.action = action;
+      err.scope = typeof errorObj.scope === "string" ? errorObj.scope : registry?.scope;
+      err.retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : registry?.retryable;
+      err.retryAfterMs = retryAfterMs;
       throw err;
     }
     return json ?? {};
@@ -3028,7 +3050,7 @@ async function withRebootstrap(ctx, cfg, fn, signal) {
   try {
     return await fn();
   } catch (error) {
-    if (error?.status !== 401 && error?.status !== 404) throw error;
+    if (error?.action !== "rebootstrap") throw error;
     const hadBaseline = Boolean(runtime.baselineAt);
     await bootstrap(ctx, cfg, signal, true);
     if (hadBaseline && !cfg.sessionAlias?.value) await baselineResponsiveDelivery(ctx, cfg, signal);
@@ -3266,6 +3288,14 @@ function recordWatcherError(error) {
   runtime.consecutiveWatcherFailures = (runtime.consecutiveWatcherFailures || 0) + 1;
   runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
 }
+function terminalWatcherState(error) {
+  if (error?.action === "reauthorize") return "auth_expired";
+  if (error?.action === "stop" || error?.action === "fix_client") return "disconnected";
+  return void 0;
+}
+function watcherRetryDelayMs(error) {
+  return typeof error?.retryAfterMs === "number" && Number.isFinite(error.retryAfterMs) ? Math.max(0, Math.trunc(error.retryAfterMs)) : jitteredBackoffMs();
+}
 function isPiIdle(ctx) {
   return typeof ctx?.isIdle === "function" ? ctx.isIdle() : true;
 }
@@ -3361,15 +3391,17 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
       } catch (error) {
         if (signal.aborted) break;
         recordWatcherError(error);
-        runtime.watcherState = error?.status === 401 ? "auth_expired" : error?.status === 404 ? "session_expired" : "backoff";
+        const terminalState = terminalWatcherState(error);
+        runtime.watcherState = terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
         setStatus(ctx, cfg);
-        await sleep(jitteredBackoffMs(), signal).catch(() => void 0);
+        if (terminalState) break;
+        await sleep(watcherRetryDelayMs(error), signal).catch(() => void 0);
       }
     }
   } catch (error) {
     if (!signal.aborted) {
       recordWatcherError(error);
-      runtime.watcherState = error?.status === 401 ? "auth_expired" : error?.status === 404 ? "session_expired" : "backoff";
+      runtime.watcherState = terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       setStatus(ctx, cfg);
     }
   } finally {
@@ -3377,7 +3409,7 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
       watcherLoopRunning = false;
       if (signal.aborted) {
         runtime.watcherState = "disconnected";
-      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff") {
+      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "disconnected") {
         runtime.watcherState = "off";
       }
       setStatus(ctx, cfg);
@@ -3505,6 +3537,8 @@ var __testing = {
   inboundPrompt,
   summarizeSendDelivery,
   maybeHeartbeatAgentSession,
+  terminalWatcherState,
+  watcherRetryDelayMs,
   startWatcher,
   handleWakeHint,
   queueResponsiveMessages,

@@ -102,10 +102,11 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
 });
 
-test("Pi delegates version error hints to the agent client", () => {
+test("Pi delegates API error taxonomy and version hints to the agent client", () => {
   const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  assert.match(source, /formatVersionErrorHint[^\n]*from "@parlehq\/agent-client"/);
+  assert.match(source, /ERROR_ACTIONS, ERROR_REGISTRY[^\n]*formatVersionErrorHint[^\n]*from "@parlehq\/agent-client"/);
   assert.doesNotMatch(source, /function formatVersionErrorHint/);
+  assert.doesNotMatch(source, /const ERROR_REGISTRY/);
 });
 
 test("Pi shares wire defaults with the agent client", () => {
@@ -160,6 +161,63 @@ test("watcher bootstrap failure records status instead of escaping", async () =>
   assert.match(state.lastError, /unsupported Parle-Version/);
 });
 
+function installWatcherFailureHarness(heartbeatResponse) {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
+  let sessionCreates = 0;
+  const heartbeatAt = [];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) {
+      sessionCreates += 1;
+      return new Response(JSON.stringify({ agent_session_id: "as-watch", session_credential: "parle_ses_watch", expires_at: "2026-07-22T00:00:00Z", address: "@p.a.watch" }), { status: 201 });
+    }
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-watch" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/heartbeat")) {
+      heartbeatAt.push(Date.now());
+      return heartbeatResponse(heartbeatAt.length);
+    }
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  return { harness, heartbeatAt, sessionCreates: () => sessionCreates };
+}
+
+test("watcher stops after one terminal invalid-token heartbeat", async () => {
+  const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 }));
+
+  await probe.harness.call("parle_status");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(probe.sessionCreates(), 1);
+  assert.equal(probe.heartbeatAt.length, 1);
+  assert.equal(__testing.runtimeState().watcherState, "auth_expired");
+});
+
+test("watcher honors 429 Retry-After before a terminal 401 stops it", async () => {
+  const probe = installWatcherFailureHarness((attempt) => attempt === 1
+    ? new Response(JSON.stringify({ error: { code: "rate_limited", message: "back off", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 30 } }), { status: 429 })
+    : new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 }));
+
+  await probe.harness.call("parle_status");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
+  assert.equal(probe.heartbeatAt.length, 2);
+  assert.ok(probe.heartbeatAt[1] - probe.heartbeatAt[0] >= 25);
+  assert.equal(__testing.runtimeState().watcherState, "auth_expired");
+});
+
+test("watcher stops on a terminal stop action", async () => {
+  const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "participant_revoked", message: "removed", action: "stop", retryable: false, scope: "room_access", retry_after_ms: null } }), { status: 403 }));
+
+  await probe.harness.call("parle_status");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(probe.heartbeatAt.length, 1);
+  assert.equal(__testing.runtimeState().watcherState, "disconnected");
+});
+
 test("footer shows x when configured Parle cannot bootstrap", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_HANDLE=galexc-intercom\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=bad-version\n");
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "unsupported_version", message: "missing or unsupported Parle-Version header" } }), { status: 400 });
@@ -202,7 +260,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.28" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.29" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1200,10 +1258,10 @@ test("advanceCursor false manual reads do not consume responsive delivery", asyn
   assert.equal(__testing.runtimeState().seenSuppressed, undefined);
 });
 
-test("heartbeat 404 reboots the session before the watcher can wedge", async () => {
+test("heartbeat rebootstrap action replaces the session before the watcher can wedge", async () => {
   let sessionCreates = 0;
   let heartbeatCalls = 0;
-  const harness = installSendHarness(async (url) => {
+  const harness = installSendHarness(async (url, init = {}) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
       sessionCreates += 1;
@@ -1213,7 +1271,9 @@ test("heartbeat 404 reboots the session before the watcher can wedge", async () 
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
-      if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { message: "not found" } }), { status: 404 });
+      assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.29");
+      if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
     }
     throw new Error("unexpected " + u);
@@ -1229,7 +1289,42 @@ test("heartbeat 404 reboots the session before the watcher can wedge", async () 
   assert.equal(typeof __testing.runtimeState().lastHeartbeatAt, "string");
 });
 
-test("room tool calls rebootstrap after session 404", async () => {
+test("terminal invalid agent token does not rebootstrap or enter a heartbeat loop", async () => {
+  let sessionCreates = 0;
+  let heartbeatCalls = 0;
+  const harness = installSendHarness(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) {
+      sessionCreates += 1;
+      return new Response(JSON.stringify({ agent_session_id: "as-terminal", session_credential: "parle_ses_terminal", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.terminal" }), { status: 201 });
+    }
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-terminal" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/heartbeat")) {
+      heartbeatCalls += 1;
+      return new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 });
+    }
+    throw new Error("unexpected " + u);
+  });
+
+  await harness.call("parle_status");
+  const cfg = __testing.resolveConfig(harness.cwd);
+  await assert.rejects(__testing.maybeHeartbeatAgentSession(harness.ctx, cfg), (error) => {
+    assert.equal(error.status, 401);
+    assert.equal(error.code, "invalid_agent_token");
+    assert.equal(error.action, "reauthorize");
+    assert.equal(error.retryable, false);
+    return true;
+  });
+
+  assert.equal(sessionCreates, 1);
+  assert.equal(heartbeatCalls, 1);
+  assert.equal(__testing.terminalWatcherState({ action: "reauthorize" }), "auth_expired");
+  assert.equal(__testing.terminalWatcherState({ action: "fix_client" }), "disconnected");
+  assert.equal(__testing.watcherRetryDelayMs({ retryAfterMs: 120_000 }), 120_000);
+});
+
+test("room tool calls rebootstrap on the server action", async () => {
   let sessionCreates = 0;
   let inboxCalls = 0;
   const harness = installSendHarness(async (url) => {
@@ -1242,7 +1337,7 @@ test("room tool calls rebootstrap after session 404", async () => {
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) {
       inboxCalls += 1;
-      if (inboxCalls === 1) return new Response(JSON.stringify({ error: { message: "not found" } }), { status: 404 });
+      if (inboxCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     }
     throw new Error("unexpected " + u);
@@ -1273,7 +1368,7 @@ test("mid-run unpinned rebootstrap baselines the new session before retry", asyn
     }
     if (u.includes("/inbound")) {
       inboxCalls += 1;
-      if (inboxCalls === 1) return new Response(JSON.stringify({ error: { message: "not found" } }), { status: 404 });
+      if (inboxCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     }
     throw new Error("unexpected " + u);
