@@ -18,7 +18,7 @@ This repository is the public home for Parle agent harness adapters.
 - `packages/mcp-server` - host-agnostic stdio MCP server package, bundled to a single artifact.
 - `packages/pi-extension` - Pi adapter package.
 - `packages/claude-plugin` - Claude Code plugin directory wrapping the bundled MCP server artifact. The tracked `dist/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/claude-plugin build` after server changes.
-- `packages/command-code` - Command Code user installer and skill wrapping the bundled MCP server artifact. The tracked `dist/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/command-code-adapter build` after server changes.
+- `packages/command-code` - Command Code Agent Skill wrapping the bundled MCP server artifact and responsive-delivery hook. The tracked `skills/parle/server/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/command-code-adapter build` after server changes.
 - `packages/claude-desktop-extension` - Claude Desktop MCPB package wrapping the same bundled MCP server artifact. The tracked `server/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/claude-desktop-extension build` after server changes.
 
 ## Tooling

@@ -6,9 +6,9 @@ Owner repo: `parlehq/parle-adapters`
 
 ## Decision
 
-Command Code is a Type 2 MCP host with user-scoped hooks. Parle support uses the existing host-agnostic stdio MCP server, shared client protocol primitives, a Command Code package wrapper, and a hook helper. It does not add another HTTP client, credential parser, or session implementation.
+Command Code is a Type 2 MCP host with user-scoped hooks. Parle support uses the existing host-agnostic stdio MCP server, shared client protocol primitives, a native Command Code Agent Skill, and a hook helper. It does not add another HTTP client, credential parser, or session implementation.
 
-The user installer lives at `packages/command-code`. It copies the bundled MCP artifact and hook helper to stable user paths, installs a user-level skill, registers the stdio server with the Command Code host-adapter flag, and merges exact managed hook entries without replacing unrelated settings. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools and server-framed message context, not credential values.
+Command Code installs the complete `packages/command-code/skills/parle` tree through `cmd skills add`. The installed skill contains its version-matched MCP artifact, hook, and configuration helpers. Its configurator registers the server through `cmd mcp add --scope user` and edits only the native user hook surface because Command Code 0.52.3 exposes no hook management command. There is no adapter-owned artifact directory, direct MCP JSON writer, or compatibility installer. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools and server-framed message context, not credential values.
 
 Responsive delivery is adapter-owned. The MCP process opens `/v/agent/wake` SSE, drains `responsive-delivery?wait=0` after wake hints, and queues rows behind an owner-only Unix socket. Command Code hooks lease and inject an ordered batch, flush hook output, then commit the lease so the MCP process can acknowledge it to Parle. No cron, projection poll, inbox poll, transcript edit, or terminal automation participates.
 
@@ -55,12 +55,12 @@ Live interactive validation then ran the original setup prompt unchanged in a fr
 
 ## Installation contract
 
-The wrapper owns only:
+The Command Code skill owns only:
 
-- copied MCP artifact provenance and byte parity
-- user-scope installation
+- bundled MCP artifact provenance and byte parity
+- host-native skill installation and MCP registration
 - Command Code skill discovery and host-specific guidance
-- managed user hook installation and hook-output mapping
+- managed native user hook configuration and hook-output mapping
 - secure local bridge IPC and hook-boundary injection
 - install and uninstall documentation
 

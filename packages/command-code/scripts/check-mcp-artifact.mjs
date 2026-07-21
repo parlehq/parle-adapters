@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = resolve(here, "../../mcp-server/dist/parle-mcp.js");
-const target = resolve(here, "../dist/parle-mcp.js");
+const target = resolve(here, "../skills/parle/server/parle-mcp.js");
 
 const sourceBytes = readFileSync(source);
 const targetBytes = readFileSync(target);

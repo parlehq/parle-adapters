@@ -18,24 +18,24 @@ test("Command Code wrapper includes safe skill guidance and MCP artifact", () =>
   assert.match(skill, /\/v\/agent\/wake/);
   assert.match(skill, /Never create a cron/);
 
-  const hook = readFileSync(resolve(root, "hooks/parle-hook.mjs"), "utf8");
+  const hook = readFileSync(resolve(root, "skills/parle/scripts/parle-hook.mjs"), "utf8");
   assert.match(hook, /decision: "block"/);
   assert.match(hook, /additionalContext/);
   assert.match(hook, /action: "commit"/);
 
-  const artifact = resolve(root, "dist/parle-mcp.js");
+  const artifact = resolve(root, "skills/parle/server/parle-mcp.js");
   assert.equal(existsSync(artifact), true);
   assert.equal(statSync(artifact).size > 0, true);
 });
 
-test("user installer contains no Parle credential values or profile parsing", () => {
-  const installer = readFileSync(resolve(root, "scripts/install-user.mjs"), "utf8");
-  assert.doesNotMatch(installer, /PARLE_ROOM_AGENT_TOKEN/);
-  assert.doesNotMatch(installer, /agent_token/);
-  assert.doesNotMatch(installer, /Authorization/);
-  assert.doesNotMatch(installer, /\.parle\/profiles/);
-  assert.match(installer, /cmd/);
-  assert.match(installer, /mcp/);
-  assert.match(installer, /PARLE_HOST_ADAPTER/);
-  assert.match(installer, /mergeParleHooks/);
+test("native skill configuration contains no Parle credentials or private config parsing", () => {
+  const configure = readFileSync(resolve(root, "skills/parle/scripts/configure.mjs"), "utf8");
+  assert.doesNotMatch(configure, /PARLE_ROOM_AGENT_TOKEN/);
+  assert.doesNotMatch(configure, /agent_token/);
+  assert.doesNotMatch(configure, /Authorization/);
+  assert.doesNotMatch(configure, /\.parle\/profiles/);
+  assert.match(configure, /"mcp", "add"/);
+  assert.match(configure, /"--scope", "user"/);
+  assert.match(configure, /PARLE_HOST_ADAPTER=command-code/);
+  assert.match(configure, /mergeParleHooks/);
 });

@@ -53,7 +53,7 @@ test("Command Code hook injects server framing and commits after output", async 
       server.listen(socketPath, resolveListen);
     });
     chmodSync(socketPath, 0o600);
-    const script = resolve("hooks/parle-hook.mjs");
+    const script = resolve("skills/parle/scripts/parle-hook.mjs");
     const result = await runHook(script, { ...process.env, HOME: home }, { cwd, session_id: "command-code-session", hook_event_name: "Stop", stop_hook_active: false });
     assert.equal(result.code, 0, result.stderr);
     const output = JSON.parse(result.stdout);

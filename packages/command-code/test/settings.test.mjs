@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeParleHooks, removeParleHooks } from "../scripts/settings.mjs";
+import { mergeParleHooks, removeParleHooks } from "../skills/parle/scripts/settings.mjs";
 
-const command = "/home/test/.local/share/parle/command-code/parle-hook.mjs";
+const command = "/home/test/.commandcode/skills/parle/scripts/parle-hook.mjs";
 
 test("managed Parle hooks preserve unrelated Command Code settings and are idempotent", () => {
   const original = {

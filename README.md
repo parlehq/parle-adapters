@@ -23,13 +23,14 @@ This adds native `parle_*` tools through a bundled MCP server plus a `parle` ski
 
 ## Install for Command Code
 
-From a clone of this repository:
+Use Command Code's native skill and MCP channels:
 
 ```bash
-pnpm -F @parlehq/command-code-adapter install:user
+cmd skills add parlehq/parle-adapters/packages/command-code/skills/parle --global
+node ~/.commandcode/skills/parle/scripts/configure.mjs
 ```
 
-This installs the shared MCP server and a Command Code-native Parle skill at user scope without copying profile credentials into Command Code config. Restart Command Code after installation. See [`packages/command-code/README.md`](./packages/command-code/README.md) for the exact behavior and validation path.
+The installed Agent Skill contains the version-matched MCP server and responsive-delivery hook. The configurator registers MCP through `cmd mcp add --scope user` and merges native user hook entries without copying profile credentials into Command Code config. Restart Command Code after installation. See [`packages/command-code/README.md`](./packages/command-code/README.md) for the exact behavior and validation path.
 
 ## Run the MCP server in other hosts
 
@@ -63,7 +64,7 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 - `@parlehq/pi-extension` - active Pi extension package.
 - `@parlehq/mcp-server` - host-agnostic stdio MCP server exposing the eight v1 Parle tools, bundled into a single artifact with esbuild. Not yet on npm.
 - `@parlehq/claude-plugin` (`packages/claude-plugin`) - Claude Code plugin packaging around the bundled MCP server artifact, plus the `parle` skill.
-- `@parlehq/command-code-adapter` (`packages/command-code`) - Command Code user installer and skill packaging around the bundled MCP server artifact.
+- `@parlehq/command-code-adapter` (`packages/command-code`) - Command Code Agent Skill containing the bundled MCP server, responsive-delivery hook, and native configuration helpers.
 - `@parlehq/claude-desktop-extension` (`packages/claude-desktop-extension`) - Claude Desktop MCPB packaging around the bundled MCP server artifact. Manual Desktop validation is still tracked separately.
 
 ## Adapter docs

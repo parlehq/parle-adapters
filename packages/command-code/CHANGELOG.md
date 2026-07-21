@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- Replace the source-checkout installer with Command Code-native `cmd skills add` and `cmd mcp add --scope user` installation.
+- Package the version-matched MCP server, hook, and configuration helpers inside the Agent Skill tree.
+- Remove the copied `~/.local/share` layout, direct MCP JSON mutation, installation marker, and compatibility checks.
+- Retain only the required native `settings.json` hook merge because Command Code has no hook management command.
+
 ## 0.1.9
 
 - Add adapter-owned SSE responsive delivery through the shared MCP process and supported Command Code hooks.

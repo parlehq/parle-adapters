@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/command-code-adapter",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "type": "module",
   "dependencies": {
@@ -8,8 +8,6 @@
   },
   "scripts": {
     "build": "node scripts/copy-mcp-artifact.mjs",
-    "install:user": "node scripts/install-user.mjs",
-    "uninstall:user": "node scripts/uninstall-user.mjs",
     "typecheck": "node scripts/check-mcp-artifact.mjs",
     "test": "node scripts/check-mcp-artifact.mjs && node --test test/*.test.mjs"
   }
