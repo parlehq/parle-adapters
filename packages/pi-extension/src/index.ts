@@ -1645,6 +1645,11 @@ function recordAutomaticFailure(error: any, cfg: ParleConfig, runId?: number): b
   } else if (retryableError(error)) {
     const delay = watcherRetryDelayMs(error);
     runtime.nextRetryAt = new Date(Date.now() + delay).toISOString();
+  } else {
+    // A retry deadline describes only the failure that created it. Never let
+    // an expired 429 deadline turn a later unclassified transport failure into
+    // a zero-delay watcher loop.
+    runtime.nextRetryAt = undefined;
   }
   return true;
 }

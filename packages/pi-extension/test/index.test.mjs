@@ -1487,6 +1487,17 @@ test("explicit Pi reads retry a terminal binding and a changed disk binding reop
   assert.equal(status.details.runtime.terminalCause, undefined);
 });
 
+test("an unclassified watcher failure clears an expired retry deadline and retains nonzero backoff", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token\n");
+  const cfg = __testing.resolveConfig(cwd);
+  __testing.recordAutomaticFailure({ status: 429, action: "backoff", retryable: true, retryAfterMs: 1, message: "wait" }, cfg);
+  assert.equal(typeof __testing.runtimeState().nextRetryAt, "string");
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  __testing.recordAutomaticFailure(new TypeError("fetch failed"), cfg);
+  assert.equal(__testing.runtimeState().nextRetryAt, undefined);
+  assert.ok(__testing.watcherRetryDelayMs(new TypeError("fetch failed")) >= 5000);
+});
+
 test("bootstrapped terminal heartbeat latches status and stale runs cannot replace its cause", async () => {
   const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }), { status: 401 }));
   await probe.harness.call("parle_status");

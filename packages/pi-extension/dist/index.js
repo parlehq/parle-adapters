@@ -3351,6 +3351,8 @@ function recordAutomaticFailure(error, cfg, runId) {
   } else if (retryableError(error)) {
     const delay = watcherRetryDelayMs(error);
     runtime.nextRetryAt = new Date(Date.now() + delay).toISOString();
+  } else {
+    runtime.nextRetryAt = void 0;
   }
   return true;
 }
