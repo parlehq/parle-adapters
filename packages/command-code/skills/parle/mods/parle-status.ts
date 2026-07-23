@@ -11,15 +11,24 @@ const REFRESH_INTERVAL_MS = 5_000;
 export default function parleStatus(cmd: any) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let current: string | null | undefined;
+  let sessionBound = false;
+  let notifiedConnected = false;
 
   const refresh = () => {
     const next = renderParleStatus(cmd.cwd, Date.now());
     if (next === current) return;
     current = next;
     cmd.ui.setStatus(next);
+    if (sessionBound && !notifiedConnected && next?.includes("✓")) {
+      notifiedConnected = true;
+      cmd.ui.notify(`Parle ${next}`);
+    }
   };
 
   const start = () => {
+    sessionBound = true;
+    notifiedConnected = false;
+    current = undefined;
     refresh();
     if (timer) return;
     timer = setInterval(refresh, REFRESH_INTERVAL_MS);
@@ -30,6 +39,8 @@ export default function parleStatus(cmd: any) {
     if (timer) clearInterval(timer);
     timer = undefined;
     current = undefined;
+    sessionBound = false;
+    notifiedConnected = false;
     cmd.ui.setStatus(null);
   };
 
@@ -37,7 +48,7 @@ export default function parleStatus(cmd: any) {
   cmd.on("session_shutdown", stop);
   cmd.on("run_start", refresh);
   cmd.on("run_end", refresh);
-  start();
+  refresh();
 }
 
 export function renderParleStatus(cwd: string, now = Date.now()): string | null {

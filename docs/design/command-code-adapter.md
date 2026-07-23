@@ -10,7 +10,7 @@ Command Code is a Type 2 MCP host with user-scoped hooks. Parle support uses the
 
 Command Code installs the complete `packages/command-code/skills/parle` tree through `cmd skills add`. The installed skill contains its version-matched MCP artifact, hook, footer mod, and configuration helpers. Its configurator registers the footer through `cmd mods add --global`, registers the server through `cmd mcp add --scope user`, and edits only the native user hook surface because Command Code exposes no hook management command. There is no adapter-owned artifact directory, direct MCP JSON writer, or compatibility installer. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools and server-framed message context, not credential values.
 
-Command Code v1 mods expose `cmd.ui.setStatus(text | null)` as one persistent footer segment per mod. The Parle mod reads only credential-free `<cwd>/.parle/runtime/*.json` snapshots already published by the MCP process. It uses the same cwd-scoped honesty contract as Claude: one live session may show its address, while several sessions show a count rather than presenting a sibling address as authoritative. Command Code owns rendering, and headless mode intentionally renders no footer.
+Command Code v1 mods expose a `cmd.ui.setStatus(text | null)` contract, but Command Code 1.3.1 documents that footer status and editor widgets are not yet wired into the interactive TUI. The Parle mod computes status from credential-free `<cwd>/.parle/runtime/*.json` snapshots and calls `setStatus` for forward compatibility. Until the host renders it, the mod emits one connected-status notice after session start. It uses the same cwd-scoped honesty contract as Claude: one live session may show its address, while several sessions show a count rather than presenting a sibling address as authoritative.
 
 Responsive delivery is adapter-owned. The MCP process opens `/v/agent/wake` SSE, drains `responsive-delivery?wait=0` after wake hints, and queues rows behind an owner-only Unix socket. Command Code hooks lease and inject an ordered batch, flush hook output, then commit the lease so the MCP process can acknowledge it to Parle. No cron, projection poll, inbox poll, transcript edit, or terminal automation participates.
 
@@ -44,9 +44,9 @@ Because long-lived agent-token material appeared in the durable session history,
 
 ## Command Code capability evidence
 
-Primary Command Code documentation retrieved on 2026-07-18 and 2026-07-22 confirms:
+Primary Command Code documentation retrieved through 2026-07-23 confirms:
 
-- mods support one persistent per-mod TUI footer segment through `cmd.ui.setStatus`: <https://commandcode.ai/docs/mods#footer-status-segments>
+- mods expose `cmd.ui.setStatus`, but the interactive TUI currently treats footer status and widgets as no-ops pending host wire-up: <https://commandcode.ai/docs/mods#footer-status-segments-and-editor-widgets>
 - mod packages install natively with user scope through `cmd mods add --global`: <https://commandcode.ai/docs/mods#packaging-and-install>
 - MCP supports local stdio servers and automatic tool discovery: <https://commandcode.ai/docs/mcp>
 - user-scoped MCP configuration is stored in `~/.commandcode/mcp.json`
@@ -63,7 +63,7 @@ The Command Code skill owns only:
 
 - bundled MCP artifact provenance and byte parity
 - host-native skill installation, mod registration, and MCP registration
-- Command Code skill discovery, cwd-scoped footer rendering, and host-specific guidance
+- Command Code skill discovery, cwd-scoped status computation, and host-specific guidance
 - managed native user hook configuration and hook-output mapping
 - secure local bridge IPC and hook-boundary injection
 - install and uninstall documentation

@@ -34,9 +34,11 @@ Installation fails closed if a skill or MCP server already owns the `parle` name
 
 The MCP server resolves `~/.parle/profiles` directly. If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Command Code with `PARLE_PROFILE` naming the intended profile.
 
-## Footer status
+## Connection status
 
-The native mod uses `cmd.ui.setStatus` to render the same credential-free, cwd-scoped runtime state used by the Claude statusline. One live session shows `#room-handle ✓ @principal.agent.session`; several sessions show an honest count rather than claiming one sibling address as the current session; a configured but disconnected workspace shows `parle · off`. Fresh unread state is included when available.
+The native mod computes the same credential-free, cwd-scoped runtime state used by the Claude statusline. One live session is `#room-handle ✓ @principal.agent.session`; several sessions use an honest count rather than claiming one sibling address as the current session; a configured but disconnected workspace is `parle · off`. Fresh unread state is included when available.
+
+Command Code 1.3.1 exposes `cmd.ui.setStatus`, but its bundled mod reference says footer status and editor widgets are not wired into the interactive TUI yet. The mod still calls `setStatus` so the footer will activate when the host wires that contract. Until then, it emits one visible connected-status notice after each Command Code session starts. It does not repeat the notice on every refresh.
 
 The mod reads only `<cwd>/.parle/runtime/*.json` snapshots published by the MCP server. It refreshes on Command Code lifecycle events and a lightweight timer, renders nothing in headless mode, and never reads profile credentials. If the host sandbox blocks sibling-process inspection with `EPERM`, the mod treats liveness as indeterminate and relies on the snapshot's bounded expiry instead of hiding a connected session.
 
@@ -56,7 +58,7 @@ The local bridge uses an owner-only Unix socket under `~/.local/state/parle/comm
 
 ## Validated host behavior
 
-The current adapter requires Command Code 1.0.0 or newer. Automated tests cover native mod and MCP registration, footer rendering, SSE wake, zero-wait drain, lease-before-ack ordering, server-framing preservation, session binding, settings merge behavior, and artifact parity. Live TUI validation is still required after installation because Command Code owns footer and hook rendering.
+The current adapter requires Command Code 1.0.0 or newer. Automated tests cover native mod and MCP registration, status computation and startup notice behavior, SSE wake, zero-wait drain, lease-before-ack ordering, server-framing preservation, session binding, settings merge behavior, and artifact parity. Live TUI validation is still required after installation because Command Code owns notice and hook rendering.
 
 Command Code launches `node` through the session's `PATH`. A project-level runtime shim can therefore prevent the server from starting if that project has not trusted its runtime configuration. Use `/mcp` to inspect the error and repair project runtime trust rather than placing credentials in another config path.
 

@@ -82,18 +82,25 @@ test("renders disconnected only for a configured workspace", () => {
   }
 });
 
-test("registers a footer segment and clears it on session shutdown", () => {
+test("registers future footer state, emits one startup notice, and clears on shutdown", () => {
   const cwd = workspace("lifecycle");
   const handlers = new Map();
   const statuses = [];
+  const notices = [];
   try {
     writeSnapshot(cwd, "one", snapshot());
     loadMod({
       cwd,
-      ui: { setStatus(value) { statuses.push(value); } },
+      ui: {
+        setStatus(value) { statuses.push(value); },
+        notify(value) { notices.push(value); },
+      },
       on(event, handler) { handlers.set(event, handler); return { dispose() {} }; },
     });
     assert.equal(statuses.at(-1), "#workshop ✓ @gilman.galexc.abcdefgh");
+    assert.deepEqual(notices, []);
+    handlers.get("session_start")();
+    assert.equal(notices.at(-1), "Parle #workshop ✓ @gilman.galexc.abcdefgh");
     handlers.get("session_shutdown")();
     assert.equal(statuses.at(-1), null);
   } finally {

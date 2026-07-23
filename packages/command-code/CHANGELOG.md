@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.14
+
+- Correct the host capability claim: Command Code 1.3.1 exposes footer status APIs but does not render them in the interactive TUI yet.
+- Emit one connected-status notice after session start as a visible fallback without repeating it on refresh.
+- Keep calling `cmd.ui.setStatus` so native footer rendering activates when Command Code wires the existing contract.
+
 ## 0.1.13
 
 - Stop automatic reconnect activity after terminal Parle authentication or client failures while preserving explicit user-paced recovery attempts.
