@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { DEFAULT_API_BASE, DEFAULT_VERSION, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.30";
+const PI_EXTENSION_VERSION = "0.1.31";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -313,13 +313,13 @@ function resolveConfig(cwd: string, profileOverride = activeProfileOverride): Pa
   // catalog per process, no layering). Relative paths resolve against cwd.
   const catalogOverride = firstConfigValue(sourceCandidates("PARLE_PROFILES_PATH"));
   const catalogPath = resolveProfileCatalogPath(catalogOverride?.value, cwd, process.env);
-  const gitExposure = catalogGitExposureWarning(catalogPath);
+  const gitExposure = enabled ? catalogGitExposureWarning(catalogPath) : undefined;
   if (gitExposure) warnings.push(gitExposure);
-  const profileSelector = explicitProfile || (directValues.length === 0 && profileCatalogHasProfile("default", catalogPath)
+  const profileSelector = explicitProfile || (enabled && directValues.length === 0 && profileCatalogHasProfile("default", catalogPath)
     ? { value: "default", source: "profile_catalog" as const, key: "PARLE_PROFILE" }
     : undefined);
   let profile: CredentialProfile | undefined;
-  if (profileSelector) {
+  if (enabled && profileSelector) {
     if (directValues.length) {
       const conflicts = directValues.map((value) => `${value.key} from ${value.source}`);
       throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
@@ -346,7 +346,7 @@ function resolveConfig(cwd: string, profileOverride = activeProfileOverride): Pa
     principalHandle: pick("PARLE_PRINCIPAL_HANDLE", undefined),
     agentHandle: pick("PARLE_AGENT_HANDLE", undefined),
     sessionCookie: firstConfigValue(sourceCandidates("PARLE_SESSION_COOKIE", true))
-      || makeValue(readSessionCookieFile(sessionCookieFilePath(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true)
+      || (enabled ? makeValue(readSessionCookieFile(sessionCookieFilePath(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true) : undefined)
       || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
     sessionAlias: pick("PARLE_SESSION_ALIAS", undefined),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
@@ -1224,6 +1224,7 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
   state.agentSessionId = String(session.agent_session_id || "");
   state.expiresAt = String(session.expires_at || "");
   state.roomId = cfg.roomId!.value;
+  if (publish && state === runtime) liveConfig = cfg;
   const entry = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/participants`, { method: "POST", session: true, signal }, state);
   state.participantId = String(entry.participant_id || "");
   state.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : cfg.roomHandle?.value;
@@ -1237,7 +1238,6 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
   state.lastError = undefined;
   if (state === runtime) clearAutomaticFailureLatch();
   if (publish) {
-    if (state === runtime) liveConfig = cfg;
     setStatus(ctx, cfg);
     publishRuntimeState(ctx, cfg);
   }
@@ -1978,20 +1978,36 @@ function setStatus(ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   } catch {}
 }
 
+function resolveLifecycleConfig(ctx: any): ParleConfig | undefined {
+  if (liveConfig && runtime.agentSessionId && runtime.sessionHandle) return liveConfig;
+  try {
+    return configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
+  } catch (error) {
+    runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+    runtime.watcherState = "off";
+    try {
+      ctx?.ui?.setStatus?.(EXTENSION_ID, "parle x check config");
+    } catch {}
+    return undefined;
+  }
+}
+
 export default function parleExtension(pi: any) {
 
   pi.on("session_start", (_event: any, ctx: any) => {
     lastCtx = ctx;
-    const cfg = resolveConfig(ctx.cwd || process.cwd());
-    preflightAutomaticBinding(cfg);
     pruneRuntimeFiles(ctx.cwd || process.cwd());
+    const cfg = resolveLifecycleConfig(ctx);
+    if (!cfg) return;
+    preflightAutomaticBinding(cfg);
     setStatus(ctx, cfg);
     startWatcher(pi, ctx, cfg);
   });
 
   pi.on("agent_settled", async (_event: any, ctx: any) => {
     lastCtx = ctx;
-    const cfg = configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
+    const cfg = resolveLifecycleConfig(ctx);
+    if (!cfg) return;
     try {
       await flushPendingResponsiveMessages(pi, ctx, cfg);
     } catch (error: any) {
@@ -2001,13 +2017,15 @@ export default function parleExtension(pi: any) {
   });
 
   pi.on("session_shutdown", (_event: any, ctx: any) => {
-    const cfg = configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2000);
-    void endAgentSession(cfg, controller.signal).catch((error) => {
-      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-    }).finally(() => clearTimeout(timer));
-    stopWatcher(ctx);
+    const cfg = resolveLifecycleConfig(ctx);
+    if (cfg) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2000);
+      void endAgentSession(cfg, controller.signal).catch((error) => {
+        runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+      }).finally(() => clearTimeout(timer));
+    }
+    stopWatcher();
     clearPendingResponsiveMessages();
     removeRuntimeFile(ctx.cwd || process.cwd());
   });

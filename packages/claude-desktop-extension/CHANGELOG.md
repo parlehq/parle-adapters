@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.22 (2026-07-24)
+
+Bundled MCP refresh so inaccessible profile catalogs fail closed with actionable access errors instead of raw filesystem exceptions.
+
 ## 0.5.21 (2026-07-23)
 
 Bundled client refresh that stops automatic reconnect activity after terminal Parle authentication or client failures while preserving explicit user-paced recovery attempts.

@@ -138,15 +138,39 @@ var ProfileConfigError = class extends Error {
 };
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var ALLOWED_KEYS = /* @__PURE__ */ new Set(["room_id", "agent_token", "agent_token_id", "api_base", "wake_base"]);
-function assertSafeCatalog(path) {
-  const link = lstatSync(path);
-  const stat = link.isSymbolicLink() ? statSync(path) : link;
+function catalogAccessError(path, operation, error) {
+  const code = typeof error?.code === "string" ? ` (${error.code})` : "";
+  return new ProfileConfigError(`Parle profile catalog cannot be ${operation}: ${path}${code}. Check that the catalog and its parent directories are accessible to the current user.`);
+}
+function inspectCatalog(path) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR")
+      return void 0;
+    throw catalogAccessError(path, "inspected", error);
+  }
+}
+function assertSafeCatalog(path, link) {
+  let stat;
+  try {
+    stat = link.isSymbolicLink() ? statSync(path) : link;
+  } catch (error) {
+    throw catalogAccessError(path, "inspected", error);
+  }
   if (!stat.isFile())
     throw new ProfileConfigError(`Parle profile catalog must be a regular file: ${path}`);
   if (process.platform !== "win32" && stat.uid !== process.getuid?.())
     throw new ProfileConfigError(`Parle profile catalog must be owned by the current user: ${path}`);
   if (process.platform !== "win32" && (stat.mode & 63) !== 0)
     console.warn(`Parle warning: profile catalog should be mode 0600: ${path}`);
+}
+function readCatalog(path) {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    throw catalogAccessError(path, "read", error);
+  }
 }
 function parseProfiles(text, path = PROFILE_CATALOG_PATH) {
   const sections = /* @__PURE__ */ new Map();
@@ -194,17 +218,19 @@ function parseProfiles(text, path = PROFILE_CATALOG_PATH) {
   return profiles;
 }
 function profileCatalogHasProfile(name, path = PROFILE_CATALOG_PATH) {
-  if (!existsSync(path))
+  const link = inspectCatalog(path);
+  if (!link)
     return false;
-  assertSafeCatalog(path);
-  return parseProfiles(readFileSync(path, "utf8"), path).has(name);
+  assertSafeCatalog(path, link);
+  return parseProfiles(readCatalog(path), path).has(name);
 }
 function loadProfile(name, path = PROFILE_CATALOG_PATH) {
-  if (!existsSync(path)) {
+  const link = inspectCatalog(path);
+  if (!link) {
     throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create one with [${name}], room_id, and agent_token.`);
   }
-  assertSafeCatalog(path);
-  const profiles = parseProfiles(readFileSync(path, "utf8"), path);
+  assertSafeCatalog(path, link);
+  const profiles = parseProfiles(readCatalog(path), path);
   const profile = profiles.get(name);
   if (profile)
     return profile;
@@ -2008,7 +2034,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.30";
+var PI_EXTENSION_VERSION = "0.1.31";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -2116,11 +2142,11 @@ function resolveConfig(cwd, profileOverride = activeProfileOverride) {
   const explicitProfile = profileOverride ? { value: profileOverride, source: "runtime_profile", key: "PARLE_PROFILE" } : firstConfigValue(sourceCandidates("PARLE_PROFILE"));
   const catalogOverride = firstConfigValue(sourceCandidates("PARLE_PROFILES_PATH"));
   const catalogPath = resolveProfileCatalogPath(catalogOverride?.value, cwd, process.env);
-  const gitExposure = catalogGitExposureWarning(catalogPath);
+  const gitExposure = enabled ? catalogGitExposureWarning(catalogPath) : void 0;
   if (gitExposure) warnings.push(gitExposure);
-  const profileSelector = explicitProfile || (directValues.length === 0 && profileCatalogHasProfile("default", catalogPath) ? { value: "default", source: "profile_catalog", key: "PARLE_PROFILE" } : void 0);
+  const profileSelector = explicitProfile || (enabled && directValues.length === 0 && profileCatalogHasProfile("default", catalogPath) ? { value: "default", source: "profile_catalog", key: "PARLE_PROFILE" } : void 0);
   let profile;
-  if (profileSelector) {
+  if (enabled && profileSelector) {
     if (directValues.length) {
       const conflicts = directValues.map((value) => `${value.key} from ${value.source}`);
       throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
@@ -2145,7 +2171,7 @@ function resolveConfig(cwd, profileOverride = activeProfileOverride) {
     agentId: pick("PARLE_AGENT_ID", void 0),
     principalHandle: pick("PARLE_PRINCIPAL_HANDLE", void 0),
     agentHandle: pick("PARLE_AGENT_HANDLE", void 0),
-    sessionCookie: firstConfigValue(sourceCandidates("PARLE_SESSION_COOKIE", true)) || makeValue(readSessionCookieFile(sessionCookieFilePath(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true) || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
+    sessionCookie: firstConfigValue(sourceCandidates("PARLE_SESSION_COOKIE", true)) || (enabled ? makeValue(readSessionCookieFile(sessionCookieFilePath(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true) : void 0) || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
     sessionAlias: pick("PARLE_SESSION_ALIAS", void 0),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
     wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_API_BASE3) : pick("PARLE_WAKE_BASE", void 0),
@@ -2963,6 +2989,7 @@ async function bootstrap(ctx, cfg, signal, preserveCursor = false, aliasOverride
   state.agentSessionId = String(session.agent_session_id || "");
   state.expiresAt = String(session.expires_at || "");
   state.roomId = cfg.roomId.value;
+  if (publish && state === runtime) liveConfig = cfg;
   const entry = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId.value)}/participants`, { method: "POST", session: true, signal }, state);
   state.participantId = String(entry.participant_id || "");
   state.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : cfg.roomHandle?.value;
@@ -2976,7 +3003,6 @@ async function bootstrap(ctx, cfg, signal, preserveCursor = false, aliasOverride
   state.lastError = void 0;
   if (state === runtime) clearAutomaticFailureLatch();
   if (publish) {
-    if (state === runtime) liveConfig = cfg;
     setStatus(ctx, cfg);
     publishRuntimeState(ctx, cfg);
   }
@@ -3657,18 +3683,34 @@ function setStatus(ctx, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   } catch {
   }
 }
+function resolveLifecycleConfig(ctx) {
+  if (liveConfig && runtime.agentSessionId && runtime.sessionHandle) return liveConfig;
+  try {
+    return configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
+  } catch (error) {
+    runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+    runtime.watcherState = "off";
+    try {
+      ctx?.ui?.setStatus?.(EXTENSION_ID, "parle x check config");
+    } catch {
+    }
+    return void 0;
+  }
+}
 function parleExtension(pi) {
   pi.on("session_start", (_event, ctx) => {
     lastCtx = ctx;
-    const cfg = resolveConfig(ctx.cwd || process.cwd());
-    preflightAutomaticBinding(cfg);
     pruneRuntimeFiles2(ctx.cwd || process.cwd());
+    const cfg = resolveLifecycleConfig(ctx);
+    if (!cfg) return;
+    preflightAutomaticBinding(cfg);
     setStatus(ctx, cfg);
     startWatcher(pi, ctx, cfg);
   });
   pi.on("agent_settled", async (_event, ctx) => {
     lastCtx = ctx;
-    const cfg = configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
+    const cfg = resolveLifecycleConfig(ctx);
+    if (!cfg) return;
     try {
       await flushPendingResponsiveMessages(pi, ctx, cfg);
     } catch (error) {
@@ -3677,13 +3719,15 @@ function parleExtension(pi) {
     }
   });
   pi.on("session_shutdown", (_event, ctx) => {
-    const cfg = configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2e3);
-    void endAgentSession(cfg, controller.signal).catch((error) => {
-      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-    }).finally(() => clearTimeout(timer));
-    stopWatcher(ctx);
+    const cfg = resolveLifecycleConfig(ctx);
+    if (cfg) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2e3);
+      void endAgentSession(cfg, controller.signal).catch((error) => {
+        runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+      }).finally(() => clearTimeout(timer));
+    }
+    stopWatcher();
     clearPendingResponsiveMessages();
     removeRuntimeFile2(ctx.cwd || process.cwd());
   });

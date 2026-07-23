@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
@@ -55,12 +55,38 @@ export class ProfileConfigError extends Error {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_KEYS = new Set(["room_id", "agent_token", "agent_token_id", "api_base", "wake_base"]);
 
-function assertSafeCatalog(path: string): void {
-  const link = lstatSync(path);
-  const stat = link.isSymbolicLink() ? statSync(path) : link;
+function catalogAccessError(path: string, operation: string, error: unknown): ProfileConfigError {
+  const code = typeof (error as any)?.code === "string" ? ` (${(error as any).code})` : "";
+  return new ProfileConfigError(`Parle profile catalog cannot be ${operation}: ${path}${code}. Check that the catalog and its parent directories are accessible to the current user.`);
+}
+
+function inspectCatalog(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error: any) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return undefined;
+    throw catalogAccessError(path, "inspected", error);
+  }
+}
+
+function assertSafeCatalog(path: string, link: Stats): void {
+  let stat: Stats;
+  try {
+    stat = link.isSymbolicLink() ? statSync(path) : link;
+  } catch (error) {
+    throw catalogAccessError(path, "inspected", error);
+  }
   if (!stat.isFile()) throw new ProfileConfigError(`Parle profile catalog must be a regular file: ${path}`);
   if (process.platform !== "win32" && stat.uid !== process.getuid?.()) throw new ProfileConfigError(`Parle profile catalog must be owned by the current user: ${path}`);
   if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) console.warn(`Parle warning: profile catalog should be mode 0600: ${path}`);
+}
+
+function readCatalog(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    throw catalogAccessError(path, "read", error);
+  }
 }
 
 export function parseProfiles(text: string, path = PROFILE_CATALOG_PATH): Map<string, CredentialProfile> {
@@ -99,21 +125,23 @@ export function parseProfiles(text: string, path = PROFILE_CATALOG_PATH): Map<st
 }
 
 export function profileCatalogExists(path: string = PROFILE_CATALOG_PATH): boolean {
-  return existsSync(path);
+  return inspectCatalog(path) !== undefined;
 }
 
 export function profileCatalogHasProfile(name: string, path: string = PROFILE_CATALOG_PATH): boolean {
-  if (!existsSync(path)) return false;
-  assertSafeCatalog(path);
-  return parseProfiles(readFileSync(path, "utf8"), path).has(name);
+  const link = inspectCatalog(path);
+  if (!link) return false;
+  assertSafeCatalog(path, link);
+  return parseProfiles(readCatalog(path), path).has(name);
 }
 
 export function loadProfile(name: string, path: string = PROFILE_CATALOG_PATH): CredentialProfile {
-  if (!existsSync(path)) {
+  const link = inspectCatalog(path);
+  if (!link) {
     throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create one with [${name}], room_id, and agent_token.`);
   }
-  assertSafeCatalog(path);
-  const profiles = parseProfiles(readFileSync(path, "utf8"), path);
+  assertSafeCatalog(path, link);
+  const profiles = parseProfiles(readCatalog(path), path);
   const profile = profiles.get(name);
   if (profile) return profile;
   const available = [...profiles.keys()].join(", ") || "none";

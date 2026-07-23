@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.15
+
+- Refresh the shared MCP artifact so inaccessible profile catalogs fail closed with actionable access errors instead of raw filesystem exceptions.
+
 ## 0.1.14
 
 - Correct the host capability claim: Command Code 1.3.1 exposes footer status APIs but does not render them in the interactive TUI yet.

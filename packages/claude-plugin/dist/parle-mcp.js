@@ -33492,6 +33492,9 @@ var ParleAgentClient = class _ParleAgentClient {
   consecutiveBootstrapFailures = 0;
   unreadInFlight = false;
   unreadPollTimer = null;
+  // This latch is deliberately consulted only by automatic work. Explicit
+  // connect/read/send and raw requestJson calls remain recovery paths.
+  automaticTerminalBinding;
   constructor(options = {}) {
     this.env = options.env || process.env;
     this.cwd = options.cwd ?? process.cwd();
@@ -33560,15 +33563,43 @@ var ParleAgentClient = class _ParleAgentClient {
   selectedEnvironment(profile = this.activeProfile) {
     return profile ? { ...this.env, PARLE_PROFILE: profile } : this.env;
   }
+  bindingKey(cfg = this.cfg) {
+    return [cfg.roomId?.value || "", cfg.agentToken?.value || "", cfg.apiBase.value || "", cfg.wakeBase.value || "", cfg.profile?.value || ""].join("\0");
+  }
+  clearAutomaticTerminalLatch() {
+    this.automaticTerminalBinding = void 0;
+    this.runtime.terminalCause = void 0;
+    this.runtime.nextRetryAt = void 0;
+  }
+  recordTerminalCause(error51) {
+    const api = error51 instanceof ParleApiError ? error51 : void 0;
+    if (!api || !["fix_client", "reauthorize", "stop"].includes(api.action || ""))
+      return;
+    const sameBinding = this.automaticTerminalBinding === this.bindingKey();
+    this.automaticTerminalBinding = this.bindingKey();
+    this.runtime.terminalCause = {
+      status: api.status,
+      code: api.code,
+      action: api.action,
+      scope: api.scope,
+      retryable: false,
+      message: redactString(api.message),
+      occurredAt: this.now().toISOString(),
+      streak: sameBinding ? (this.runtime.terminalCause?.streak || 0) + 1 : 1
+    };
+  }
+  // Disk-backed credentials are the one safe automatic recovery input. A
+  // changed binding clears only the automatic gate, never suppressing an
+  // explicit caller's retry.
   refreshConfigIfAgentTokenChanged() {
-    const oldToken = this.cfg.agentToken?.value;
+    const oldBinding = this.bindingKey();
     const next = resolveConfig(this.cwd, this.selectedEnvironment());
-    const newToken = next.agentToken?.value;
-    if (!oldToken || !newToken || oldToken === newToken)
+    if (oldBinding === this.bindingKey(next))
       return false;
     this.cfg = next;
+    if (oldBinding !== this.bindingKey())
+      this.clearAutomaticTerminalLatch();
     this.runtime.lastBootstrapError = void 0;
-    this.runtime.nextRetryAt = void 0;
     this.publishRuntimeState();
     return true;
   }
@@ -33700,7 +33731,7 @@ var ParleAgentClient = class _ParleAgentClient {
       this.bootstrapGeneration += 1;
       this.runtime.bootstrapState = "ready";
       this.runtime.lastBootstrapError = void 0;
-      this.runtime.nextRetryAt = void 0;
+      this.clearAutomaticTerminalLatch();
       this.consecutiveBootstrapFailures = 0;
       this.publishRuntimeState();
       this.scheduleUnreadPoll();
@@ -33710,10 +33741,14 @@ var ParleAgentClient = class _ParleAgentClient {
         return this.doBootstrap(signal, preserveCursor, false);
       }
       this.consecutiveBootstrapFailures += 1;
-      const backoffMs = Math.min(6e4, 5e3 * 2 ** (this.consecutiveBootstrapFailures - 1));
+      const api = error51 instanceof ParleApiError ? error51 : void 0;
       this.runtime.bootstrapState = "failed";
       this.runtime.lastBootstrapError = redactString(error51 instanceof Error ? error51.message : String(error51));
-      this.runtime.nextRetryAt = new Date(this.now().getTime() + backoffMs).toISOString();
+      this.recordTerminalCause(error51);
+      const terminalLatched = this.automaticTerminalBinding === this.bindingKey() && Boolean(this.runtime.terminalCause);
+      const syntheticBackoffMs = Math.min(6e4, 5e3 * 2 ** (this.consecutiveBootstrapFailures - 1));
+      const backoffMs = terminalLatched ? void 0 : api?.retryAfterMs ?? syntheticBackoffMs;
+      this.runtime.nextRetryAt = backoffMs === void 0 ? void 0 : new Date(this.now().getTime() + backoffMs).toISOString();
       this.publishRuntimeState();
       throw error51;
     }
@@ -33789,6 +33824,7 @@ var ParleAgentClient = class _ParleAgentClient {
           this.bootstrapGeneration += 1;
           this.rebootstrapEpisode = null;
           this.consecutiveBootstrapFailures = 0;
+          this.clearAutomaticTerminalLatch();
           this.publishRuntimeState();
           this.scheduleUnreadPoll();
         },
@@ -33843,7 +33879,10 @@ var ParleAgentClient = class _ParleAgentClient {
   async ensureReadySafe(signal) {
     if (this.runtime.bootstrapped && this.runtime.sessionHandle && !this.sessionExpired())
       return false;
+    this.refreshConfigIfAgentTokenChanged();
     if (!this.cfg.roomId?.value || !this.cfg.agentToken?.value)
+      return false;
+    if (this.automaticTerminalBinding === this.bindingKey())
       return false;
     if (this.runtime.bootstrapState === "failed" && this.runtime.nextRetryAt && new Date(this.runtime.nextRetryAt) > this.now())
       return false;
@@ -34024,8 +34063,10 @@ var ParleAgentClient = class _ParleAgentClient {
     try {
       return await fn();
     } catch (error51) {
-      if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap")
+      if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap") {
+        this.recordTerminalCause(error51);
         throw error51;
+      }
       const failedSessionHandle = this.runtime.sessionHandle || "<missing-session>";
       const existing = this.rebootstrapEpisode;
       if (existing?.failedSessionHandle === failedSessionHandle && (existing.attempted || existing.terminal)) {
@@ -34055,6 +34096,15 @@ var ParleAgentClient = class _ParleAgentClient {
     }
   }
   async openWakeStream(signal) {
+    if (this.automaticTerminalBinding === this.bindingKey()) {
+      const cause = this.runtime.terminalCause;
+      throw new ParleApiError(cause?.message || "Parle automatic wake is stopped until credentials or binding change", {
+        status: cause?.status,
+        code: cause?.code,
+        action: cause?.action,
+        scope: cause?.scope
+      });
+    }
     return this.withRebootstrap(async () => {
       this.assertConfigured();
       const url2 = wakeUrl(this.cfg);
@@ -34416,7 +34466,7 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.17" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.18" });
   server.registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -34562,7 +34612,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
 async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.17" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.18" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");

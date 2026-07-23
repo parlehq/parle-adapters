@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,9 +15,10 @@ function installHarness(cwd) {
   __testing.resetRuntime();
   const tools = {};
   const commands = {};
+  const handlers = {};
   const injected = [];
   const pi = {
-    on() {},
+    on(name, handler) { handlers[name] = handler; },
     registerCommand(name, spec) { commands[name] = spec; },
     registerTool(spec) { tools[spec.name] = spec; },
     sendUserMessage(message) { injected.push(message); },
@@ -28,6 +29,7 @@ function installHarness(cwd) {
   return {
     tools,
     commands,
+    handlers,
     statuses,
     injected,
     pi,
@@ -100,6 +102,139 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   const defaultStatus = await installHarness(cwd).call("parle_status");
   assert.equal(defaultStatus.details.profile.value, "default");
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
+});
+
+test("profile access denial does not reject Pi lifecycle startup or shutdown cleanup", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const cwd = tempProject("PARLE_PROFILE=default\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  const locked = join(process.env.HOME, "locked");
+  try {
+    mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+    mkdirSync(locked, { mode: 0o700 });
+    writeFileSync(join(locked, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
+    symlinkSync(join(locked, "profiles"), join(catalogDir, "profiles"));
+    chmodSync(locked, 0o000);
+    globalThis.fetch = async () => { throw new Error("lifecycle must not reach the network"); };
+
+    const harness = installHarness(cwd);
+    assert.doesNotThrow(() => harness.handlers.session_start({}, harness.ctx));
+    assert.deepEqual(harness.statuses.at(-1), { id: "25-parle", label: "parle x check config" });
+    assert.match(__testing.runtimeState().lastError, /cannot be inspected: .*profiles \((?:EACCES|EPERM)\)/);
+    await assert.doesNotReject(() => harness.handlers.agent_settled({}, harness.ctx));
+    await assert.doesNotReject(() => harness.handlers.agent_settled({}, harness.ctx));
+    assert.equal(__testing.runtimeState().terminalCause, undefined);
+    assert.equal(__testing.runtimeState().watcherState, "off");
+    await assert.rejects(harness.call("parle_status"), /cannot be inspected: .*profiles \((?:EACCES|EPERM)\)/);
+
+    const runtimeDir = join(cwd, ".parle", "runtime");
+    const runtimeFile = join(runtimeDir, `${process.pid}.json`);
+    mkdirSync(runtimeDir, { recursive: true });
+    writeFileSync(runtimeFile, "{}", { mode: 0o600 });
+    assert.doesNotThrow(() => harness.handlers.session_shutdown({}, harness.ctx));
+    assert.equal(existsSync(runtimeFile), false);
+  } finally {
+    chmodSync(locked, 0o700);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("shutdown retires a live session when its profile catalog becomes inaccessible", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const cwd = tempProject("PARLE_PROFILE=default\nPARLE_WATCH_ENABLED=0\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  const locked = join(process.env.HOME, "locked");
+  let endCalls = 0;
+  try {
+    mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+    mkdirSync(locked, { mode: 0o700 });
+    writeFileSync(join(locked, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
+    symlinkSync(join(locked, "profiles"), join(catalogDir, "profiles"));
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-1", session_credential: "parle_ses_raw-session", session_handle: "raw-session", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
+      if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-1", room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agent_session_id: "as-1" }), { status: 201 });
+      if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
+      if (u.endsWith("/v/agent/sessions/as-1/end")) {
+        endCalls += 1;
+        return new Response(JSON.stringify({ ended: true }), { status: 200 });
+      }
+      throw new Error("unexpected " + u);
+    };
+
+    const harness = installHarness(cwd);
+    await harness.call("parle_status");
+    const runtimeFile = join(cwd, ".parle", "runtime", `${process.pid}.json`);
+    assert.equal(existsSync(runtimeFile), true);
+    chmodSync(locked, 0o000);
+
+    assert.doesNotThrow(() => harness.handlers.session_shutdown({}, harness.ctx));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(endCalls, 1);
+    assert.equal(existsSync(runtimeFile), false);
+  } finally {
+    chmodSync(locked, 0o700);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("shutdown retires a partially bootstrapped session when its catalog becomes inaccessible", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const cwd = tempProject("PARLE_PROFILE=default\nPARLE_WATCH_ENABLED=0\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  const locked = join(process.env.HOME, "locked");
+  let endCalls = 0;
+  try {
+    mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+    mkdirSync(locked, { mode: 0o700 });
+    writeFileSync(join(locked, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
+    symlinkSync(join(locked, "profiles"), join(catalogDir, "profiles"));
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-partial", session_credential: "parle_ses_partial", session_handle: "partial", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.partial" }), { status: 201 });
+      if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-partial", room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agent_session_id: "as-partial" }), { status: 201 });
+      if (u.includes("/projection")) return new Response(JSON.stringify({ error: { code: "projection_failed", message: "projection unavailable" } }), { status: 400 });
+      if (u.endsWith("/v/agent/sessions/as-partial/end")) {
+        endCalls += 1;
+        return new Response(JSON.stringify({ ended: true }), { status: 200 });
+      }
+      throw new Error("unexpected " + u);
+    };
+
+    const harness = installHarness(cwd);
+    const status = await harness.call("parle_status");
+    assert.match(status.details.runtime.lastError, /projection unavailable/);
+    chmodSync(locked, 0o000);
+
+    assert.doesNotThrow(() => harness.handlers.session_shutdown({}, harness.ctx));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(endCalls, 1);
+    assert.equal(existsSync(join(cwd, ".parle", "runtime", `${process.pid}.json`)), false);
+  } finally {
+    chmodSync(locked, 0o700);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("PARLE_ENABLED=0 skips inaccessible profile catalog inspection", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
+  const cwd = tempProject("PARLE_ENABLED=0\nPARLE_PROFILE=default\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  const locked = join(process.env.HOME, "locked");
+  try {
+    mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+    mkdirSync(locked, { mode: 0o700 });
+    writeFileSync(join(locked, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
+    symlinkSync(join(locked, "profiles"), join(catalogDir, "profiles"));
+    chmodSync(locked, 0o000);
+    globalThis.fetch = async () => { throw new Error("disabled lifecycle must not reach the network"); };
+
+    const harness = installHarness(cwd);
+    assert.doesNotThrow(() => harness.handlers.session_start({}, harness.ctx));
+    assert.deepEqual(harness.statuses.at(-1), { id: "25-parle", label: "parle off" });
+    assert.equal(__testing.runtimeState().lastError, undefined);
+    const status = await harness.call("parle_status");
+    assert.equal(status.details.enabled, false);
+  } finally {
+    chmodSync(locked, 0o700);
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("Pi delegates API error taxonomy and version hints to the agent client", () => {
@@ -262,7 +397,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.30" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.31" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1274,7 +1409,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.30");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.31");
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
     }

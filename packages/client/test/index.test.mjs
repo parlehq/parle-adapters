@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
@@ -20,6 +20,8 @@ import {
   parseKeyValueFile,
   parseSSEBlocks,
   performProfileSwitch,
+  profileCatalogHasProfile,
+  loadProfile,
   redactedSecretValue,
   redactString,
   resolveConfig,
@@ -104,6 +106,46 @@ test("config resolves env before files and redacts tokens", () => {
   assert.equal(cfg.roomId?.value, "room-1");
   assert.equal(cfg.agentToken?.source, "env");
   assert.equal(redactString("Authorization: Bearer parle_agt_secret"), "Authorization: Bearer <redacted>");
+});
+
+test("profile catalog access failures are actionable and never treated as absence", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-profile-access-"));
+  const locked = join(root, "locked");
+  const catalog = join(root, "profiles");
+  try {
+    mkdirSync(locked, { mode: 0o700 });
+    writeFileSync(join(locked, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
+    symlinkSync(join(locked, "profiles"), catalog);
+    chmodSync(locked, 0o000);
+
+    assert.throws(
+      () => profileCatalogHasProfile("default", catalog),
+      /cannot be inspected: .*profiles \((?:EACCES|EPERM)\).*parent directories are accessible/,
+    );
+    assert.throws(
+      () => loadProfile("default", catalog),
+      /cannot be inspected: .*profiles \((?:EACCES|EPERM)\).*parent directories are accessible/,
+    );
+  } finally {
+    chmodSync(locked, 0o700);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("profile catalog read failures are actionable", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-profile-read-"));
+  const catalog = join(root, "profiles");
+  try {
+    writeFileSync(catalog, "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
+    chmodSync(catalog, 0o000);
+    assert.throws(
+      () => profileCatalogHasProfile("default", catalog),
+      /cannot be read: .*profiles \((?:EACCES|EPERM)\).*parent directories are accessible/,
+    );
+  } finally {
+    chmodSync(catalog, 0o600);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("profile switch orchestration keeps resolve and prepare failures before commit", async () => {

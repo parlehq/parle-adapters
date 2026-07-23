@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.30 (2026-07-24)
+
+Refresh the shared MCP artifact so inaccessible profile catalogs fail closed with actionable access errors instead of raw filesystem exceptions.
+
 ## 0.5.29 (2026-07-23)
 
 Stop automatic reconnect activity after terminal Parle authentication or client failures while preserving explicit user-paced recovery attempts. Status now retains the terminal cause separately from transient retry state.
