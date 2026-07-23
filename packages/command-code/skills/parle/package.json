@@ -1,0 +1,10 @@
+{
+  "name": "@parlehq/command-code-parle-mod",
+  "private": true,
+  "type": "module",
+  "commandcode": {
+    "mods": [
+      "./mods/parle-status.ts"
+    ]
+  }
+}

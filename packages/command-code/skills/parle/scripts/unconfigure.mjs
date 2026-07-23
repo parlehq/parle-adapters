@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { removeParleHooks } from "./settings.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const skill = resolve(here, "..");
 const hook = resolve(here, "parle-hook.mjs");
 const server = resolve(here, "../server/parle-mcp.js");
 const userSettings = resolve(homedir(), ".commandcode/settings.json");
@@ -30,6 +31,14 @@ if (!inspection.stdout.includes(server) || !inspection.stdout.includes("PARLE_HO
   throw new Error("The MCP server named `parle` is not owned by this installed skill. Refusing to remove it.");
 }
 
+const modResult = spawnSync("cmd", ["mods", "remove", "--global", skill], {
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "pipe"],
+});
+if (modResult.error || modResult.status !== 0) {
+  throw new Error(`Command Code could not remove the Parle footer mod: ${(modResult.stderr || modResult.stdout || modResult.error?.message || "unknown error").trim()}`);
+}
+
 const originalSettings = existsSync(userSettings) ? JSON.parse(readFileSync(userSettings, "utf8")) : {};
 const nextSettings = removeParleHooks(originalSettings, hook);
 if (existsSync(userSettings)) writeJsonAtomic(userSettings, nextSettings);
@@ -40,8 +49,10 @@ const result = spawnSync("cmd", ["mcp", "remove", "--scope", "user", "parle"], {
 });
 if (result.error || result.status !== 0) {
   if (existsSync(userSettings)) writeJsonAtomic(userSettings, originalSettings);
+  spawnSync("cmd", ["mods", "add", "--global", skill], { stdio: "ignore" });
   throw new Error(`Command Code could not remove the Parle MCP server: ${(result.stderr || result.stdout || result.error?.message || "unknown error").trim()}`);
 }
 
+console.log(modResult.stdout.trim());
 console.log(result.stdout.trim());
-console.log("Removed Parle MCP and hook configuration. Run `cmd skills remove parle --global --yes` to remove the skill files, then restart Command Code.");
+console.log("Removed Parle MCP, footer mod, and hook configuration. Run `cmd skills remove parle --global --yes` to remove the skill files, then restart Command Code.");

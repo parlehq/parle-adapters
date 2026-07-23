@@ -8,7 +8,9 @@ Owner repo: `parlehq/parle-adapters`
 
 Command Code is a Type 2 MCP host with user-scoped hooks. Parle support uses the existing host-agnostic stdio MCP server, shared client protocol primitives, a native Command Code Agent Skill, and a hook helper. It does not add another HTTP client, credential parser, or session implementation.
 
-Command Code installs the complete `packages/command-code/skills/parle` tree through `cmd skills add`. The installed skill contains its version-matched MCP artifact, hook, and configuration helpers. Its configurator registers the server through `cmd mcp add --scope user` and edits only the native user hook surface because Command Code 0.52.3 exposes no hook management command. There is no adapter-owned artifact directory, direct MCP JSON writer, or compatibility installer. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools and server-framed message context, not credential values.
+Command Code installs the complete `packages/command-code/skills/parle` tree through `cmd skills add`. The installed skill contains its version-matched MCP artifact, hook, footer mod, and configuration helpers. Its configurator registers the footer through `cmd mods add --global`, registers the server through `cmd mcp add --scope user`, and edits only the native user hook surface because Command Code exposes no hook management command. There is no adapter-owned artifact directory, direct MCP JSON writer, or compatibility installer. The MCP server resolves `~/.parle/profiles` inside the trusted Node process. Command Code receives tools and server-framed message context, not credential values.
+
+Command Code v1 mods expose `cmd.ui.setStatus(text | null)` as one persistent footer segment per mod. The Parle mod reads only credential-free `<cwd>/.parle/runtime/*.json` snapshots already published by the MCP process. It uses the same cwd-scoped honesty contract as Claude: one live session may show its address, while several sessions show a count rather than presenting a sibling address as authoritative. Command Code owns rendering, and headless mode intentionally renders no footer.
 
 Responsive delivery is adapter-owned. The MCP process opens `/v/agent/wake` SSE, drains `responsive-delivery?wait=0` after wake hints, and queues rows behind an owner-only Unix socket. Command Code hooks lease and inject an ordered batch, flush hook output, then commit the lease so the MCP process can acknowledge it to Parle. No cron, projection poll, inbox poll, transcript edit, or terminal automation participates.
 
@@ -42,8 +44,10 @@ Because long-lived agent-token material appeared in the durable session history,
 
 ## Command Code capability evidence
 
-Primary Command Code documentation retrieved on 2026-07-18 confirms:
+Primary Command Code documentation retrieved on 2026-07-18 and 2026-07-22 confirms:
 
+- mods support one persistent per-mod TUI footer segment through `cmd.ui.setStatus`: <https://commandcode.ai/docs/mods#footer-status-segments>
+- mod packages install natively with user scope through `cmd mods add --global`: <https://commandcode.ai/docs/mods#packaging-and-install>
 - MCP supports local stdio servers and automatic tool discovery: <https://commandcode.ai/docs/mcp>
 - user-scoped MCP configuration is stored in `~/.commandcode/mcp.json`
 - user-level skills live in `~/.commandcode/skills/` and use the Agent Skills `SKILL.md` format: <https://commandcode.ai/docs/skills>
@@ -58,8 +62,8 @@ Live interactive validation then ran the original setup prompt unchanged in a fr
 The Command Code skill owns only:
 
 - bundled MCP artifact provenance and byte parity
-- host-native skill installation and MCP registration
-- Command Code skill discovery and host-specific guidance
+- host-native skill installation, mod registration, and MCP registration
+- Command Code skill discovery, cwd-scoped footer rendering, and host-specific guidance
 - managed native user hook configuration and hook-output mapping
 - secure local bridge IPC and hook-boundary injection
 - install and uninstall documentation

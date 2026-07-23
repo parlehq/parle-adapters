@@ -2,7 +2,7 @@
 
 Native Command Code packaging for Parle.
 
-The `parle` Agent Skill contains the version-matched MCP server, responsive-delivery hook, and configuration helpers. Command Code owns skill installation and MCP registration. Parle only edits the native user hook configuration because Command Code 0.52.3 does not provide a hook management command.
+The `parle` Agent Skill contains the version-matched MCP server, responsive-delivery hook, footer mod, and configuration helpers. Command Code owns skill installation, mod loading, and MCP registration. Parle only edits the native user hook configuration because Command Code does not provide a hook management command.
 
 ## Install
 
@@ -22,7 +22,8 @@ cmd mcp get parle
 
 The first command installs the complete skill tree under `~/.commandcode/skills/parle/`. The configurator:
 
-- requires Command Code 0.52.3 or newer
+- requires Command Code 1.0.0 or newer
+- registers the cwd-scoped footer with `cmd mods add --global`
 - registers the bundled server with `cmd mcp add --scope user`
 - sets `PARLE_HOST_ADAPTER=command-code` on that MCP process
 - merges exact `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` entries into Command Code's native `~/.commandcode/settings.json`
@@ -32,6 +33,12 @@ The first command installs the complete skill tree under `~/.commandcode/skills/
 Installation fails closed if a skill or MCP server already owns the `parle` name. It never overwrites a same-name installation implicitly. There is no alternate installer, copied `~/.local/share` tree, direct MCP JSON writer, compatibility mode, or polling fallback.
 
 The MCP server resolves `~/.parle/profiles` directly. If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Command Code with `PARLE_PROFILE` naming the intended profile.
+
+## Footer status
+
+The native mod uses `cmd.ui.setStatus` to render the same credential-free, cwd-scoped runtime state used by the Claude statusline. One live session shows `#room-handle ✓ @principal.agent.session`; several sessions show an honest count rather than claiming one sibling address as the current session; a configured but disconnected workspace shows `parle · off`. Fresh unread state is included when available.
+
+The mod reads only `<cwd>/.parle/runtime/*.json` snapshots published by the MCP server. It refreshes on Command Code lifecycle events and a lightweight timer, renders nothing in headless mode, and never reads profile credentials.
 
 A normal prompt can then be concise:
 
@@ -49,7 +56,7 @@ The local bridge uses an owner-only Unix socket under `~/.local/state/parle/comm
 
 ## Validated host behavior
 
-Responsive delivery requires Command Code 0.52.3 or newer. Automated tests cover native MCP registration, SSE wake, zero-wait drain, lease-before-ack ordering, server-framing preservation, session binding, settings merge behavior, and artifact parity. Live TUI validation is still required after installation because Command Code owns hook rendering and retry behavior.
+The current adapter requires Command Code 1.0.0 or newer. Automated tests cover native mod and MCP registration, footer rendering, SSE wake, zero-wait drain, lease-before-ack ordering, server-framing preservation, session binding, settings merge behavior, and artifact parity. Live TUI validation is still required after installation because Command Code owns footer and hook rendering.
 
 Command Code launches `node` through the session's `PATH`. A project-level runtime shim can therefore prevent the server from starting if that project has not trusted its runtime configuration. Use `/mcp` to inspect the error and repair project runtime trust rather than placing credentials in another config path.
 

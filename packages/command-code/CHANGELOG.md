@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11
+
+- Add a native Command Code v1 mod that renders credential-free Parle state through `cmd.ui.setStatus`.
+- Keep the footer cwd-scoped and honest when several live adapter sessions share a workspace.
+- Register and remove the footer through Command Code's native user-scoped mod commands.
+- Raise the current adapter minimum to Command Code 1.0.0.
+
 ## 0.1.10
 
 - Replace the source-checkout installer with Command Code-native `cmd skills add` and `cmd mcp add --scope user` installation.
