@@ -3461,7 +3461,8 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
         runtime.watcherState = terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
         setStatus(ctx, cfg);
         if (terminalState) break;
-        await sleep(watcherRetryDelayMs(error), signal).catch(() => void 0);
+        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - Date.now()) : watcherRetryDelayMs(error);
+        await sleep(retryDelay, signal).catch(() => void 0);
       }
     }
   } catch (error) {

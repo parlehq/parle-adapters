@@ -1765,7 +1765,11 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
         runtime.watcherState = terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
         setStatus(ctx, cfg);
         if (terminalState) break;
-        await sleep(watcherRetryDelayMs(error), signal).catch(() => undefined);
+        // recordAutomaticFailure chose the retry deadline once. Sleeping to
+        // that exact deadline avoids a second jitter draw that could wake
+        // early, see the still-closed gate, and accidentally end the watcher.
+        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - Date.now()) : watcherRetryDelayMs(error);
+        await sleep(retryDelay, signal).catch(() => undefined);
       }
     }
   } catch (error: any) {

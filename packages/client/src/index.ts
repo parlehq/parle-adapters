@@ -919,13 +919,16 @@ export class ParleAgentClient {
       }
       this.consecutiveBootstrapFailures += 1;
       const api = error instanceof ParleApiError ? error : undefined;
-      const backoffMs = api?.retryable ? (api.retryAfterMs ?? Math.min(60_000, 5_000 * 2 ** (this.consecutiveBootstrapFailures - 1))) : undefined;
       this.runtime.bootstrapState = "failed";
       this.runtime.lastBootstrapError = redactString(error instanceof Error ? error.message : String(error));
-      // nextRetryAt is an exact retryable-failure gate, never a fabricated
-      // delay for terminal auth/config faults.
-      this.runtime.nextRetryAt = backoffMs === undefined ? undefined : new Date(this.now().getTime() + backoffMs).toISOString();
       this.recordTerminalCause(error);
+      const terminalLatched = this.automaticTerminalBinding === this.bindingKey() && Boolean(this.runtime.terminalCause);
+      const syntheticBackoffMs = Math.min(60_000, 5_000 * 2 ** (this.consecutiveBootstrapFailures - 1));
+      const backoffMs = terminalLatched ? undefined : (api?.retryAfterMs ?? syntheticBackoffMs);
+      // Server retry timing is exact when present. Unknown transport and
+      // unclassified failures retain the bounded synthetic gate so automatic
+      // readiness can never become a hot loop.
+      this.runtime.nextRetryAt = backoffMs === undefined ? undefined : new Date(this.now().getTime() + backoffMs).toISOString();
       this.publishRuntimeState();
       throw error;
     }
@@ -1065,10 +1068,12 @@ export class ParleAgentClient {
   // or inside the failure backoff window (explicit tool calls like connect/read/
   // send are user-paced and always retry; this path is the one that could hammer).
   async ensureReadySafe(signal?: AbortSignal): Promise<boolean> {
-    // Preflight disk rotation before consulting the latch. A changed credential
-    // binding is an affirmative recovery signal and may reopen automatic work.
-    this.refreshConfigIfAgentTokenChanged();
+    // Never rebind a healthy live session from ambient disk changes. Binding
+    // rotation is consulted only while automatic recovery is actually needed.
     if (this.runtime.bootstrapped && this.runtime.sessionHandle && !this.sessionExpired()) return false;
+    // A changed disk credential is an affirmative recovery signal for a failed
+    // or expired binding and may reopen automatic work before the latch check.
+    this.refreshConfigIfAgentTokenChanged();
     if (!this.cfg.roomId?.value || !this.cfg.agentToken?.value) return false;
     if (this.automaticTerminalBinding === this.bindingKey()) return false;
     if (this.runtime.bootstrapState === "failed" && this.runtime.nextRetryAt && new Date(this.runtime.nextRetryAt) > this.now()) return false;

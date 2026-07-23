@@ -33716,11 +33716,13 @@ var ParleAgentClient = class _ParleAgentClient {
       }
       this.consecutiveBootstrapFailures += 1;
       const api = error51 instanceof ParleApiError ? error51 : void 0;
-      const backoffMs = api?.retryable ? api.retryAfterMs ?? Math.min(6e4, 5e3 * 2 ** (this.consecutiveBootstrapFailures - 1)) : void 0;
       this.runtime.bootstrapState = "failed";
       this.runtime.lastBootstrapError = redactString(error51 instanceof Error ? error51.message : String(error51));
-      this.runtime.nextRetryAt = backoffMs === void 0 ? void 0 : new Date(this.now().getTime() + backoffMs).toISOString();
       this.recordTerminalCause(error51);
+      const terminalLatched = this.automaticTerminalBinding === this.bindingKey() && Boolean(this.runtime.terminalCause);
+      const syntheticBackoffMs = Math.min(6e4, 5e3 * 2 ** (this.consecutiveBootstrapFailures - 1));
+      const backoffMs = terminalLatched ? void 0 : api?.retryAfterMs ?? syntheticBackoffMs;
+      this.runtime.nextRetryAt = backoffMs === void 0 ? void 0 : new Date(this.now().getTime() + backoffMs).toISOString();
       this.publishRuntimeState();
       throw error51;
     }
@@ -33849,9 +33851,9 @@ var ParleAgentClient = class _ParleAgentClient {
   // or inside the failure backoff window (explicit tool calls like connect/read/
   // send are user-paced and always retry; this path is the one that could hammer).
   async ensureReadySafe(signal) {
-    this.refreshConfigIfAgentTokenChanged();
     if (this.runtime.bootstrapped && this.runtime.sessionHandle && !this.sessionExpired())
       return false;
+    this.refreshConfigIfAgentTokenChanged();
     if (!this.cfg.roomId?.value || !this.cfg.agentToken?.value)
       return false;
     if (this.automaticTerminalBinding === this.bindingKey())

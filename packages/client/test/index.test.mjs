@@ -1178,6 +1178,52 @@ test("terminal wake failures use the same shared-client automatic latch", async 
   assert.equal(wakeCalls, 1, "the automatic wake latch rejects without another request");
 });
 
+test("healthy shared-client sessions ignore ambient disk binding changes", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-client-live-binding-"));
+  try {
+    writeFileSync(join(cwd, ".env"), "PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=old-token\n");
+    const seen = [];
+    const client = new ParleAgentClient({
+      cwd,
+      env: {},
+      fetch: async (url, init = {}) => {
+        const path = String(url);
+        seen.push({ path, authorization: init.headers?.Authorization });
+        if (path.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-live", session_credential: "parle_ses_live", expires_at: "2999-01-01T00:00:00Z" }, 201);
+        if (path.endsWith("/participants")) return json({ participant_id: "p-live" }, 201);
+        if (path.includes("/projection")) return json({ watermark: 0, messages: [] });
+        if (path.endsWith("/probe")) return json({ ok: true });
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    await client.connect();
+    writeFileSync(join(cwd, ".env"), "PARLE_ROOM_ID=room-2\nPARLE_ROOM_AGENT_TOKEN=new-token\n");
+    assert.equal(await client.ensureReadySafe(), false);
+    assert.equal(client.cfg.roomId?.value, "room-1");
+    await client.requestJson("/probe");
+    assert.equal(seen.at(-1).authorization, "Bearer old-token");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("unknown bootstrap transport failures retain a bounded automatic retry gate", async () => {
+  let requests = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "token" },
+    now: () => new Date("2026-01-01T00:00:00Z"),
+    fetch: async () => {
+      requests += 1;
+      throw new TypeError("fetch failed");
+    },
+  });
+  assert.equal(await client.ensureReadySafe(), true);
+  assert.equal(client.runtime.nextRetryAt, "2026-01-01T00:00:05.000Z");
+  assert.equal(await client.ensureReadySafe(), false);
+  assert.equal(requests, 1);
+  assert.equal(client.runtime.terminalCause, undefined);
+});
+
 test("disk credential rotation clears the automatic client latch and a retry gate stays exact", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-client-auto-latch-"));
   try {
