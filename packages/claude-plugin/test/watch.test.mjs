@@ -2,13 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const script = resolve(root, "skills/parle/scripts/parle-watch.sh");
+const workerScript = resolve(root, "skills/parle/scripts/parle-watch-worker.sh");
 
 // The liveness check shells out to python3 and probes pids with kill(pid, 0);
 // skip cleanly where the sandbox denies either.
@@ -107,12 +108,168 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function runWorkerScenario(outputs) {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-outcomes-"));
+  const bin = join(cwd, "bin");
+  mkdirSync(bin);
+  const scenarioPath = join(cwd, "scenario.json");
+  const statePath = join(cwd, "state");
+  const requestLog = join(cwd, "requests.log");
+  const sleepLog = join(cwd, "sleeps.log");
+  const helper = join(cwd, "helper.mjs");
+  writeFileSync(scenarioPath, JSON.stringify(outputs));
+  writeFileSync(helper, `
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+const outputs = JSON.parse(readFileSync(process.env.WATCH_SCENARIO, "utf8"));
+const index = existsSync(process.env.WATCH_STATE) ? Number(readFileSync(process.env.WATCH_STATE, "utf8")) : 0;
+writeFileSync(process.env.WATCH_STATE, String(index + 1));
+appendFileSync(process.env.WATCH_REQUEST_LOG, String(process.argv[4] || "25") + "\\n");
+process.stdout.write(outputs[Math.min(index, outputs.length - 1)]);
+`);
+  writeFileSync(join(bin, "sleep"), `#!/bin/sh\nprintf '%s\\n' "$1" >> "$WATCH_SLEEP_LOG"\n`);
+  chmodSync(join(bin, "sleep"), 0o755);
+  const child = spawn("sh", [workerScript, "1"], {
+    cwd,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      PARLE_API_BASE: "https://api.example",
+      PARLE_ROOM_ID: "room-1",
+      PARLE_ROOM_AGENT_TOKEN: "parle_agt_test",
+      PARLE_WATCH_AGENT_SESSION: "parle_ses_test",
+      PARLE_VERSION: "2026-07-07",
+      PARLE_WATCH_REQUEST_HELPER: helper,
+      PARLE_WATCH_PARENT_PID: String(process.pid),
+      PARLE_WATCH_SESSION_LIVENESS: "0",
+      WATCH_SCENARIO: scenarioPath,
+      WATCH_STATE: statePath,
+      WATCH_REQUEST_LOG: requestLog,
+      WATCH_SLEEP_LOG: sleepLog,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  return {
+    exited: new Promise((resolveExit) => child.on("exit", (code) => resolveExit(code))),
+    out: () => stdout,
+    err: () => stderr,
+    requests: () => existsSync(requestLog) ? readFileSync(requestLog, "utf8").trim().split("\n") : [],
+    sleeps: () => existsSync(sleepLog) ? readFileSync(sleepLog, "utf8").trim().split("\n") : [],
+    cleanup: () => rmSync(cwd, { recursive: true, force: true }),
+  };
+}
+
 async function assertStillWatching(watch) {
   await sleep(1200);
   assert.equal(watch.child.exitCode, null, `watch exited early: ${watch.err()}${watch.out()}`);
   watch.child.kill("SIGKILL");
   await watch.exited;
 }
+
+const deadline = '000\n{"watcher_local":{"outcome":"held_deadline"}}';
+const transport = '000\n{"watcher_local":{"outcome":"network_failure"}}';
+const malformed = '000\n{"watcher_local":{"outcome":"malformed_response"}}';
+const relevant = '200\n{"messages":[{"seq":2}],"watermark":2}';
+
+test("one or two helper deadlines do not consume failures or trigger a health probe", async () => {
+  const watch = runWorkerScenario([deadline, deadline, relevant]);
+  try {
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.deepEqual(watch.requests(), ["hold", "hold", "hold"]);
+    assert.deepEqual(watch.sleeps(), []);
+  } finally {
+    watch.cleanup();
+  }
+});
+
+test("three helper deadlines trigger one healthy wait=0 probe before held polling resumes", async () => {
+  const healthy = '200\n{"messages":[],"watermark":1}';
+  const watch = runWorkerScenario([deadline, deadline, deadline, healthy, relevant]);
+  try {
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.deepEqual(watch.requests(), ["hold", "hold", "hold", "probe", "hold"]);
+    assert.deepEqual(watch.sleeps(), []);
+  } finally {
+    watch.cleanup();
+  }
+});
+
+test("a healthy probe processes a relevant row instead of discarding it", async () => {
+  const watch = runWorkerScenario([deadline, deadline, deadline, relevant]);
+  try {
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.deepEqual(watch.requests(), ["hold", "hold", "hold", "probe"]);
+    assert.match(watch.out(), /relevant activity/);
+  } finally {
+    watch.cleanup();
+  }
+});
+
+test("a failed deadline health probe enters the ordinary five-failure path", async () => {
+  const watch = runWorkerScenario([deadline, deadline, deadline, transport, transport, transport, transport, transport]);
+  try {
+    assert.equal(await watch.exited, 2);
+    assert.deepEqual(watch.requests(), ["hold", "hold", "hold", "probe", "hold", "hold", "hold", "hold"]);
+    assert.deepEqual(watch.sleeps(), ["5", "10", "15", "20"]);
+    assert.match(watch.err(), /5 consecutive network failures/);
+  } finally {
+    watch.cleanup();
+  }
+});
+
+test("malformed responses and a malformed deadline probe consume the ordinary failure budget", async () => {
+  const malformedWatch = runWorkerScenario([malformed, malformed, malformed, malformed, malformed]);
+  try {
+    assert.equal(await malformedWatch.exited, 2);
+    assert.match(malformedWatch.err(), /5 consecutive network failures/);
+  } finally {
+    malformedWatch.cleanup();
+  }
+
+  const malformedProbe = runWorkerScenario([deadline, deadline, deadline, malformed, malformed, malformed, malformed, malformed]);
+  try {
+    assert.equal(await malformedProbe.exited, 2);
+    assert.deepEqual(malformedProbe.requests(), ["hold", "hold", "hold", "probe", "hold", "hold", "hold", "hold"]);
+    assert.match(malformedProbe.err(), /5 consecutive network failures/);
+  } finally {
+    malformedProbe.cleanup();
+  }
+});
+
+test("retryable and terminal HTTP outcomes keep their canonical shell behavior", async () => {
+  const retryable = '429\n{"error":{"action":"retry_with_backoff","code":"rate_limited","retry_after_ms":1234}}';
+  const retryWatch = runWorkerScenario([retryable, relevant]);
+  try {
+    assert.equal(await retryWatch.exited, 0, retryWatch.err());
+    assert.deepEqual(retryWatch.sleeps(), ["2"]);
+    assert.match(retryWatch.err(), /retrying after 2s/);
+  } finally {
+    retryWatch.cleanup();
+  }
+
+  const terminal = '401\n{"error":{"action":"reauthorize","code":"invalid_token"}}';
+  const terminalWatch = runWorkerScenario([terminal]);
+  try {
+    assert.equal(await terminalWatch.exited, 2);
+    assert.deepEqual(terminalWatch.sleeps(), []);
+    assert.match(terminalWatch.err(), /reauthorize/);
+  } finally {
+    terminalWatch.cleanup();
+  }
+
+  const terminalAfterDeadlines = runWorkerScenario([deadline, deadline, terminal, relevant]);
+  try {
+    assert.equal(await terminalAfterDeadlines.exited, 2);
+    assert.deepEqual(terminalAfterDeadlines.requests(), ["hold", "hold", "hold"]);
+    assert.deepEqual(terminalAfterDeadlines.sleeps(), []);
+    assert.match(terminalAfterDeadlines.err(), /reauthorize/);
+  } finally {
+    terminalAfterDeadlines.cleanup();
+  }
+});
 
 test("watch resolves a named profile on every manual re-arm without exposing its token", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-watch-profile-project-"));

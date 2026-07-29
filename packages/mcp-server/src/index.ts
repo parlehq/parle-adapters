@@ -64,7 +64,7 @@ export type ParleAccountClientLike = {
 };
 
 export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.19" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.20" });
 
   server.registerTool("parle_status", {
     title: "Parle Status",
@@ -226,7 +226,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 export async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.19" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.20" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -382,41 +382,86 @@ export async function runWatcher(metaUrl: string, args: string[], cwd = process.
   }
 }
 
-async function runWatcherRequest(since: string): Promise<void> {
-  const apiBase = process.env.PARLE_API_BASE;
-  const roomId = process.env.PARLE_ROOM_ID;
-  const token = process.env.PARLE_ROOM_AGENT_TOKEN;
-  const sessionCredential = process.env.PARLE_WATCH_AGENT_SESSION;
-  const version = process.env.PARLE_VERSION;
+type WatcherRequestOptions = {
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  parentPid?: number;
+};
+
+type WatcherRequestMode = "hold" | "probe";
+
+function watcherLocalWire(outcome: "held_deadline" | "network_failure" | "malformed_response" | "parent_gone"): string {
+  return `000\n${JSON.stringify({ watcher_local: { outcome } })}`;
+}
+
+export async function watcherRequestWire(since: string, mode: WatcherRequestMode = "hold", options: WatcherRequestOptions = {}): Promise<string> {
+  if (mode !== "hold" && mode !== "probe") throw new Error("watch request mode must be hold or probe");
+  const env = options.env ?? process.env;
+  const apiBase = env.PARLE_API_BASE;
+  const roomId = env.PARLE_ROOM_ID;
+  const token = env.PARLE_ROOM_AGENT_TOKEN;
+  const sessionCredential = env.PARLE_WATCH_AGENT_SESSION;
+  const version = env.PARLE_VERSION;
   if (!apiBase || !roomId || !token || !sessionCredential || !version) throw new Error("watch request configuration is missing");
   const url = new URL(`/v/rooms/${encodeURIComponent(roomId)}/projection`, apiBase);
   url.searchParams.set("since_seq", since);
-  url.searchParams.set("wait", "25");
+  url.searchParams.set("wait", mode === "probe" ? "0" : "25");
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 40_000);
-  const parentPid = Number(process.env.PARLE_WATCH_PARENT_PID);
+  let helperDeadline = false;
+  let parentGone = false;
+  const timeoutMs = options.timeoutMs ?? (mode === "probe" ? 10_000 : 40_000);
+  const timer = setTimeout(() => {
+    helperDeadline = true;
+    controller.abort();
+  }, timeoutMs);
+  const parentPid = options.parentPid ?? Number(env.PARLE_WATCH_PARENT_PID);
   const parentMonitor = Number.isInteger(parentPid) && parentPid > 0 ? setInterval(() => {
     try {
       process.kill(parentPid, 0);
     } catch {
+      parentGone = true;
       controller.abort();
     }
   }, 500) : undefined;
   parentMonitor?.unref();
   try {
-    const response = await fetch(url, {
+    const response = await (options.fetchImpl ?? fetch)(url, {
       headers: { Authorization: `Bearer ${token}`, "Parle-Agent-Session": sessionCredential, "Parle-Version": version, Connection: "close" },
       signal: controller.signal,
     });
     const raw = await response.text();
     const withoutSecrets = raw.split(token).join("<redacted>").split(sessionCredential).join("<redacted>");
-    await new Promise<void>((resolve) => process.stdout.write(`${response.status}\n${redactString(withoutSecrets)}`, () => resolve()));
+    const body = redactString(withoutSecrets);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      return watcherLocalWire("malformed_response");
+    }
+    if (response.ok) {
+      const projection = parsed as { messages?: unknown; watermark?: unknown } | null;
+      if (!projection || typeof projection !== "object" || Array.isArray(projection)
+        || !Array.isArray(projection.messages)
+        || !Number.isInteger(projection.watermark) || (projection.watermark as number) < 0) {
+        return watcherLocalWire("malformed_response");
+      }
+    }
+    return `${response.status}\n${body}`;
   } catch {
-    await new Promise<void>((resolve) => process.stdout.write("000\n{}", () => resolve()));
+    if (parentGone) return watcherLocalWire("parent_gone");
+    if (helperDeadline && mode === "hold") return watcherLocalWire("held_deadline");
+    return watcherLocalWire("network_failure");
   } finally {
     clearTimeout(timer);
     if (parentMonitor) clearInterval(parentMonitor);
   }
+}
+
+async function runWatcherRequest(since: string, mode: string): Promise<void> {
+  if (mode !== "hold" && mode !== "probe") throw new Error("watch request mode must be hold or probe");
+  const wire = await watcherRequestWire(since, mode);
+  await new Promise<void>((resolve) => process.stdout.write(wire, () => resolve()));
 }
 
 if (isDirectRun(import.meta.url)) {
@@ -425,7 +470,7 @@ if (isDirectRun(import.meta.url)) {
   const task = command === "--parle-watch"
     ? runWatcher(import.meta.url, process.argv.slice(3)).then((code) => { process.exitCode = code; })
     : isRequest
-      ? runWatcherRequest(process.argv[3] ?? "0")
+      ? runWatcherRequest(process.argv[3] ?? "0", process.argv[4] ?? "hold")
       : runStdio();
   task.then(() => {
     // Node's global fetch keeps an idle connection alive. The one-shot private

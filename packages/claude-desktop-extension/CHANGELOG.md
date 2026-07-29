@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.24 (2026-07-29)
+
+Bundled MCP refresh with credential-free Claude watcher request outcome classification. Claude Desktop runtime behavior is unchanged.
+
 ## 0.5.23 (2026-07-29)
 
 Bundled MCP refresh using `https://wake.parle.sh` as the default responsive-delivery endpoint, with a warning for suspicious explicit API-base reuse.

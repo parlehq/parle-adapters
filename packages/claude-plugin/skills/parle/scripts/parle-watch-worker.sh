@@ -285,6 +285,7 @@ PY
 }
 
 fails=0
+helper_deadlines=0
 dead_liveness=0
 gone_liveness=0
 unready_liveness=0
@@ -298,6 +299,35 @@ unready_liveness=0
 seen_live=0
 noted_never_present=0
 noted_unready=0
+parse_wire() {
+  status=${wire%%
+*}
+  resp=${wire#*
+}
+  parsed=$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+except Exception:
+    body = {}
+if not isinstance(body, dict):
+    body = {}
+local = body.get("watcher_local") or {}
+err = body.get("error") or {}
+if not isinstance(local, dict):
+    local = {}
+if not isinstance(err, dict):
+    err = {}
+print(local.get("outcome") or "")
+print(err.get("action") or "network")
+print(err.get("code") or "")
+print(err.get("retry_after_ms") or "")
+')
+  local_outcome=$(printf '%s\n' "$parsed" | sed -n '1p')
+  err_action=$(printf '%s\n' "$parsed" | sed -n '2p')
+  err_code=$(printf '%s\n' "$parsed" | sed -n '3p')
+  retry_after_ms=$(printf '%s\n' "$parsed" | sed -n '4p')
+}
 while :; do
   # Do not outlive a launcher terminated with SIGKILL. The request helper also
   # monitors this pid so an in-flight long poll aborts promptly.
@@ -356,29 +386,33 @@ while :; do
       dead_liveness=0; gone_liveness=0; unready_liveness=0
       ;;
   esac
-  # The request helper inherits the resolved token through its environment.
-  # It constructs Authorization inside Node, so the token never appears in
-  # argv, stdout, logs, or a temporary file.
-  wire=$(node "$PARLE_WATCH_REQUEST_HELPER" --parle-watch-request "$since") || wire='000
-{}'
-  status=${wire%%
-*}
-  resp=${wire#*
-}
+  # The helper owns abort provenance and emits credential-free local outcomes
+  # inside the existing two-line private wire. The shell never guesses a
+  # deadline from status 000 or synthesizes canonical API error meaning.
+  wire=$(node "$PARLE_WATCH_REQUEST_HELPER" --parle-watch-request "$since" hold) || wire='000
+{"watcher_local":{"outcome":"network_failure"}}'
+  parse_wire
+
+  if [ "$local_outcome" = "held_deadline" ]; then
+    helper_deadlines=$((helper_deadlines + 1))
+    if [ "$helper_deadlines" -lt 3 ]; then
+      continue
+    fi
+    # Replace the held result with one immediate health probe, then fall
+    # through the ordinary HTTP/action/success path. A successful probe may
+    # contain a relevant row and must not be discarded.
+    wire=$(node "$PARLE_WATCH_REQUEST_HELPER" --parle-watch-request "$since" probe) || wire='000
+{"watcher_local":{"outcome":"network_failure"}}'
+    parse_wire
+    helper_deadlines=0
+  else
+    helper_deadlines=0
+  fi
+
+  if [ "$local_outcome" = "parent_gone" ]; then
+    exit 2
+  fi
   if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-    action=$(printf '%s' "$resp" | python3 -c '
-import json, sys
-try:
-    err = (json.load(sys.stdin).get("error") or {})
-except Exception:
-    err = {}
-print(err.get("action") or "network")
-print(err.get("code") or "")
-print(err.get("retry_after_ms") or "")
-')
-    err_action=$(printf '%s\n' "$action" | sed -n '1p')
-    err_code=$(printf '%s\n' "$action" | sed -n '2p')
-    retry_after_ms=$(printf '%s\n' "$action" | sed -n '3p')
     case "$err_action" in
       fix_client)
         echo "Parle stopped: client request is invalid; upgrade or repair the adapter. ${err_code}" >&2

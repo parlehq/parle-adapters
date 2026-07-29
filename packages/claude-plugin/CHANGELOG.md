@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.32 (2026-07-29)
+
+Classify helper-owned held-poll deadlines separately from transport and malformed-response failures. After three consecutive helper deadlines, probe API health once with `wait=0` before resuming or entering the existing bounded failure path.
+
 ## 0.5.31 (2026-07-29)
 
 Use `https://wake.parle.sh` as the default responsive-delivery endpoint and warn when an explicit wake base suspiciously matches the API base.

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient } from "@parlehq/agent-client";
-import { createParleMcpServer, isDirectRun, resolveWatcherEnvironment } from "../dist/index.js";
+import { createParleMcpServer, isDirectRun, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -30,6 +30,75 @@ const expectedTools = [
 test("direct-run detection handles URL-encoded paths", () => {
   const path = "/tmp/Application Support/parle-mcp.js";
   assert.equal(isDirectRun(pathToFileURL(path).href, path), true);
+});
+
+const watcherEnv = {
+  PARLE_API_BASE: "https://api.example",
+  PARLE_ROOM_ID: "room-1",
+  PARLE_ROOM_AGENT_TOKEN: "parle_agt_watch_secret",
+  PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
+  PARLE_VERSION: "2026-07-07",
+};
+
+test("watch request helper classifies its deadline without exposing credentials", async () => {
+  let requestedUrl;
+  const fetchImpl = (url, options) => {
+    requestedUrl = String(url);
+    return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+  };
+  const wire = await watcherRequestWire("7", "hold", { env: watcherEnv, fetchImpl, timeoutMs: 5, parentPid: 0 });
+  assert.equal(wire, '000\n{"watcher_local":{"outcome":"held_deadline"}}');
+  assert.match(requestedUrl, /since_seq=7&wait=25/);
+  assert.equal(wire.includes(watcherEnv.PARLE_ROOM_AGENT_TOKEN), false);
+  assert.equal(wire.includes(watcherEnv.PARLE_WATCH_AGENT_SESSION), false);
+});
+
+test("watch request helper keeps transport, parent abort, and malformed responses distinct from a held deadline", async () => {
+  const transport = await watcherRequestWire("8", "hold", {
+    env: watcherEnv,
+    fetchImpl: async () => { throw new TypeError("fetch failed"); },
+    parentPid: 0,
+  });
+  assert.equal(transport, '000\n{"watcher_local":{"outcome":"network_failure"}}');
+
+  for (const body of ["not-json", "[]", "null", "{}", '{"messages":[],"watermark":-1}']) {
+    const malformed = await watcherRequestWire("9", "hold", {
+      env: watcherEnv,
+      fetchImpl: async () => new Response(body, { status: 200 }),
+      parentPid: 0,
+    });
+    assert.equal(malformed, '000\n{"watcher_local":{"outcome":"malformed_response"}}');
+  }
+
+  const parentAbort = await watcherRequestWire("10", "hold", {
+    env: watcherEnv,
+    fetchImpl: async (_url, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    timeoutMs: 2000,
+    parentPid: 99999999,
+  });
+  assert.equal(parentAbort, '000\n{"watcher_local":{"outcome":"parent_gone"}}');
+
+  const probeTimeout = await watcherRequestWire("11", "probe", {
+    env: watcherEnv,
+    fetchImpl: async (_url, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    timeoutMs: 5,
+    parentPid: 0,
+  });
+  assert.equal(probeTimeout, '000\n{"watcher_local":{"outcome":"network_failure"}}');
+
+  const http = await watcherRequestWire("12", "hold", {
+    env: watcherEnv,
+    fetchImpl: async () => new Response(JSON.stringify({ messages: [], watermark: 12 }), { status: 200 }),
+    parentPid: 0,
+  });
+  assert.equal(http, '200\n{"messages":[],"watermark":12}');
+
+  const apiError = await watcherRequestWire("13", "hold", {
+    env: watcherEnv,
+    fetchImpl: async () => new Response(JSON.stringify({ error: { action: "retry_with_backoff", retry_after_ms: 2000 } }), { status: 429 }),
+    parentPid: 0,
+  });
+  assert.equal(apiError, '429\n{"error":{"action":"retry_with_backoff","retry_after_ms":2000}}');
 });
 
 test("account-tool errors preserve actionable invitation denial fields", async () => {
