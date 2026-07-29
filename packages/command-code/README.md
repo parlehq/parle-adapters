@@ -38,7 +38,7 @@ The MCP server resolves `~/.parle/profiles` directly. If the catalog has a `[def
 
 The native mod computes the same credential-free, cwd-scoped runtime state used by the Claude statusline. One live session is `#room-handle ✓ @principal.agent.session`; several sessions use an honest count rather than claiming one sibling address as the current session; a configured but disconnected workspace is `parle · off`. Fresh unread state is included when available.
 
-Command Code 1.4.5 exposes `cmd.ui.setStatus`, but its bundled mod reference says footer status and editor widgets are not wired into the interactive TUI yet. The mod still calls `setStatus` so the footer will activate when the host wires that contract. Until then, its typed `onSessionStart` hook schedules one visible connected-status notice after the harness and interactive feed bind. It does not repeat the notice on every refresh.
+Command Code 1.5.0 exposes `cmd.ui.setStatus`, but its bundled mod reference says footer status and editor widgets are not wired into the interactive TUI yet. The mod still calls `setStatus` so the footer will activate when the host wires that contract. Until then, its typed `onSessionStart` hook schedules one visible connected-status notice after the harness and interactive feed bind. It does not repeat the notice on every refresh.
 
 The mod reads only `<cwd>/.parle/runtime/*.json` snapshots published by the MCP server. It refreshes on Command Code lifecycle events and a lightweight timer, renders nothing in headless mode, and never reads profile credentials. If the host sandbox blocks sibling-process inspection with `EPERM`, the mod treats liveness as indeterminate and relies on the snapshot's bounded expiry instead of hiding a connected session.
 
