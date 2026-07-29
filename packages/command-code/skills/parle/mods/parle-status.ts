@@ -7,9 +7,11 @@ const EXPIRY_SKEW_MS = 30_000;
 const START_TIME_TOLERANCE_MS = 15_000;
 const UNREAD_FRESH_MS = 180_000;
 const REFRESH_INTERVAL_MS = 5_000;
+const NOTICE_DELAY_MS = 1_000;
 
 export default function parleStatus(cmd: any) {
   let timer: ReturnType<typeof setInterval> | undefined;
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   let current: string | null | undefined;
   let sessionBound = false;
   let notifiedConnected = false;
@@ -21,7 +23,11 @@ export default function parleStatus(cmd: any) {
     cmd.ui.setStatus(next);
     if (sessionBound && !notifiedConnected && next?.includes("✓")) {
       notifiedConnected = true;
-      cmd.ui.notify(`Parle ${next}`);
+      noticeTimer = setTimeout(() => {
+        noticeTimer = undefined;
+        if (sessionBound) cmd.ui.notify(`Parle ${next}`);
+      }, NOTICE_DELAY_MS);
+      noticeTimer.unref?.();
     }
   };
 
@@ -37,15 +43,19 @@ export default function parleStatus(cmd: any) {
 
   const stop = () => {
     if (timer) clearInterval(timer);
+    if (noticeTimer) clearTimeout(noticeTimer);
     timer = undefined;
+    noticeTimer = undefined;
     current = undefined;
     sessionBound = false;
     notifiedConnected = false;
     cmd.ui.setStatus(null);
   };
 
-  cmd.on("session_start", start);
-  cmd.on("session_shutdown", stop);
+  cmd.hooks({
+    onSessionStart: start,
+    onSessionEnd: stop,
+  });
   cmd.on("run_start", refresh);
   cmd.on("run_end", refresh);
   refresh();

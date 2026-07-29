@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.18
+
+- Register the visible Parle startup notice through the typed mod `onSessionStart` hook so it runs after the Command Code harness binds.
+- Delay the notice until the interactive feed is mounted instead of letting startup rendering clear it.
+- Clear status polling and pending notices through the matching `onSessionEnd` hook.
+
 ## 0.1.17
 
 - Refresh the shared MCP artifact with credential-free Claude watcher request outcome classification. Command Code runtime behavior is unchanged.
