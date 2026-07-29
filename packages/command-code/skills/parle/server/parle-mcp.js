@@ -33073,7 +33073,7 @@ function compactStatusCardFromStatus(status) {
 
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
-var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
+var DEFAULT_WAKE_BASE = DEFAULT_API_BASE3;
 var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
@@ -33196,7 +33196,6 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     profile = loadProfile(profileSelector.value, catalogPath);
   }
   const profileValue = (name, value) => value === void 0 ? void 0 : { value, source: `profile:${profile.name}` };
-  const wakeBaseExplicit = profile ? profile.wakeBase !== void 0 : Boolean(firstConfigValue("PARLE_WAKE_BASE", sources).value);
   const cfg = {
     enabledInput: firstConfigValue("PARLE_ENABLED", sources, "1"),
     apiBase: profile ? profileValue("PARLE_API_BASE", profile.apiBase ?? DEFAULT_API_BASE3) : firstConfigValue("PARLE_API_BASE", sources, DEFAULT_API_BASE3),
@@ -33215,9 +33214,6 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning)
       cfg.warnings.push(value.warning);
-  }
-  if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
-    cfg.warnings.push(`PARLE_WAKE_BASE explicitly matches PARLE_API_BASE (${cfg.apiBase.value}). Responsive delivery normally uses ${DEFAULT_WAKE_BASE}.`);
   }
   return cfg;
 }
@@ -34174,10 +34170,13 @@ var ParleAgentClient = class _ParleAgentClient {
       const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
       const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), READ_LIMIT_BYTES);
       const cursorBefore = this.runtime.cursor;
-      if (params.advanceCursor !== false && params.sinceSeq === void 0) {
-        this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : void 0);
-        const remaining = surface === "inbound" ? rawMessages.filter((row) => typeof row?.seq === "number" && row.seq > this.runtime.cursor).length : 0;
-        this.setUnread(remaining);
+      const shouldAdvanceCursor = params.advanceCursor === true || params.advanceCursor === void 0 && params.sinceSeq === void 0;
+      if (shouldAdvanceCursor) {
+        this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, capped.messages, params.sinceSeq === void 0 && rawMessages.length === 0 ? projection.watermark : void 0);
+        if (this.runtime.cursor !== cursorBefore || params.sinceSeq === void 0) {
+          const remaining = surface === "inbound" ? rawMessages.filter((row) => typeof row?.seq === "number" && row.seq > this.runtime.cursor).length : 0;
+          this.setUnread(remaining);
+        }
       }
       return { ...projection, surface, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: this.runtime.cursor, advancedCursor: cursorBefore !== this.runtime.cursor, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}, note: wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text." };
     }, signal);
