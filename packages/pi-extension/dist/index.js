@@ -2035,7 +2035,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.32";
+var PI_EXTENSION_VERSION = "0.1.33";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -2053,14 +2053,23 @@ var WATCH_BASELINE_ACK_LIMIT = 5e3;
 var HEARTBEAT_INTERVAL_MS = 5 * 60 * 1e3;
 var FOOTER_FAILURE_THRESHOLD = 3;
 var FOOTER_FAILURE_AGE_MS = 6e4;
+var RATE_LIMIT_FAILURE_THRESHOLD = 5;
+var RATE_LIMIT_MAX_ELAPSED_MS = 15 * 60 * 1e3;
 var INJECTED_KEY_LIMIT = 4096;
 var runtime = { bootstrapped: false, watcherState: "off" };
 var activeProfileOverride;
 var liveConfig;
 var lastCtx;
 var watcherAbort;
+var watcherTask;
+var recoveryRestartAbort;
 var watcherLoopRunning = false;
 var activeWatcherRunId = 0;
+var rateLimitFirst429MonotonicMs;
+var rateLimitRecoveryInProgress = false;
+var wallNowMs = () => Date.now();
+var monotonicNowMs = () => performance.now();
+var watcherSleep = sleep;
 var automaticFailureBinding;
 var injectedKeys = /* @__PURE__ */ new Set();
 var injectedKeyOrder = [];
@@ -2081,10 +2090,19 @@ function configForLiveRuntime(resolved) {
 function bindingKey(cfg) {
   return [cfg.roomId?.value || "", cfg.agentToken?.value || "", cfg.apiBase.value || "", cfg.wakeBase.value || "", cfg.profile?.value || ""].join("\0");
 }
+function clearRateLimitContainment() {
+  rateLimitFirst429MonotonicMs = void 0;
+  runtime.rateLimitConsecutive429s = void 0;
+  runtime.rateLimitFirst429At = void 0;
+  runtime.rateLimitParkedCause = void 0;
+  runtime.rateLimitRecoveryOperation = void 0;
+  runtime.rateLimitRecoveryHealthy = void 0;
+}
 function clearAutomaticFailureLatch() {
   automaticFailureBinding = void 0;
   runtime.terminalCause = void 0;
   runtime.nextRetryAt = void 0;
+  clearRateLimitContainment();
 }
 function preflightAutomaticBinding(cfg) {
   if (automaticFailureBinding && automaticFailureBinding !== bindingKey(cfg)) clearAutomaticFailureLatch();
@@ -2099,7 +2117,8 @@ function automaticGateClosed(cfg) {
   preflightAutomaticBinding(cfg);
   if (automaticFailureBinding !== bindingKey(cfg)) return false;
   if (runtime.terminalCause) return true;
-  return Boolean(runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > Date.now());
+  if (runtime.rateLimitParkedCause && !runtime.rateLimitRecoveryHealthy) return true;
+  return Boolean(runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > wallNowMs());
 }
 function readKeyValueFile(path) {
   if (!existsSync4(path)) return {};
@@ -3005,8 +3024,8 @@ async function bootstrap(ctx, cfg, signal, preserveCursor = false, aliasOverride
     const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId.value)}/projection?wait=0`, { session: true, signal }, state);
     state.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
   }
-  state.lastError = void 0;
-  if (state === runtime) clearAutomaticFailureLatch();
+  if (!(state === runtime && rateLimitRecoveryInProgress)) state.lastError = void 0;
+  if (state === runtime && !rateLimitRecoveryInProgress && !runtime.rateLimitParkedCause) clearAutomaticFailureLatch();
   if (publish) {
     setStatus(ctx, cfg);
     publishRuntimeState(ctx, cfg);
@@ -3098,21 +3117,29 @@ function assertSessionAlias(alias) {
 }
 async function useSessionAlias(pi, ctx, cfg, alias, signal) {
   assertSessionAlias(alias);
-  stopWatcher(ctx);
-  await endAgentSession(cfg, signal).catch((error) => {
-    runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-    publishRuntimeState(ctx, cfg);
-  });
-  removeRuntimeFile2(ctx.cwd || process.cwd());
-  await bootstrap(ctx, cfg, signal, true, alias);
-  startWatcher(pi, ctx, cfg);
-  return {
-    status: "alias_active",
-    alias: runtime.sessionAlias,
-    generation: runtime.sessionGeneration,
-    sessionAddress: runtime.sessionAddress,
-    expiresAt: runtime.expiresAt
-  };
+  const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
+  const recovering = await prepareRateLimitRecovery(ctx);
+  try {
+    if (!recovering) stopWatcher(ctx);
+    await endAgentSession(cfg, signal).catch((error) => {
+      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+      publishRuntimeState(ctx, cfg);
+    });
+    removeRuntimeFile2(ctx.cwd || process.cwd());
+    await bootstrap(ctx, cfg, signal, true, alias);
+    if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
+    else startWatcher(pi, ctx, cfg);
+    return {
+      status: "alias_active",
+      alias: runtime.sessionAlias,
+      generation: runtime.sessionGeneration,
+      sessionAddress: runtime.sessionAddress,
+      expiresAt: runtime.expiresAt
+    };
+  } catch (error) {
+    restoreRateLimitRecoveryWatcher(pi, ctx, cfg, recovering, priorHealthy);
+    throw error;
+  }
 }
 async function withRebootstrap(ctx, cfg, fn, signal) {
   await ensureBootstrapped(ctx, cfg, signal);
@@ -3345,10 +3372,19 @@ function classifyWatcherError(error) {
   if (error instanceof TypeError || error?.name === "AbortError") return "network";
   return "client";
 }
-function recordWatcherSuccess() {
-  runtime.lastSuccessAt = (/* @__PURE__ */ new Date()).toISOString();
+function recordWatcherSuccess(wakeStreamCompleted = false) {
+  runtime.lastSuccessAt = new Date(wallNowMs()).toISOString();
+  if (runtime.rateLimitParkedCause && (!runtime.rateLimitRecoveryHealthy || !wakeStreamCompleted)) return;
   runtime.consecutiveWatcherFailures = 0;
   runtime.lastErrorClass = void 0;
+  if (runtime.rateLimitParkedCause) {
+    runtime.watcherBackoffCount = 0;
+    runtime.lastError = void 0;
+    runtime.lastHttpStatus = void 0;
+    clearRateLimitContainment();
+  } else {
+    clearRateLimitContainment();
+  }
   if (!runtime.terminalCause) {
     runtime.nextRetryAt = void 0;
     automaticFailureBinding = void 0;
@@ -3361,29 +3397,76 @@ function recordWatcherError(error) {
   runtime.consecutiveWatcherFailures = (runtime.consecutiveWatcherFailures || 0) + 1;
   runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
 }
+function rateLimitElapsedMs() {
+  return rateLimitFirst429MonotonicMs === void 0 ? 0 : Math.max(0, monotonicNowMs() - rateLimitFirst429MonotonicMs);
+}
+function parkRateLimitedWatcher(reason) {
+  if (!runtime.rateLimitParkedCause || runtime.rateLimitRecoveryHealthy) {
+    runtime.rateLimitParkedCause = {
+      reason,
+      occurredAt: new Date(wallNowMs()).toISOString(),
+      consecutive429s: runtime.rateLimitConsecutive429s || 0
+    };
+  }
+  runtime.rateLimitRecoveryHealthy = false;
+  runtime.watcherState = "rate_limited";
+}
+function maybeParkRateLimitedWatcher() {
+  if (runtime.rateLimitParkedCause) return true;
+  if ((runtime.rateLimitConsecutive429s || 0) >= RATE_LIMIT_FAILURE_THRESHOLD) {
+    parkRateLimitedWatcher("count");
+    return true;
+  }
+  if (rateLimitFirst429MonotonicMs !== void 0 && rateLimitElapsedMs() >= RATE_LIMIT_MAX_ELAPSED_MS) {
+    parkRateLimitedWatcher("elapsed");
+    return true;
+  }
+  return false;
+}
+function rateLimitParkDelayMs() {
+  if (rateLimitFirst429MonotonicMs === void 0 || runtime.rateLimitParkedCause) return void 0;
+  return Math.max(0, RATE_LIMIT_MAX_ELAPSED_MS - rateLimitElapsedMs());
+}
+function isRateLimitError(error) {
+  return error?.status === 429;
+}
 function recordAutomaticFailure(error, cfg, runId) {
   if (runId !== void 0 && runId !== activeWatcherRunId) return false;
   recordWatcherError(error);
   const binding = bindingKey(cfg);
   const priorSameBinding = automaticFailureBinding === binding;
+  if (!priorSameBinding) clearRateLimitContainment();
   automaticFailureBinding = binding;
-  if (terminalError(error)) {
-    runtime.nextRetryAt = void 0;
-    runtime.terminalCause = {
-      status: error?.status,
-      code: error?.code,
-      action: error?.action,
-      scope: error?.scope,
-      retryable: false,
-      message: redactString(error instanceof Error ? error.message : String(error)),
-      occurredAt: (/* @__PURE__ */ new Date()).toISOString(),
-      streak: priorSameBinding && runtime.terminalCause ? runtime.terminalCause.streak + 1 : 1
-    };
-  } else if (retryableError(error)) {
+  if (isRateLimitError(error)) {
+    if (rateLimitFirst429MonotonicMs === void 0) {
+      rateLimitFirst429MonotonicMs = monotonicNowMs();
+      runtime.rateLimitFirst429At = new Date(wallNowMs()).toISOString();
+    }
+    runtime.rateLimitConsecutive429s = (runtime.rateLimitConsecutive429s || 0) + 1;
     const delay = watcherRetryDelayMs(error);
-    runtime.nextRetryAt = new Date(Date.now() + delay).toISOString();
+    runtime.nextRetryAt = new Date(wallNowMs() + delay).toISOString();
+    if (runtime.rateLimitParkedCause || runtime.rateLimitRecoveryHealthy) parkRateLimitedWatcher(runtime.rateLimitParkedCause?.reason || "count");
+    else maybeParkRateLimitedWatcher();
   } else {
-    runtime.nextRetryAt = void 0;
+    if (!runtime.rateLimitParkedCause) clearRateLimitContainment();
+    if (terminalError(error)) {
+      runtime.nextRetryAt = void 0;
+      runtime.terminalCause = {
+        status: error?.status,
+        code: error?.code,
+        action: error?.action,
+        scope: error?.scope,
+        retryable: false,
+        message: redactString(error instanceof Error ? error.message : String(error)),
+        occurredAt: new Date(wallNowMs()).toISOString(),
+        streak: priorSameBinding && runtime.terminalCause ? runtime.terminalCause.streak + 1 : 1
+      };
+    } else if (retryableError(error)) {
+      const delay = watcherRetryDelayMs(error);
+      runtime.nextRetryAt = new Date(wallNowMs() + delay).toISOString();
+    } else {
+      runtime.nextRetryAt = void 0;
+    }
   }
   return true;
 }
@@ -3485,23 +3568,28 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
         runtime.watcherState = "waiting";
         setStatus(ctx, cfg);
         await withRebootstrap(ctx, cfg, async () => consumeWakeStream(pi, ctx, cfg, signal), signal);
-        recordWatcherSuccess();
+        recordWatcherSuccess(true);
         if (!signal.aborted) await sleep(WATCH_EMPTY_BACKOFF_MS, signal);
       } catch (error) {
         if (signal.aborted || runId !== activeWatcherRunId) break;
         if (!recordAutomaticFailure(error, cfg, runId)) break;
         const terminalState = terminalWatcherState(error);
-        runtime.watcherState = terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+        runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
         setStatus(ctx, cfg);
-        if (terminalState) break;
-        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - Date.now()) : watcherRetryDelayMs(error);
-        await sleep(retryDelay, signal).catch(() => void 0);
+        if (terminalState || runtime.rateLimitParkedCause) break;
+        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
+        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : void 0;
+        await watcherSleep(parkDelay === void 0 ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => void 0);
+        if (!signal.aborted && runId === activeWatcherRunId && maybeParkRateLimitedWatcher()) {
+          setStatus(ctx, cfg);
+          break;
+        }
       }
     }
   } catch (error) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
-      runtime.watcherState = terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+      runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       setStatus(ctx, cfg);
     }
   } finally {
@@ -3509,7 +3597,7 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
       watcherLoopRunning = false;
       if (signal.aborted) {
         runtime.watcherState = "disconnected";
-      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "disconnected") {
+      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "rate_limited" && runtime.watcherState !== "disconnected") {
         runtime.watcherState = "off";
       }
       setStatus(ctx, cfg);
@@ -3523,15 +3611,72 @@ function startWatcher(pi, ctx, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   watcherAbort?.abort();
   watcherAbort = new AbortController();
   const runId = ++activeWatcherRunId;
-  void runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
+  const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
+  watcherTask = task;
+  void task.finally(() => {
+    if (watcherTask === task) watcherTask = void 0;
+  });
 }
 function stopWatcher(ctx) {
   activeWatcherRunId += 1;
   watcherAbort?.abort();
   watcherAbort = void 0;
+  recoveryRestartAbort?.abort();
+  recoveryRestartAbort = void 0;
   runtime.watcherEnabled = false;
-  runtime.watcherState = "off";
+  runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : "off";
   if (ctx) setStatus(ctx);
+}
+async function quiesceWatcher(ctx) {
+  const task = watcherTask;
+  stopWatcher(ctx);
+  if (task) await task.catch(() => void 0);
+  watcherLoopRunning = false;
+}
+async function prepareRateLimitRecovery(ctx) {
+  if (!runtime.rateLimitParkedCause) return false;
+  await quiesceWatcher(ctx);
+  rateLimitRecoveryInProgress = true;
+  return true;
+}
+function abandonRateLimitRecovery(recovering) {
+  if (recovering) rateLimitRecoveryInProgress = false;
+}
+function scheduleRateLimitRecoveryWatcher(pi, ctx, cfg) {
+  recoveryRestartAbort?.abort();
+  const delay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : 0;
+  if (delay === 0) {
+    startWatcher(pi, ctx, cfg);
+    return;
+  }
+  recoveryRestartAbort = new AbortController();
+  const controller = recoveryRestartAbort;
+  void watcherSleep(delay, controller.signal).then(() => {
+    if (recoveryRestartAbort === controller && runtime.rateLimitRecoveryHealthy) startWatcher(pi, ctx, cfg);
+  }).catch(() => void 0);
+}
+function completeRateLimitRecovery(pi, ctx, cfg, operation, recovering) {
+  if (!recovering || !runtime.rateLimitParkedCause) return;
+  rateLimitRecoveryInProgress = false;
+  runtime.rateLimitRecoveryOperation = operation;
+  runtime.rateLimitRecoveryHealthy = true;
+  scheduleRateLimitRecoveryWatcher(pi, ctx, cfg);
+}
+function restoreRateLimitRecoveryWatcher(pi, ctx, cfg, recovering, priorHealthy) {
+  abandonRateLimitRecovery(recovering);
+  if (recovering && priorHealthy && runtime.rateLimitParkedCause) scheduleRateLimitRecoveryWatcher(pi, ctx, cfg);
+}
+async function runRateLimitRecoveryOperation(pi, ctx, cfg, operation, fn) {
+  const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
+  const recovering = await prepareRateLimitRecovery(ctx);
+  try {
+    const result = await fn();
+    completeRateLimitRecovery(pi, ctx, cfg, operation, recovering);
+    return result;
+  } catch (error) {
+    restoreRateLimitRecoveryWatcher(pi, ctx, cfg, recovering, priorHealthy);
+    throw error;
+  }
 }
 function formatResult(details) {
   return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
@@ -3578,6 +3723,16 @@ function statusDetails(ctx) {
       lastError: runtime.lastError,
       terminalCause: runtime.terminalCause,
       nextRetryAt: runtime.nextRetryAt,
+      rateLimitConsecutive429s: runtime.rateLimitConsecutive429s,
+      rateLimitFirst429At: runtime.rateLimitFirst429At,
+      rateLimitParkedCause: runtime.rateLimitParkedCause,
+      rateLimitRecoveryOperation: runtime.rateLimitRecoveryOperation,
+      rateLimitRecoveryHealthy: runtime.rateLimitRecoveryHealthy,
+      rateLimitRecovery: runtime.rateLimitParkedCause ? {
+        required: true,
+        allowedOperations: ["parle_session_alias", "parle_read", "parle_inbox"],
+        next: runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > wallNowMs() ? `Wait until ${runtime.nextRetryAt}, then call parle_session_alias, parle_read, or parle_inbox for explicit recovery.` : "Call parle_session_alias, parle_read, or parle_inbox for explicit recovery."
+      } : void 0,
       watcherState: runtime.watcherState,
       watcherStarted: runtime.watcherStarted,
       watcherEnabled: runtime.watcherEnabled,
@@ -3613,7 +3768,7 @@ function hasConnectionFailure() {
   return Boolean(runtime.lastError || runtime.lastHttpStatus || runtime.lastErrorClass);
 }
 function shouldShowFooterError() {
-  if (runtime.watcherState === "auth_expired" || runtime.watcherState === "session_expired" || runtime.watcherState === "disconnected") return true;
+  if (runtime.watcherState === "auth_expired" || runtime.watcherState === "session_expired" || runtime.watcherState === "rate_limited" || runtime.watcherState === "disconnected") return true;
   if (hasConnectionFailure()) return true;
   if (runtime.watcherState !== "backoff") return false;
   if ((runtime.consecutiveWatcherFailures || 0) >= FOOTER_FAILURE_THRESHOLD) return true;
@@ -3623,6 +3778,7 @@ function shouldShowFooterError() {
 function footerErrorLabel() {
   if (runtime.watcherState === "auth_expired" || runtime.lastHttpStatus === 401 || runtime.lastHttpStatus === 403) return "parle x check auth";
   if (runtime.watcherState === "session_expired") return "parle x session expired";
+  if (runtime.watcherState === "rate_limited") return "parle x rate limited";
   if (runtime.watcherState === "disconnected") return "parle x disconnected";
   if (runtime.lastHttpStatus === 400) {
     if (/version/i.test(runtime.lastError || "")) return "parle x check version";
@@ -3643,6 +3799,7 @@ var __testing = {
   watcherRetryDelayMs,
   automaticGateClosed,
   recordAutomaticFailure,
+  maybeParkRateLimitedWatcher,
   startWatcher,
   handleWakeHint,
   queueResponsiveMessages,
@@ -3656,6 +3813,11 @@ var __testing = {
   patchRuntime(patch) {
     runtime = { ...runtime, ...patch };
   },
+  setWatcherTiming(timing) {
+    if (timing.wallNowMs) wallNowMs = timing.wallNowMs;
+    if (timing.monotonicNowMs) monotonicNowMs = timing.monotonicNowMs;
+    if (timing.sleep) watcherSleep = timing.sleep;
+  },
   setStatus,
   resetRuntime() {
     runtime = { bootstrapped: false, watcherState: "off" };
@@ -3668,8 +3830,16 @@ var __testing = {
     clearPendingResponsiveMessages();
     watcherAbort?.abort();
     watcherAbort = void 0;
+    watcherTask = void 0;
+    recoveryRestartAbort?.abort();
+    recoveryRestartAbort = void 0;
     watcherLoopRunning = false;
     activeWatcherRunId = 0;
+    rateLimitFirst429MonotonicMs = void 0;
+    rateLimitRecoveryInProgress = false;
+    wallNowMs = () => Date.now();
+    monotonicNowMs = () => performance.now();
+    watcherSleep = sleep;
     automaticFailureBinding = void 0;
   }
 };
@@ -4012,7 +4182,7 @@ function parleExtension(pi) {
     async execute(_id, params, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await withRebootstrap(ctx, cfg, async () => {
+      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "read", () => withRebootstrap(ctx, cfg, async () => {
         const since = typeof params.sinceSeq === "number" ? params.sinceSeq : runtime.cursor || 0;
         const wait = typeof params.waitSeconds === "number" ? Math.max(0, Math.min(30, params.waitSeconds)) : 0;
         const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId.value)}/projection?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, signal });
@@ -4034,7 +4204,7 @@ function parleExtension(pi) {
         if (params.advanceCursor !== false && params.sinceSeq === void 0) runtime.cursor = updateCursorFromMessages(runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : void 0);
         result.cursor = runtime.cursor;
         return result;
-      }, signal);
+      }, signal));
       setStatus(ctx, cfg);
       return formatResult(details);
     }
@@ -4052,7 +4222,7 @@ function parleExtension(pi) {
     async execute(_id, params, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await withRebootstrap(ctx, cfg, async () => {
+      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "inbox", () => withRebootstrap(ctx, cfg, async () => {
         const since = typeof params.sinceSeq === "number" ? params.sinceSeq : runtime.cursor || 0;
         const wait = typeof params.waitSeconds === "number" ? Math.max(0, Math.min(30, params.waitSeconds)) : 0;
         const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId.value)}/inbound?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, signal });
@@ -4075,7 +4245,7 @@ function parleExtension(pi) {
         if (params.advanceCursor !== false && params.sinceSeq === void 0) runtime.cursor = updateCursorFromMessages(runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : void 0);
         result.cursor = runtime.cursor;
         return result;
-      }, signal);
+      }, signal));
       setStatus(ctx, cfg);
       return formatResult(details);
     }

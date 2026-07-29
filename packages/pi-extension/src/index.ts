@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.32";
+const PI_EXTENSION_VERSION = "0.1.33";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -23,6 +23,8 @@ const WATCH_BASELINE_ACK_LIMIT = 5000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const FOOTER_FAILURE_THRESHOLD = 3;
 const FOOTER_FAILURE_AGE_MS = 60_000;
+const RATE_LIMIT_FAILURE_THRESHOLD = 5;
+const RATE_LIMIT_MAX_ELAPSED_MS = 15 * 60 * 1000;
 const INJECTED_KEY_LIMIT = 4096;
 
 type SourceKind = "env" | "project_env" | "runtime_profile" | "session_file" | "profile_catalog" | `profile:${string}` | "default";
@@ -56,8 +58,14 @@ type ParleConfig = {
   warnings: string[];
 };
 
-type WatcherState = "off" | "starting" | "watching" | "waiting" | "injecting" | "backoff" | "disconnected" | "auth_expired" | "session_expired" | "held" | "idle";
+type WatcherState = "off" | "starting" | "watching" | "waiting" | "injecting" | "backoff" | "rate_limited" | "disconnected" | "auth_expired" | "session_expired" | "held" | "idle";
 type WatcherErrorClass = "network" | "timeout" | "http_4xx" | "http_5xx" | "http_other" | "client";
+type RateLimitParkedCause = {
+  reason: "count" | "elapsed";
+  occurredAt: string;
+  consecutive429s: number;
+};
+type RateLimitRecoveryOperation = "session_alias" | "read" | "inbox";
 type TerminalCause = {
   status?: number;
   code?: string;
@@ -86,6 +94,11 @@ type RuntimeState = {
   // the terminal reason that closed automatic activity.
   terminalCause?: TerminalCause;
   nextRetryAt?: string;
+  rateLimitConsecutive429s?: number;
+  rateLimitFirst429At?: string;
+  rateLimitParkedCause?: RateLimitParkedCause;
+  rateLimitRecoveryOperation?: RateLimitRecoveryOperation;
+  rateLimitRecoveryHealthy?: boolean;
   watcherState?: WatcherState;
   watcherStarted?: boolean;
   watcherEnabled?: boolean;
@@ -193,8 +206,15 @@ let activeProfileOverride: string | undefined;
 let liveConfig: ParleConfig | undefined;
 let lastCtx: any | undefined;
 let watcherAbort: AbortController | undefined;
+let watcherTask: Promise<void> | undefined;
+let recoveryRestartAbort: AbortController | undefined;
 let watcherLoopRunning = false;
 let activeWatcherRunId = 0;
+let rateLimitFirst429MonotonicMs: number | undefined;
+let rateLimitRecoveryInProgress = false;
+let wallNowMs = () => Date.now();
+let monotonicNowMs = () => performance.now();
+let watcherSleep = sleep;
 // Never expose this value: it includes the credential solely to bind a local
 // automatic latch to exactly one credential/room endpoint combination.
 let automaticFailureBinding: string | undefined;
@@ -226,10 +246,20 @@ function bindingKey(cfg: ParleConfig): string {
   return [cfg.roomId?.value || "", cfg.agentToken?.value || "", cfg.apiBase.value || "", cfg.wakeBase.value || "", cfg.profile?.value || ""].join("\u0000");
 }
 
+function clearRateLimitContainment() {
+  rateLimitFirst429MonotonicMs = undefined;
+  runtime.rateLimitConsecutive429s = undefined;
+  runtime.rateLimitFirst429At = undefined;
+  runtime.rateLimitParkedCause = undefined;
+  runtime.rateLimitRecoveryOperation = undefined;
+  runtime.rateLimitRecoveryHealthy = undefined;
+}
+
 function clearAutomaticFailureLatch() {
   automaticFailureBinding = undefined;
   runtime.terminalCause = undefined;
   runtime.nextRetryAt = undefined;
+  clearRateLimitContainment();
 }
 
 // A disk/profile binding change is the only automatic recovery signal. It
@@ -250,7 +280,8 @@ function automaticGateClosed(cfg: ParleConfig): boolean {
   preflightAutomaticBinding(cfg);
   if (automaticFailureBinding !== bindingKey(cfg)) return false;
   if (runtime.terminalCause) return true;
-  return Boolean(runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > Date.now());
+  if (runtime.rateLimitParkedCause && !runtime.rateLimitRecoveryHealthy) return true;
+  return Boolean(runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > wallNowMs());
 }
 
 function readKeyValueFile(path: string): Record<string, string> {
@@ -1241,8 +1272,8 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
     const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/projection?wait=0`, { session: true, signal }, state);
     state.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
   }
-  state.lastError = undefined;
-  if (state === runtime) clearAutomaticFailureLatch();
+  if (!(state === runtime && rateLimitRecoveryInProgress)) state.lastError = undefined;
+  if (state === runtime && !rateLimitRecoveryInProgress && !runtime.rateLimitParkedCause) clearAutomaticFailureLatch();
   if (publish) {
     setStatus(ctx, cfg);
     publishRuntimeState(ctx, cfg);
@@ -1340,21 +1371,29 @@ function assertSessionAlias(alias: string) {
 
 async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal) {
   assertSessionAlias(alias);
-  stopWatcher(ctx);
-  await endAgentSession(cfg, signal).catch((error) => {
-    runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-    publishRuntimeState(ctx, cfg);
-  });
-  removeRuntimeFile(ctx.cwd || process.cwd());
-  await bootstrap(ctx, cfg, signal, true, alias);
-  startWatcher(pi, ctx, cfg);
-  return {
-    status: "alias_active",
-    alias: runtime.sessionAlias,
-    generation: runtime.sessionGeneration,
-    sessionAddress: runtime.sessionAddress,
-    expiresAt: runtime.expiresAt,
-  };
+  const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
+  const recovering = await prepareRateLimitRecovery(ctx);
+  try {
+    if (!recovering) stopWatcher(ctx);
+    await endAgentSession(cfg, signal).catch((error) => {
+      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+      publishRuntimeState(ctx, cfg);
+    });
+    removeRuntimeFile(ctx.cwd || process.cwd());
+    await bootstrap(ctx, cfg, signal, true, alias);
+    if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
+    else startWatcher(pi, ctx, cfg);
+    return {
+      status: "alias_active",
+      alias: runtime.sessionAlias,
+      generation: runtime.sessionGeneration,
+      sessionAddress: runtime.sessionAddress,
+      expiresAt: runtime.expiresAt,
+    };
+  } catch (error) {
+    restoreRateLimitRecoveryWatcher(pi, ctx, cfg, recovering, priorHealthy);
+    throw error;
+  }
 }
 
 async function withRebootstrap<T>(ctx: any, cfg: ParleConfig, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -1609,10 +1648,19 @@ function classifyWatcherError(error: any): WatcherErrorClass {
   return "client";
 }
 
-function recordWatcherSuccess() {
-  runtime.lastSuccessAt = new Date().toISOString();
+function recordWatcherSuccess(wakeStreamCompleted = false) {
+  runtime.lastSuccessAt = new Date(wallNowMs()).toISOString();
+  if (runtime.rateLimitParkedCause && (!runtime.rateLimitRecoveryHealthy || !wakeStreamCompleted)) return;
   runtime.consecutiveWatcherFailures = 0;
   runtime.lastErrorClass = undefined;
+  if (runtime.rateLimitParkedCause) {
+    runtime.watcherBackoffCount = 0;
+    runtime.lastError = undefined;
+    runtime.lastHttpStatus = undefined;
+    clearRateLimitContainment();
+  } else {
+    clearRateLimitContainment();
+  }
   if (!runtime.terminalCause) {
     runtime.nextRetryAt = undefined;
     automaticFailureBinding = undefined;
@@ -1627,6 +1675,44 @@ function recordWatcherError(error: any) {
   runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
 }
 
+function rateLimitElapsedMs(): number {
+  return rateLimitFirst429MonotonicMs === undefined ? 0 : Math.max(0, monotonicNowMs() - rateLimitFirst429MonotonicMs);
+}
+
+function parkRateLimitedWatcher(reason: RateLimitParkedCause["reason"]) {
+  if (!runtime.rateLimitParkedCause || runtime.rateLimitRecoveryHealthy) {
+    runtime.rateLimitParkedCause = {
+      reason,
+      occurredAt: new Date(wallNowMs()).toISOString(),
+      consecutive429s: runtime.rateLimitConsecutive429s || 0,
+    };
+  }
+  runtime.rateLimitRecoveryHealthy = false;
+  runtime.watcherState = "rate_limited";
+}
+
+function maybeParkRateLimitedWatcher(): boolean {
+  if (runtime.rateLimitParkedCause) return true;
+  if ((runtime.rateLimitConsecutive429s || 0) >= RATE_LIMIT_FAILURE_THRESHOLD) {
+    parkRateLimitedWatcher("count");
+    return true;
+  }
+  if (rateLimitFirst429MonotonicMs !== undefined && rateLimitElapsedMs() >= RATE_LIMIT_MAX_ELAPSED_MS) {
+    parkRateLimitedWatcher("elapsed");
+    return true;
+  }
+  return false;
+}
+
+function rateLimitParkDelayMs(): number | undefined {
+  if (rateLimitFirst429MonotonicMs === undefined || runtime.rateLimitParkedCause) return undefined;
+  return Math.max(0, RATE_LIMIT_MAX_ELAPSED_MS - rateLimitElapsedMs());
+}
+
+function isRateLimitError(error: any): boolean {
+  return error?.status === 429;
+}
+
 // Called only after the caller has been admitted through automaticGateClosed.
 // In particular, a status/start call while a 429 gate is closed never reaches
 // this function and therefore cannot extend the exact server-provided gate.
@@ -1635,27 +1721,41 @@ function recordAutomaticFailure(error: any, cfg: ParleConfig, runId?: number): b
   recordWatcherError(error);
   const binding = bindingKey(cfg);
   const priorSameBinding = automaticFailureBinding === binding;
+  if (!priorSameBinding) clearRateLimitContainment();
   automaticFailureBinding = binding;
-  if (terminalError(error)) {
-    runtime.nextRetryAt = undefined;
-    runtime.terminalCause = {
-      status: error?.status,
-      code: error?.code,
-      action: error?.action,
-      scope: error?.scope,
-      retryable: false,
-      message: redactString(error instanceof Error ? error.message : String(error)),
-      occurredAt: new Date().toISOString(),
-      streak: priorSameBinding && runtime.terminalCause ? runtime.terminalCause.streak + 1 : 1,
-    };
-  } else if (retryableError(error)) {
+  if (isRateLimitError(error)) {
+    if (rateLimitFirst429MonotonicMs === undefined) {
+      rateLimitFirst429MonotonicMs = monotonicNowMs();
+      runtime.rateLimitFirst429At = new Date(wallNowMs()).toISOString();
+    }
+    runtime.rateLimitConsecutive429s = (runtime.rateLimitConsecutive429s || 0) + 1;
     const delay = watcherRetryDelayMs(error);
-    runtime.nextRetryAt = new Date(Date.now() + delay).toISOString();
+    runtime.nextRetryAt = new Date(wallNowMs() + delay).toISOString();
+    if (runtime.rateLimitParkedCause || runtime.rateLimitRecoveryHealthy) parkRateLimitedWatcher(runtime.rateLimitParkedCause?.reason || "count");
+    else maybeParkRateLimitedWatcher();
   } else {
-    // A retry deadline describes only the failure that created it. Never let
-    // an expired 429 deadline turn a later unclassified transport failure into
-    // a zero-delay watcher loop.
-    runtime.nextRetryAt = undefined;
+    if (!runtime.rateLimitParkedCause) clearRateLimitContainment();
+    if (terminalError(error)) {
+      runtime.nextRetryAt = undefined;
+      runtime.terminalCause = {
+        status: error?.status,
+        code: error?.code,
+        action: error?.action,
+        scope: error?.scope,
+        retryable: false,
+        message: redactString(error instanceof Error ? error.message : String(error)),
+        occurredAt: new Date(wallNowMs()).toISOString(),
+        streak: priorSameBinding && runtime.terminalCause ? runtime.terminalCause.streak + 1 : 1,
+      };
+    } else if (retryableError(error)) {
+      const delay = watcherRetryDelayMs(error);
+      runtime.nextRetryAt = new Date(wallNowMs() + delay).toISOString();
+    } else {
+      // A retry deadline describes only the failure that created it. Never let
+      // an expired 429 deadline turn a later unclassified transport failure into
+      // a zero-delay watcher loop.
+      runtime.nextRetryAt = undefined;
+    }
   }
   return true;
 }
@@ -1767,26 +1867,31 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
         runtime.watcherState = "waiting";
         setStatus(ctx, cfg);
         await withRebootstrap(ctx, cfg, async () => consumeWakeStream(pi, ctx, cfg, signal), signal);
-        recordWatcherSuccess();
+        recordWatcherSuccess(true);
         if (!signal.aborted) await sleep(WATCH_EMPTY_BACKOFF_MS, signal);
       } catch (error: any) {
         if (signal.aborted || runId !== activeWatcherRunId) break;
         if (!recordAutomaticFailure(error, cfg, runId)) break;
         const terminalState = terminalWatcherState(error);
-        runtime.watcherState = terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+        runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
         setStatus(ctx, cfg);
-        if (terminalState) break;
-        // recordAutomaticFailure chose the retry deadline once. Sleeping to
-        // that exact deadline avoids a second jitter draw that could wake
-        // early, see the still-closed gate, and accidentally end the watcher.
-        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - Date.now()) : watcherRetryDelayMs(error);
-        await sleep(retryDelay, signal).catch(() => undefined);
+        if (terminalState || runtime.rateLimitParkedCause) break;
+        // recordAutomaticFailure chose the retry deadline once. The monotonic
+        // containment deadline may be earlier, in which case the watcher parks
+        // without issuing another request and retains the server deadline.
+        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
+        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : undefined;
+        await watcherSleep(parkDelay === undefined ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => undefined);
+        if (!signal.aborted && runId === activeWatcherRunId && maybeParkRateLimitedWatcher()) {
+          setStatus(ctx, cfg);
+          break;
+        }
       }
     }
   } catch (error: any) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
-      runtime.watcherState = terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+      runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       setStatus(ctx, cfg);
     }
   } finally {
@@ -1794,7 +1899,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       watcherLoopRunning = false;
       if (signal.aborted) {
         runtime.watcherState = "disconnected";
-      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "disconnected") {
+      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "rate_limited" && runtime.watcherState !== "disconnected") {
         runtime.watcherState = "off";
       }
       setStatus(ctx, cfg);
@@ -1809,16 +1914,80 @@ function startWatcher(pi: any, ctx: any, cfg = resolveConfig(ctx.cwd || process.
   watcherAbort?.abort();
   watcherAbort = new AbortController();
   const runId = ++activeWatcherRunId;
-  void runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
+  const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
+  watcherTask = task;
+  void task.finally(() => {
+    if (watcherTask === task) watcherTask = undefined;
+  });
 }
 
 function stopWatcher(ctx?: any) {
   activeWatcherRunId += 1;
   watcherAbort?.abort();
   watcherAbort = undefined;
+  recoveryRestartAbort?.abort();
+  recoveryRestartAbort = undefined;
   runtime.watcherEnabled = false;
-  runtime.watcherState = "off";
+  runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : "off";
   if (ctx) setStatus(ctx);
+}
+
+async function quiesceWatcher(ctx: any) {
+  const task = watcherTask;
+  stopWatcher(ctx);
+  if (task) await task.catch(() => undefined);
+  watcherLoopRunning = false;
+}
+
+async function prepareRateLimitRecovery(ctx: any): Promise<boolean> {
+  if (!runtime.rateLimitParkedCause) return false;
+  await quiesceWatcher(ctx);
+  rateLimitRecoveryInProgress = true;
+  return true;
+}
+
+function abandonRateLimitRecovery(recovering: boolean) {
+  if (recovering) rateLimitRecoveryInProgress = false;
+}
+
+function scheduleRateLimitRecoveryWatcher(pi: any, ctx: any, cfg: ParleConfig) {
+  recoveryRestartAbort?.abort();
+  const delay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : 0;
+  if (delay === 0) {
+    startWatcher(pi, ctx, cfg);
+    return;
+  }
+  recoveryRestartAbort = new AbortController();
+  const controller = recoveryRestartAbort;
+  void watcherSleep(delay, controller.signal).then(() => {
+    if (recoveryRestartAbort === controller && runtime.rateLimitRecoveryHealthy) startWatcher(pi, ctx, cfg);
+  }).catch(() => undefined);
+}
+
+function completeRateLimitRecovery(pi: any, ctx: any, cfg: ParleConfig, operation: RateLimitRecoveryOperation, recovering: boolean) {
+  if (!recovering || !runtime.rateLimitParkedCause) return;
+  rateLimitRecoveryInProgress = false;
+  runtime.rateLimitRecoveryOperation = operation;
+  runtime.rateLimitRecoveryHealthy = true;
+  scheduleRateLimitRecoveryWatcher(pi, ctx, cfg);
+}
+
+function restoreRateLimitRecoveryWatcher(pi: any, ctx: any, cfg: ParleConfig, recovering: boolean, priorHealthy: boolean) {
+  abandonRateLimitRecovery(recovering);
+  if (recovering && priorHealthy && runtime.rateLimitParkedCause) scheduleRateLimitRecoveryWatcher(pi, ctx, cfg);
+}
+
+async function runRateLimitRecoveryOperation<T>(pi: any, ctx: any, cfg: ParleConfig, operation: RateLimitRecoveryOperation, fn: () => Promise<T>): Promise<T> {
+  const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
+  const recovering = await prepareRateLimitRecovery(ctx);
+  try {
+    const result = await fn();
+    completeRateLimitRecovery(pi, ctx, cfg, operation, recovering);
+    return result;
+  } catch (error) {
+    restoreRateLimitRecoveryWatcher(pi, ctx, cfg, recovering, priorHealthy);
+    throw error;
+  }
 }
 
 function formatResult(details: any) {
@@ -1869,6 +2038,18 @@ function statusDetails(ctx: any) {
       lastError: runtime.lastError,
       terminalCause: runtime.terminalCause,
       nextRetryAt: runtime.nextRetryAt,
+      rateLimitConsecutive429s: runtime.rateLimitConsecutive429s,
+      rateLimitFirst429At: runtime.rateLimitFirst429At,
+      rateLimitParkedCause: runtime.rateLimitParkedCause,
+      rateLimitRecoveryOperation: runtime.rateLimitRecoveryOperation,
+      rateLimitRecoveryHealthy: runtime.rateLimitRecoveryHealthy,
+      rateLimitRecovery: runtime.rateLimitParkedCause ? {
+        required: true,
+        allowedOperations: ["parle_session_alias", "parle_read", "parle_inbox"],
+        next: runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > wallNowMs()
+          ? `Wait until ${runtime.nextRetryAt}, then call parle_session_alias, parle_read, or parle_inbox for explicit recovery.`
+          : "Call parle_session_alias, parle_read, or parle_inbox for explicit recovery.",
+      } : undefined,
       watcherState: runtime.watcherState,
       watcherStarted: runtime.watcherStarted,
       watcherEnabled: runtime.watcherEnabled,
@@ -1906,7 +2087,7 @@ function hasConnectionFailure(): boolean {
 }
 
 function shouldShowFooterError(): boolean {
-  if (runtime.watcherState === "auth_expired" || runtime.watcherState === "session_expired" || runtime.watcherState === "disconnected") return true;
+  if (runtime.watcherState === "auth_expired" || runtime.watcherState === "session_expired" || runtime.watcherState === "rate_limited" || runtime.watcherState === "disconnected") return true;
   if (hasConnectionFailure()) return true;
   if (runtime.watcherState !== "backoff") return false;
   if ((runtime.consecutiveWatcherFailures || 0) >= FOOTER_FAILURE_THRESHOLD) return true;
@@ -1917,6 +2098,7 @@ function shouldShowFooterError(): boolean {
 function footerErrorLabel(): string {
   if (runtime.watcherState === "auth_expired" || runtime.lastHttpStatus === 401 || runtime.lastHttpStatus === 403) return "parle x check auth";
   if (runtime.watcherState === "session_expired") return "parle x session expired";
+  if (runtime.watcherState === "rate_limited") return "parle x rate limited";
   if (runtime.watcherState === "disconnected") return "parle x disconnected";
   if (runtime.lastHttpStatus === 400) {
     if (/version/i.test(runtime.lastError || "")) return "parle x check version";
@@ -1938,6 +2120,7 @@ export const __testing = {
   watcherRetryDelayMs,
   automaticGateClosed,
   recordAutomaticFailure,
+  maybeParkRateLimitedWatcher,
   startWatcher,
   handleWakeHint,
   queueResponsiveMessages,
@@ -1947,6 +2130,11 @@ export const __testing = {
   useSessionAlias,
   runtimeState() { return runtime; },
   patchRuntime(patch: Partial<RuntimeState>) { runtime = { ...runtime, ...patch }; },
+  setWatcherTiming(timing: { wallNowMs?: () => number; monotonicNowMs?: () => number; sleep?: typeof sleep }) {
+    if (timing.wallNowMs) wallNowMs = timing.wallNowMs;
+    if (timing.monotonicNowMs) monotonicNowMs = timing.monotonicNowMs;
+    if (timing.sleep) watcherSleep = timing.sleep;
+  },
   setStatus,
   resetRuntime() {
     runtime = { bootstrapped: false, watcherState: "off" };
@@ -1959,8 +2147,16 @@ export const __testing = {
     clearPendingResponsiveMessages();
     watcherAbort?.abort();
     watcherAbort = undefined;
+    watcherTask = undefined;
+    recoveryRestartAbort?.abort();
+    recoveryRestartAbort = undefined;
     watcherLoopRunning = false;
     activeWatcherRunId = 0;
+    rateLimitFirst429MonotonicMs = undefined;
+    rateLimitRecoveryInProgress = false;
+    wallNowMs = () => Date.now();
+    monotonicNowMs = () => performance.now();
+    watcherSleep = sleep;
     automaticFailureBinding = undefined;
   },
 };
@@ -2330,7 +2526,7 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleReadParams, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await withRebootstrap(ctx, cfg, async () => {
+      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "read", () => withRebootstrap(ctx, cfg, async () => {
         const since = typeof params.sinceSeq === "number" ? params.sinceSeq : (runtime.cursor || 0);
         const wait = typeof params.waitSeconds === "number" ? Math.max(0, Math.min(30, params.waitSeconds)) : 0;
         const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/projection?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, signal });
@@ -2352,7 +2548,7 @@ export default function parleExtension(pi: any) {
         if (params.advanceCursor !== false && params.sinceSeq === undefined) runtime.cursor = updateCursorFromMessages(runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : undefined);
         result.cursor = runtime.cursor;
         return result;
-      }, signal);
+      }, signal));
       setStatus(ctx, cfg);
       return formatResult(details);
     },
@@ -2371,7 +2567,7 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleInboxParams, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await withRebootstrap(ctx, cfg, async () => {
+      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "inbox", () => withRebootstrap(ctx, cfg, async () => {
         const since = typeof params.sinceSeq === "number" ? params.sinceSeq : (runtime.cursor || 0);
         const wait = typeof params.waitSeconds === "number" ? Math.max(0, Math.min(30, params.waitSeconds)) : 0;
         const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/inbound?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, signal });
@@ -2394,7 +2590,7 @@ export default function parleExtension(pi: any) {
         if (params.advanceCursor !== false && params.sinceSeq === undefined) runtime.cursor = updateCursorFromMessages(runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : undefined);
         result.cursor = runtime.cursor;
         return result;
-      }, signal);
+      }, signal));
       setStatus(ctx, cfg);
       return formatResult(details);
     },

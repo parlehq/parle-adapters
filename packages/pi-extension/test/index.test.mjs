@@ -353,6 +353,220 @@ test("watcher honors 429 Retry-After before a terminal 401 stops it", async () =
   assert.equal(__testing.runtimeState().terminalCause.action, "reauthorize");
 });
 
+test("watcher parks after five consecutive 429s and retains the server retry deadline", () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
+  const cfg = __testing.resolveConfig(cwd);
+  __testing.resetRuntime();
+  let wall = 1_000_000;
+  let monotonic = 10_000;
+  __testing.setWatcherTiming({ wallNowMs: () => wall, monotonicNowMs: () => monotonic });
+  const error = { status: 429, action: "backoff", retryable: true, retryAfterMs: 60_000, message: "wait" };
+
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    __testing.recordAutomaticFailure(error, cfg);
+    assert.equal(__testing.runtimeState().rateLimitConsecutive429s, attempt);
+    assert.equal(__testing.runtimeState().rateLimitParkedCause, undefined);
+    wall += 60_000;
+    monotonic += 60_000;
+  }
+  __testing.recordAutomaticFailure(error, cfg);
+
+  const state = __testing.runtimeState();
+  assert.equal(state.watcherState, "rate_limited");
+  assert.deepEqual(state.rateLimitParkedCause, {
+    reason: "count",
+    occurredAt: new Date(wall).toISOString(),
+    consecutive429s: 5,
+  });
+  assert.equal(state.nextRetryAt, new Date(wall + 60_000).toISOString());
+  assert.equal(__testing.automaticGateClosed(cfg), true);
+  __testing.resetRuntime();
+});
+
+test("elapsed 429 containment parks on a monotonic timer and joins the watcher before explicit read recovery", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
+  let wall = 2_000_000;
+  let monotonic = 20_000;
+  let heartbeatCalls = 0;
+  let sleepStarted = false;
+  let sleepAborted = false;
+  let recoveryReadObservedJoin = false;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-rate", session_credential: "parle_ses_rate", expires_at: "later", address: "@p.a.rate" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
+    if (u.includes("/projection")) {
+      if (heartbeatCalls > 0) recoveryReadObservedJoin = sleepAborted;
+      return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/heartbeat")) {
+      heartbeatCalls += 1;
+      if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "rate_limited", message: "wait", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 20 * 60 * 1000 } }), { status: 429 });
+      return new Response(null, { status: 204 });
+    }
+    if (u.endsWith("/v/agent/wake")) return new Response("");
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  __testing.setWatcherTiming({
+    wallNowMs: () => wall,
+    monotonicNowMs: () => monotonic,
+    sleep(ms, signal) {
+      if (ms === 250) return new Promise(() => {});
+      sleepStarted = true;
+      return new Promise((resolve, reject) => signal?.addEventListener("abort", () => {
+        sleepAborted = true;
+        reject(new Error("aborted"));
+      }, { once: true }));
+    },
+  });
+
+  await harness.call("parle_status");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sleepStarted, true);
+  const retainedRetryAt = __testing.runtimeState().nextRetryAt;
+  wall += 15 * 60 * 1000;
+  monotonic += 15 * 60 * 1000;
+  assert.equal(__testing.maybeParkRateLimitedWatcher(), true);
+  assert.equal(__testing.runtimeState().rateLimitParkedCause.reason, "elapsed");
+  assert.equal(__testing.runtimeState().nextRetryAt, retainedRetryAt);
+  wall += 5 * 60 * 1000;
+  monotonic += 5 * 60 * 1000;
+
+  await harness.call("parle_read");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(recoveryReadObservedJoin, true, "explicit recovery request begins only after the automatic watcher joins");
+  assert.equal(heartbeatCalls, 2);
+  assert.equal(__testing.runtimeState().rateLimitParkedCause, undefined);
+  assert.equal(__testing.runtimeState().rateLimitConsecutive429s, undefined);
+  assert.equal(__testing.runtimeState().nextRetryAt, undefined);
+  assert.equal(__testing.runtimeState().watcherBackoffCount, 0);
+  __testing.resetRuntime();
+});
+
+test("only the named explicit recovery paths establish a healthy parked-session recovery checkpoint", async () => {
+  for (const [tool, expectedOperation, params] of [
+    ["parle_read", "read", {}],
+    ["parle_inbox", "inbox", {}],
+    ["parle_session_alias", "session_alias", { alias: "recovered" }],
+  ]) {
+    const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_WATCH_ENABLED=0\n");
+    let sessionCreates = 0;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) {
+        sessionCreates += 1;
+        const body = init.body ? JSON.parse(init.body) : {};
+        return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "later", address: body.alias ? `@p.a.${body.alias}` : `@p.a.session-${sessionCreates}`, alias: body.alias }), { status: 201 });
+      }
+      if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
+      if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+      if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+      if (u.endsWith("/end")) return new Response(JSON.stringify({ ended: true }), { status: 200 });
+      throw new Error("unexpected " + u);
+    };
+    const harness = installHarness(cwd);
+    await harness.call("parle_status");
+    const cfg = __testing.resolveConfig(cwd);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      __testing.recordAutomaticFailure({ status: 429, action: "backoff", retryable: true, retryAfterMs: 1_000, message: "wait" }, cfg);
+    }
+    const parkedStatus = await harness.call("parle_status");
+    assert.deepEqual(parkedStatus.details.runtime.rateLimitRecovery.allowedOperations, ["parle_session_alias", "parle_read", "parle_inbox"]);
+    assert.match(parkedStatus.details.runtime.rateLimitRecovery.next, /explicit recovery/);
+
+    await harness.call(tool, params);
+
+    const state = __testing.runtimeState();
+    assert.equal(state.rateLimitParkedCause.reason, "count", `${tool} retains the parked cause until watcher success`);
+    assert.equal(state.rateLimitRecoveryOperation, expectedOperation);
+    assert.equal(state.rateLimitRecoveryHealthy, true);
+    assert.equal(state.rateLimitConsecutive429s, 5);
+    assert.equal(typeof state.nextRetryAt, "string");
+  }
+  __testing.resetRuntime();
+});
+
+test("non-recovery send rebootstrap cannot clear parked containment", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  let sessionCreates = 0;
+  let sends = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) {
+      sessionCreates += 1;
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "later", address: `@p.a.session-${sessionCreates}` }), { status: 201 });
+    }
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/messages")) {
+      sends += 1;
+      if (sends === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session" } }), { status: 401 });
+      return new Response(JSON.stringify({ seq: 9 }), { status: 200 });
+    }
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  const cfg = __testing.resolveConfig(cwd);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    __testing.recordAutomaticFailure({ status: 429, action: "backoff", retryable: true, retryAfterMs: 60_000, message: "wait" }, cfg);
+  }
+  const retryAt = __testing.runtimeState().nextRetryAt;
+
+  const result = await harness.call("parle_send", { body: "recovery invariant" });
+
+  assert.equal(result.details.seq, 9);
+  assert.equal(sessionCreates, 2);
+  assert.equal(sends, 2);
+  assert.equal(__testing.runtimeState().watcherState, "rate_limited");
+  assert.equal(__testing.runtimeState().rateLimitParkedCause.reason, "count");
+  assert.equal(__testing.runtimeState().rateLimitConsecutive429s, 5);
+  assert.equal(__testing.runtimeState().nextRetryAt, retryAt);
+});
+
+test("a failed second named recovery restores the pending watcher restart", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  let scheduled = 0;
+  let aborted = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-rate", session_credential: "parle_ses_rate", expires_at: "later", address: "@p.a.rate" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/inbound")) throw new TypeError("recovery read failed");
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  __testing.setWatcherTiming({
+    sleep(_ms, signal) {
+      scheduled += 1;
+      return new Promise((resolve, reject) => signal?.addEventListener("abort", () => {
+        aborted += 1;
+        reject(new Error("aborted"));
+      }, { once: true }));
+    },
+  });
+  const cfg = __testing.resolveConfig(cwd);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    __testing.recordAutomaticFailure({ status: 429, action: "backoff", retryable: true, retryAfterMs: 60_000, message: "wait" }, cfg);
+  }
+
+  await harness.call("parle_read");
+  assert.equal(scheduled, 1);
+  assert.equal(__testing.runtimeState().rateLimitRecoveryHealthy, true);
+  await assert.rejects(harness.call("parle_inbox"), /recovery read failed/);
+
+  assert.equal(aborted, 1);
+  assert.equal(scheduled, 2, "the failed second recovery restores the deferred automatic restart");
+  assert.equal(__testing.runtimeState().rateLimitParkedCause.reason, "count");
+  assert.equal(__testing.runtimeState().rateLimitRecoveryHealthy, true);
+  assert.equal(__testing.runtimeState().rateLimitRecoveryOperation, "read");
+  __testing.resetRuntime();
+});
+
 test("watcher stops on a terminal stop action", async () => {
   const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "participant_revoked", message: "removed", action: "stop", retryable: false, scope: "room_access", retry_after_ms: null } }), { status: 403 }));
 
@@ -405,7 +619,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.32" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.33" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1417,7 +1631,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.32");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.33");
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
     }
