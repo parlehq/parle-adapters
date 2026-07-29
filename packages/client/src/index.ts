@@ -15,7 +15,7 @@ export { CONFORMANCE_PARLE_VERSION, CONFORMANCE_TOKEN_CLASSES, type ConformanceT
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
-export const DEFAULT_WAKE_BASE = DEFAULT_API_BASE;
+export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
@@ -339,6 +339,9 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
     profile = loadProfile(profileSelector.value, catalogPath);
   }
   const profileValue = (name: string, value: string | undefined): ConfigValue | undefined => value === undefined ? undefined : { value, source: `profile:${profile!.name}` };
+  const wakeBaseExplicit = profile
+    ? profile.wakeBase !== undefined
+    : Boolean(firstConfigValue("PARLE_WAKE_BASE", sources).value);
   const cfg: ParleConfig = {
     enabledInput: firstConfigValue("PARLE_ENABLED", sources, "1"),
     apiBase: profile ? profileValue("PARLE_API_BASE", profile.apiBase ?? DEFAULT_API_BASE)! : firstConfigValue("PARLE_API_BASE", sources, DEFAULT_API_BASE),
@@ -356,6 +359,9 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
   };
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning) cfg.warnings.push(value.warning);
+  }
+  if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
+    cfg.warnings.push(`PARLE_WAKE_BASE explicitly matches PARLE_API_BASE (${cfg.apiBase.value}). Responsive delivery normally uses ${DEFAULT_WAKE_BASE}.`);
   }
   return cfg;
 }

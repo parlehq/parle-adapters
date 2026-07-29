@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.23 (2026-07-29)
+
+Bundled MCP refresh using `https://wake.parle.sh` as the default responsive-delivery endpoint, with a warning for suspicious explicit API-base reuse.
+
 ## 0.5.22 (2026-07-24)
 
 Bundled MCP refresh so inaccessible profile catalogs fail closed with actionable access errors instead of raw filesystem exceptions.

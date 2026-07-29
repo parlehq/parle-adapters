@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
 import {
+  DEFAULT_API_BASE,
   DEFAULT_VERSION,
+  DEFAULT_WAKE_BASE,
   ERROR_ACTIONS,
   ERROR_REGISTRY,
   ERROR_SCOPES,
@@ -95,6 +97,30 @@ test("client boundary scan ignores prose and detects forbidden import specifiers
     assert.equal(findings[0].specifier, "@modelcontextprotocol/sdk/server/mcp.js");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("wake configuration uses the dedicated default and warns on an explicit API-base override", () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-wake-config-"));
+  try {
+    assert.equal(DEFAULT_API_BASE, "https://api.parle.sh");
+    assert.equal(DEFAULT_WAKE_BASE, "https://wake.parle.sh");
+
+    const defaultCfg = resolveConfig(home, { HOME: home });
+    assert.equal(defaultCfg.wakeBase.value, DEFAULT_WAKE_BASE);
+    assert.equal(defaultCfg.wakeBase.source, "default");
+    assert.doesNotMatch(defaultCfg.warnings.join("\n"), /PARLE_WAKE_BASE explicitly matches/);
+
+    const overrideCfg = resolveConfig(home, {
+      HOME: home,
+      PARLE_API_BASE: DEFAULT_API_BASE,
+      PARLE_WAKE_BASE: DEFAULT_API_BASE,
+    });
+    assert.equal(overrideCfg.wakeBase.value, DEFAULT_API_BASE);
+    assert.equal(overrideCfg.wakeBase.source, "env");
+    assert.match(overrideCfg.warnings.join("\n"), /PARLE_WAKE_BASE explicitly matches PARLE_API_BASE/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

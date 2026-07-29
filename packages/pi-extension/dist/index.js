@@ -1946,6 +1946,7 @@ var ParleAccountClient = class {
 
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
+var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var READ_LIMIT_BYTES = 256 * 1024;
 async function performProfileSwitch(plan) {
@@ -2034,7 +2035,7 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.31";
+var PI_EXTENSION_VERSION = "0.1.32";
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -2159,6 +2160,7 @@ function resolveConfig(cwd, profileOverride = activeProfileOverride) {
     key,
     secret
   });
+  const wakeBaseExplicit = profile ? profile.wakeBase !== void 0 : Boolean(firstConfigValue(sourceCandidates("PARLE_WAKE_BASE"))?.value);
   const cfg = {
     enabled,
     enabledInput,
@@ -2174,13 +2176,16 @@ function resolveConfig(cwd, profileOverride = activeProfileOverride) {
     sessionCookie: firstConfigValue(sourceCandidates("PARLE_SESSION_COOKIE", true)) || (enabled ? makeValue(readSessionCookieFile(sessionCookieFilePath(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true) : void 0) || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
     sessionAlias: pick("PARLE_SESSION_ALIAS", void 0),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
-    wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_API_BASE3) : pick("PARLE_WAKE_BASE", void 0),
+    wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_WAKE_BASE) : pick("PARLE_WAKE_BASE", DEFAULT_WAKE_BASE),
     profile: profileSelector,
     profilesPath: { value: catalogPath, source: catalogOverride ? catalogOverride.source : "default", key: "PARLE_PROFILES_PATH" },
     warnings
   };
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.agentId, cfg.principalHandle, cfg.agentHandle, cfg.sessionCookie, cfg.sessionAlias, cfg.watchEnabled, cfg.profile]) {
     if (value?.warning) cfg.warnings.push(value.warning);
+  }
+  if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
+    cfg.warnings.push(`PARLE_WAKE_BASE explicitly matches PARLE_API_BASE (${cfg.apiBase.value}). Responsive delivery normally uses ${DEFAULT_WAKE_BASE}.`);
   }
   const diskToken = projectEnv.PARLE_ROOM_AGENT_TOKEN;
   if (!profile && cfg.agentToken?.source === "env" && diskToken && diskToken !== cfg.agentToken?.value) {

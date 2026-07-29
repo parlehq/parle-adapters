@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.31";
+const PI_EXTENSION_VERSION = "0.1.32";
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -333,6 +333,9 @@ function resolveConfig(cwd: string, profileOverride = activeProfileOverride): Pa
     secret,
   });
 
+  const wakeBaseExplicit = profile
+    ? profile.wakeBase !== undefined
+    : Boolean(firstConfigValue(sourceCandidates("PARLE_WAKE_BASE"))?.value);
   const cfg: ParleConfig = {
     enabled,
     enabledInput,
@@ -350,13 +353,16 @@ function resolveConfig(cwd: string, profileOverride = activeProfileOverride): Pa
       || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
     sessionAlias: pick("PARLE_SESSION_ALIAS", undefined),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
-    wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_API_BASE) : pick("PARLE_WAKE_BASE", undefined),
+    wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_WAKE_BASE) : pick("PARLE_WAKE_BASE", DEFAULT_WAKE_BASE),
     profile: profileSelector,
     profilesPath: { value: catalogPath, source: catalogOverride ? catalogOverride.source : "default", key: "PARLE_PROFILES_PATH" },
     warnings,
   };
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.agentId, cfg.principalHandle, cfg.agentHandle, cfg.sessionCookie, cfg.sessionAlias, cfg.watchEnabled, cfg.profile]) {
     if (value?.warning) cfg.warnings.push(value.warning);
+  }
+  if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
+    cfg.warnings.push(`PARLE_WAKE_BASE explicitly matches PARLE_API_BASE (${cfg.apiBase.value}). Responsive delivery normally uses ${DEFAULT_WAKE_BASE}.`);
   }
   // Process env is a startup snapshot; project .env is regenerated on rotation.
   // When they disagree on the token, the snapshot is almost certainly stale.

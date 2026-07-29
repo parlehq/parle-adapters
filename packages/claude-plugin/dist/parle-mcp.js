@@ -33073,7 +33073,7 @@ function compactStatusCardFromStatus(status) {
 
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
-var DEFAULT_WAKE_BASE = DEFAULT_API_BASE3;
+var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
@@ -33196,6 +33196,7 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     profile = loadProfile(profileSelector.value, catalogPath);
   }
   const profileValue = (name, value) => value === void 0 ? void 0 : { value, source: `profile:${profile.name}` };
+  const wakeBaseExplicit = profile ? profile.wakeBase !== void 0 : Boolean(firstConfigValue("PARLE_WAKE_BASE", sources).value);
   const cfg = {
     enabledInput: firstConfigValue("PARLE_ENABLED", sources, "1"),
     apiBase: profile ? profileValue("PARLE_API_BASE", profile.apiBase ?? DEFAULT_API_BASE3) : firstConfigValue("PARLE_API_BASE", sources, DEFAULT_API_BASE3),
@@ -33214,6 +33215,9 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning)
       cfg.warnings.push(value.warning);
+  }
+  if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
+    cfg.warnings.push(`PARLE_WAKE_BASE explicitly matches PARLE_API_BASE (${cfg.apiBase.value}). Responsive delivery normally uses ${DEFAULT_WAKE_BASE}.`);
   }
   return cfg;
 }
@@ -34466,7 +34470,7 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.18" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.19" });
   server.registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -34612,7 +34616,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
 async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.18" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.19" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");

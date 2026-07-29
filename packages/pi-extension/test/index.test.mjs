@@ -67,6 +67,14 @@ test("status reads room and token from project .env and redacts token", async ()
   assert.equal(status.details.agentToken.value, "<redacted>");
 });
 
+test("status warns when an explicit wake base matches the API base", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WAKE_BASE=https://api.parle.sh\nPARLE_WATCH_ENABLED=0\n");
+  globalThis.fetch = async () => { throw new Error("offline test"); };
+  const status = await installHarness(cwd).call("parle_status");
+  assert.equal(status.details.wakeBase.value, "https://api.parle.sh");
+  assert.match(status.details.warnings.join("\n"), /PARLE_WAKE_BASE explicitly matches PARLE_API_BASE/);
+});
+
 test("status ignores persisted PARLE_VERSION and warns", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_VERSION=from-dotenv\nPARLE_WATCH_ENABLED=0\n");
   mkdirSync(join(cwd, ".parle"));
@@ -92,7 +100,7 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(status.details.roomId.source, "profile:work");
   assert.equal(status.details.agentToken.value, "<redacted>");
   assert.equal(status.details.apiBase.value, "https://api.parle.sh");
-  assert.equal(status.details.wakeBase.value, "https://api.parle.sh");
+  assert.equal(status.details.wakeBase.value, "https://wake.parle.sh");
 
   writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=work\nPARLE_ROOM_ID=stale\n");
   await assert.rejects(installHarness(cwd).call("parle_status"), /PARLE_PROFILE from project_env conflicts with direct configuration/);
@@ -397,7 +405,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.31" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.32" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1409,7 +1417,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.31");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.32");
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
     }

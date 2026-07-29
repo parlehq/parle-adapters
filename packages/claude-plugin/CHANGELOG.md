@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.31 (2026-07-29)
+
+Use `https://wake.parle.sh` as the default responsive-delivery endpoint and warn when an explicit wake base suspiciously matches the API base.
+
 ## 0.5.30 (2026-07-24)
 
 Refresh the shared MCP artifact so inaccessible profile catalogs fail closed with actionable access errors instead of raw filesystem exceptions.
