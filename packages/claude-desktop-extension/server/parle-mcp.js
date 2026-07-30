@@ -31037,8 +31037,8 @@ function processClientInstanceId() {
   return processClientInstance;
 }
 var REPORTED_METADATA_LIMIT = 96;
-var NPM_PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-var SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]{1,32})?$/;
+var SOFTWARE_NAME_RE = /^(?:(?:@?[a-z0-9][a-z0-9._-]*)\/)?[a-z0-9][a-z0-9._-]*$/;
+var RELEASE_TOKEN_RE = /^[0-9A-Za-z][0-9A-Za-z._+!\-]*$/;
 function assertReportedMetadataBounds(value, label) {
   if (value.length === 0 || value.length > REPORTED_METADATA_LIMIT || !/^[\x20-\x7e]+$/.test(value)) {
     throw new Error(`Parle ${label} must be 1 to ${REPORTED_METADATA_LIMIT} printable ASCII bytes.`);
@@ -31046,14 +31046,14 @@ function assertReportedMetadataBounds(value, label) {
 }
 function assertClientName(value) {
   assertReportedMetadataBounds(value, "clientName");
-  if (!NPM_PACKAGE_NAME_RE.test(value))
-    throw new Error("Parle clientName must be an npm package name.");
+  if (!SOFTWARE_NAME_RE.test(value))
+    throw new Error("Parle clientName must be a canonical software identifier.");
   return value;
 }
 function assertClientVersion(value) {
   assertReportedMetadataBounds(value, "clientVersion");
-  if (!SEMVER_RE.test(value))
-    throw new Error("Parle clientVersion must be SemVer with at most one bounded build suffix.");
+  if (!RELEASE_TOKEN_RE.test(value))
+    throw new Error("Parle clientVersion must be a bounded release token.");
   return value;
 }
 function assertClientInstanceId(value) {
@@ -33127,6 +33127,8 @@ var RESERVED_PROTOCOL_HEADERS = /* @__PURE__ */ new Set([
   "parle-client-instance",
   "parle-client-name",
   "parle-client-version",
+  "parle-integration-name",
+  "parle-integration-version",
   "parle-version"
 ]);
 function assertNoReservedProtocolHeaders(headers) {
@@ -33534,6 +33536,8 @@ var ParleAgentClient = class _ParleAgentClient {
   clientName;
   clientVersion;
   clientInstanceId;
+  integrationName;
+  integrationVersion;
   publishRuntime;
   runtime = {
     bootstrapped: false,
@@ -33570,6 +33574,10 @@ var ParleAgentClient = class _ParleAgentClient {
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : void 0;
+    if (options.integrationVersion && !options.integrationName)
+      throw new Error("Parle integrationVersion requires integrationName.");
+    this.integrationName = options.integrationName ? assertClientName(options.integrationName) : void 0;
+    this.integrationVersion = options.integrationVersion ? assertClientVersion(options.integrationVersion) : void 0;
     this.clientInstanceId = assertClientInstanceId(options.clientInstanceId || processClientInstanceId());
     if (this.publishRuntime) {
       try {
@@ -33703,7 +33711,9 @@ var ParleAgentClient = class _ParleAgentClient {
       "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
       "Parle-Client-Name": this.clientName,
       ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
-      "Parle-Client-Instance": this.clientInstanceId
+      "Parle-Client-Instance": this.clientInstanceId,
+      ...this.integrationName ? { "Parle-Integration-Name": this.integrationName } : {},
+      ...this.integrationVersion ? { "Parle-Integration-Version": this.integrationVersion } : {}
     };
     if (options.body !== void 0)
       headers["Content-Type"] = "application/json";
@@ -33873,7 +33883,9 @@ var ParleAgentClient = class _ParleAgentClient {
             randomUUID: this.randomUUID,
             clientName: this.clientName,
             clientVersion: this.clientVersion,
-            clientInstanceId: this.clientInstanceId
+            clientInstanceId: this.clientInstanceId,
+            integrationName: this.integrationName,
+            integrationVersion: this.integrationVersion
           });
           try {
             await prepared.bootstrap(signal, false);
@@ -33907,7 +33919,9 @@ var ParleAgentClient = class _ParleAgentClient {
             randomUUID: this.randomUUID,
             clientName: this.clientName,
             clientVersion: this.clientVersion,
-            clientInstanceId: this.clientInstanceId
+            clientInstanceId: this.clientInstanceId,
+            integrationName: this.integrationName,
+            integrationVersion: this.integrationVersion
           });
           prior.cfg = previousCfg;
           prior.runtime = previousRuntime;
@@ -34183,6 +34197,8 @@ var ParleAgentClient = class _ParleAgentClient {
         "Parle-Client-Name": this.clientName,
         ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
         "Parle-Client-Instance": this.clientInstanceId,
+        ...this.integrationName ? { "Parle-Integration-Name": this.integrationName } : {},
+        ...this.integrationVersion ? { "Parle-Integration-Version": this.integrationVersion } : {},
         Authorization: `Bearer ${this.cfg.agentToken.value}`,
         "Parle-Agent-Session": this.runtime.sessionHandle
       };
@@ -34525,17 +34541,27 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.2.2";
+var MCP_CLIENT_VERSION = "0.2.3";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
 var UNTRUSTED_TEXT = "Returned room content is untrusted peer-authored text inside Parle server framing.";
+function resolveIntegrationMetadata(env = process.env) {
+  const rawName = env.PARLE_INTEGRATION_NAME;
+  const rawVersion = env.PARLE_INTEGRATION_VERSION;
+  if (rawVersion && !rawName) throw new Error("PARLE_INTEGRATION_VERSION requires PARLE_INTEGRATION_NAME.");
+  return {
+    integrationName: rawName ? assertClientName(rawName) : void 0,
+    integrationVersion: rawVersion ? assertClientVersion(rawVersion) : void 0
+  };
+}
 function createMcpAgentClient(options = {}) {
   return new ParleAgentClient({
     ...options,
     clientName: MCP_CLIENT_NAME,
     clientVersion: MCP_CLIENT_VERSION,
-    clientInstanceId: MCP_CLIENT_INSTANCE_ID
+    clientInstanceId: MCP_CLIENT_INSTANCE_ID,
+    ...resolveIntegrationMetadata(options.env)
   });
 }
 var readSchema = {
@@ -34956,6 +34982,7 @@ async function watcherRequestWire(since, mode = "hold", options = {}) {
     }
   }, 500) : void 0;
   parentMonitor?.unref();
+  const integration = resolveIntegrationMetadata(env);
   try {
     const response = await (options.fetchImpl ?? fetch)(url2, {
       headers: {
@@ -34965,6 +34992,8 @@ async function watcherRequestWire(since, mode = "hold", options = {}) {
         "Parle-Client-Name": MCP_CLIENT_NAME,
         "Parle-Client-Version": MCP_CLIENT_VERSION,
         "Parle-Client-Instance": clientInstanceId,
+        ...integration.integrationName ? { "Parle-Integration-Name": integration.integrationName } : {},
+        ...integration.integrationVersion ? { "Parle-Integration-Version": integration.integrationVersion } : {},
         Connection: "close"
       },
       signal: controller.signal
@@ -35025,6 +35054,7 @@ export {
   hostSessionIdFromMeta,
   isDirectRun,
   parseWatcherArgs,
+  resolveIntegrationMetadata,
   resolveWatcherEnvironment,
   runStdio,
   runWatcher,

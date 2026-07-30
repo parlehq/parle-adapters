@@ -30,6 +30,8 @@ const RESERVED_PROTOCOL_HEADERS = new Set([
   "parle-client-instance",
   "parle-client-name",
   "parle-client-version",
+  "parle-integration-name",
+  "parle-integration-version",
   "parle-version",
 ]);
 
@@ -118,6 +120,8 @@ export type ClientOptions = {
   randomUUID?: () => string;
   clientName?: string;
   clientVersion?: string;
+  integrationName?: string;
+  integrationVersion?: string;
   // Defaults to the package process singleton. Adapter-owned scratch clients
   // must pass their owner's value so rebootstrap and profile switches retain it.
   clientInstanceId?: string;
@@ -673,6 +677,8 @@ export class ParleAgentClient {
   readonly clientName: string;
   readonly clientVersion?: string;
   readonly clientInstanceId: string;
+  readonly integrationName?: string;
+  readonly integrationVersion?: string;
   readonly publishRuntime?: { adapterName: string; adapterVersion?: string };
   runtime: RuntimeState = {
     bootstrapped: false,
@@ -710,6 +716,9 @@ export class ParleAgentClient {
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : undefined;
+    if (options.integrationVersion && !options.integrationName) throw new Error("Parle integrationVersion requires integrationName.");
+    this.integrationName = options.integrationName ? assertClientName(options.integrationName) : undefined;
+    this.integrationVersion = options.integrationVersion ? assertClientVersion(options.integrationVersion) : undefined;
     this.clientInstanceId = assertClientInstanceId(options.clientInstanceId || processClientInstanceId());
     if (this.publishRuntime) {
       try {
@@ -850,6 +859,8 @@ export class ParleAgentClient {
       "Parle-Client-Name": this.clientName,
       ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
       "Parle-Client-Instance": this.clientInstanceId,
+      ...(this.integrationName ? { "Parle-Integration-Name": this.integrationName } : {}),
+      ...(this.integrationVersion ? { "Parle-Integration-Version": this.integrationVersion } : {}),
     };
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
     if (options.authMode === "human_session") throw new ParleApiError("human_session auth is not implemented in @parlehq/agent-client yet", { code: "not_implemented" });
@@ -1025,6 +1036,8 @@ export class ParleAgentClient {
             clientName: this.clientName,
             clientVersion: this.clientVersion,
             clientInstanceId: this.clientInstanceId,
+            integrationName: this.integrationName,
+            integrationVersion: this.integrationVersion,
           });
           try {
             await prepared.bootstrap(signal, false);
@@ -1060,6 +1073,8 @@ export class ParleAgentClient {
             clientName: this.clientName,
             clientVersion: this.clientVersion,
             clientInstanceId: this.clientInstanceId,
+            integrationName: this.integrationName,
+            integrationVersion: this.integrationVersion,
           });
           prior.cfg = previousCfg;
           prior.runtime = previousRuntime;
@@ -1350,6 +1365,8 @@ export class ParleAgentClient {
         "Parle-Client-Name": this.clientName,
         ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
         "Parle-Client-Instance": this.clientInstanceId,
+        ...(this.integrationName ? { "Parle-Integration-Name": this.integrationName } : {}),
+        ...(this.integrationVersion ? { "Parle-Integration-Version": this.integrationVersion } : {}),
         Authorization: `Bearer ${this.cfg.agentToken!.value}`,
         "Parle-Agent-Session": this.runtime.sessionHandle,
       };

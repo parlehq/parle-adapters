@@ -3,6 +3,10 @@
     "parle": {
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js"],
+      "env": {
+        "PARLE_INTEGRATION_NAME": "@parlehq/claude-plugin",
+        "PARLE_INTEGRATION_VERSION": "0.5.39"
+      },
       "alwaysLoad": true
     }
   }

@@ -12,8 +12,8 @@ export function processClientInstanceId(): string {
 }
 
 const REPORTED_METADATA_LIMIT = 96;
-const NPM_PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]{1,32})?$/;
+const SOFTWARE_NAME_RE = /^(?:(?:@?[a-z0-9][a-z0-9._-]*)\/)?[a-z0-9][a-z0-9._-]*$/;
+const RELEASE_TOKEN_RE = /^[0-9A-Za-z][0-9A-Za-z._+!\-]*$/;
 
 function assertReportedMetadataBounds(value: string, label: string): void {
   if (value.length === 0 || value.length > REPORTED_METADATA_LIMIT || !/^[\x20-\x7e]+$/.test(value)) {
@@ -23,13 +23,13 @@ function assertReportedMetadataBounds(value: string, label: string): void {
 
 export function assertClientName(value: string): string {
   assertReportedMetadataBounds(value, "clientName");
-  if (!NPM_PACKAGE_NAME_RE.test(value)) throw new Error("Parle clientName must be an npm package name.");
+  if (!SOFTWARE_NAME_RE.test(value)) throw new Error("Parle clientName must be a canonical software identifier.");
   return value;
 }
 
 export function assertClientVersion(value: string): string {
   assertReportedMetadataBounds(value, "clientVersion");
-  if (!SEMVER_RE.test(value)) throw new Error("Parle clientVersion must be SemVer with at most one bounded build suffix.");
+  if (!RELEASE_TOKEN_RE.test(value)) throw new Error("Parle clientVersion must be a bounded release token.");
   return value;
 }
 

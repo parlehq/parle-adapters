@@ -15,6 +15,7 @@ const server = resolve(here, "../server/parle-mcp.js");
 const mod = resolve(skill, "mods/parle-status.ts");
 const modManifest = resolve(skill, "package.json");
 const userSettings = resolve(homedir(), ".commandcode/settings.json");
+const integrationName = "@parlehq/command-code-adapter";
 
 function readJson(path) {
   if (!existsSync(path)) return {};
@@ -52,6 +53,8 @@ function versionAtLeast(actual, minimum) {
 for (const path of [hook, server, mod, modManifest]) {
   if (!existsSync(path)) throw new Error(`The installed Parle skill is incomplete: missing ${path}`);
 }
+const integrationVersion = readJson(modManifest).version;
+if (typeof integrationVersion !== "string" || !integrationVersion) throw new Error("The installed Parle skill has no integration version.");
 
 const versionResult = spawnSync("cmd", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const installedVersion = versionTuple(`${versionResult.stdout || ""} ${versionResult.stderr || ""}`);
@@ -79,6 +82,8 @@ const mcpResult = spawnSync("cmd", [
   "--transport", "stdio",
   "--scope", "user",
   "--env", "PARLE_RESPONSIVE_DELIVERY=hook-bridge",
+  "--env", `PARLE_INTEGRATION_NAME=${integrationName}`,
+  "--env", `PARLE_INTEGRATION_VERSION=${integrationVersion}`,
   "parle", "--", "node", server,
 ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 if (mcpResult.error || mcpResult.status !== 0) {

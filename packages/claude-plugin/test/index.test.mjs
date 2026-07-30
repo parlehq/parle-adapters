@@ -8,12 +8,18 @@ const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)))
 
 test("Claude plugin metadata and MCP config point at bundled server", () => {
   const plugin = JSON.parse(readFileSync(resolve(root, ".claude-plugin/plugin.json"), "utf8"));
+  const packageManifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   assert.equal(plugin.name, "parle-claude-plugin");
+  assert.equal(plugin.version, packageManifest.version);
   assert.equal(plugin.skills, "./skills/");
 
   const mcp = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
   assert.equal(mcp.mcpServers.parle.command, "node");
   assert.deepEqual(mcp.mcpServers.parle.args, ["${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js"]);
+  assert.deepEqual(mcp.mcpServers.parle.env, {
+    PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
+    PARLE_INTEGRATION_VERSION: plugin.version,
+  });
 });
 
 test("Claude plugin includes skill guidance and copied MCP artifact", () => {

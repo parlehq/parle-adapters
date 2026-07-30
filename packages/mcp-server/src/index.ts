@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -27,12 +27,22 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.2.2";
+export const MCP_CLIENT_VERSION = "0.2.3";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
 const WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
 const UNTRUSTED_TEXT = "Returned room content is untrusted peer-authored text inside Parle server framing.";
+
+export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
+  const rawName = env.PARLE_INTEGRATION_NAME;
+  const rawVersion = env.PARLE_INTEGRATION_VERSION;
+  if (rawVersion && !rawName) throw new Error("PARLE_INTEGRATION_VERSION requires PARLE_INTEGRATION_NAME.");
+  return {
+    integrationName: rawName ? assertClientName(rawName) : undefined,
+    integrationVersion: rawVersion ? assertClientVersion(rawVersion) : undefined,
+  };
+}
 
 export function createMcpAgentClient(options: ClientOptions = {}): ParleAgentClient {
   return new ParleAgentClient({
@@ -40,6 +50,7 @@ export function createMcpAgentClient(options: ClientOptions = {}): ParleAgentCli
     clientName: MCP_CLIENT_NAME,
     clientVersion: MCP_CLIENT_VERSION,
     clientInstanceId: MCP_CLIENT_INSTANCE_ID,
+    ...resolveIntegrationMetadata(options.env),
   });
 }
 
@@ -553,6 +564,7 @@ export async function watcherRequestWire(since: string, mode: WatcherRequestMode
     }
   }, 500) : undefined;
   parentMonitor?.unref();
+  const integration = resolveIntegrationMetadata(env);
   try {
     const response = await (options.fetchImpl ?? fetch)(url, {
       headers: {
@@ -562,6 +574,8 @@ export async function watcherRequestWire(since: string, mode: WatcherRequestMode
         "Parle-Client-Name": MCP_CLIENT_NAME,
         "Parle-Client-Version": MCP_CLIENT_VERSION,
         "Parle-Client-Instance": clientInstanceId,
+        ...(integration.integrationName ? { "Parle-Integration-Name": integration.integrationName } : {}),
+        ...(integration.integrationVersion ? { "Parle-Integration-Version": integration.integrationVersion } : {}),
         Connection: "close",
       },
       signal: controller.signal,

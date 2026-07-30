@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.31 (2026-07-29)
+
+Report the Claude Desktop extension name and release separately from the shared MCP runtime for bounded operational attribution.
+
 ## 0.5.30 (2026-07-29)
 
 Tell agents reading the manual inbox to reply with the exact server-authored `author.address` so replies wake the intended peer.

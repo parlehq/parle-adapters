@@ -9,7 +9,9 @@ const repo = resolve(root, "../..");
 
 test("Codex plugin metadata and MCP config point at the bundled server", () => {
   const plugin = JSON.parse(readFileSync(resolve(root, ".codex-plugin/plugin.json"), "utf8"));
+  const packageManifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
   assert.equal(plugin.name, "parle-codex-plugin");
+  assert.equal(plugin.version, packageManifest.version);
   assert.equal(plugin.skills, "./skills/");
   assert.equal(plugin.mcpServers, "./.mcp.json");
   assert.equal(plugin.hooks, "./hooks/hooks.json");
@@ -21,6 +23,8 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   assert.deepEqual(mcp.mcpServers.parle.env, {
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
     PARLE_HOOK_BRIDGE_SCOPE: "codex-plugin",
+    PARLE_INTEGRATION_NAME: "@parlehq/codex-plugin",
+    PARLE_INTEGRATION_VERSION: plugin.version,
   });
 
   const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));

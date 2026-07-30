@@ -384,6 +384,8 @@ test("requestJson sends one process client identity and rejects reserved caller 
   const options = {
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     publishRuntime: { adapterName: "@parlehq/test-adapter", adapterVersion: "1.2.3" },
+    integrationName: "parlehq/test-integration",
+    integrationVersion: "1!2.0rc1+build.7",
     fetch: async (_url, init = {}) => {
       observed.push(init.headers);
       return json({ ok: true });
@@ -398,14 +400,21 @@ test("requestJson sends one process client identity and rejects reserved caller 
   assert.equal(observed[0]["Parle-Client-Name"], "@parlehq/test-adapter");
   assert.equal(observed[0]["Parle-Client-Version"], "1.2.3");
   assert.equal(observed[0]["Parle-Client-Instance"], processClientInstanceId());
+  assert.equal(observed[0]["Parle-Integration-Name"], "parlehq/test-integration");
+  assert.equal(observed[0]["Parle-Integration-Version"], "1!2.0rc1+build.7");
   assert.equal(observed[1]["Parle-Client-Instance"], processClientInstanceId());
   await assert.rejects(
     () => first.requestJson("/v/test", { headers: { "pArLe-ClIeNt-InStAnCe": "00000000-0000-4000-8000-000000000000" } }),
     /reserved by the Parle client/,
   );
+  await assert.rejects(
+    () => first.requestJson("/v/test", { headers: { "pArLe-InTeGrAtIoN-NaMe": "spoofed" } }),
+    /reserved by the Parle client/,
+  );
   assert.equal(observed.length, 2);
-  assert.throws(() => new ParleAgentClient({ ...options, clientName: "Not A Package" }), /npm package name/);
-  assert.throws(() => new ParleAgentClient({ ...options, clientVersion: "release" }), /SemVer/);
+  assert.throws(() => new ParleAgentClient({ ...options, clientName: "Not A Package" }), /canonical software identifier/);
+  assert.throws(() => new ParleAgentClient({ ...options, clientVersion: "bad version" }), /bounded release token/);
+  assert.throws(() => new ParleAgentClient({ ...options, integrationName: undefined, integrationVersion: "1.0.0" }), /requires integrationName/);
 });
 
 test("unsupported version errors include source, default, and server versions", async () => {

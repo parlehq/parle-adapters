@@ -59,6 +59,8 @@ const watcherEnv = {
   PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
   PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
   PARLE_VERSION: "2026-07-07",
+  PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
+  PARLE_INTEGRATION_VERSION: "0.5.39",
 };
 
 test("watch request helper retains the owner process identity without exposing credentials", async () => {
@@ -75,6 +77,8 @@ test("watch request helper retains the owner process identity without exposing c
   assert.equal(requestedHeaders["Parle-Client-Name"], MCP_CLIENT_NAME);
   assert.equal(requestedHeaders["Parle-Client-Version"], MCP_CLIENT_VERSION);
   assert.equal(requestedHeaders["Parle-Client-Instance"], MCP_CLIENT_INSTANCE_ID);
+  assert.equal(requestedHeaders["Parle-Integration-Name"], "@parlehq/claude-plugin");
+  assert.equal(requestedHeaders["Parle-Integration-Version"], "0.5.39");
   assert.equal(wire.includes(watcherEnv.PARLE_ROOM_AGENT_TOKEN), false);
   assert.equal(wire.includes(watcherEnv.PARLE_WATCH_AGENT_SESSION), false);
 });
@@ -135,8 +139,14 @@ test("MCP client factory keeps one process identity through dedicated session bo
     if (String(url).endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "part-watch" }), { status: 201 });
     return new Response(JSON.stringify({ watermark: 0, messages: [] }));
   };
-  const first = createMcpAgentClient({ env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "token-1" }, fetch: fetchImpl });
-  const second = createMcpAgentClient({ env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "token-1" }, fetch: fetchImpl });
+  const integrationEnv = {
+    PARLE_ROOM_ID: "room-1",
+    PARLE_ROOM_AGENT_TOKEN: "token-1",
+    PARLE_INTEGRATION_NAME: "@parlehq/codex-plugin",
+    PARLE_INTEGRATION_VERSION: "0.2.3",
+  };
+  const first = createMcpAgentClient({ env: integrationEnv, fetch: fetchImpl });
+  const second = createMcpAgentClient({ env: integrationEnv, fetch: fetchImpl });
   await first.bootstrap();
   await second.requestJson("/v/probe");
   assert.equal(first.clientInstanceId, MCP_CLIENT_INSTANCE_ID);
@@ -145,7 +155,13 @@ test("MCP client factory keeps one process identity through dedicated session bo
     assert.equal(request.headers["Parle-Client-Name"], MCP_CLIENT_NAME);
     assert.equal(request.headers["Parle-Client-Version"], MCP_CLIENT_VERSION);
     assert.equal(request.headers["Parle-Client-Instance"], MCP_CLIENT_INSTANCE_ID);
+    assert.equal(request.headers["Parle-Integration-Name"], "@parlehq/codex-plugin");
+    assert.equal(request.headers["Parle-Integration-Version"], "0.2.3");
   }
+  assert.throws(
+    () => createMcpAgentClient({ env: { PARLE_INTEGRATION_VERSION: "1.0.0" } }),
+    /requires PARLE_INTEGRATION_NAME/,
+  );
 });
 
 test("account-tool errors preserve actionable invitation denial fields", async () => {

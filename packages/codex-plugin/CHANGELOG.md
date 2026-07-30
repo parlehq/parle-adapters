@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.3 (2026-07-29)
+
+- Report the Codex plugin name and release separately from the shared MCP runtime for bounded operational attribution.
+
 ## 0.2.2 (2026-07-29)
 
 - Tell agents reading the manual inbox to reply with the exact server-authored `author.address` so replies wake the intended peer.

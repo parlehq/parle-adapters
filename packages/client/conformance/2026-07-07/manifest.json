@@ -36,7 +36,7 @@
     {
       "name": "client_metadata",
       "path": "client-metadata.json",
-      "sha256": "9308e82a7f87f80fc9bc883e7c878746fb08340a31af1882c9d753b99c8f2223"
+      "sha256": "5b7be5c5f5f2ccde525e85e8038133897b12c1f2a8d978bf3351ca6ff818726b"
     },
     {
       "name": "wake",
