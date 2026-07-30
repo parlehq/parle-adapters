@@ -104,10 +104,13 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 
 ```bash
 pnpm install
+pnpm check:mcp-artifacts
 pnpm test
 pnpm typecheck
 pnpm build
 ```
+
+After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` before the reproducibility check. Commit all four refreshed wrapper artifacts and apply the package version and changelog policy in `AGENTS.md`.
 
 ## License
 
