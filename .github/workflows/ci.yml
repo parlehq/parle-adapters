@@ -44,3 +44,11 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Upload Claude Desktop MCPB
+        uses: actions/upload-artifact@v4
+        with:
+          name: parle-claude-desktop-extension
+          path: packages/claude-desktop-extension/out/parle-claude-desktop-extension.mcpb
+          if-no-files-found: error
+          retention-days: 14
