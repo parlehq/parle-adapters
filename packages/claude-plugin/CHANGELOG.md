@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.33 (2026-07-29)
+
+Render connected Claude status with honest `Watcher unknown` evidence and the safe next action `arm or verify the watcher`. Status cards never infer a running watcher from the MCP session or remembered task state.
+
 ## 0.5.32 (2026-07-29)
 
 Classify helper-owned held-poll deadlines separately from transport and malformed-response failures. After three consecutive helper deadlines, probe API health once with `wait=0` before resuming or entering the existing bounded failure path.

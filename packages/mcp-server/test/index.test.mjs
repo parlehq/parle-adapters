@@ -340,9 +340,17 @@ test("parle_status auto-connects a configured client and reports the attempt", a
     assert.equal(first.structuredContent.runtime.bootstrapState, "ready");
     assert.equal(first.structuredContent.runtime.sessionAddress, "@p.a.s1");
     assert.match(first.structuredContent.compactText, /Session Address:\n@p\.a\.s1/);
+    assert.match(first.structuredContent.compactText, /Watcher       unknown/);
+    assert.match(first.structuredContent.compactText, /Next: arm or verify the watcher\./);
+    assert.deepEqual(first.structuredContent.watcher, {
+      state: "unknown",
+      nextActionKey: "arm-or-verify-watcher",
+      nextAction: "arm or verify the watcher",
+    });
     assert.equal(counters.sessions, 1);
     const second = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(second.structuredContent.bootstrapAttempted, false);
+    assert.deepEqual(second.structuredContent.watcher, first.structuredContent.watcher);
     assert.equal(counters.sessions, 1);
   } finally {
     await client.close();
@@ -362,6 +370,8 @@ test("parle_status inspect:true is a passive read with no network side effects",
     assert.equal(result.structuredContent.bootstrapAttempted, false);
     assert.equal(result.structuredContent.runtime.bootstrapped, false);
     assert.match(result.structuredContent.compactText, /Parle configured, not connected/);
+    assert.equal(Object.hasOwn(result.structuredContent, "watcher"), false);
+    assert.doesNotMatch(result.structuredContent.compactText, /Watcher/);
     assert.equal(counters.total ?? 0, 0);
   } finally {
     await client.close();

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.25 (2026-07-29)
+
+Bundled MCP refresh with honest unknown watcher status and the safe next action `arm or verify the watcher`. Desktop does not claim watcher evidence it does not own.
+
 ## 0.5.24 (2026-07-29)
 
 Bundled MCP refresh with credential-free Claude watcher request outcome classification. Claude Desktop runtime behavior is unchanged.

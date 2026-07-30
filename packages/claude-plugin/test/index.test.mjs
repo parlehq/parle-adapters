@@ -26,6 +26,9 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /Arming is part of connecting by default/);
   assert.match(skill, /Session Address:/);
   assert.match(skill, /Watcher       on/);
+  assert.match(skill, /Status watcher evidence is not yet authoritative/);
+  assert.match(skill, /Watcher       unknown/);
+  assert.match(skill, /Next: arm or verify the watcher\./);
   assert.match(skill, /Do not report UUIDs, cursor, expiry, backlog, or config provenance/);
   assert.match(skill, /parle_switch_profile/);
   assert.match(skill, /parle_mint_principal_invite/);

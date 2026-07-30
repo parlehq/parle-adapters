@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.19
+
+- Refresh the shared MCP artifact with honest unknown watcher status and the safe next action `arm or verify the watcher`. Command Code bridge behavior is unchanged.
+
 ## 0.1.18
 
 - Register the visible Parle startup notice through the typed mod `onSessionStart` hook so it runs after the Command Code harness binds.

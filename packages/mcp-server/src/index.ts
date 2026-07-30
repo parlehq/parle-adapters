@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, compactConnectionCardFromSummary, compactStatusCardFromStatus, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, compactConnectionCardFromSummary, compactStatusCardFromStatus, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { CommandCodeWakeBridge } from "./command-code-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -64,11 +64,11 @@ export type ParleAccountClientLike = {
 };
 
 export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.20" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.21" });
 
   server.registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. Connected MCP status reports watcher state as unknown and the safe next action arm or verify the watcher because MCP session health is not watcher evidence. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params) => safeTool(async () => {
@@ -76,8 +76,11 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     const status = client.status();
     if (typeof status === "object" && status !== null) {
-      const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(status as any) } : {};
-      return { ...status, bootstrapAttempted, ...card };
+      const connected = (status as any).runtime?.bootstrapState === "ready" && Boolean((status as any).runtime?.sessionAddress);
+      const watcher = connected ? WATCHER_UNKNOWN_GUIDANCE : undefined;
+      const enriched = watcher ? { ...status, watcher } : status;
+      const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
+      return { ...status, bootstrapAttempted, ...(watcher ? { watcher } : {}), ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -226,7 +229,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 export async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.20" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.21" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");

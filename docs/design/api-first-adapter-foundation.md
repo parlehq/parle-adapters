@@ -166,6 +166,13 @@ Current ledger:
   - Upstream issue: `parlehq/parle#433`
   - Removal condition: session bootstrap and connect guidance are server-authored in `llms.txt`/OpenAPI/`ai.parle.sh`; adapters render the server text.
   - Reason it still exists: the sessions and participant-join endpoints are entirely undocumented at L0, so clients have no server-owned connect narrative to render.
+- Helper: `WATCHER_UNKNOWN_GUIDANCE` in `@parlehq/agent-client`
+  - Marker: `@parle-interpretation parlehq/parle#433`
+  - Layer: L1
+  - Meaning interpreted: honest watcher-unknown status and the temporary next action `arm or verify the watcher` while adapters lack server-authored guidance and Claude lacks authoritative watcher evidence.
+  - Upstream issue: `parlehq/parle#433`, adapter evidence follow-through `parlehq/parle-adapters#47`.
+  - Removal condition: core discovery authors watcher next-step guidance and each host status surface can bind it to owned watcher evidence.
+  - Reason it still exists: connected status must not imply responsive delivery is armed, and agents need one safe action until the L0 guidance and host evidence contracts land.
 - Helper: `connectionSummary`/`connect` and the `setup` connection-posture note in `@parlehq/agent-client`
   - Marker: `@parle-interpretation parlehq/parle#434`
   - Layer: L1

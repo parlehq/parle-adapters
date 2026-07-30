@@ -32980,6 +32980,11 @@ var ParleAccountClient = class {
 };
 
 // ../client/dist/format.js
+var WATCHER_UNKNOWN_GUIDANCE = {
+  state: "unknown",
+  nextActionKey: "arm-or-verify-watcher",
+  nextAction: "arm or verify the watcher"
+};
 var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
 var CARD_RULE = "========================================";
 function nextTextFor(key) {
@@ -32993,7 +32998,8 @@ function nextTextFor(key) {
     case "read-inbox":
       return "read your inbox for messages addressed to this session.";
     case "arm-watcher":
-      return "arm the watcher, then stand by for messages to this Session Address.";
+    case "arm-or-verify-watcher":
+      return `${WATCHER_UNKNOWN_GUIDANCE.nextAction}.`;
     default:
       return key;
   }
@@ -33025,7 +33031,7 @@ function formatCompactConnectionCard(input) {
   const room = roomLabel(input);
   if (room)
     lines.push(line("In room", room));
-  if (input.watcher && input.watcher !== "unknown")
+  if (input.watcher)
     lines.push(line("Watcher", input.watcher));
   if (typeof input.unread === "number" && input.unread > 0)
     lines.push(line("Unread", String(input.unread)));
@@ -33055,7 +33061,8 @@ function compactStatusCardFromStatus(status) {
       roomHandle: status.config?.roomHandle?.value,
       roomId: runtime.roomId || status.config?.roomId?.value,
       unread,
-      next: unread && unread > 0 ? "read-inbox" : "already-connected"
+      watcher: status.watcher?.state,
+      next: status.watcher?.nextActionKey || (unread && unread > 0 ? "read-inbox" : "already-connected")
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
@@ -33073,7 +33080,7 @@ function compactStatusCardFromStatus(status) {
 
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
-var DEFAULT_WAKE_BASE = DEFAULT_API_BASE3;
+var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
@@ -33196,6 +33203,7 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     profile = loadProfile(profileSelector.value, catalogPath);
   }
   const profileValue = (name, value) => value === void 0 ? void 0 : { value, source: `profile:${profile.name}` };
+  const wakeBaseExplicit = profile ? profile.wakeBase !== void 0 : Boolean(firstConfigValue("PARLE_WAKE_BASE", sources).value);
   const cfg = {
     enabledInput: firstConfigValue("PARLE_ENABLED", sources, "1"),
     apiBase: profile ? profileValue("PARLE_API_BASE", profile.apiBase ?? DEFAULT_API_BASE3) : firstConfigValue("PARLE_API_BASE", sources, DEFAULT_API_BASE3),
@@ -33214,6 +33222,9 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
   for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
     if (value?.warning)
       cfg.warnings.push(value.warning);
+  }
+  if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
+    cfg.warnings.push(`PARLE_WAKE_BASE explicitly matches PARLE_API_BASE (${cfg.apiBase.value}). Responsive delivery normally uses ${DEFAULT_WAKE_BASE}.`);
   }
   return cfg;
 }
@@ -34170,13 +34181,10 @@ var ParleAgentClient = class _ParleAgentClient {
       const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
       const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), READ_LIMIT_BYTES);
       const cursorBefore = this.runtime.cursor;
-      const shouldAdvanceCursor = params.advanceCursor === true || params.advanceCursor === void 0 && params.sinceSeq === void 0;
-      if (shouldAdvanceCursor) {
-        this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, capped.messages, params.sinceSeq === void 0 && rawMessages.length === 0 ? projection.watermark : void 0);
-        if (this.runtime.cursor !== cursorBefore || params.sinceSeq === void 0) {
-          const remaining = surface === "inbound" ? rawMessages.filter((row) => typeof row?.seq === "number" && row.seq > this.runtime.cursor).length : 0;
-          this.setUnread(remaining);
-        }
+      if (params.advanceCursor !== false && params.sinceSeq === void 0) {
+        this.runtime.cursor = updateCursorFromMessages(this.runtime.cursor, capped.messages, rawMessages.length === 0 ? projection.watermark : void 0);
+        const remaining = surface === "inbound" ? rawMessages.filter((row) => typeof row?.seq === "number" && row.seq > this.runtime.cursor).length : 0;
+        this.setUnread(remaining);
       }
       return { ...projection, surface, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: this.runtime.cursor, advancedCursor: cursorBefore !== this.runtime.cursor, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}, note: wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text." };
     }, signal);
@@ -34469,10 +34477,10 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.20" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.21" });
   server.registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. Connected MCP status reports watcher state as unknown and the safe next action arm or verify the watcher because MCP session health is not watcher evidence. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params) => safeTool(async () => {
@@ -34480,8 +34488,11 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     const status = client.status();
     if (typeof status === "object" && status !== null) {
-      const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(status) } : {};
-      return { ...status, bootstrapAttempted, ...card };
+      const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
+      const watcher = connected ? WATCHER_UNKNOWN_GUIDANCE : void 0;
+      const enriched = watcher ? { ...status, watcher } : status;
+      const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
+      return { ...status, bootstrapAttempted, ...watcher ? { watcher } : {}, ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -34615,7 +34626,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
 async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.20" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.21" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");

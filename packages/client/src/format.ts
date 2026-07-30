@@ -1,6 +1,14 @@
 export type CompactConnectionWatcher = "on" | "off" | "unknown";
 
-export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher";
+export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher";
+
+// @parle-interpretation parlehq/parle#433
+// Temporary L1 wording until core discovery authors watcher next-step guidance.
+export const WATCHER_UNKNOWN_GUIDANCE = {
+  state: "unknown" as const,
+  nextActionKey: "arm-or-verify-watcher" as const,
+  nextAction: "arm or verify the watcher",
+};
 
 export type CompactConnectionCardInput = {
   connectedLabel?: string;
@@ -32,7 +40,8 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
     case "read-inbox":
       return "read your inbox for messages addressed to this session.";
     case "arm-watcher":
-      return "arm the watcher, then stand by for messages to this Session Address.";
+    case "arm-or-verify-watcher":
+      return `${WATCHER_UNKNOWN_GUIDANCE.nextAction}.`;
     default:
       return key;
   }
@@ -64,7 +73,7 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   }
   const room = roomLabel(input);
   if (room) lines.push(line("In room", room));
-  if (input.watcher && input.watcher !== "unknown") lines.push(line("Watcher", input.watcher));
+  if (input.watcher) lines.push(line("Watcher", input.watcher));
   if (typeof input.unread === "number" && input.unread > 0) lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
     lines.push("", "Session Address:", input.sessionAddress);
@@ -88,6 +97,11 @@ export function compactConnectionCardFromSummary(summary: ConnectionSummaryLike,
 }
 
 export type StatusLike = {
+  watcher?: {
+    state?: CompactConnectionWatcher;
+    nextActionKey?: CompactConnectionNextKey;
+    nextAction?: string;
+  };
   config?: {
     roomHandle?: { value?: string };
     roomId?: { value?: string; configured?: boolean };
@@ -115,7 +129,8 @@ export function compactStatusCardFromStatus(status: StatusLike): string {
       roomHandle: status.config?.roomHandle?.value,
       roomId: runtime.roomId || status.config?.roomId?.value,
       unread,
-      next: unread && unread > 0 ? "read-inbox" : "already-connected",
+      watcher: status.watcher?.state,
+      next: status.watcher?.nextActionKey || (unread && unread > 0 ? "read-inbox" : "already-connected"),
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);

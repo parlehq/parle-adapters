@@ -17,6 +17,9 @@ test("Command Code wrapper includes safe skill guidance and MCP artifact", () =>
   assert.match(skill, /parle_send/);
   assert.match(skill, /\/v\/agent\/wake/);
   assert.match(skill, /Never create a cron/);
+  assert.match(skill, /MCP status surface does not own authoritative watcher evidence/);
+  assert.match(skill, /Watcher       unknown/);
+  assert.match(skill, /Next: arm or verify the watcher\./);
 
   const hook = readFileSync(resolve(root, "skills/parle/scripts/parle-hook.mjs"), "utf8");
   assert.match(hook, /decision: "block"/);
