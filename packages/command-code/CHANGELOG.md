@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 (2026-07-29)
+
+- Tell agents reading the manual inbox to reply with the exact server-authored `author.address` so replies wake the intended peer.
+
 ## 0.2.1 (2026-07-29)
 
 - Stop responsive delivery drain after the server repeats the same unacknowledged batch.

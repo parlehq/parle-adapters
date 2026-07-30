@@ -505,6 +505,10 @@ test("stdio server lists the fourteen tools and setup works without secrets", as
     assert.match(read.description, /bounded single wait/);
     assert.match(read.description, /Do not loop/);
     assert.match(read.description, /untrusted/);
+    const inbox = tools.tools.find((tool) => tool.name === "parle_inbox");
+    assert.match(inbox.description, /parle_send with to set exactly to that message's author\.address/);
+    assert.match(inbox.description, /will not wake that peer/);
+    assert.match(inbox.description, /do not guess from participant_id or provenance fields/);
     const connectOwnAgent = tools.tools.find((tool) => tool.name === "parle_connect_own_agent");
     assert.match(connectOwnAgent.description, /one owned durable agent per operation/);
     assert.match(connectOwnAgent.description, /create an additional one/);

@@ -451,6 +451,11 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
   });
   const inbox = await client.readInbox({ waitSeconds: 2 });
   assert.equal(inbox.cursorAfter, 4);
+  assert.match(inbox.note, /parle_send with to set exactly to that message's author\.address/);
+  assert.match(inbox.note, /Omitting to sends an unaddressed message and will not wake that peer/);
+  assert.match(inbox.note, /do not guess from participant_id or provenance fields/);
+  const projection = await client.readProjection();
+  assert.doesNotMatch(projection.note, /author\.address/);
   const sent = await client.send({ body: "hello", to: "@p.a.s1" });
   assert.equal(sent.idempotencyKey, "idem-1");
   assert.equal(sent.deliveryStatus.state, "accepted_scan_skipped");

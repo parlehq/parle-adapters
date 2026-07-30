@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.38 (2026-07-29)
+
+Tell agents reading the manual inbox to reply with the exact server-authored `author.address` so replies wake the intended peer.
+
 ## 0.5.37 (2026-07-29)
 
 Refresh the shared MCP artifact with bounded repeated-batch drain handling and degraded bridge status. Claude Code watcher behavior is unchanged.

@@ -620,7 +620,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.34" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.35" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -867,7 +867,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.1.34");
+    assert.equal(call.headers["Parle-Client-Version"], "0.1.35");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1400,6 +1400,10 @@ test("parle_inbox reads the inbound attention surface", async () => {
   assert.equal(result.details.surface, "inbound");
   assert.equal(result.details.cursor, 4);
   assert.match(result.details.note, /excludes your own rows/);
+  assert.match(result.details.note, /parle_send with to set exactly to that message's author\.address/);
+  assert.match(result.details.note, /will not wake that peer/);
+  assert.match(result.details.note, /do not guess from participant_id or provenance fields/);
+  assert.match(harness.tools.parle_inbox.description, /parle_send with to set exactly to that message's author\.address/);
 });
 
 test("setStatus ignores stale Pi UI contexts", () => {
@@ -1663,7 +1667,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.34");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.35");
       assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });

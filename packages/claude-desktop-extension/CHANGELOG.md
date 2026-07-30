@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.30 (2026-07-29)
+
+Tell agents reading the manual inbox to reply with the exact server-authored `author.address` so replies wake the intended peer.
+
 ## 0.5.29 (2026-07-29)
 
 Refresh the shared MCP artifact with bounded repeated-batch drain handling and degraded bridge status.
