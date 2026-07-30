@@ -629,7 +629,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.38" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.39" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -934,7 +934,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.1.38");
+    assert.equal(call.headers["Parle-Client-Version"], "0.1.39");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1473,6 +1473,45 @@ test("parle_inbox reads the inbound attention surface", async () => {
   assert.match(harness.tools.parle_inbox.description, /parle_send with to set exactly to that message's author\.address/);
 });
 
+async function runPiCursorRead({ cursor, messages = [], watermark = 20, params = {} }) {
+  const harness = installSendHarness(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-cursor", session_credential: "parle_ses_cursor-session", session_handle: "cursor-session", expires_at: "2099-07-04T00:00:00Z", address: "@p.a.cursor-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-cursor" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
+    if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark, messages }), { status: 200 });
+    throw new Error("unexpected " + u);
+  });
+  await harness.call("parle_status");
+  if (typeof cursor === "number") __testing.runtimeState().cursor = cursor;
+  return { harness, result: await harness.call("parle_inbox", params) };
+}
+
+test("Pi read cursor semantics stay aligned with the shared-client contract", async () => {
+  const committed = await runPiCursorRead({ messages: [{ seq: 8 }, { seq: 9 }, { seq: 10 }], params: { sinceSeq: 2, advanceCursor: true, limitMessages: 2 } });
+  assert.equal(committed.result.details.cursor, 9);
+  assert.deepEqual(committed.result.details.messages.map((row) => row.seq), [8, 9]);
+  assert.equal(committed.result.details.truncated, true);
+
+  const audit = await runPiCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2 } });
+  assert.equal(audit.result.details.cursor, 7);
+
+  const disabled = await runPiCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { advanceCursor: false } });
+  assert.equal(disabled.result.details.cursor, 7);
+
+  const emptyExplicit = await runPiCursorRead({ messages: [], watermark: 20, params: { sinceSeq: 2, advanceCursor: true } });
+  assert.equal(emptyExplicit.result.details.cursor, 7);
+
+  const emptyDefault = await runPiCursorRead({ messages: [], watermark: 20 });
+  assert.equal(emptyDefault.result.details.cursor, 20);
+
+  const monotonic = await runPiCursorRead({ cursor: 12, messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2, advanceCursor: true } });
+  assert.equal(monotonic.result.details.cursor, 12);
+
+  assert.match(committed.harness.tools.parle_inbox.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
+  assert.match(committed.harness.tools.parle_inbox.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
+});
+
 test("setStatus ignores stale Pi UI contexts", () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
   const staleCtx = {
@@ -1693,7 +1732,7 @@ test("wake hint acks seen and injected prefix only after successful injection", 
   assert.equal(__testing.runtimeState().lastAckedSeq, 6);
 });
 
-test("advanceCursor false manual reads do not consume responsive delivery", async () => {
+test("non-committing manual reads do not consume responsive delivery", async () => {
   const injected = [];
   const acked = [];
   const harness = installSendHarness(async (url, init = {}) => {
@@ -1712,6 +1751,7 @@ test("advanceCursor false manual reads do not consume responsive delivery", asyn
 
   await harness.call("parle_status");
   await harness.call("parle_inbox", { advanceCursor: false });
+  await harness.call("parle_inbox", { sinceSeq: 0 });
   const cfg = __testing.resolveConfig(harness.cwd);
   await __testing.handleWakeHint({ sendUserMessage: async (message) => injected.push(message) }, harness.ctx, cfg);
 
@@ -1734,7 +1774,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.38");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.39");
       assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });

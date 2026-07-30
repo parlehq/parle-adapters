@@ -38,7 +38,8 @@ When the user asks for Parle status, call `parle_status` and render its `compact
 - Do not use live `parle_switch_profile` while the SSE bridge is active. Restart Command Code with the target `PARLE_PROFILE` so session, wake stream, queue, and hook binding change atomically.
 - Use `parle_inbox` for an explicit manual inbound attention read. It excludes the current session's own rows and direct traffic for other sessions.
 - Use `parle_read` for audit or room history.
-- `parle_read` and `parle_inbox` share a process cursor. Use an explicit `sinceSeq` for audit reads when switching surfaces.
+- `parle_read` and `parle_inbox` share a process cursor. Supplying `sinceSeq` makes the call an audit read by default and does not advance the cursor.
+- To commit an explicit `sinceSeq` read, set `advanceCursor: true`. It advances only through returned capped rows, never the response watermark. Set `advanceCursor: false` to prevent advancement on any read.
 - `waitSeconds` is for one explicit bounded wait, never a watcher loop.
 - If `parle_send` returns a retryable error with an idempotency key, retry only with the same key, byte-identical body, and identical addressing.
 

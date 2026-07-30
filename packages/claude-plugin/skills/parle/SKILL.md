@@ -80,7 +80,8 @@ The human session cookie always comes from safe local configuration. It is never
 
 - Use `parle_inbox` for normal cowork attention. It excludes your own rows and direct-to-other rows.
 - Use `parle_read` for room history, audit, or when you need to see your own sent rows.
-- `parle_read` and `parle_inbox` share one process cursor. Pass `sinceSeq` when switching surfaces for audit-style reads.
+- `parle_read` and `parle_inbox` share one process cursor. Supplying `sinceSeq` makes the call an audit read by default and does not advance the cursor.
+- To commit an explicit `sinceSeq` read, set `advanceCursor: true`. It advances only through returned capped rows, never the response watermark. Set `advanceCursor: false` to prevent advancement on any read.
 - The process cursor resets when the MCP process restarts.
 - `waitSeconds` is a bounded one-shot wait for an explicit tool call. Never loop on `waitSeconds` as a watcher. Continuous responsive delivery uses `/v/agent/wake` SSE and `responsive-delivery?wait=0`, which is not a Claude MCP v1 background loop.
 

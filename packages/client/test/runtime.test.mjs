@@ -203,6 +203,88 @@ function unreadFetch(counters = {}, rows = () => []) {
   };
 }
 
+async function runCursorRead({ cursor = 7, messages = [], watermark = 20, params = {} }) {
+  const counters = {};
+  const happy = happyFetch(counters);
+  const client = new ParleAgentClient({
+    env: ENV,
+    fetch: async (url, init) => {
+      if (String(url).includes("/inbound?")) return json({ watermark, messages });
+      return happy(url, init);
+    },
+  });
+  await client.connect();
+  client.runtime.cursor = cursor;
+  client.runtime.unreadCount = 5;
+  const result = await client.readInbox(params);
+  return { client, result };
+}
+
+test("read cursor precedence follows the seven-row contract", async (t) => {
+  await t.test("omitted sinceSeq and advanceCursor commits returned rows or an empty response watermark", async () => {
+    const returned = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }] });
+    assert.equal(returned.result.cursorBefore, 7);
+    assert.equal(returned.result.cursorAfter, 9);
+    assert.equal(returned.result.advancedCursor, true);
+    assert.equal(returned.client.runtime.unreadCount, 0);
+
+    const empty = await runCursorRead({ messages: [], watermark: 20 });
+    assert.equal(empty.result.cursorAfter, 20);
+    assert.equal(empty.result.advancedCursor, true);
+    assert.equal(empty.client.runtime.unreadCount, 0);
+  });
+
+  await t.test("explicit true without sinceSeq has the default commit behavior", async () => {
+    const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { advanceCursor: true } });
+    assert.equal(result.cursorAfter, 9);
+    assert.equal(result.advancedCursor, true);
+    assert.equal(client.runtime.unreadCount, 0);
+  });
+
+  await t.test("explicit false never advances with or without sinceSeq", async () => {
+    for (const params of [{ advanceCursor: false }, { sinceSeq: 2, advanceCursor: false }]) {
+      const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params });
+      assert.equal(result.cursorBefore, 7);
+      assert.equal(result.cursorAfter, 7);
+      assert.equal(result.advancedCursor, false);
+      assert.equal(client.runtime.unreadCount, 5);
+    }
+  });
+
+  await t.test("explicit sinceSeq defaults to an audit read", async () => {
+    const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2 } });
+    assert.equal(result.cursorAfter, 7);
+    assert.equal(result.advancedCursor, false);
+    assert.equal(client.runtime.unreadCount, 5);
+  });
+
+  await t.test("explicit sinceSeq plus true commits only returned capped rows and recomputes unread", async () => {
+    const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }, { seq: 10 }], params: { sinceSeq: 2, advanceCursor: true, limitMessages: 2 } });
+    assert.equal(result.cursorBefore, 7);
+    assert.equal(result.cursorAfter, 9);
+    assert.equal(result.advancedCursor, true);
+    assert.deepEqual(result.messages.map((row) => row.seq), [8, 9]);
+    assert.equal(result.truncated, true);
+    assert.equal(client.runtime.unreadCount, 1, "the capped row beyond the committed cursor remains unread");
+  });
+
+  await t.test("an empty explicit commit never jumps to the watermark or erases unread state", async () => {
+    const { client, result } = await runCursorRead({ messages: [], watermark: 20, params: { sinceSeq: 2, advanceCursor: true } });
+    assert.equal(result.cursorBefore, 7);
+    assert.equal(result.cursorAfter, 7);
+    assert.equal(result.advancedCursor, false);
+    assert.equal(client.runtime.unreadCount, 5);
+  });
+
+  await t.test("cursor movement is monotonic and a no-op explicit commit preserves unread state", async () => {
+    const { client, result } = await runCursorRead({ cursor: 12, messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2, advanceCursor: true } });
+    assert.equal(result.cursorBefore, 12);
+    assert.equal(result.cursorAfter, 12);
+    assert.equal(result.advancedCursor, false);
+    assert.equal(client.runtime.unreadCount, 5);
+  });
+});
+
 test("observeUnread counts without advancing the cursor and repeated polls are idempotent", async () => {
   const counters = {};
   const client = new ParleAgentClient({ env: ENV, fetch: unreadFetch(counters, () => [{ seq: 8 }, { seq: 9 }]) });

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.7 (2026-07-30)
+
+- Honor explicit `advanceCursor: true` on `sinceSeq` reads and preserve unread state on empty explicit commits.
+- Explain audit versus commit cursor behavior in MCP and Codex skill guidance.
+
 ## 0.2.6 (2026-07-30)
 
 - Launch lifecycle hooks with the exact Node runtime published by the running MCP bridge instead of resolving ambient runtime-manager shims.

@@ -518,10 +518,15 @@ test("stdio server lists the fourteen tools and setup works without secrets", as
     assert.equal(setup.structuredContent.ok, false);
     assert.deepEqual(setup.structuredContent.missing, ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN"]);
     const read = tools.tools.find((tool) => tool.name === "parle_read");
+    assert.match(read.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
+    assert.match(read.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
+    assert.match(read.description, /advanceCursor:false never advances/);
     assert.match(read.description, /bounded single wait/);
     assert.match(read.description, /Do not loop/);
     assert.match(read.description, /untrusted/);
     const inbox = tools.tools.find((tool) => tool.name === "parle_inbox");
+    assert.match(inbox.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
+    assert.match(inbox.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
     assert.match(inbox.description, /parle_send with to set exactly to that message's author\.address/);
     assert.match(inbox.description, /will not wake that peer/);
     assert.match(inbox.description, /do not guess from participant_id or provenance fields/);

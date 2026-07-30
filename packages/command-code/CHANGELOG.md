@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6 (2026-07-30)
+
+- Honor explicit `advanceCursor: true` on `sinceSeq` reads and preserve unread state on empty explicit commits.
+- Explain audit versus commit cursor behavior in MCP and Command Code skill guidance.
+
 ## 0.2.5 (2026-07-30)
 
 - Refresh the shared hook bridge with owner-only runtime publication, stale-artifact cleanup, and fail-open hook handling.

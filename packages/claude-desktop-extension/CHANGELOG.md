@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.33 (2026-07-30)
+
+Honor explicit `advanceCursor: true` on `sinceSeq` reads, preserve unread state on empty explicit commits, and make audit versus commit cursor behavior unambiguous in MCP tool guidance.
+
 ## 0.5.32 (2026-07-30)
 
 Refresh the shared MCP artifact with scoped hook-bridge runtime publication and fail-open hook handling. Claude Desktop behavior is unchanged.

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.41 (2026-07-30)
+
+Honor explicit `advanceCursor: true` on `sinceSeq` reads, preserve unread state on empty explicit commits, and document audit versus commit cursor behavior.
+
 ## 0.5.40 (2026-07-30)
 
 Refresh the shared MCP artifact with scoped hook-bridge runtime publication and fail-open hook handling. Claude Code watcher behavior is unchanged.

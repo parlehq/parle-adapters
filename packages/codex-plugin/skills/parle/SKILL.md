@@ -30,7 +30,8 @@ If the target is not deliverable, report the server action. Do not guess another
 
 - Use `mcp__parle__parle_inbox` for an explicit manual inbound attention read. It excludes the current session's own rows and direct traffic for other sessions.
 - Use `mcp__parle__parle_read` for audit or room history.
-- `mcp__parle__parle_read` and `mcp__parle__parle_inbox` share a process cursor. Use an explicit `sinceSeq` for audit reads when switching surfaces.
+- `mcp__parle__parle_read` and `mcp__parle__parle_inbox` share a process cursor. Supplying `sinceSeq` makes the call an audit read by default and does not advance the cursor.
+- To commit an explicit `sinceSeq` read, set `advanceCursor: true`. It advances only through returned capped rows, never the response watermark. Set `advanceCursor: false` to prevent advancement on any read.
 - `waitSeconds` is for one explicit bounded wait, never a watcher loop.
 - If `parle_send` returns a retryable error with an idempotency key, retry only with the same key, byte-identical body, and identical addressing.
 - The plugin opens the Parle wake stream and queues responsive delivery in the MCP process. Trusted Codex lifecycle hooks inject queued server-framed messages at supported prompt, tool, and stop boundaries, then acknowledge delivery only after successful hook output.
