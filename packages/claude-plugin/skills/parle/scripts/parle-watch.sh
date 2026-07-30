@@ -4,6 +4,7 @@
 # live MCP switch, `--profile NAME` selects that profile explicitly; the Node
 # launcher freezes its concrete binding for the worker. The room agent token is
 # passed only in the worker child environment.
+# Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]
 set -u
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 2
 artifact="$script_dir/../../../dist/parle-mcp.js"

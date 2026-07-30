@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.20
+
+- Refresh the shared MCP artifact with fail-fast Claude watcher launcher argument validation. Command Code runtime behavior is unchanged.
+
 ## 0.1.19
 
 - Refresh the shared MCP artifact with honest unknown watcher status and the safe next action `arm or verify the watcher`. Command Code bridge behavior is unchanged.

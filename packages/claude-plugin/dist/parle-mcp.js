@@ -34477,7 +34477,7 @@ var switchProfileSchema = {
   watcherStopped: external_exports.boolean()
 };
 function createParleMcpServer(client = new ParleAgentClient(), accountClient = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.21" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.22" });
   server.registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. Connected MCP status reports watcher state as unknown and the safe next action arm or verify the watcher because MCP session health is not watcher evidence. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -34626,7 +34626,7 @@ function createParleMcpServer(client = new ParleAgentClient(), accountClient = n
 async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.21" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.22" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -34710,16 +34710,28 @@ function resolveWatcherEnvironment(cwd = process.cwd(), env = process.env, onWar
     PARLE_ROOM_AGENT_TOKEN: agentToken
   };
 }
+var WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+var WatcherUsageError = class extends Error {
+  constructor() {
+    super(WATCHER_USAGE);
+    this.name = "WatcherUsageError";
+  }
+};
+function parseWatcherArgs(args) {
+  let profile;
+  let positional = args;
+  if (args[0]?.startsWith("-")) {
+    if (args[0] !== "--profile" || !args[1] || args[1].startsWith("-")) throw new WatcherUsageError();
+    profile = args[1];
+    positional = args.slice(2);
+  }
+  if (positional.length < 1 || positional.length > 2 || !/^[0-9]+$/.test(positional[0]) || positional[1]?.startsWith("-")) throw new WatcherUsageError();
+  return { ...profile ? { profile } : {}, workerArgs: positional };
+}
 async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env) {
+  const { profile, workerArgs } = parseWatcherArgs(args);
   const worker = join7(dirname5(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
   if (!existsSync5(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
-  let profile;
-  let workerArgs = args;
-  if (args[0] === "--profile") {
-    profile = args[1];
-    if (!profile) throw new Error("--profile requires a named profile");
-    workerArgs = args.slice(2);
-  }
   const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
@@ -34833,13 +34845,17 @@ if (isDirectRun(import.meta.url)) {
   task.then(() => {
     if (isRequest) process.exit(0);
   }).catch((error51) => {
-    console.error(`Parle stopped: ${error51 instanceof Error ? error51.message : String(error51)}`);
+    if (error51 instanceof WatcherUsageError) console.error(WATCHER_USAGE);
+    else console.error(`Parle stopped: ${error51 instanceof Error ? error51.message : String(error51)}`);
     process.exitCode = 2;
   });
 }
 export {
+  WATCHER_USAGE,
+  WatcherUsageError,
   createParleMcpServer,
   isDirectRun,
+  parseWatcherArgs,
   resolveWatcherEnvironment,
   runStdio,
   runWatcher,

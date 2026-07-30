@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.26 (2026-07-29)
+
+Bundled MCP refresh with fail-fast Claude watcher launcher argument validation. Claude Desktop runtime behavior is unchanged.
+
 ## 0.5.25 (2026-07-29)
 
 Bundled MCP refresh with honest unknown watcher status and the safe next action `arm or verify the watcher`. Desktop does not claim watcher evidence it does not own.

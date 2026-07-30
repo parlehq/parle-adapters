@@ -64,7 +64,7 @@ export type ParleAccountClientLike = {
 };
 
 export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
-  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.21" });
+  const server = new McpServer({ name: "parle-mcp-server", version: "0.1.22" });
 
   server.registerTool("parle_status", {
     title: "Parle Status",
@@ -229,7 +229,7 @@ export function createParleMcpServer(client: ParleMcpClientLike = new ParleAgent
 export async function runStdio() {
   const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
   const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.21" } });
+  const client = new ParleAgentClient({ env: clientEnv, publishRuntime: { adapterName: "@parlehq/mcp-server", adapterVersion: "0.1.22" } });
   if (commandCodeHost) {
     client.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -329,16 +329,33 @@ export function resolveWatcherEnvironment(cwd = process.cwd(), env: NodeJS.Proce
   };
 }
 
+export const WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+
+export class WatcherUsageError extends Error {
+  constructor() {
+    super(WATCHER_USAGE);
+    this.name = "WatcherUsageError";
+  }
+}
+
+export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs: [string] | [string, string] } {
+  let profile: string | undefined;
+  let positional = args;
+  if (args[0]?.startsWith("-")) {
+    if (args[0] !== "--profile" || !args[1] || args[1].startsWith("-")) throw new WatcherUsageError();
+    profile = args[1];
+    positional = args.slice(2);
+  }
+  // since_seq is decimal digits only. Leading zeroes are accepted and retain
+  // the shell worker's existing numeric semantics.
+  if (positional.length < 1 || positional.length > 2 || !/^[0-9]+$/.test(positional[0]) || positional[1]?.startsWith("-")) throw new WatcherUsageError();
+  return { ...(profile ? { profile } : {}), workerArgs: positional as [string] | [string, string] };
+}
+
 export async function runWatcher(metaUrl: string, args: string[], cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): Promise<number> {
+  const { profile, workerArgs } = parseWatcherArgs(args);
   const worker = join(dirname(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
   if (!existsSync(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
-  let profile: string | undefined;
-  let workerArgs = args;
-  if (args[0] === "--profile") {
-    profile = args[1];
-    if (!profile) throw new Error("--profile requires a named profile");
-    workerArgs = args.slice(2);
-  }
   const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
   // Shared rooms require the room-bound token and a live entered agent session.
   // The watcher owns a dedicated short-lived session so the primary MCP
@@ -480,7 +497,8 @@ if (isDirectRun(import.meta.url)) {
     // request helper has flushed stdout and must not linger after each poll.
     if (isRequest) process.exit(0);
   }).catch((error) => {
-    console.error(`Parle stopped: ${error instanceof Error ? error.message : String(error)}`);
+    if (error instanceof WatcherUsageError) console.error(WATCHER_USAGE);
+    else console.error(`Parle stopped: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 2;
   });
 }

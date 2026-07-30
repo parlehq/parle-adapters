@@ -5,7 +5,8 @@
 # session, which then drains parle_inbox and restarts the watch. One held
 # long-poll connection, no tight loops.
 #
-# Usage: parle-watch.sh <since_seq> [my_agent_session_id]
+# Public usage: Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]
+# Private worker argv: <since_seq> [my_agent_session_id]
 #
 # With my_agent_session_id set, rows you authored and directs addressed to
 # other sessions are skipped instead of waking you, so busy multi-session

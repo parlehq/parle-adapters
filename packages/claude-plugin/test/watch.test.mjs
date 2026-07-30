@@ -169,6 +169,27 @@ async function assertStillWatching(watch) {
   await watch.exited;
 }
 
+test("invalid launcher forms fail with one usage line before network or worker activity", async () => {
+  let requests = 0;
+  const server = await stubServer({ messages: [], watermark: 1 }, () => { requests += 1; });
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-invalid-"));
+  const usage = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+  writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=poison\nPARLE_ROOM_ID=conflict\n");
+  try {
+    for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", "as-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "extra"]]) {
+      const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, args);
+      assert.equal(await watch.exited, 2);
+      assert.equal(watch.out(), "");
+      assert.equal(watch.err(), `${usage}\n`);
+    }
+    assert.equal(requests, 0);
+    assert.equal(existsSync(join(cwd, ".parle", "runtime")), false);
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 const deadline = '000\n{"watcher_local":{"outcome":"held_deadline"}}';
 const transport = '000\n{"watcher_local":{"outcome":"network_failure"}}';
 const malformed = '000\n{"watcher_local":{"outcome":"malformed_response"}}';
@@ -355,13 +376,13 @@ test("watch --profile selects the switched profile and freezes its token outside
   }
 });
 
-test("watch preserves direct configuration and keeps the token out of child argv", async () => {
+test("one-argument watch preserves direct config and wakes on the caller's own row", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-watch-direct-"));
   const token = "parle_agt_direct_argv_secret";
   let auth;
   const server = await stubServer((req) => {
     auth = req.headers.authorization;
-    return { messages: [{ seq: 2 }], watermark: 2 };
+    return { messages: [{ seq: 2, author: { agent_session_id: "caller-session" } }], watermark: 2 };
   });
   try {
     const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"], { PARLE_ROOM_AGENT_TOKEN: token });

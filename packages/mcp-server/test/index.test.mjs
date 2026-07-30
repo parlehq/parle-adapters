@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient } from "@parlehq/agent-client";
-import { createParleMcpServer, isDirectRun, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
+import { WATCHER_USAGE, WatcherUsageError, createParleMcpServer, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -30,6 +30,19 @@ const expectedTools = [
 test("direct-run detection handles URL-encoded paths", () => {
   const path = "/tmp/Application Support/parle-mcp.js";
   assert.equal(isDirectRun(pathToFileURL(path).href, path), true);
+});
+
+test("watcher arguments accept only documented positional and profile forms", () => {
+  assert.deepEqual(parseWatcherArgs(["0"]), { workerArgs: ["0"] });
+  assert.deepEqual(parseWatcherArgs(["007"]), { workerArgs: ["007"] });
+  assert.deepEqual(parseWatcherArgs(["7"]), { workerArgs: ["7"] });
+  assert.deepEqual(parseWatcherArgs(["7", "as-1"]), { workerArgs: ["7", "as-1"] });
+  assert.deepEqual(parseWatcherArgs(["--profile", "target", "7"]), { profile: "target", workerArgs: ["7"] });
+  assert.deepEqual(parseWatcherArgs(["--profile", "target", "7", "as-1"]), { profile: "target", workerArgs: ["7", "as-1"] });
+
+  for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", "as-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "extra"]]) {
+    assert.throws(() => parseWatcherArgs(args), (error) => error instanceof WatcherUsageError && error.message === WATCHER_USAGE);
+  }
 });
 
 const watcherEnv = {

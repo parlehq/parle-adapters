@@ -100,6 +100,8 @@ Profile switches last only for the current MCP process. A Claude restart returns
 
 ## Responsive watch (pre-channels)
 
+Canonical launcher usage: `Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]`. The one-argument positional form intentionally watches for any new room row, including the caller's own sends; pass the optional agent session id to filter self-authored and other-session direct rows.
+
 Claude Code cannot receive Parle pushes today: MCP v1 has no background delivery, and the `/v/agent/wake` SSE credential is held inside the MCP process. Until channel delivery ships, use the bundled watcher instead of improvised polling loops:
 
 1. Take the watermark from the `cursor` in your `parle_connect` result, or the latest `watermark` from a `parle_inbox`/`parle_send` result (`seq` of your own send counts).
