@@ -33034,6 +33034,8 @@ function nextTextFor(key) {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return `${WATCHER_UNKNOWN_GUIDANCE.nextAction}.`;
+    case "recover-watcher":
+      return "inspect the responsive delivery error and restart the host if it does not recover.";
     default:
       return key;
   }
@@ -34477,6 +34479,7 @@ var HookDeliveryBridge = class {
           const response = await this.client.openWakeStream(signal);
           const reader = response.body?.getReader();
           if (!reader) throw new Error("Parle wake stream response body is not readable");
+          this.lastError = void 0;
           const decoder = new TextDecoder();
           let buffer = "";
           while (!signal.aborted) {
@@ -34502,13 +34505,16 @@ var HookDeliveryBridge = class {
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
       const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
       if (delivery.messages.length === 0) return;
+      let queued = 0;
       for (const message of delivery.messages) {
         const key = deliveryKey(message);
         if (this.queuedKeys.has(key)) continue;
         if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
         this.pending.push({ ...message, key });
         this.queuedKeys.add(key);
+        queued += 1;
       }
+      if (queued === 0) return;
     }
     throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }
@@ -34516,7 +34522,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.2.0";
+var MCP_CLIENT_VERSION = "0.2.1";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -34582,7 +34588,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = connected ? bridgeStatus ? bridgeStatus.running ? { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
+      const watcher = connected ? bridgeStatus ? bridgeStatus.running ? bridgeStatus.lastError ? { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
       const enriched = watcher ? { ...status, watcher } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
       return { ...status, bootstrapAttempted, ...watcher ? { watcher } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
@@ -34607,13 +34613,14 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (deliveryBridge?.start) await deliveryBridge.start();
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = bridgeStatus ? bridgeStatus.running ? "on" : "off" : void 0;
+      const watcher = bridgeStatus ? bridgeStatus.running ? bridgeStatus.lastError ? "degraded" : "on" : "off" : void 0;
       return {
         ...summary,
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},
         compactText: compactConnectionCardFromSummary(summary, {
           watcher,
-          ...watcher === "on" ? { next: "already-connected" } : {}
+          ...watcher === "on" ? { next: "already-connected" } : {},
+          ...watcher === "degraded" ? { next: "recover-watcher" } : {}
         })
       };
     }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.29 (2026-07-29)
+
+Refresh the shared MCP artifact with bounded repeated-batch drain handling and degraded bridge status.
+
 ## 0.5.28 (2026-07-29)
 
 Refresh the shared MCP artifact with the host-neutral hook delivery bridge. Claude Desktop runtime behavior is unchanged.

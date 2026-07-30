@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.2.0";
+export const MCP_CLIENT_VERSION = "0.2.1";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -124,7 +124,9 @@ export function createParleMcpServer(
       const watcher = connected
         ? bridgeStatus
           ? bridgeStatus.running
-            ? { state: "on" as const, nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" }
+            ? bridgeStatus.lastError
+              ? { state: "degraded" as const, nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
+              : { state: "on" as const, nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" }
             : { state: "off" as const, nextActionKey: "arm-watcher" as const, nextAction: "restart the Parle hook bridge" }
           : WATCHER_UNKNOWN_GUIDANCE
         : undefined;
@@ -154,13 +156,14 @@ export function createParleMcpServer(
     if (deliveryBridge?.start) await deliveryBridge.start();
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = bridgeStatus ? (bridgeStatus.running ? "on" : "off") : undefined;
+      const watcher = bridgeStatus ? (bridgeStatus.running ? (bridgeStatus.lastError ? "degraded" : "on") : "off") : undefined;
       return {
         ...summary,
         ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}),
         compactText: compactConnectionCardFromSummary(summary as any, {
           watcher,
           ...(watcher === "on" ? { next: "already-connected" as const } : {}),
+          ...(watcher === "degraded" ? { next: "recover-watcher" as const } : {}),
         }),
       };
     }

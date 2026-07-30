@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.37 (2026-07-29)
+
+Refresh the shared MCP artifact with bounded repeated-batch drain handling and degraded bridge status. Claude Code watcher behavior is unchanged.
+
 ## 0.5.36 (2026-07-29)
 
 Refresh the shared MCP artifact with the host-neutral hook delivery bridge. Claude Code watcher behavior is unchanged.

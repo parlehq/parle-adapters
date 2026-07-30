@@ -406,6 +406,37 @@ test("parle_status auto-connects a configured client and reports the attempt", a
   }
 });
 
+test("parle_status surfaces a running bridge error as degraded", async () => {
+  const counters = {};
+  const clientImpl = new ParleAgentClient({ env: realClientEnv(), fetch: sessionFetch(counters) });
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({
+      running: true,
+      pending: 0,
+      baselineSkipped: 0,
+      socketPath: "/tmp/parle-test.sock",
+      hostSessionBound: true,
+      lastError: "Parle wake stream 502: Bad Gateway",
+    }),
+  };
+  const server = createParleMcpServer(clientImpl, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-status-degraded", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const result = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.match(result.structuredContent.compactText, /Watcher       degraded/);
+    assert.match(result.structuredContent.compactText, /Next: inspect the responsive delivery error and restart the host if it does not recover\./);
+    assert.equal(result.structuredContent.watcher.state, "degraded");
+    assert.equal(result.structuredContent.responsiveDeliveryBridge.lastError, "Parle wake stream 502: Bad Gateway");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("parle_status inspect:true is a passive read with no network side effects", async () => {
   const counters = {};
   const clientImpl = new ParleAgentClient({ env: realClientEnv(), fetch: sessionFetch(counters) });

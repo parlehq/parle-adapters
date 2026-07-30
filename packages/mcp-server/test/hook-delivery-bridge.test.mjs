@@ -42,8 +42,8 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     withRebootstrap: async (fn) => fn(),
     drainResponsiveDelivery: async () => {
       drainCalls += 1;
-      if (drainCalls === 2) return { messages: [{ seq: 7, event_id: "evt-7", content: "server-framed content" }] };
-      return { messages: [] };
+      if (drainCalls === 1) return { messages: [] };
+      return { messages: [{ seq: 7, event_id: "evt-7", content: "server-framed content" }] };
     },
     ackResponsiveDelivery: async (message) => { acknowledgements.push([message.seq, message.event_id]); },
     openWakeStream: async (signal) => {
@@ -61,6 +61,8 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     await bridge.start();
     await eventually(() => bridge.status().pending === 1);
     assert.deepEqual(acknowledgements, []);
+    assert.equal(bridge.status().lastError, undefined);
+    assert.equal(drainCalls, 3, "the repeated unacked batch should terminate the drain");
 
     assert.deepEqual(await request(bridge.status().socketPath, { action: "bind", sessionId: "command-code-session" }), { ok: true, bound: true });
     assert.deepEqual(await request(bridge.status().socketPath, { action: "bind", sessionId: "other-session" }), { ok: false, bound: true });

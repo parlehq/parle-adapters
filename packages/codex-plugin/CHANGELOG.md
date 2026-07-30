@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.2.1 (2026-07-29)
+
+- Stop responsive delivery drain after the server repeats the same unacknowledged batch, avoiding a 100-request loop before the host hook can commit it.
+- Surface active wake or drain failures as `Watcher degraded` instead of masking them as `Watcher on`.
+
 ## 0.2.0 (2026-07-29)
 
 - Add trusted Codex lifecycle hooks backed by the shared responsive-delivery hook bridge.

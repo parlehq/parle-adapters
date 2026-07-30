@@ -219,6 +219,7 @@ export class HookDeliveryBridge {
           const response = await this.client.openWakeStream(signal);
           const reader = response.body?.getReader();
           if (!reader) throw new Error("Parle wake stream response body is not readable");
+          this.lastError = undefined;
           const decoder = new TextDecoder();
           let buffer = "";
           while (!signal.aborted) {
@@ -245,13 +246,18 @@ export class HookDeliveryBridge {
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
       const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
       if (delivery.messages.length === 0) return;
+      let queued = 0;
       for (const message of delivery.messages) {
         const key = deliveryKey(message);
         if (this.queuedKeys.has(key)) continue;
         if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
         this.pending.push({ ...message, key });
         this.queuedKeys.add(key);
+        queued += 1;
       }
+      // The server cursor advances only after hook commit acks the queued rows.
+      // A repeated all-known batch is therefore the drain boundary, not a stall.
+      if (queued === 0) return;
     }
     throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }

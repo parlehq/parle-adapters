@@ -131,6 +131,16 @@ test("status card omits zero unread and retains unknown watcher guidance", () =>
   assert.match(card, /Next: arm or verify the watcher\./);
 });
 
+test("status card surfaces degraded responsive delivery", () => {
+  const card = compactStatusCardFromStatus({
+    watcher: { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" },
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", roomId: "room-1", unreadCount: 0 },
+  });
+  assert.match(card, /Watcher       degraded/);
+  assert.match(card, /Next: inspect the responsive delivery error and restart the host if it does not recover\./);
+});
+
 test("failed status shows a short not-connected card without watcher claims", () => {
   assert.equal(compactStatusCardFromStatus({
     config: { roomId: { configured: true }, agentToken: { configured: true } },

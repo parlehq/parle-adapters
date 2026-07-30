@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 (2026-07-29)
+
+- Stop responsive delivery drain after the server repeats the same unacknowledged batch.
+- Report active hook bridge errors as `Watcher degraded` in status cards.
+
 ## 0.2.0 (2026-07-29)
 
 - Replace the host-name switch with the host-neutral `PARLE_RESPONSIVE_DELIVERY=hook-bridge` capability.
