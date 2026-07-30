@@ -13,6 +13,7 @@ import {
   ERROR_REGISTRY,
   ERROR_SCOPES,
   ParleAgentClient,
+  processClientInstanceId,
   formatVersionErrorHint,
   addressingWarning,
   assertSafeBase,
@@ -333,6 +334,7 @@ test("wake, zero-wait drain, and ack stay in shared client primitives", async ()
   assert.equal(calls[0].url, "http://localhost:3001/v/agent/wake");
   assert.equal(calls[0].init.headers.Accept, "text/event-stream");
   assert.equal(calls[0].init.headers["Parle-Agent-Session"], "session-secret");
+  assert.equal(calls[0].init.headers["Parle-Client-Instance"], client.clientInstanceId);
   assert.equal(calls[1].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery?wait=0");
   assert.equal(calls[2].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery/ack");
   assert.deepEqual(JSON.parse(calls[2].init.body), { seq: 8, event_id: "evt-8" });
@@ -377,19 +379,33 @@ test("wrapped content compacts only exact same-response framing", () => {
   assert.equal(compactServerWrappedContent(content.replace("trusted\n", "trusted\n\n"), preamble, "ABC"), content.replace("trusted\n", "trusted\n\n"));
 });
 
-test("requestJson sends low-cardinality client identity headers", async () => {
-  let observed;
-  const client = new ParleAgentClient({
+test("requestJson sends one process client identity and rejects reserved caller overrides", async () => {
+  const observed = [];
+  const options = {
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     publishRuntime: { adapterName: "@parlehq/test-adapter", adapterVersion: "1.2.3" },
     fetch: async (_url, init = {}) => {
-      observed = init.headers;
+      observed.push(init.headers);
       return json({ ok: true });
     },
-  });
-  await client.requestJson("/v/test");
-  assert.equal(observed["Parle-Client-Name"], "@parlehq/test-adapter");
-  assert.equal(observed["Parle-Client-Version"], "1.2.3");
+  };
+  const first = new ParleAgentClient(options);
+  const second = new ParleAgentClient(options);
+  await first.requestJson("/v/test");
+  await second.requestJson("/v/test");
+  assert.equal(first.clientInstanceId, processClientInstanceId());
+  assert.equal(second.clientInstanceId, processClientInstanceId());
+  assert.equal(observed[0]["Parle-Client-Name"], "@parlehq/test-adapter");
+  assert.equal(observed[0]["Parle-Client-Version"], "1.2.3");
+  assert.equal(observed[0]["Parle-Client-Instance"], processClientInstanceId());
+  assert.equal(observed[1]["Parle-Client-Instance"], processClientInstanceId());
+  await assert.rejects(
+    () => first.requestJson("/v/test", { headers: { "pArLe-ClIeNt-InStAnCe": "00000000-0000-4000-8000-000000000000" } }),
+    /reserved by the Parle client/,
+  );
+  assert.equal(observed.length, 2);
+  assert.throws(() => new ParleAgentClient({ ...options, clientName: "Not A Package" }), /npm package name/);
+  assert.throws(() => new ParleAgentClient({ ...options, clientVersion: "release" }), /SemVer/);
 });
 
 test("unsupported version errors include source, default, and server versions", async () => {
@@ -1014,9 +1030,11 @@ test("client profile switch prepares a scratch session, adopts room identity, an
     mkdirSync(join(home, ".parle"), { mode: 0o700 });
     writeFileSync(join(home, ".parle", "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_old\n\n[target]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_target\n", { mode: 0o600 });
     const calls = [];
+    const instances = [];
     const fetch = async (url, init = {}) => {
       const path = new URL(String(url)).pathname;
       const auth = init.headers?.Authorization;
+      instances.push(init.headers?.["Parle-Client-Instance"]);
       if (path === "/v/agent/sessions") {
         calls.push(["session", auth]);
         const target = auth === "Bearer parle_agt_target";
@@ -1046,6 +1064,7 @@ test("client profile switch prepares a scratch session, adopts room identity, an
     assert.equal(client.status().config.profile.value, "target");
     assert.equal(client.status().runtime.roomHandle, "target-room");
     assert.deepEqual(calls.at(-1), ["end-old", "Bearer parle_agt_old", "parle_ses_old"]);
+    assert.deepEqual([...new Set(instances)], [client.clientInstanceId], "scratch bootstrap and retirement retain the owner process identity");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

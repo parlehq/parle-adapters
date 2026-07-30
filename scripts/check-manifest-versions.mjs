@@ -24,10 +24,7 @@ const runtimeChecks = [
   {
     sourcePath: 'packages/mcp-server/src/index.ts',
     packagePath: 'packages/mcp-server/package.json',
-    patterns: [
-      /new McpServer\(\{ name: "parle-mcp-server", version: "([^"]+)" \}\)/,
-      /adapterName: "@parlehq\/mcp-server", adapterVersion: "([^"]+)"/,
-    ],
+    patterns: [/const MCP_CLIENT_VERSION = "([^"]+)";/],
   },
 ];
 

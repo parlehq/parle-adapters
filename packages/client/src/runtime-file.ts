@@ -17,6 +17,7 @@ export type RuntimeFileSnapshot = {
   schemaVersion: number;
   pid: number;
   processStartedAt: string;
+  clientInstanceId: string;
   state: RuntimeFileState;
   sessionAddress: string | null;
   agentSessionId: string;

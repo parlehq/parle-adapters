@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient } from "@parlehq/agent-client";
-import { WATCHER_USAGE, WatcherUsageError, createParleMcpServer, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -50,18 +50,24 @@ const watcherEnv = {
   PARLE_ROOM_ID: "room-1",
   PARLE_ROOM_AGENT_TOKEN: "parle_agt_watch_secret",
   PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
+  PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
   PARLE_VERSION: "2026-07-07",
 };
 
-test("watch request helper classifies its deadline without exposing credentials", async () => {
+test("watch request helper retains the owner process identity without exposing credentials", async () => {
   let requestedUrl;
+  let requestedHeaders;
   const fetchImpl = (url, options) => {
     requestedUrl = String(url);
+    requestedHeaders = options.headers;
     return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
   };
   const wire = await watcherRequestWire("7", "hold", { env: watcherEnv, fetchImpl, timeoutMs: 5, parentPid: 0 });
   assert.equal(wire, '000\n{"watcher_local":{"outcome":"held_deadline"}}');
   assert.match(requestedUrl, /since_seq=7&wait=25/);
+  assert.equal(requestedHeaders["Parle-Client-Name"], MCP_CLIENT_NAME);
+  assert.equal(requestedHeaders["Parle-Client-Version"], MCP_CLIENT_VERSION);
+  assert.equal(requestedHeaders["Parle-Client-Instance"], MCP_CLIENT_INSTANCE_ID);
   assert.equal(wire.includes(watcherEnv.PARLE_ROOM_AGENT_TOKEN), false);
   assert.equal(wire.includes(watcherEnv.PARLE_WATCH_AGENT_SESSION), false);
 });
@@ -114,6 +120,27 @@ test("watch request helper keeps transport, parent abort, and malformed response
   assert.equal(apiError, '429\n{"error":{"action":"retry_with_backoff","retry_after_ms":2000}}');
 });
 
+test("MCP client factory keeps one process identity through dedicated session bootstrap", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init = {}) => {
+    requests.push({ url: String(url), headers: init.headers });
+    if (String(url).endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-watch", session_credential: "parle_ses_watch", expires_at: "2099-01-01T00:00:00Z" }), { status: 201 });
+    if (String(url).endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "part-watch" }), { status: 201 });
+    return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+  };
+  const first = createMcpAgentClient({ env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "token-1" }, fetch: fetchImpl });
+  const second = createMcpAgentClient({ env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "token-1" }, fetch: fetchImpl });
+  await first.bootstrap();
+  await second.requestJson("/v/probe");
+  assert.equal(first.clientInstanceId, MCP_CLIENT_INSTANCE_ID);
+  assert.equal(second.clientInstanceId, MCP_CLIENT_INSTANCE_ID);
+  for (const request of requests) {
+    assert.equal(request.headers["Parle-Client-Name"], MCP_CLIENT_NAME);
+    assert.equal(request.headers["Parle-Client-Version"], MCP_CLIENT_VERSION);
+    assert.equal(request.headers["Parle-Client-Instance"], MCP_CLIENT_INSTANCE_ID);
+  }
+});
+
 test("account-tool errors preserve actionable invitation denial fields", async () => {
   const denial = Object.assign(new Error("Parle API 403: forbidden. Reason: unhardened. Next action: set a password, then enroll a second factor"), {
     status: 403,
@@ -155,6 +182,7 @@ test("watch launcher uses shared profile resolution and preserves direct config"
     assert.equal(profile.PARLE_API_BASE, "https://profile.example");
     assert.equal(profile.SAFE_KEEP, "yes");
     assert.equal(profile.PARLE_PROFILE, undefined);
+    assert.equal(profile.PARLE_WATCH_CLIENT_INSTANCE_ID, MCP_CLIENT_INSTANCE_ID);
     const explicitProfile = resolveWatcherEnvironment(cwd, { HOME: home, PARLE_PROFILE: "stale-selector" }, undefined, "watch");
     assert.equal(explicitProfile.PARLE_ROOM_AGENT_TOKEN, "parle_agt_watch_secret");
     assert.equal(explicitProfile.PARLE_PROFILE, undefined);

@@ -2,10 +2,12 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, ERROR_ACTIONS, ERROR_REGISTRY, ParleAccountClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, processClientInstanceId, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
-const PI_EXTENSION_VERSION = "0.1.33";
+const PI_CLIENT_NAME = "@parlehq/pi-extension";
+const PI_EXTENSION_VERSION = "0.1.34";
+const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -610,6 +612,7 @@ function publishRuntimeState(ctx: any, cfg = resolveConfig(ctx?.cwd || process.c
       schemaVersion: RUNTIME_SCHEMA_VERSION,
       pid: process.pid,
       processStartedAt: processStartedAtIso(),
+      clientInstanceId: PI_CLIENT_INSTANCE_ID,
       state,
       sessionAddress: runtime.sessionAddress || null,
       agentSessionId: runtime.agentSessionId || "",
@@ -995,10 +998,14 @@ async function parleRequest(cfg: ParleConfig, params: ParleRequestParams, signal
       throw new Error(`Mutating Parle request requires confirmMutation=true, confirmScope=${expected}, and a reason.`);
     }
   }
+  assertNoReservedProtocolHeaders(params.headers);
   const headers: Record<string, string> = {
     Accept: "application/json, text/plain, */*",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
     ...(params.headers || {}),
+    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
+    "Parle-Client-Name": PI_CLIENT_NAME,
+    "Parle-Client-Version": PI_EXTENSION_VERSION,
+    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
   };
   let body: string | undefined;
   if (params.body !== undefined) {
@@ -1038,8 +1045,9 @@ async function requestJson(cfg: ParleConfig, path: string, options: { method?: s
   const headers: Record<string, string> = {
     Accept: "application/json",
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
-    "Parle-Client-Name": "@parlehq/pi-extension",
+    "Parle-Client-Name": PI_CLIENT_NAME,
     "Parle-Client-Version": PI_EXTENSION_VERSION,
+    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
     Authorization: `Bearer ${cfg.agentToken!.value}`,
   };
   if (options.session && state.sessionHandle) headers["Parle-Agent-Session"] = state.sessionHandle;
@@ -1153,6 +1161,9 @@ async function fetchWakeStream(cfg: ParleConfig, signal: AbortSignal): Promise<R
   const headers: Record<string, string> = {
     Accept: "text/event-stream",
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
+    "Parle-Client-Name": PI_CLIENT_NAME,
+    "Parle-Client-Version": PI_EXTENSION_VERSION,
+    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
     Authorization: `Bearer ${cfg.agentToken!.value}`,
   };
   if (runtime.sessionHandle) headers["Parle-Agent-Session"] = runtime.sessionHandle;
@@ -2126,7 +2137,11 @@ export const __testing = {
   queueResponsiveMessages,
   flushPendingResponsiveMessages,
   parseSSEBlocks,
+  fetchWakeStream,
+  parleRequest,
+  requestJson,
   resolveConfig,
+  clientInstanceId: PI_CLIENT_INSTANCE_ID,
   useSessionAlias,
   runtimeState() { return runtime; },
   patchRuntime(patch: Partial<RuntimeState>) { runtime = { ...runtime, ...patch }; },

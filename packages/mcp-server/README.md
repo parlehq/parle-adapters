@@ -23,7 +23,9 @@ MCP v1 tools:
 
 The stdio server uses the shared client resolver. It supports direct process env and project `.env` configuration, plus atomic `PARLE_PROFILE` bindings from a single profile catalog (`~/.parle/profiles` by default, `PARLE_PROFILES_PATH` to relocate; the override replaces the default entirely). An explicit profile cannot be mixed with direct room-binding values. With no explicit binding, `[default]` is selected when present.
 
-The bundled Claude watcher launcher is also hosted in this artifact. Every watcher start resolves configuration afresh, then passes the agent token only in the worker child environment. The request helper constructs authentication inside Node, so the token is never placed in argv, stdout, logs, or temporary files.
+The bundled Claude watcher launcher is also hosted in this artifact. Every watcher start resolves configuration afresh, then passes the agent token only in the worker child environment. The request helper constructs authentication inside Node, so the token is never placed in argv, stdout, logs, or temporary files. One process-ephemeral UUID identifies MCP agent-token requests, including watcher bootstrap and every one-shot poll helper. The shell hands the owner UUID to helpers instead of letting each helper mint one.
+
+Claude Code plugin, Command Code, and Claude Desktop requests report the bundled `@parlehq/mcp-server` name and version on the wire. Packaging wrapper versions are not injected as protocol identity.
 
 ## Session lifecycle
 
@@ -31,7 +33,7 @@ The stdio entrypoint constructs a `ParleAgentClient` with runtime publishing ena
 
 `parle_status` auto-connects by default when configured and not yet connected, reporting `bootstrapAttempted`; `inspect: true` restores the passive no-network read. Explicit calls (`parle_connect`, reads, sends) always retry regardless of the backoff window.
 
-The client publishes a display-safe per-process snapshot to `<cwd>/.parle/runtime/<pid>.json` (0700 directory, 0600 file, atomic rename; never a credential) for host UX surfaces such as statuslines. Snapshots self-invalidate via expiry plus pid liveness; provably stale sibling files are pruned at startup; SIGINT/SIGTERM end the session best-effort and remove the file.
+The client publishes a display-safe per-process snapshot to `<cwd>/.parle/runtime/<pid>.json` (0700 directory, 0600 file, atomic rename; never a credential) for host UX surfaces such as statuslines. Its `clientInstanceId` matches the request header for local PID correlation. Snapshots self-invalidate via expiry plus pid liveness; provably stale sibling files are pruned at startup; SIGINT/SIGTERM end the session best-effort and remove the file.
 
 ## Unread observation
 

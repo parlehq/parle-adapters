@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+## 0.5.35
+
+Report one process-ephemeral MCP client instance on agent-token JSON, wake, watcher bootstrap, and watcher poll requests. Runtime snapshots publish the same identifier.
+
 ## 0.5.34 (2026-07-29)
 
 Reject unsupported watcher launcher arguments before configuration resolution, watcher-session bootstrap, or worker spawn. Preserve the documented one-argument, two-argument, and profile-prefixed forms with one canonical usage line.
-
 ## 0.5.33 (2026-07-29)
 
 Render connected Claude status with honest `Watcher unknown` evidence and the safe next action `arm or verify the watcher`. Status cards never infer a running watcher from the MCP session or remembered task state.

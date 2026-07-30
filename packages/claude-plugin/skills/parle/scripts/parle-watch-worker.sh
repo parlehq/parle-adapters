@@ -61,6 +61,7 @@ me="${2:-}"
 : "${PARLE_ROOM_AGENT_TOKEN:?resolved watcher configuration missing}"
 : "${PARLE_WATCH_AGENT_SESSION:?dedicated watcher session missing}"
 : "${PARLE_VERSION:?resolved watcher configuration missing}"
+: "${PARLE_WATCH_CLIENT_INSTANCE_ID:?watch launcher client identity missing}"
 : "${PARLE_WATCH_REQUEST_HELPER:?bundled watch request helper missing}"
 : "${PARLE_WATCH_PARENT_PID:?watch launcher pid missing}"
 

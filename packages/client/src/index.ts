@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
+import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
 import { CONFORMANCE_PARLE_VERSION, CONFORMANCE_TOKEN_CLASSES } from "./conformance-data.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
@@ -10,6 +11,7 @@ export * from "./account.js";
 export * from "./hardening.js";
 export * from "./format.js";
 export * from "./runtime-file.js";
+export * from "./process-instance.js";
 export { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
 export { CONFORMANCE_PARLE_VERSION, CONFORMANCE_TOKEN_CLASSES, type ConformanceTokenClass } from "./conformance-data.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
@@ -20,6 +22,20 @@ export const DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
+
+const RESERVED_PROTOCOL_HEADERS = new Set([
+  "authorization",
+  "parle-agent-session",
+  "parle-client-instance",
+  "parle-client-name",
+  "parle-client-version",
+  "parle-version",
+]);
+
+export function assertNoReservedProtocolHeaders(headers?: Record<string, string>): void {
+  const overridden = Object.keys(headers || {}).find((name) => RESERVED_PROTOCOL_HEADERS.has(name.toLowerCase()));
+  if (overridden) throw new ParleApiError(`Caller header ${overridden} is reserved by the Parle client`, { code: "validation_failed", action: "fix_client", scope: "request" });
+}
 
 // @parle-interpretation parlehq/parle#433
 // Canonical connect guidance pending server-authored text in discovery surfaces.
@@ -101,6 +117,9 @@ export type ClientOptions = {
   randomUUID?: () => string;
   clientName?: string;
   clientVersion?: string;
+  // Defaults to the package process singleton. Adapter-owned scratch clients
+  // must pass their owner's value so rebootstrap and profile switches retain it.
+  clientInstanceId?: string;
   // When set, the client publishes a display-safe per-pid runtime snapshot to
   // .parle/runtime/<pid>.json on every bootstrap state change (see runtime-file.ts)
   // and prunes provably stale sibling files at construction.
@@ -652,6 +671,7 @@ export class ParleAgentClient {
   readonly randomUUID: () => string;
   readonly clientName: string;
   readonly clientVersion?: string;
+  readonly clientInstanceId: string;
   readonly publishRuntime?: { adapterName: string; adapterVersion?: string };
   runtime: RuntimeState = {
     bootstrapped: false,
@@ -686,8 +706,10 @@ export class ParleAgentClient {
     this.sleepImpl = options.sleep || defaultSleep;
     this.randomUUID = options.randomUUID || randomUUID;
     this.publishRuntime = options.publishRuntime;
-    this.clientName = options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client";
-    this.clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
+    this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
+    const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
+    this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : undefined;
+    this.clientInstanceId = assertClientInstanceId(options.clientInstanceId || processClientInstanceId());
     if (this.publishRuntime) {
       try {
         pruneRuntimeFiles(this.cwd, this.now());
@@ -819,12 +841,14 @@ export class ParleAgentClient {
   private async requestJsonOnce(pathOrUrl: string, options: RequestOptions, method: string): Promise<any> {
     const url = requestUrl(this.cfg, pathOrUrl);
     assertSafeBase(url.origin, this.env);
+    assertNoReservedProtocolHeaders(options.headers);
     const headers: Record<string, string> = {
       Accept: "application/json",
+      ...options.headers,
       "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
       "Parle-Client-Name": this.clientName,
       ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
-      ...options.headers,
+      "Parle-Client-Instance": this.clientInstanceId,
     };
     if (options.body !== undefined) headers["Content-Type"] = "application/json";
     if (options.authMode === "human_session") throw new ParleApiError("human_session auth is not implemented in @parlehq/agent-client yet", { code: "not_implemented" });
@@ -999,6 +1023,7 @@ export class ParleAgentClient {
             randomUUID: this.randomUUID,
             clientName: this.clientName,
             clientVersion: this.clientVersion,
+            clientInstanceId: this.clientInstanceId,
           });
           try {
             await prepared.bootstrap(signal, false);
@@ -1033,6 +1058,7 @@ export class ParleAgentClient {
             randomUUID: this.randomUUID,
             clientName: this.clientName,
             clientVersion: this.clientVersion,
+            clientInstanceId: this.clientInstanceId,
           });
           prior.cfg = previousCfg;
           prior.runtime = previousRuntime;
@@ -1098,6 +1124,7 @@ export class ParleAgentClient {
         schemaVersion: RUNTIME_SCHEMA_VERSION,
         pid: process.pid,
         processStartedAt: processStartedAtIso(this.now()),
+        clientInstanceId: this.clientInstanceId,
         state: this.runtime.bootstrapState === "ready" ? "ready" : this.runtime.bootstrapState === "failed" ? "failed" : "starting",
         sessionAddress: this.runtime.sessionAddress,
         // agent_session_id is room-visible operational metadata, not a credential
@@ -1321,6 +1348,7 @@ export class ParleAgentClient {
         "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
         "Parle-Client-Name": this.clientName,
         ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
+        "Parle-Client-Instance": this.clientInstanceId,
         Authorization: `Bearer ${this.cfg.agentToken!.value}`,
         "Parle-Agent-Session": this.runtime.sessionHandle,
       };

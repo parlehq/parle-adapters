@@ -614,12 +614,13 @@ test("status publishes a display-safe runtime snapshot", async () => {
   await harness.call("parle_status");
   const snapshot = JSON.parse(readFileSync(join(cwd, ".parle", "runtime", `${process.pid}.json`), "utf8"));
   assert.equal(snapshot.schemaVersion, 1);
+  assert.equal(snapshot.clientInstanceId, __testing.clientInstanceId);
   assert.equal(snapshot.state, "ready");
   assert.equal(snapshot.agentSessionId, "as-1");
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.33" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.34" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -845,6 +846,37 @@ test("mutating request requires exact confirmation scope", async () => {
   );
   const ok = await harness.call("parle_request", { method: "POST", path: "/v/rooms", confirmMutation: true, confirmScope: "POST /v/rooms", reason: "test" });
   assert.equal(ok.details.ok, true);
+});
+
+test("Pi JSON, generic agent request, and wake use one protected process identity", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), headers: init.headers });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const harness = installHarness(cwd);
+  __testing.patchRuntime({ sessionHandle: "parle_ses_pi", agentSessionId: "as-pi", roomId: "room-1", bootstrapped: true });
+  const cfg = __testing.resolveConfig(cwd);
+
+  await __testing.requestJson(cfg, "/v/probe", { session: true });
+  await harness.call("parle_request", { path: "/v/rooms/room-1/projection", authMode: "agent_token", headers: { "X-Test": "safe" } });
+  await __testing.fetchWakeStream(cfg, new AbortController().signal);
+
+  assert.match(__testing.clientInstanceId, /^[0-9a-f-]{36}$/);
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
+    assert.equal(call.headers["Parle-Client-Version"], "0.1.34");
+    assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
+  }
+  assert.equal(calls[1].headers["X-Test"], "safe");
+  assert.equal(calls[2].headers.Accept, "text/event-stream");
+  await assert.rejects(
+    harness.call("parle_request", { path: "/v/rooms/room-1/projection", authMode: "agent_token", headers: { "pArLe-ClIeNt-NaMe": "spoofed" } }),
+    /reserved by the Parle client/,
+  );
+  assert.equal(calls.length, 3);
 });
 
 test("session cookie files fail closed when group or world accessible", async () => {
@@ -1631,7 +1663,8 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.33");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.34");
+      assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
     }

@@ -1,7 +1,15 @@
 // src/index.ts
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { chmodSync as chmodSync2, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync4, readdirSync, realpathSync as realpathSync2, renameSync as renameSync3, rmSync, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename as basename2, dirname as dirname4, join as join4 } from "node:path";
+
+// ../client/dist/process-instance.js
+import { randomUUID } from "node:crypto";
+var processClientInstance;
+function processClientInstanceId() {
+  processClientInstance ||= randomUUID();
+  return processClientInstance;
+}
 
 // ../client/dist/error-contract.js
 var ERROR_ACTIONS = [
@@ -1949,6 +1957,19 @@ var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var READ_LIMIT_BYTES = 256 * 1024;
+var RESERVED_PROTOCOL_HEADERS = /* @__PURE__ */ new Set([
+  "authorization",
+  "parle-agent-session",
+  "parle-client-instance",
+  "parle-client-name",
+  "parle-client-version",
+  "parle-version"
+]);
+function assertNoReservedProtocolHeaders(headers) {
+  const overridden = Object.keys(headers || {}).find((name) => RESERVED_PROTOCOL_HEADERS.has(name.toLowerCase()));
+  if (overridden)
+    throw new ParleApiError(`Caller header ${overridden} is reserved by the Parle client`, { code: "validation_failed", action: "fix_client", scope: "request" });
+}
 async function performProfileSwitch(plan) {
   const target = plan.resolve();
   if (!target.changed) {
@@ -1973,6 +1994,26 @@ async function performProfileSwitch(plan) {
   }
   return { switched: true, profile: target.profile, roomId: target.roomId, watcherRestarted, warnings };
 }
+var ParleApiError = class extends Error {
+  status;
+  code;
+  action;
+  scope;
+  retryAfterMs;
+  retryable;
+  details;
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "ParleApiError";
+    this.status = options.status;
+    this.code = options.code;
+    this.action = options.action;
+    this.scope = options.scope;
+    this.retryAfterMs = options.retryAfterMs;
+    this.retryable = options.retryable ?? false;
+    this.details = options.details;
+  }
+};
 function parseKeyValueFile(text) {
   const out = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -2035,7 +2076,9 @@ function summarizeSendDelivery(details) {
 // src/index.ts
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
-var PI_EXTENSION_VERSION = "0.1.33";
+var PI_CLIENT_NAME = "@parlehq/pi-extension";
+var PI_EXTENSION_VERSION = "0.1.34";
+var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -2400,6 +2443,7 @@ function publishRuntimeState(ctx, cfg = resolveConfig(ctx?.cwd || process.cwd())
       schemaVersion: RUNTIME_SCHEMA_VERSION2,
       pid: process.pid,
       processStartedAt: processStartedAtIso2(),
+      clientInstanceId: PI_CLIENT_INSTANCE_ID,
       state,
       sessionAddress: runtime.sessionAddress || null,
       agentSessionId: runtime.agentSessionId || "",
@@ -2761,10 +2805,14 @@ async function parleRequest(cfg, params, signal, runtimeSession) {
       throw new Error(`Mutating Parle request requires confirmMutation=true, confirmScope=${expected}, and a reason.`);
     }
   }
+  assertNoReservedProtocolHeaders(params.headers);
   const headers = {
     Accept: "application/json, text/plain, */*",
+    ...params.headers || {},
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
-    ...params.headers || {}
+    "Parle-Client-Name": PI_CLIENT_NAME,
+    "Parle-Client-Version": PI_EXTENSION_VERSION,
+    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID
   };
   let body;
   if (params.body !== void 0) {
@@ -2806,8 +2854,9 @@ async function requestJson(cfg, path, options = {}, state = runtime) {
   const headers = {
     Accept: "application/json",
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
-    "Parle-Client-Name": "@parlehq/pi-extension",
+    "Parle-Client-Name": PI_CLIENT_NAME,
     "Parle-Client-Version": PI_EXTENSION_VERSION,
+    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
     Authorization: `Bearer ${cfg.agentToken.value}`
   };
   if (options.session && state.sessionHandle) headers["Parle-Agent-Session"] = state.sessionHandle;
@@ -2913,6 +2962,9 @@ async function fetchWakeStream(cfg, signal) {
   const headers = {
     Accept: "text/event-stream",
     "Parle-Version": cfg.version.value || DEFAULT_VERSION,
+    "Parle-Client-Name": PI_CLIENT_NAME,
+    "Parle-Client-Version": PI_EXTENSION_VERSION,
+    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
     Authorization: `Bearer ${cfg.agentToken.value}`
   };
   if (runtime.sessionHandle) headers["Parle-Agent-Session"] = runtime.sessionHandle;
@@ -3805,7 +3857,11 @@ var __testing = {
   queueResponsiveMessages,
   flushPendingResponsiveMessages,
   parseSSEBlocks,
+  fetchWakeStream,
+  parleRequest,
+  requestJson,
   resolveConfig,
+  clientInstanceId: PI_CLIENT_INSTANCE_ID,
   useSessionAlias,
   runtimeState() {
     return runtime;
@@ -4274,7 +4330,7 @@ function parleExtension(pi) {
     async execute(_id, params, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const idempotencyKey = params.idempotencyKey || randomUUID();
+      const idempotencyKey = params.idempotencyKey || randomUUID2();
       const to = typeof params.to === "string" && params.to.trim() ? params.to.trim() : void 0;
       const submitBody = { type: "message_submitted", payload: { body: params.body } };
       if (to) submitBody.addressing = { audience: "direct", to };

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import {
   ParleAgentClient,
+  processClientInstanceId,
   isLiveRuntimeSnapshot,
   runtimeDirPath,
   runtimeFilePath,
@@ -127,6 +128,8 @@ test("publishRuntime writes a credential-free 0600 snapshot and endSession remov
     assert.equal(snapshot.schemaVersion, 1);
     assert.equal(snapshot.state, "ready");
     assert.equal(snapshot.pid, process.pid);
+    assert.equal(snapshot.clientInstanceId, processClientInstanceId());
+    assert.equal(snapshot.clientInstanceId, client.clientInstanceId);
     assert.equal(snapshot.sessionAddress, "@p.a.s1");
     assert.equal(snapshot.agentSessionId, "as-1");
     assert.equal(snapshot.roomHandle, "test-room");
