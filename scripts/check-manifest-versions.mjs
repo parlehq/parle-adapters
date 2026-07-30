@@ -9,6 +9,10 @@ const checks = [
     manifestPath: 'packages/claude-desktop-extension/manifest.json',
     packagePath: 'packages/claude-desktop-extension/package.json',
   },
+  {
+    manifestPath: 'packages/codex-plugin/.codex-plugin/plugin.json',
+    packagePath: 'packages/codex-plugin/package.json',
+  },
 ];
 
 const runtimeChecks = [

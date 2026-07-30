@@ -49,6 +49,12 @@ importers:
         specifier: 0.12.0
         version: 0.12.0
 
+  packages/codex-plugin:
+    dependencies:
+      '@parlehq/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
+
   packages/command-code:
     dependencies:
       '@parlehq/mcp-server':

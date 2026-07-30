@@ -1,0 +1,34 @@
+{
+  "name": "parle-codex-plugin",
+  "version": "0.1.0",
+  "description": "Parle room tools for Codex through the bundled Parle MCP server",
+  "author": {
+    "name": "Parle"
+  },
+  "repository": "https://github.com/parlehq/parle-adapters",
+  "license": "MIT",
+  "keywords": [
+    "parle",
+    "mcp",
+    "agents",
+    "coordination"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Parle",
+    "shortDescription": "Coordinate Codex sessions through Parle rooms",
+    "longDescription": "Connect Codex to Parle room tools through a bundled local MCP server and focused coordination guidance.",
+    "developerName": "Parle",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://parle.sh",
+    "defaultPrompt": [
+      "Connect to Parle and show my room status",
+      "Read my Parle inbox and handle the latest coordination request"
+    ]
+  }
+}

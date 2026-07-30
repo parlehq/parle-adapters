@@ -23,6 +23,7 @@ Parle HTTP protocol and discovery
         ↓                                      ↓
 Generic MCP hosts                    Pi native tools and watcher
 Claude Code plugin
+Codex plugin
 Claude Desktop MCPB
 Future MCP-only packages
 ```
@@ -84,6 +85,7 @@ Adapter-local fixes are appropriate for host UX, packaging, permissions, and pre
 | `@parlehq/pi-extension` | Pi tool registration, Pi lifecycle hooks, watcher loop orchestration, prompt injection, Pi UX | Pi API changes, watcher UX changes, native responsive-delivery behavior | Pi tests plus live Pi validation when watcher changes |
 | `@parlehq/mcp-server` | MCP tool schemas, annotations, stdio server, MCP-safe rendering | tool contract changes, tool description changes that require skill consistency review, shared client API changes, MCP SDK behavior | MCP tests, stdio smoke, build bundle |
 | `packages/claude-plugin` | Claude Code plugin metadata, `.mcp.json`, skill guidance, copied MCP artifact | Claude Code plugin metadata or skill changes, MCP artifact changes | plugin tests, artifact byte-check, local plugin validation for install-flow changes |
+| `packages/codex-plugin` | Codex plugin metadata, marketplace entry, `.mcp.json`, skill guidance, copied MCP artifact | Codex plugin metadata or skill changes, MCP artifact changes | plugin tests, artifact byte-check, disposable Codex marketplace install |
 | `packages/claude-desktop-extension` | MCPB manifest, sensitive user config, package README, pack/inspect/secret-scan, copied MCP artifact | MCP artifact changes, MCPB schema changes, Desktop install UX changes | package test, MCPB validate/pack/unpack, archive inspection, secret scan, manual Desktop validation for release |
 | Generic MCP docs | Host-specific launch examples for the MCP server | published package path changes, tool contract changes | docs review plus MCP smoke |
 
@@ -159,10 +161,11 @@ Remote or hosted MCP is out of scope for the current stdio server. The current M
 
 ## Release and CI/CD implications
 
-The repo now has three release artifact classes:
+The repo now has four release artifact classes:
 
 - npm candidates: `@parlehq/agent-client`, `@parlehq/mcp-server`, `@parlehq/pi-extension`
 - git-installed Claude Code plugin: `packages/claude-plugin`
+- marketplace-installed Codex plugin: `packages/codex-plugin`
 - downloadable MCPB bundle: `packages/claude-desktop-extension/out/parle-claude-desktop-extension.mcpb`
 
 CI should separate validation from publication.

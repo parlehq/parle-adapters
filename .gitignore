@@ -6,6 +6,9 @@ packages/claude-plugin/dist/*
 !packages/command-code/dist/
 packages/command-code/dist/*
 !packages/command-code/dist/parle-mcp.js
+!packages/codex-plugin/dist/
+packages/codex-plugin/dist/*
+!packages/codex-plugin/dist/parle-mcp.js
 !packages/pi-extension/dist/
 packages/pi-extension/dist/*
 !packages/pi-extension/dist/index.js

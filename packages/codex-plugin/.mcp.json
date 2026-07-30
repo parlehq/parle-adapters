@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "parle": {
+      "command": "node",
+      "args": [
+        "./dist/parle-mcp.js"
+      ],
+      "cwd": "."
+    }
+  }
+}

@@ -10,6 +10,7 @@ Use this library when an agent runtime benefits from an extension, plugin, adapt
 - Claude Code plugin: installable today from this repo's plugin marketplace.
 - Generic MCP host: run the bundled stdio server artifact from a clone of this repo.
 - Command Code: install the user-scoped MCP server and Parle skill from this repo.
+- Codex: install the native plugin from this repo's Codex marketplace.
 - Claude Desktop (MCPB): package scaffold exists and reuses the same bundled MCP server artifact; manual Desktop install validation is pending.
 
 ## Install the Claude Code plugin
@@ -31,6 +32,17 @@ node ~/.commandcode/skills/parle/scripts/configure.mjs
 ```
 
 The installed Agent Skill contains the version-matched MCP server and responsive-delivery hook. The configurator registers MCP through `cmd mcp add --scope user` and merges native user hook entries without copying profile credentials into Command Code config. Restart Command Code after installation. See [`packages/command-code/README.md`](./packages/command-code/README.md) for the exact behavior and validation path.
+
+## Install for Codex
+
+Use Codex's native marketplace and plugin channels:
+
+```bash
+codex plugin marketplace add parlehq/parle-adapters
+codex plugin add parle-codex-plugin@parlehq
+```
+
+Start a new Codex session after installation. The plugin supplies native `parle_*` MCP tools plus focused Agent Skill guidance. It remains pull-based in version 0.1.0 and adds no Codex-specific protocol runtime. See [`packages/codex-plugin/README.md`](./packages/codex-plugin/README.md) for the exact behavior and validation path.
 
 ## Run the MCP server in other hosts
 
@@ -65,6 +77,7 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 - `@parlehq/mcp-server` - host-agnostic stdio MCP server exposing the eight v1 Parle tools, bundled into a single artifact with esbuild. Not yet on npm.
 - `@parlehq/claude-plugin` (`packages/claude-plugin`) - Claude Code plugin packaging around the bundled MCP server artifact, plus the `parle` skill.
 - `@parlehq/command-code-adapter` (`packages/command-code`) - Command Code Agent Skill containing the bundled MCP server, responsive-delivery hook, and native configuration helpers.
+- `@parlehq/codex-plugin` (`packages/codex-plugin`) - Codex plugin containing the bundled MCP server and focused Agent Skill guidance.
 - `@parlehq/claude-desktop-extension` (`packages/claude-desktop-extension`) - Claude Desktop MCPB packaging around the bundled MCP server artifact. Manual Desktop validation is still tracked separately.
 
 ## Adapter docs
@@ -72,11 +85,13 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 - Pi: [`packages/pi-extension/README.md`](./packages/pi-extension/README.md) for the Pi tool surface, configuration, and install notes.
 - Claude Code: [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for install, permissions namespacing, and validation notes.
 - Command Code: [`packages/command-code/README.md`](./packages/command-code/README.md) for user installation, skill behavior, and validation notes.
+- Codex: [`packages/codex-plugin/README.md`](./packages/codex-plugin/README.md) for marketplace installation, skill behavior, and validation notes.
 - MCP server: [`packages/mcp-server/README.md`](./packages/mcp-server/README.md) for the tool contract and build.
 - Claude Desktop: [`packages/claude-desktop-extension/README.md`](./packages/claude-desktop-extension/README.md) for MCPB build and validation.
 - Adapter maintenance strategy: [`docs/design/adapter-maintenance-strategy.md`](./docs/design/adapter-maintenance-strategy.md) for shared client, MCP wrapper, Pi, Claude Code, and Desktop boundaries.
 - API-first adapter foundation: [`docs/design/api-first-adapter-foundation.md`](./docs/design/api-first-adapter-foundation.md) for the doctrine that Parle HTTP semantics are canonical and adapters stay thin.
 - Command Code adapter: [`docs/design/command-code-adapter.md`](./docs/design/command-code-adapter.md) for the evidence-backed wrapper decision and failed-session lessons.
+- Codex adapter: [`docs/design/codex-adapter.md`](./docs/design/codex-adapter.md) for the evidence-backed thin-plugin decision and responsive-delivery boundary.
 
 ## Boundary rules
 
