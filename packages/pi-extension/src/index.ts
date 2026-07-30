@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, ERROR_ACTIONS, ER
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.1.36";
+const PI_EXTENSION_VERSION = "0.1.37";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";

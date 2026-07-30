@@ -23,7 +23,12 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.4 <0.81.0",
+    "@earendil-works/pi-coding-agent": ">=0.80.4",
     "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
   }
 }

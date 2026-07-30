@@ -2080,7 +2080,7 @@ function summarizeSendDelivery(details) {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.1.36";
+var PI_EXTENSION_VERSION = "0.1.37";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
