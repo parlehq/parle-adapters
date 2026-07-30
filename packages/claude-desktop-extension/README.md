@@ -18,17 +18,24 @@ Desktop setup is env-only in v1. Project `.env` discovery is not documented as a
 
 `parle_harden_account` accepts no password, OTP, recovery code, cookie, URI, or arbitrary path and never launches the human helper. The account owner must run `parle-hardening-secret` independently in a separate controlling terminal. Disable terminal scrollback and recording before displaying a provisioning QR. Follow the [operator ceremony](../../docs/account-hardening-ceremony.md).
 
-## Validation
+## Build and validation
 
-Run from the repo root:
+From a clean checkout, build the shared client and MCP server in dependency order, then emit the installable MCPB:
 
 ```bash
-pnpm -F @parlehq/mcp-server build
-pnpm -F @parlehq/claude-desktop-extension build
+pnpm install
+pnpm pack:desktop
+```
+
+The bundle is written to `packages/claude-desktop-extension/out/parle-claude-desktop-extension.mcpb`.
+
+Run the full package validation after building:
+
+```bash
 pnpm -F @parlehq/claude-desktop-extension test
 ```
 
-The test path validates the manifest with `@anthropic-ai/mcpb@2.1.2`, packs from a clean staging directory, unpacks the bundle, inspects the archive contents, and runs package-local secret scans.
+`pack:desktop` uses pnpm's dependency-aware filter to build `@parlehq/agent-client` before `@parlehq/mcp-server`; it does not rely on an ignored `packages/client/dist` tree from an earlier build. The package-local `pack:mcpb` script stages, validates, and packs the bundle. The test path additionally runs the MCP smoke test, unpacks and inspects the archive, and runs package-local secret scans.
 
 ## Local Desktop validation checklist
 

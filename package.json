@@ -5,6 +5,8 @@
   "packageManager": "pnpm@11.18.0",
   "scripts": {
     "build": "pnpm -r build",
+    "build:mcp": "pnpm --filter @parlehq/mcp-server... build",
+    "pack:desktop": "pnpm build:mcp && pnpm -F @parlehq/claude-desktop-extension pack:mcpb",
     "check:manifests": "node scripts/check-manifest-versions.mjs",
     "sync-conformance": "node scripts/sync-conformance.mjs",
     "typecheck": "pnpm -r typecheck",
