@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5 (2026-07-30)
+
+- Refresh the shared hook bridge with owner-only runtime publication, stale-artifact cleanup, and fail-open hook handling.
+
 ## 0.2.4 (2026-07-30)
 
 - Return valid JSON when no responsive delivery is queued so lifecycle hooks complete cleanly.

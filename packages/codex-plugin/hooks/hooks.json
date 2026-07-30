@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
+            "commandWindows": "cmd /d /s /c \"echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -19,7 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
+            "commandWindows": "cmd /d /s /c \"echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -32,7 +34,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
+            "commandWindows": "cmd /d /s /c \"echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -45,7 +48,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
+            "commandWindows": "cmd /d /s /c \"echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery"
           }

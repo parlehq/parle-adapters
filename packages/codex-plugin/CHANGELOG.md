@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.6 (2026-07-30)
+
+- Launch lifecycle hooks with the exact Node runtime published by the running MCP bridge instead of resolving ambient runtime-manager shims.
+- Keep every plugin-owned launch and handler failure fail-open with valid no-op JSON.
+- Remove the unsupported `PreToolUse permissionDecision:allow` delivery output.
+- Use one stable launcher command for future hook trust continuity and an explicit Windows no-op while responsive delivery depends on Unix sockets.
+
 ## 0.2.5 (2026-07-30)
 
 - Launch lifecycle hooks from the plugin directory so project-local runtime managers cannot reject an unrelated project configuration before the hook starts.

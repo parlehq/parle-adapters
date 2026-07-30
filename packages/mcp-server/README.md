@@ -43,6 +43,8 @@ Runtime-publishing clients also observe the self-excluding inbound surface past 
 
 When `PARLE_RESPONSIVE_DELIVERY=hook-bridge`, the stdio process disables unread-count polling and starts the host-neutral hook delivery bridge. The bridge queues responsive rows in memory and exposes only server-framed delivery content over an owner-only Unix socket. A supported host binds the bridge to one exact host session, leases pending rows through lifecycle hooks, injects them through valid hook output, and commits before Parle acknowledgement. The socket never carries credentials. `PARLE_HOOK_BRIDGE_SCOPE` selects a shared discovery scope when the MCP process and lifecycle hooks use different working directories.
 
+An armed bridge also publishes an owner-only diagnostic runtime descriptor and executable handle beside its socket. Codex uses that handle to run hooks with the exact Node executable that started the MCP bridge, without consulting ambient runtime-manager shims. Publication failure leaves normal MCP tools available and reports responsive delivery as unarmed. Clean shutdown removes the artifacts, and bridge startup prunes artifacts belonging to provably dead processes.
+
 This package owns:
 
 - stdio MCP server entrypoint and future `bin`

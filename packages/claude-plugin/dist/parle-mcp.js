@@ -410,11 +410,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants);
+          this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -431,10 +431,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants);
+        this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -495,8 +495,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants) {
-        this.code = optimizeExpr(this.code, names, constants);
+      optimizeNames(names, constants2) {
+        this.code = optimizeExpr(this.code, names, constants2);
         return this;
       }
       get names() {
@@ -525,12 +525,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants))
+          if (n.optimizeNames(names, constants2))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -583,12 +583,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a3;
-        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants);
-        if (!(super.optimizeNames(names, constants) || this.else))
+        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
+        if (!(super.optimizeNames(names, constants2) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants);
+        this.condition = optimizeExpr(this.condition, names, constants2);
         return this;
       }
       get names() {
@@ -611,10 +611,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants);
+        this.iteration = optimizeExpr(this.iteration, names, constants2);
         return this;
       }
       get names() {
@@ -650,10 +650,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants);
+        this.iterable = optimizeExpr(this.iterable, names, constants2);
         return this;
       }
       get names() {
@@ -695,11 +695,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a3, _b;
-        super.optimizeNames(names, constants);
-        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants);
+        super.optimizeNames(names, constants2);
+        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants2);
         return this;
       }
       get names() {
@@ -1000,7 +1000,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants) {
+    function optimizeExpr(expr, names, constants2) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1015,14 +1015,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants[n.str];
+        const c = constants2[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -34307,10 +34307,22 @@ var ParleAgentClient = class _ParleAgentClient {
 
 // src/hook-delivery-bridge.ts
 import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
-import { chmodSync as chmodSync3, lstatSync as lstatSync4, mkdirSync as mkdirSync4, rmSync as rmSync2 } from "node:fs";
+import {
+  accessSync,
+  chmodSync as chmodSync3,
+  constants,
+  lstatSync as lstatSync4,
+  mkdirSync as mkdirSync4,
+  readdirSync as readdirSync2,
+  renameSync as renameSync4,
+  rmSync as rmSync2,
+  statSync as statSync3,
+  symlinkSync,
+  writeFileSync as writeFileSync3
+} from "node:fs";
 import { createServer } from "node:net";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { dirname as dirname4, isAbsolute as isAbsolute3, join as join6 } from "node:path";
 var MAX_PENDING = 100;
 var MAX_DRAIN_BATCHES = 100;
 var MAX_BASELINE_MESSAGES = 5e3;
@@ -34341,19 +34353,37 @@ function hookBridgeStateDir(scope) {
 function hookBridgeSocketPath(scope, pid = process.pid) {
   return join6(hookBridgeStateDir(scope), `${pid}.sock`);
 }
+function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid) {
+  return join6(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+}
+function hookBridgeRuntimeHandlePath(scope, pid = process.pid) {
+  return join6(hookBridgeStateDir(scope), `${pid}.node`);
+}
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error51) {
+    if (error51?.code === "ESRCH") return false;
+    return true;
+  }
+}
 var HookDeliveryBridge = class {
-  constructor(client, scope = process.cwd()) {
+  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath) {
     this.client = client;
     this.scope = scope;
+    this.runtimeExecPath = runtimeExecPath;
   }
   client;
   scope;
+  runtimeExecPath;
   abortController = new AbortController();
   pending = [];
   queuedKeys = /* @__PURE__ */ new Set();
   server;
   lease;
   loop;
+  startPromise;
   baselineSkipped = 0;
   lastError;
   hostSessionId;
@@ -34375,21 +34405,38 @@ var HookDeliveryBridge = class {
   }
   async start() {
     if (this.loop) return;
-    await this.client.ensureBootstrapped(this.abortController.signal);
-    await this.baseline();
-    await this.listen();
-    this.loop = this.watchLoop();
-    void this.loop.catch((error51) => {
-      if (!this.abortController.signal.aborted) this.lastError = error51 instanceof Error ? error51.message : String(error51);
-    });
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startBridge();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = void 0;
+    }
   }
   async stop() {
     this.abortController.abort();
     const server = this.server;
     this.server = void 0;
     if (server) await new Promise((resolve) => server.close(() => resolve()));
-    rmSync2(hookBridgeSocketPath(this.scope), { force: true });
+    this.removeOwnRuntimeArtifacts();
     await this.loop?.catch(() => void 0);
+    this.loop = void 0;
+  }
+  async startBridge() {
+    try {
+      this.lastError = void 0;
+      await this.client.ensureBootstrapped(this.abortController.signal);
+      await this.baseline();
+      await this.listen();
+      this.loop = this.watchLoop();
+      void this.loop.catch((error51) => {
+        if (!this.abortController.signal.aborted) this.lastError = error51 instanceof Error ? error51.message : String(error51);
+      });
+    } catch (error51) {
+      this.lastError = error51 instanceof Error ? error51.message : String(error51);
+      this.server = void 0;
+      this.removeOwnRuntimeArtifacts();
+    }
   }
   async baseline() {
     let skipped = 0;
@@ -34415,16 +34462,71 @@ var HookDeliveryBridge = class {
     chmodSync3(dir, 448);
     const after = lstatSync4(dir);
     if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
-    rmSync2(path, { force: true });
-    this.server = createServer((socket) => this.handleSocket(socket));
-    await new Promise((resolve, reject) => {
-      this.server.once("error", reject);
-      this.server.listen(path, () => {
-        this.server.removeListener("error", reject);
-        chmodSync3(path, 384);
-        resolve();
+    this.removeDeadRuntimeArtifacts(dir);
+    this.removeOwnRuntimeArtifacts();
+    this.publishRuntimeArtifacts();
+    try {
+      this.server = createServer((socket) => this.handleSocket(socket));
+      await new Promise((resolve, reject) => {
+        this.server.once("error", reject);
+        this.server.listen(path, () => {
+          this.server.removeListener("error", reject);
+          chmodSync3(path, 384);
+          resolve();
+        });
       });
-    });
+    } catch (error51) {
+      this.server = void 0;
+      this.removeOwnRuntimeArtifacts();
+      throw error51;
+    }
+  }
+  publishRuntimeArtifacts() {
+    const execPath = this.runtimeExecPath;
+    if (!isAbsolute3(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
+    accessSync(execPath, constants.X_OK);
+    if (!statSync3(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
+    const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
+    const handlePath = hookBridgeRuntimeHandlePath(this.scope);
+    const descriptorTemporary = `${descriptorPath}.tmp`;
+    const handleTemporary = `${handlePath}.tmp`;
+    rmSync2(descriptorTemporary, { force: true });
+    rmSync2(handleTemporary, { force: true });
+    try {
+      writeFileSync3(descriptorTemporary, `${JSON.stringify({
+        execPath,
+        pid: process.pid,
+        startedAt: (/* @__PURE__ */ new Date()).toISOString()
+      })}
+`, { encoding: "utf8", mode: 384, flag: "wx" });
+      chmodSync3(descriptorTemporary, 384);
+      renameSync4(descriptorTemporary, descriptorPath);
+      symlinkSync(execPath, handleTemporary, "file");
+      renameSync4(handleTemporary, handlePath);
+    } catch (error51) {
+      rmSync2(descriptorTemporary, { force: true });
+      rmSync2(handleTemporary, { force: true });
+      rmSync2(descriptorPath, { force: true });
+      rmSync2(handlePath, { force: true });
+      throw error51;
+    }
+  }
+  removeOwnRuntimeArtifacts() {
+    for (const path of [
+      hookBridgeSocketPath(this.scope),
+      hookBridgeRuntimeDescriptorPath(this.scope),
+      hookBridgeRuntimeHandlePath(this.scope),
+      `${hookBridgeRuntimeDescriptorPath(this.scope)}.tmp`,
+      `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`
+    ]) rmSync2(path, { force: true });
+  }
+  removeDeadRuntimeArtifacts(dir) {
+    const stalePattern = /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp)?$/;
+    for (const name of readdirSync2(dir)) {
+      const match = name.match(stalePattern);
+      if (!match || processIsAlive(Number(match[1]))) continue;
+      rmSync2(join6(dir, name), { force: true });
+    }
   }
   handleSocket(socket) {
     socket.setEncoding("utf8");
@@ -34541,7 +34643,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.2.3";
+var MCP_CLIENT_VERSION = "0.2.4";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -34617,7 +34719,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = connected ? bridgeStatus ? bridgeStatus.running ? bridgeStatus.lastError ? { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
+      const watcher = connected ? bridgeStatus ? bridgeStatus.lastError ? { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus.running ? { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
       const enriched = watcher ? { ...status, watcher } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
       return { ...status, bootstrapAttempted, ...watcher ? { watcher } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
@@ -34642,7 +34744,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (deliveryBridge?.start) await deliveryBridge.start();
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = bridgeStatus ? bridgeStatus.running ? bridgeStatus.lastError ? "degraded" : "on" : "off" : void 0;
+      const watcher = bridgeStatus ? bridgeStatus.lastError ? "degraded" : bridgeStatus.running ? "on" : "off" : void 0;
       return {
         ...summary,
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},

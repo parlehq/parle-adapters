@@ -422,14 +422,14 @@ test("parle_status auto-connects a configured client and reports the attempt", a
   }
 });
 
-test("parle_status surfaces a running bridge error as degraded", async () => {
+test("parle_status surfaces an unarmed bridge error as degraded", async () => {
   const counters = {};
   const clientImpl = new ParleAgentClient({ env: realClientEnv(), fetch: sessionFetch(counters) });
   const deliveryBridge = {
     start: async () => {},
     bindHostSession: () => true,
     status: () => ({
-      running: true,
+      running: false,
       pending: 0,
       baselineSkipped: 0,
       socketPath: "/tmp/parle-test.sock",

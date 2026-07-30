@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.32 (2026-07-30)
+
+Refresh the shared MCP artifact with scoped hook-bridge runtime publication and fail-open hook handling. Claude Desktop behavior is unchanged.
+
 ## 0.5.31 (2026-07-29)
 
 Report the Claude Desktop extension name and release separately from the shared MCP runtime for bounded operational attribution.

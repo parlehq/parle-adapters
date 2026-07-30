@@ -36,9 +36,13 @@ The plugin bundles a host-neutral responsive-delivery bridge and trusted Codex l
 
 Codex binds each MCP bridge to the exact thread id carried in MCP request metadata. Hooks can inject queued messages at user-prompt, tool, and stop boundaries. A `Stop` delivery continues the turn so Codex can react before settling.
 
+Codex runs hook commands through the user login shell in the session working directory. The plugin therefore does not resolve `node` from ambient `PATH`. The running bridge publishes its exact Node executable through owner-only runtime state, and one stable fail-open launcher uses that handle. Missing or invalid runtime state produces valid no-op JSON instead of breaking the Codex turn. Windows hooks are an explicit no-op while responsive delivery depends on Unix sockets.
+
+Output is written before the local lease is committed. If commit fails, the message can be injected again after the 30-second lease expires. This at-least-once behavior prefers recognizable duplicate coordination context over silently acknowledging a message the host may not have received.
+
 Codex does not currently expose a supported plugin API for starting a new turn in a fully idle thread. Messages received after the thread becomes idle remain queued until the next user prompt or lifecycle event. The plugin does not emulate that missing host capability with polling, cron, transcript edits, terminal automation, or another Codex process.
 
-Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it.
+Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it. Version 0.2.6 changes the command to the stable launcher and requires one renewed review after updating.
 
 Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields.
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.40 (2026-07-30)
+
+Refresh the shared MCP artifact with scoped hook-bridge runtime publication and fail-open hook handling. Claude Code watcher behavior is unchanged.
+
 ## 0.5.39 (2026-07-29)
 
 Report the Claude Code plugin name and release separately from the shared MCP runtime for bounded operational attribution.

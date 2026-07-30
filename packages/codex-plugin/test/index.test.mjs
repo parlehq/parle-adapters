@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +31,10 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
   assert.deepEqual(Object.keys(hooks.hooks), ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
   for (const definitions of Object.values(hooks.hooks)) {
-    assert.equal(definitions[0].hooks[0].command, "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin");
+    // Trust is recorded against the command definition. Keep this launcher
+    // literal stable so handler-only releases do not require renewed approval.
+    assert.equal(definitions[0].hooks[0].command, "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin");
+    assert.equal(definitions[0].hooks[0].commandWindows, "cmd /d /s /c \"echo {}\"");
   }
 });
 
@@ -65,4 +69,11 @@ test("Codex plugin includes bounded guidance and the copied MCP artifact", () =>
   const hookArtifact = resolve(root, "hooks/parle-hook.mjs");
   assert.equal(existsSync(hookArtifact), true);
   assert.equal(statSync(hookArtifact).size > 0, true);
+  const hookLauncher = resolve(root, "hooks/run-parle-hook.sh");
+  assert.equal(existsSync(hookLauncher), true);
+  assert.notEqual(statSync(hookLauncher).mode & 0o111, 0);
+  const launcher = readFileSync(hookLauncher, "utf8");
+  const bakedKey = launcher.match(/hook-bridge\/([a-f0-9]{16})"/)?.[1];
+  const derivedKey = createHash("sha256").update("codex-plugin").digest("hex").slice(0, 16);
+  assert.equal(bakedKey, derivedKey);
 });

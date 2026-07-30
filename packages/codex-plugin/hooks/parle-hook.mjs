@@ -102,12 +102,11 @@ function hookOutput(event, context) {
     return {
       hookSpecificOutput: {
         hookEventName: event,
-        ...(event === "PreToolUse" ? { permissionDecision: "allow" } : {}),
         additionalContext: context,
       },
     };
   }
-  return {};
+  return undefined;
 }
 
 async function readStdin() {
@@ -119,19 +118,48 @@ async function readStdin() {
   return JSON.parse(input || "{}");
 }
 
-const args = parseArgs(process.argv.slice(2));
-const payload = await readStdin();
-const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
-const scope = args.scope || cwd;
-const sessionId = typeof payload.session_id === "string" && payload.session_id
-  ? payload.session_id
-  : process.env.COMMANDCODE_SESSION_ID;
-const delivery = sessionId ? await take(scope, sessionId, args.bind) : undefined;
-if (!delivery) {
-  await new Promise((resolve, reject) => process.stdout.write("{}\n", (error) => error ? reject(error) : resolve()));
-} else {
-  const output = JSON.stringify(hookOutput(payload.hook_event_name, formatMessages(delivery.messages)));
-  await new Promise((resolve, reject) => process.stdout.write(`${output}\n`, (error) => error ? reject(error) : resolve()));
-  const committed = await request(delivery.path, { action: "commit", sessionId, leaseId: delivery.leaseId });
-  if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+function writeOutput(value) {
+  const output = `${JSON.stringify(value)}\n`;
+  return new Promise((resolve, reject) => process.stdout.write(output, (error) => error ? reject(error) : resolve()));
 }
+
+function reportFailure(error) {
+  try {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Parle hook failed open: ${message}\n`);
+  } catch {
+    // Diagnostics must never change fail-open behavior.
+  }
+}
+
+async function main() {
+  let outputWritten = false;
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    const payload = await readStdin();
+    const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
+    const scope = args.scope || cwd;
+    const sessionId = typeof payload.session_id === "string" && payload.session_id
+      ? payload.session_id
+      : process.env.COMMANDCODE_SESSION_ID;
+    const delivery = sessionId ? await take(scope, sessionId, args.bind) : undefined;
+    const output = delivery ? hookOutput(payload.hook_event_name, formatMessages(delivery.messages)) : undefined;
+    await writeOutput(output || {});
+    outputWritten = true;
+    if (!delivery || !output) return;
+    const committed = await request(delivery.path, { action: "commit", sessionId, leaseId: delivery.leaseId });
+    if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+  } catch (error) {
+    reportFailure(error);
+    if (!outputWritten) {
+      try {
+        await writeOutput({});
+      } catch {
+        // The host closed stdout. Exit zero without creating another failure.
+      }
+    }
+  }
+  process.exitCode = 0;
+}
+
+await main();

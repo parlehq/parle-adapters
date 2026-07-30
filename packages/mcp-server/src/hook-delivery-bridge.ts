@@ -1,8 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   ParleAgentClient,
   ParleApiError,
@@ -57,6 +69,24 @@ export function hookBridgeSocketPath(scope: string, pid = process.pid): string {
   return join(hookBridgeStateDir(scope), `${pid}.sock`);
 }
 
+export function hookBridgeRuntimeDescriptorPath(scope: string, pid = process.pid): string {
+  return join(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+}
+
+export function hookBridgeRuntimeHandlePath(scope: string, pid = process.pid): string {
+  return join(hookBridgeStateDir(scope), `${pid}.node`);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ESRCH") return false;
+    return true;
+  }
+}
+
 export class HookDeliveryBridge {
   private readonly abortController = new AbortController();
   private readonly pending: PendingMessage[] = [];
@@ -64,11 +94,16 @@ export class HookDeliveryBridge {
   private server?: Server;
   private lease?: Lease;
   private loop?: Promise<void>;
+  private startPromise?: Promise<void>;
   private baselineSkipped = 0;
   private lastError?: string;
   private hostSessionId?: string;
 
-  constructor(private readonly client: ParleAgentClient, private readonly scope = process.cwd()) {}
+  constructor(
+    private readonly client: ParleAgentClient,
+    private readonly scope = process.cwd(),
+    private readonly runtimeExecPath = process.execPath,
+  ) {}
 
   status(): HookDeliveryBridgeStatus {
     return {
@@ -90,13 +125,13 @@ export class HookDeliveryBridge {
 
   async start(): Promise<void> {
     if (this.loop) return;
-    await this.client.ensureBootstrapped(this.abortController.signal);
-    await this.baseline();
-    await this.listen();
-    this.loop = this.watchLoop();
-    void this.loop.catch((error) => {
-      if (!this.abortController.signal.aborted) this.lastError = error instanceof Error ? error.message : String(error);
-    });
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startBridge();
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = undefined;
+    }
   }
 
   async stop(): Promise<void> {
@@ -104,8 +139,26 @@ export class HookDeliveryBridge {
     const server = this.server;
     this.server = undefined;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(hookBridgeSocketPath(this.scope), { force: true });
+    this.removeOwnRuntimeArtifacts();
     await this.loop?.catch(() => undefined);
+    this.loop = undefined;
+  }
+
+  private async startBridge(): Promise<void> {
+    try {
+      this.lastError = undefined;
+      await this.client.ensureBootstrapped(this.abortController.signal);
+      await this.baseline();
+      await this.listen();
+      this.loop = this.watchLoop();
+      void this.loop.catch((error) => {
+        if (!this.abortController.signal.aborted) this.lastError = error instanceof Error ? error.message : String(error);
+      });
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.server = undefined;
+      this.removeOwnRuntimeArtifacts();
+    }
   }
 
   private async baseline(): Promise<void> {
@@ -133,16 +186,74 @@ export class HookDeliveryBridge {
     chmodSync(dir, 0o700);
     const after = lstatSync(dir);
     if ((after.mode & 0o077) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
-    rmSync(path, { force: true });
-    this.server = createServer((socket) => this.handleSocket(socket));
-    await new Promise<void>((resolve, reject) => {
-      this.server!.once("error", reject);
-      this.server!.listen(path, () => {
-        this.server!.removeListener("error", reject);
-        chmodSync(path, 0o600);
-        resolve();
+    this.removeDeadRuntimeArtifacts(dir);
+    this.removeOwnRuntimeArtifacts();
+    this.publishRuntimeArtifacts();
+    try {
+      this.server = createServer((socket) => this.handleSocket(socket));
+      await new Promise<void>((resolve, reject) => {
+        this.server!.once("error", reject);
+        this.server!.listen(path, () => {
+          this.server!.removeListener("error", reject);
+          chmodSync(path, 0o600);
+          resolve();
+        });
       });
-    });
+    } catch (error) {
+      this.server = undefined;
+      this.removeOwnRuntimeArtifacts();
+      throw error;
+    }
+  }
+
+  private publishRuntimeArtifacts(): void {
+    const execPath = this.runtimeExecPath;
+    if (!isAbsolute(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
+    accessSync(execPath, constants.X_OK);
+    if (!statSync(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
+
+    const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
+    const handlePath = hookBridgeRuntimeHandlePath(this.scope);
+    const descriptorTemporary = `${descriptorPath}.tmp`;
+    const handleTemporary = `${handlePath}.tmp`;
+    rmSync(descriptorTemporary, { force: true });
+    rmSync(handleTemporary, { force: true });
+    try {
+      writeFileSync(descriptorTemporary, `${JSON.stringify({
+        execPath,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+      })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      chmodSync(descriptorTemporary, 0o600);
+      renameSync(descriptorTemporary, descriptorPath);
+      symlinkSync(execPath, handleTemporary, "file");
+      renameSync(handleTemporary, handlePath);
+    } catch (error) {
+      rmSync(descriptorTemporary, { force: true });
+      rmSync(handleTemporary, { force: true });
+      rmSync(descriptorPath, { force: true });
+      rmSync(handlePath, { force: true });
+      throw error;
+    }
+  }
+
+  private removeOwnRuntimeArtifacts(): void {
+    for (const path of [
+      hookBridgeSocketPath(this.scope),
+      hookBridgeRuntimeDescriptorPath(this.scope),
+      hookBridgeRuntimeHandlePath(this.scope),
+      `${hookBridgeRuntimeDescriptorPath(this.scope)}.tmp`,
+      `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`,
+    ]) rmSync(path, { force: true });
+  }
+
+  private removeDeadRuntimeArtifacts(dir: string): void {
+    const stalePattern = /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp)?$/;
+    for (const name of readdirSync(dir)) {
+      const match = name.match(stalePattern);
+      if (!match || processIsAlive(Number(match[1]))) continue;
+      rmSync(join(dir, name), { force: true });
+    }
   }
 
   private handleSocket(socket: Socket): void {

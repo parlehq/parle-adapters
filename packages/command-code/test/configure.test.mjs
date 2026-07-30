@@ -35,7 +35,7 @@ test("skill configurator uses native MCP registration and preserves unrelated ho
     assert.equal(result.code, 0, result.stderr);
     const commands = readFileSync(commandLog, "utf8").trim().split("\n");
     assert.match(commands[0], /^mods add --global .*skills\/parle\s*$/);
-    assert.match(commands[1], /^mcp add --transport stdio --scope user --env PARLE_RESPONSIVE_DELIVERY=hook-bridge --env PARLE_INTEGRATION_NAME=@parlehq\/command-code-adapter --env PARLE_INTEGRATION_VERSION=0\.2\.4 parle -- node .*skills\/parle\/server\/parle-mcp\.js\s*$/);
+    assert.match(commands[1], /^mcp add --transport stdio --scope user --env PARLE_RESPONSIVE_DELIVERY=hook-bridge --env PARLE_INTEGRATION_NAME=@parlehq\/command-code-adapter --env PARLE_INTEGRATION_VERSION=0\.2\.5 parle -- node .*skills\/parle\/server\/parle-mcp\.js\s*$/);
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal(settings.theme, "dark");
     assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command === "/tmp/quality-gate")), true);
