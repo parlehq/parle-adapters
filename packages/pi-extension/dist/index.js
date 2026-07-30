@@ -2080,7 +2080,7 @@ function summarizeSendDelivery(details) {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.1.37";
+var PI_EXTENSION_VERSION = "0.1.38";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
@@ -3174,14 +3174,49 @@ async function useSessionAlias(pi, ctx, cfg, alias, signal) {
   assertSessionAlias(alias);
   const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
   const recovering = await prepareRateLimitRecovery(ctx);
+  const prepared = {
+    bootstrapped: false,
+    watcherState: "off",
+    cursor: runtime.cursor
+  };
   try {
+    try {
+      await bootstrap(ctx, cfg, signal, true, alias, prepared, false);
+    } catch (error) {
+      await endAgentSession(cfg, void 0, prepared).catch(() => void 0);
+      throw error;
+    }
     if (!recovering) stopWatcher(ctx);
-    await endAgentSession(cfg, signal).catch((error) => {
+    const previousRuntime = { ...runtime };
+    liveConfig = cfg;
+    runtime = {
+      ...runtime,
+      sessionHandle: prepared.sessionHandle,
+      sessionAddress: prepared.sessionAddress,
+      sessionAlias: prepared.sessionAlias,
+      sessionGeneration: prepared.sessionGeneration,
+      agentSessionId: prepared.agentSessionId,
+      expiresAt: prepared.expiresAt,
+      participantId: prepared.participantId,
+      roomId: prepared.roomId,
+      roomHandle: prepared.roomHandle,
+      bootstrapped: true,
+      lastHeartbeatAt: void 0,
+      watcherState: "off",
+      watcherStarted: false,
+      watcherEnabled: parseBoolEnabled(cfg.watchEnabled.value)
+    };
+    if (!recovering) clearAutomaticFailureLatch();
+    try {
+      removeRuntimeFile2(ctx.cwd || process.cwd());
+    } catch {
+    }
+    setStatus(ctx, cfg);
+    publishRuntimeState(ctx, cfg);
+    await endAgentSession(cfg, signal, previousRuntime).catch((error) => {
       runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
       publishRuntimeState(ctx, cfg);
     });
-    removeRuntimeFile2(ctx.cwd || process.cwd());
-    await bootstrap(ctx, cfg, signal, true, alias);
     if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
     else startWatcher(pi, ctx, cfg);
     return {

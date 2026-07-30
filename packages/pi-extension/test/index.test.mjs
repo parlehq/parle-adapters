@@ -629,7 +629,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.37" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.38" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -654,18 +654,24 @@ test("footer prefers alias route when session uses an alias", async () => {
   assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
 });
 
-test("parle_session_alias moves runtime without persistent config", async () => {
+test("parle_session_alias prepares the replacement before retiring the active session", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_WATCH_ENABLED=0\n");
   let sessionCreates = 0;
+  const order = [];
   globalThis.fetch = async (url, init) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
       sessionCreates += 1;
       const body = init.body ? JSON.parse(String(init.body)) : {};
       const alias = body.alias;
+      order.push(`create:${alias || "unaliased"}`);
+      if (alias) __testing.patchRuntime({ cursor: 14 });
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `raw-${sessionCreates}`, alias, generation: alias ? 3 : 0, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
     }
-    if (u.endsWith("/end")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    if (u.endsWith("/end")) {
+      order.push("retire:as-1");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias-tool", room_id: "room-1", room_handle: "actual-room" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 9, messages: [] }), { status: 200 });
     throw new Error("unexpected " + u);
@@ -673,11 +679,63 @@ test("parle_session_alias moves runtime without persistent config", async () => 
   const harness = installHarness(cwd);
   await harness.call("parle_status");
   const result = await harness.call("parle_session_alias", { alias: "parle-landing" });
+  assert.deepEqual(order, ["create:unaliased", "create:parle-landing", "retire:as-1"]);
   assert.equal(result.details.sessionAddress, "@p.a.parle-landing");
   assert.equal(result.details.alias, "parle-landing");
   assert.equal(result.details.generation, 3);
+  assert.equal(__testing.runtimeState().cursor, 14);
   assert.equal(__testing.resolveConfig(cwd).sessionAlias.value, "");
   assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
+});
+
+test("failed parle_session_alias preserves the active session and watcher", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_WATCH_ENABLED=1\n");
+  let sessionCreates = 0;
+  let endCalls = 0;
+  let wakeOpens = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/wake")) {
+      wakeOpens += 1;
+      const stream = new ReadableStream({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }
+    if (u.endsWith("/v/agent/sessions")) {
+      sessionCreates += 1;
+      const body = init.body ? JSON.parse(String(init.body)) : {};
+      if (body.alias) return new Response(JSON.stringify({ error: { code: "session_alias_reserved", message: "session alias is reserved", action: "stop", retryable: false } }), { status: 409 });
+      return new Response(JSON.stringify({ agent_session_id: "as-active", session_credential: "parle_ses_active", session_handle: "raw-active", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-active" }), { status: 201 });
+    }
+    if (u.endsWith("/end")) {
+      endCalls += 1;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-active", room_id: "room-1", room_handle: "actual-room" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 9, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { last_acked_seq: 9 }, messages: [] }), { status: 200 });
+    if (u.endsWith("/heartbeat")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  await eventually(() => __testing.runtimeState().watcherState === "watching");
+  const before = __testing.runtimeState();
+
+  await assert.rejects(harness.call("parle_session_alias", { alias: "reserved-alias" }), /session alias is reserved/);
+  const after = __testing.runtimeState();
+  assert.equal(sessionCreates, 2);
+  assert.equal(endCalls, 0);
+  assert.equal(wakeOpens, 1);
+  assert.equal(after.agentSessionId, before.agentSessionId);
+  assert.equal(after.sessionHandle, before.sessionHandle);
+  assert.equal(after.sessionAddress, before.sessionAddress);
+  assert.equal(after.bootstrapped, true);
+  assert.equal(after.watcherState, "watching");
+  __testing.resetRuntime();
 });
 
 test("parle_switch_profile prepares the target before atomically replacing room state", async () => {
@@ -876,7 +934,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.1.37");
+    assert.equal(call.headers["Parle-Client-Version"], "0.1.38");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1676,7 +1734,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.37");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.38");
       assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
