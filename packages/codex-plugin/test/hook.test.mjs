@@ -24,7 +24,10 @@ function runProcess(executable, args, options, payload) {
     child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
     child.once("error", reject);
-    child.once("exit", (code) => resolveResult({ code, stdout, stderr }));
+    child.once("close", (code) => resolveResult({ code, stdout, stderr }));
+    child.stdin.on("error", (error) => {
+      if (error.code !== "EPIPE") reject(error);
+    });
     child.stdin.end(typeof payload === "string" ? payload : JSON.stringify(payload));
   });
 }
