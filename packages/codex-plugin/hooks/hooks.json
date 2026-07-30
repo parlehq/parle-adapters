@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "command": "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery"
           }

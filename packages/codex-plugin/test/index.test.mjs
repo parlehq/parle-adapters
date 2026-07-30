@@ -30,7 +30,7 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
   assert.deepEqual(Object.keys(hooks.hooks), ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
   for (const definitions of Object.values(hooks.hooks)) {
-    assert.equal(definitions[0].hooks[0].command, "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin");
+    assert.equal(definitions[0].hooks[0].command, "cd \"${PLUGIN_ROOT}\" && node hooks/parle-hook.mjs --scope codex-plugin");
   }
 });
 
