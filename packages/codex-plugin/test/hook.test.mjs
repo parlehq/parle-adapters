@@ -19,6 +19,26 @@ function runHook(script, args, env, payload) {
   });
 }
 
+for (const hookEventName of ["PostToolUse", "Stop"]) {
+  test(`Codex ${hookEventName} hook returns valid JSON when no delivery is queued`, async () => {
+    const home = join("/tmp", `codex-parle-empty-hook-${hookEventName}-${process.pid}`);
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    try {
+      const script = resolve("hooks/parle-hook.mjs");
+      const result = await runHook(script, ["--scope", "codex-plugin"], { ...process.env, HOME: home }, {
+        cwd: "/tmp/codex-project",
+        session_id: "codex-thread",
+        hook_event_name: hookEventName,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {});
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
 test("Codex hook injects a pre-bound delivery and commits after output", async () => {
   const home = join("/tmp", `codex-parle-hook-${process.pid}`);
   const scope = "codex-plugin";

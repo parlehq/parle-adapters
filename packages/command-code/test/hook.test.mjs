@@ -19,6 +19,24 @@ function runHook(script, args, env, payload) {
   });
 }
 
+test("Command Code hook returns valid JSON when no delivery is queued", async () => {
+  const home = join("/tmp", `pcc-empty-hook-${process.pid}`);
+  rmSync(home, { recursive: true, force: true });
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  try {
+    const script = resolve("skills/parle/scripts/parle-hook.mjs");
+    const result = await runHook(script, [], { ...process.env, HOME: home }, {
+      cwd: "/tmp/parle-hook-project",
+      session_id: "command-code-session",
+      hook_event_name: "Stop",
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {});
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("Command Code hook injects server framing and commits after output", async () => {
   const home = join("/tmp", `pcc-hook-${process.pid}`);
   rmSync(home, { recursive: true, force: true });

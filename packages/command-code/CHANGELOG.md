@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4 (2026-07-30)
+
+- Return valid JSON when no responsive delivery is queued so lifecycle hooks complete cleanly.
+
 ## 0.2.3 (2026-07-29)
 
 - Report the Command Code adapter name and release separately from the shared MCP runtime for bounded operational attribution.

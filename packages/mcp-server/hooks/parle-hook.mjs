@@ -126,11 +126,12 @@ const scope = args.scope || cwd;
 const sessionId = typeof payload.session_id === "string" && payload.session_id
   ? payload.session_id
   : process.env.COMMANDCODE_SESSION_ID;
-if (!sessionId) process.exit(0);
-const delivery = await take(scope, sessionId, args.bind);
-if (!delivery) process.exit(0);
-
-const output = JSON.stringify(hookOutput(payload.hook_event_name, formatMessages(delivery.messages)));
-await new Promise((resolve, reject) => process.stdout.write(`${output}\n`, (error) => error ? reject(error) : resolve()));
-const committed = await request(delivery.path, { action: "commit", sessionId, leaseId: delivery.leaseId });
-if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+const delivery = sessionId ? await take(scope, sessionId, args.bind) : undefined;
+if (!delivery) {
+  await new Promise((resolve, reject) => process.stdout.write("{}\n", (error) => error ? reject(error) : resolve()));
+} else {
+  const output = JSON.stringify(hookOutput(payload.hook_event_name, formatMessages(delivery.messages)));
+  await new Promise((resolve, reject) => process.stdout.write(`${output}\n`, (error) => error ? reject(error) : resolve()));
+  const committed = await request(delivery.path, { action: "commit", sessionId, leaseId: delivery.leaseId });
+  if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+}
