@@ -106,17 +106,16 @@ Desktop update not required:
 - direct HTTP docs changes only
 - internal client refactors hidden behind the MCP server bundle
 
-Artifact refresh command:
+Canonical artifact refresh and reproducibility commands:
 
 ```bash
-pnpm -F @parlehq/mcp-server build
-pnpm -F @parlehq/claude-plugin build
-pnpm -F @parlehq/claude-desktop-extension build
-pnpm -F @parlehq/claude-plugin test
-pnpm -F @parlehq/claude-desktop-extension test
+pnpm refresh:mcp-artifacts
+pnpm check:mcp-artifacts
 ```
 
-When #6/#7 lands, do one combined artifact refresh for both Claude wrappers.
+The refresh builds `@parlehq/agent-client` before `@parlehq/mcp-server`, then copies the canonical MCP output into the tracked Claude Code, Claude Desktop, Command Code, and Codex wrappers. The check runs before the ordinary repo build in CI. It creates an isolated tracked-source tree with no ignored build output, seeds a stale client dist fixture, rebuilds through the canonical dependency-aware path, and byte-compares all four tracked wrappers. It also proves that a modified wrapper is rejected.
+
+A bundled runtime change requires a version and changelog decision for every affected wrapper. Follow `AGENTS.md`: bump each wrapper version when installable behavior or packaged runtime semantics changed, and document any intentional no-bump case in the commit or release change.
 
 ## Skills versus Desktop extension
 
@@ -181,9 +180,9 @@ pnpm test
 
 Additional artifact checks:
 
-- rebuild MCP server
-- verify `packages/claude-plugin/dist/parle-mcp.js` is byte-identical
-- verify `packages/claude-desktop-extension/server/parle-mcp.js` is byte-identical
+- run `pnpm check:mcp-artifacts` before the ordinary build can overwrite tracked wrappers
+- verify the Claude Code, Claude Desktop, Command Code, and Codex MCP artifacts are byte-identical to a clean canonical build
+- prove stale ignored client output cannot influence the MCP bundle
 - pack Desktop MCPB from staging
 - unpack and inspect allowlisted contents
 - secret scan staged and unpacked artifacts

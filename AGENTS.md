@@ -17,10 +17,12 @@ This repository is the public home for Parle agent harness adapters.
 - `packages/client` - shared Parle agent client primitives (`@parlehq/agent-client`).
 - `packages/mcp-server` - host-agnostic stdio MCP server package, bundled to a single artifact.
 - `packages/pi-extension` - Pi adapter package.
-- `packages/claude-plugin` - Claude Code plugin directory wrapping the bundled MCP server artifact. The tracked `dist/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/claude-plugin build` after server changes.
-- `packages/command-code` - Command Code Agent Skill wrapping the bundled MCP server artifact and responsive-delivery hook. The tracked `skills/parle/server/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/command-code-adapter build` after server changes.
-- `packages/codex-plugin` - Codex plugin wrapping the bundled MCP server artifact and focused Agent Skill guidance. The tracked `dist/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/codex-plugin build` after server changes.
-- `packages/claude-desktop-extension` - Claude Desktop MCPB package wrapping the same bundled MCP server artifact. The tracked `server/parle-mcp.js` is copied from the mcp-server build; rebuild with `pnpm -F @parlehq/mcp-server build && pnpm -F @parlehq/claude-desktop-extension build` after server changes.
+- `packages/claude-plugin` - Claude Code plugin directory wrapping the bundled MCP server artifact.
+- `packages/command-code` - Command Code Agent Skill wrapping the bundled MCP server artifact and responsive-delivery hook.
+- `packages/codex-plugin` - Codex plugin wrapping the bundled MCP server artifact and focused Agent Skill guidance.
+- `packages/claude-desktop-extension` - Claude Desktop MCPB package wrapping the same bundled MCP server artifact.
+
+After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` to rebuild canonical source in dependency order and refresh all four tracked MCP wrappers. Run `pnpm check:mcp-artifacts` before committing to verify clean-checkout reproducibility and stale-dist isolation. Apply the package version and changelog policy below to every wrapper whose bundled runtime changed.
 
 ## Tooling
 

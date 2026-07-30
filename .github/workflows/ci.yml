@@ -36,6 +36,9 @@ jobs:
       - name: Check manifest versions
         run: pnpm check:manifests
 
+      - name: Check clean MCP artifact reproducibility
+        run: pnpm check:mcp-artifacts
+
       - name: Build
         run: pnpm build
 
