@@ -10,6 +10,7 @@ const MINIMUM_COMMAND_CODE = [1, 0, 0];
 const here = dirname(fileURLToPath(import.meta.url));
 const skill = resolve(here, "..");
 const hook = resolve(here, "parle-hook.mjs");
+const hookCommand = `${hook} --bind`;
 const server = resolve(here, "../server/parle-mcp.js");
 const mod = resolve(skill, "mods/parle-status.ts");
 const modManifest = resolve(skill, "package.json");
@@ -72,12 +73,12 @@ if (modResult.error || modResult.status !== 0) {
   throw new Error(`Command Code could not register the Parle footer mod: ${(modResult.stderr || modResult.stdout || modResult.error?.message || "unknown error").trim()}`);
 }
 
-const settings = mergeParleHooks(readJson(userSettings), hook);
+const settings = mergeParleHooks(readJson(userSettings), hookCommand);
 const mcpResult = spawnSync("cmd", [
   "mcp", "add",
   "--transport", "stdio",
   "--scope", "user",
-  "--env", "PARLE_HOST_ADAPTER=command-code",
+  "--env", "PARLE_RESPONSIVE_DELIVERY=hook-bridge",
   "parle", "--", "node", server,
 ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 if (mcpResult.error || mcpResult.status !== 0) {

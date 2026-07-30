@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.28 (2026-07-29)
+
+Refresh the shared MCP artifact with the host-neutral hook delivery bridge. Claude Desktop runtime behavior is unchanged.
+
 ## 0.5.27
 
 Bundled MCP refresh with stable process request attribution on agent-token JSON and wake traffic.

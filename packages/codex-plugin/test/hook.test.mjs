@@ -19,12 +19,12 @@ function runHook(script, args, env, payload) {
   });
 }
 
-test("Command Code hook injects server framing and commits after output", async () => {
-  const home = join("/tmp", `pcc-hook-${process.pid}`);
+test("Codex hook injects a pre-bound delivery and commits after output", async () => {
+  const home = join("/tmp", `codex-parle-hook-${process.pid}`);
+  const scope = "codex-plugin";
   rmSync(home, { recursive: true, force: true });
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  const cwd = "/tmp/parle-hook-project";
-  const key = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+  const key = createHash("sha256").update(scope).digest("hex").slice(0, 16);
   const stateDir = join(home, ".local", "state", "parle", "hook-bridge", key);
   const socketPath = join(stateDir, `${process.pid}.sock`);
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -37,13 +37,14 @@ test("Command Code hook injects server framing and commits after output", async 
       const newline = input.indexOf("\n");
       if (newline < 0) return;
       const command = JSON.parse(input.slice(0, newline));
-      if (command.action === "bind") {
-        socket.end(`${JSON.stringify({ ok: true, bound: true })}\n`);
-      } else if (command.action === "take") {
+      if (command.action === "take") {
+        assert.equal(command.sessionId, "codex-thread");
         socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-1", messages: [{ seq: 4, event_id: "evt-4", content: "trusted preamble\n«FENCE BEGIN TOKEN»\nuntrusted peer body\n«FENCE END TOKEN»" }] })}\n`);
       } else if (command.action === "commit") {
         committed = command.leaseId === "lease-1";
         socket.end(`${JSON.stringify({ ok: true, committed: 1 })}\n`);
+      } else {
+        socket.end(`${JSON.stringify({ ok: false })}\n`);
       }
     });
   });
@@ -53,8 +54,13 @@ test("Command Code hook injects server framing and commits after output", async 
       server.listen(socketPath, resolveListen);
     });
     chmodSync(socketPath, 0o600);
-    const script = resolve("skills/parle/scripts/parle-hook.mjs");
-    const result = await runHook(script, ["--bind"], { ...process.env, HOME: home }, { cwd, session_id: "command-code-session", hook_event_name: "Stop", stop_hook_active: false });
+    const script = resolve("hooks/parle-hook.mjs");
+    const result = await runHook(script, ["--scope", scope], { ...process.env, HOME: home }, {
+      cwd: "/tmp/codex-project",
+      session_id: "codex-thread",
+      hook_event_name: "Stop",
+      stop_hook_active: false,
+    });
     assert.equal(result.code, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.decision, "block");

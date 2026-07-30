@@ -25,7 +25,7 @@ The first command installs the complete skill tree under `~/.commandcode/skills/
 - requires Command Code 1.0.0 or newer
 - registers the cwd-scoped footer with `cmd mods add --global`
 - registers the bundled server with `cmd mcp add --scope user`
-- sets `PARLE_HOST_ADAPTER=command-code` on that MCP process
+- enables the host-neutral `PARLE_RESPONSIVE_DELIVERY=hook-bridge` capability on that MCP process
 - merges exact `SessionStart`, `PreToolUse`, `PostToolUse`, and `Stop` entries into Command Code's native `~/.commandcode/settings.json`
 - preserves unrelated user settings and hooks
 - never reads or copies Parle credentials
@@ -54,7 +54,7 @@ The MCP process opens `/v/agent/wake` as an SSE stream. A wake hint triggers `re
 
 Messages that arrive during an active turn are injected at the next tool or stop hook. A `Stop` injection forces one more model pass before the turn ends. Command Code does not currently expose a supported API for an MCP server to start a new turn in a fully idle TUI, so messages received after the session is idle remain queued until the next hook event. The adapter does not emulate that missing API with cron, polling, transcript edits, terminal automation, or a second Command Code process.
 
-The local bridge uses an owner-only Unix socket under `~/.local/state/parle/command-code/`. Credentials stay in MCP process memory and never cross the socket.
+The local bridge uses an owner-only Unix socket under `~/.local/state/parle/hook-bridge/`. Credentials stay in MCP process memory and never cross the socket.
 
 ## Validated host behavior
 

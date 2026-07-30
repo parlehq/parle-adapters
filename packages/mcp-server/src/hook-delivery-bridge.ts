@@ -20,11 +20,12 @@ const LEASE_MS = 30_000;
 const STREAM_RECONNECT_MS = 5000;
 const STREAM_RECONNECT_JITTER_MS = 1000;
 
-export type CommandCodeBridgeStatus = {
+export type HookDeliveryBridgeStatus = {
   running: boolean;
   pending: number;
   baselineSkipped: number;
   socketPath: string;
+  hostSessionBound: boolean;
   lastError?: string;
 };
 
@@ -47,16 +48,16 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-export function commandCodeStateDir(cwd: string): string {
-  const key = createHash("sha256").update(cwd).digest("hex").slice(0, 16);
-  return join(homedir(), ".local", "state", "parle", "command-code", key);
+export function hookBridgeStateDir(scope: string): string {
+  const key = createHash("sha256").update(scope).digest("hex").slice(0, 16);
+  return join(homedir(), ".local", "state", "parle", "hook-bridge", key);
 }
 
-export function commandCodeSocketPath(cwd: string, pid = process.pid): string {
-  return join(commandCodeStateDir(cwd), `${pid}.sock`);
+export function hookBridgeSocketPath(scope: string, pid = process.pid): string {
+  return join(hookBridgeStateDir(scope), `${pid}.sock`);
 }
 
-export class CommandCodeWakeBridge {
+export class HookDeliveryBridge {
   private readonly abortController = new AbortController();
   private readonly pending: PendingMessage[] = [];
   private readonly queuedKeys = new Set<string>();
@@ -65,18 +66,26 @@ export class CommandCodeWakeBridge {
   private loop?: Promise<void>;
   private baselineSkipped = 0;
   private lastError?: string;
-  private commandCodeSessionId?: string;
+  private hostSessionId?: string;
 
-  constructor(private readonly client: ParleAgentClient, private readonly cwd = process.cwd()) {}
+  constructor(private readonly client: ParleAgentClient, private readonly scope = process.cwd()) {}
 
-  status(): CommandCodeBridgeStatus {
+  status(): HookDeliveryBridgeStatus {
     return {
       running: Boolean(this.server?.listening && !this.abortController.signal.aborted),
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
-      socketPath: commandCodeSocketPath(this.cwd),
+      socketPath: hookBridgeSocketPath(this.scope),
+      hostSessionBound: Boolean(this.hostSessionId),
       ...(this.lastError ? { lastError: this.lastError } : {}),
     };
+  }
+
+  bindHostSession(sessionId: string): boolean {
+    if (!sessionId) return false;
+    if (this.hostSessionId && this.hostSessionId !== sessionId) return false;
+    this.hostSessionId = sessionId;
+    return true;
   }
 
   async start(): Promise<void> {
@@ -95,7 +104,7 @@ export class CommandCodeWakeBridge {
     const server = this.server;
     this.server = undefined;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(commandCodeSocketPath(this.cwd), { force: true });
+    rmSync(hookBridgeSocketPath(this.scope), { force: true });
     await this.loop?.catch(() => undefined);
   }
 
@@ -106,7 +115,7 @@ export class CommandCodeWakeBridge {
       if (delivery.messages.length === 0) break;
       for (const message of delivery.messages) {
         skipped += 1;
-        if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Command Code Parle baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
+        if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
         await this.client.ackResponsiveDelivery(message, this.abortController.signal);
       }
     }
@@ -114,16 +123,16 @@ export class CommandCodeWakeBridge {
   }
 
   private async listen(): Promise<void> {
-    const path = commandCodeSocketPath(this.cwd);
+    const path = hookBridgeSocketPath(this.scope);
     const dir = dirname(path);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const before = lstatSync(dir);
     if (!before.isDirectory() || before.isSymbolicLink() || (typeof process.getuid === "function" && before.uid !== process.getuid())) {
-      throw new Error(`Unsafe Command Code Parle bridge directory: ${dir}`);
+      throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
     }
     chmodSync(dir, 0o700);
     const after = lstatSync(dir);
-    if ((after.mode & 0o077) !== 0) throw new Error(`Command Code Parle bridge directory is not owner-only: ${dir}`);
+    if ((after.mode & 0o077) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
     rmSync(path, { force: true });
     this.server = createServer((socket) => this.handleSocket(socket));
     await new Promise<void>((resolve, reject) => {
@@ -155,18 +164,17 @@ export class CommandCodeWakeBridge {
 
   private async handleCommand(line: string): Promise<unknown> {
     const command = JSON.parse(line);
-    if (command?.action === "status") return { ok: true, ...this.status(), bound: Boolean(this.commandCodeSessionId) };
+    if (command?.action === "status") return { ok: true, ...this.status() };
     const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
-    if (!sessionId) throw new Error("Command Code session id is required");
+    if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
-      if (this.commandCodeSessionId && this.commandCodeSessionId !== sessionId) return { ok: false, bound: true };
-      this.commandCodeSessionId = sessionId;
-      return { ok: true, bound: true };
+      const bound = this.bindHostSession(sessionId);
+      return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
-    if (this.commandCodeSessionId !== sessionId) return { ok: false, error: "Command Code session is not bound to this bridge" };
+    if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
-    throw new Error("unknown Command Code Parle bridge action");
+    throw new Error("unknown Parle hook bridge action");
   }
 
   private take(): unknown {
@@ -189,12 +197,12 @@ export class CommandCodeWakeBridge {
 
   private async commit(leaseId: string): Promise<unknown> {
     const lease = this.lease;
-    if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Command Code Parle delivery lease is missing or expired");
+    if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Parle hook bridge delivery lease is missing or expired");
     let committed = 0;
     for (const message of lease.messages) {
       await this.client.ackResponsiveDelivery(message, this.abortController.signal);
       const head = this.pending[0];
-      if (!head || head.key !== message.key) throw new Error("Command Code Parle pending queue changed during commit");
+      if (!head || head.key !== message.key) throw new Error("Parle hook bridge pending queue changed during commit");
       this.pending.shift();
       this.queuedKeys.delete(message.key);
       committed += 1;
@@ -240,11 +248,11 @@ export class CommandCodeWakeBridge {
       for (const message of delivery.messages) {
         const key = deliveryKey(message);
         if (this.queuedKeys.has(key)) continue;
-        if (this.pending.length >= MAX_PENDING) throw new Error(`Command Code Parle pending queue reached ${MAX_PENDING} messages`);
+        if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
         this.pending.push({ ...message, key });
         this.queuedKeys.add(key);
       }
     }
-    throw new Error(`Command Code Parle responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
+    throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }
 }

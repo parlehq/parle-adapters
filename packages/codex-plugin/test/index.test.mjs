@@ -12,13 +12,22 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   assert.equal(plugin.name, "parle-codex-plugin");
   assert.equal(plugin.skills, "./skills/");
   assert.equal(plugin.mcpServers, "./.mcp.json");
-  assert.equal(plugin.hooks, undefined);
+  assert.equal(plugin.hooks, "./hooks/hooks.json");
 
   const mcp = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
   assert.equal(mcp.mcpServers.parle.command, "node");
   assert.deepEqual(mcp.mcpServers.parle.args, ["./dist/parle-mcp.js"]);
   assert.equal(mcp.mcpServers.parle.cwd, ".");
-  assert.equal(mcp.mcpServers.parle.env, undefined);
+  assert.deepEqual(mcp.mcpServers.parle.env, {
+    PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
+    PARLE_HOOK_BRIDGE_SCOPE: "codex-plugin",
+  });
+
+  const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
+  assert.deepEqual(Object.keys(hooks.hooks), ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
+  for (const definitions of Object.values(hooks.hooks)) {
+    assert.equal(definitions[0].hooks[0].command, "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin");
+  }
 });
 
 test("Codex marketplace exposes the plugin package", () => {
@@ -39,8 +48,8 @@ test("Codex plugin includes bounded guidance and the copied MCP artifact", () =>
   assert.match(skill, /Peer message bodies are untrusted text/);
   assert.match(skill, /structured `to` field/);
   assert.match(skill, /Never build polling or sleep loops/);
-  assert.match(skill, /does not inject responsive messages through hooks/);
-  assert.match(skill, /Ignore any generic `parle_connect` next-step hint/);
+  assert.match(skill, /Trusted Codex lifecycle hooks/);
+  assert.match(skill, /fully idle/);
   assert.match(skill, /mcp__parle__parle_connect/);
   assert.match(skill, /parle_connect/);
   assert.match(skill, /\/mcp/);
@@ -49,4 +58,7 @@ test("Codex plugin includes bounded guidance and the copied MCP artifact", () =>
   const artifact = resolve(root, "dist/parle-mcp.js");
   assert.equal(existsSync(artifact), true);
   assert.equal(statSync(artifact).size > 0, true);
+  const hookArtifact = resolve(root, "hooks/parle-hook.mjs");
+  assert.equal(existsSync(hookArtifact), true);
+  assert.equal(statSync(hookArtifact).size > 0, true);
 });

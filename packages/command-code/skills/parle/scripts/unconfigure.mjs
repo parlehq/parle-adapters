@@ -9,6 +9,7 @@ import { removeParleHooks } from "./settings.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const skill = resolve(here, "..");
 const hook = resolve(here, "parle-hook.mjs");
+const hookCommand = `${hook} --bind`;
 const server = resolve(here, "../server/parle-mcp.js");
 const userSettings = resolve(homedir(), ".commandcode/settings.json");
 
@@ -27,7 +28,7 @@ const inspection = spawnSync("cmd", ["mcp", "get", "parle"], { encoding: "utf8",
 if (inspection.error || inspection.status !== 0) {
   throw new Error("The user-scoped Parle MCP registration is missing. Refusing a partial or ambiguous uninstall.");
 }
-if (!inspection.stdout.includes(server) || !inspection.stdout.includes("PARLE_HOST_ADAPTER=command-code")) {
+if (!inspection.stdout.includes(server) || !inspection.stdout.includes("PARLE_RESPONSIVE_DELIVERY=hook-bridge")) {
   throw new Error("The MCP server named `parle` is not owned by this installed skill. Refusing to remove it.");
 }
 
@@ -40,7 +41,7 @@ if (modResult.error || modResult.status !== 0) {
 }
 
 const originalSettings = existsSync(userSettings) ? JSON.parse(readFileSync(userSettings, "utf8")) : {};
-const nextSettings = removeParleHooks(originalSettings, hook);
+const nextSettings = removeParleHooks(removeParleHooks(originalSettings, hookCommand), hook);
 if (existsSync(userSettings)) writeJsonAtomic(userSettings, nextSettings);
 
 const result = spawnSync("cmd", ["mcp", "remove", "--scope", "user", "parle"], {

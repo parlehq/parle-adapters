@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 (2026-07-29)
+
+- Replace the host-name switch with the host-neutral `PARLE_RESPONSIVE_DELIVERY=hook-bridge` capability.
+- Consume the shared hook bridge client and owner-only hook-bridge socket namespace.
+- Require Command Code alpha installations to update their MCP registration to the new capability contract.
+
 ## 0.1.21
 
 - Refresh the shared MCP artifact with stable process request attribution on agent-token JSON and wake traffic.

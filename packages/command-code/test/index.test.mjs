@@ -25,6 +25,7 @@ test("Command Code wrapper includes safe skill guidance and MCP artifact", () =>
   assert.match(hook, /decision: "block"/);
   assert.match(hook, /additionalContext/);
   assert.match(hook, /action: "commit"/);
+  assert.notEqual(statSync(resolve(root, "skills/parle/scripts/parle-hook.mjs")).mode & 0o111, 0);
 
   const manifest = JSON.parse(readFileSync(resolve(root, "skills/parle/package.json"), "utf8"));
   assert.deepEqual(manifest.commandcode.mods, ["./mods/parle-status.ts"]);
@@ -45,7 +46,7 @@ test("native skill configuration contains no Parle credentials or private config
   assert.doesNotMatch(configure, /\.parle\/profiles/);
   assert.match(configure, /"mcp", "add"/);
   assert.match(configure, /"--scope", "user"/);
-  assert.match(configure, /PARLE_HOST_ADAPTER=command-code/);
+  assert.match(configure, /PARLE_RESPONSIVE_DELIVERY=hook-bridge/);
   assert.match(configure, /mergeParleHooks/);
   assert.match(configure, /"mods", "add", "--global"/);
 });

@@ -35,11 +35,11 @@ test("skill configurator uses native MCP registration and preserves unrelated ho
     assert.equal(result.code, 0, result.stderr);
     const commands = readFileSync(commandLog, "utf8").trim().split("\n");
     assert.match(commands[0], /^mods add --global .*skills\/parle\s*$/);
-    assert.match(commands[1], /^mcp add --transport stdio --scope user --env PARLE_HOST_ADAPTER=command-code parle -- node .*skills\/parle\/server\/parle-mcp\.js\s*$/);
+    assert.match(commands[1], /^mcp add --transport stdio --scope user --env PARLE_RESPONSIVE_DELIVERY=hook-bridge parle -- node .*skills\/parle\/server\/parle-mcp\.js\s*$/);
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal(settings.theme, "dark");
     assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command === "/tmp/quality-gate")), true);
-    assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command.endsWith("/skills/parle/scripts/parle-hook.mjs"))), true);
+    assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command.endsWith("/skills/parle/scripts/parle-hook.mjs --bind"))), true);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -70,11 +70,11 @@ test("skill unconfigurator removes only its native MCP registration and hook ent
   const settingsPath = join(home, ".commandcode", "settings.json");
   const hook = resolve("skills/parle/scripts/parle-hook.mjs");
   const server = resolve("skills/parle/server/parle-mcp.js");
-  const managed = { hooks: [{ type: "command", command: hook, timeout: 5 }] };
+  const managed = { hooks: [{ type: "command", command: `${hook} --bind`, timeout: 5 }] };
   rmSync(home, { recursive: true, force: true });
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   mkdirSync(join(home, ".commandcode"), { recursive: true, mode: 0o700 });
-  writeFileSync(commandCode, `#!/bin/sh\nif [ "$1 $2 $3" = "mcp get parle" ]; then printf 'Args: %s\\nEnvironment:\\n  PARLE_HOST_ADAPTER=command-code\\n' "${server}"; exit 0; fi\nprintf '%s ' "$@" >> "${commandLog}"\nprintf '\\n' >> "${commandLog}"\necho removed\n`, { mode: 0o700 });
+  writeFileSync(commandCode, `#!/bin/sh\nif [ "$1 $2 $3" = "mcp get parle" ]; then printf 'Args: %s\\nEnvironment:\\n  PARLE_RESPONSIVE_DELIVERY=hook-bridge\\n' "${server}"; exit 0; fi\nprintf '%s ' "$@" >> "${commandLog}"\nprintf '\\n' >> "${commandLog}"\necho removed\n`, { mode: 0o700 });
   writeFileSync(settingsPath, JSON.stringify({ theme: "dark", hooks: { Stop: [{ hooks: [{ type: "command", command: "/tmp/quality-gate" }] }, managed], SessionStart: [managed], PreToolUse: [managed], PostToolUse: [managed] } }));
   try {
     const result = await run(process.execPath, [resolve("skills/parle/scripts/unconfigure.mjs")], { env: { ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });

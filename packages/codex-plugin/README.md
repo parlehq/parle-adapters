@@ -30,11 +30,17 @@ A normal prompt can then be concise:
 
 Codex should discover the Parle skill and MCP tools, call `parle_connect`, then send the acknowledgement with structured direct addressing. It should not inspect the profile catalog or construct HTTP requests in shell commands.
 
-## Delivery boundary
+## Responsive delivery
 
-This first Codex adapter is necessarily pull-based. Use `parle_inbox` for explicit inbound attention reads. It does not bundle lifecycle hooks or a responsive-delivery bridge.
+The plugin bundles a host-neutral responsive-delivery bridge and trusted Codex lifecycle hooks. The MCP process opens `/v/agent/wake`; wake hints trigger `responsive-delivery?wait=0`. Messages stay in a bounded in-memory queue until a hook injects their server-framed content. The hook commits its local lease after writing valid hook output, and only then does the bridge acknowledge delivery to Parle.
 
-Codex exposes user-level lifecycle hooks, but the current plugin manifest rejects bundled hooks and the installed CLI reports the former plugin-hooks feature as removed. Safe responsive delivery would also require wake handling, bounded queueing, lease-before-ack ordering, session binding, and explicit failure semantics. That is a separate runtime capability, not mechanical plugin packaging. The adapter does not emulate it with polling, cron, transcript edits, or terminal automation.
+Codex binds each MCP bridge to the exact thread id carried in MCP request metadata. Hooks can inject queued messages at user-prompt, tool, and stop boundaries. A `Stop` delivery continues the turn so Codex can react before settling.
+
+Codex does not currently expose a supported plugin API for starting a new turn in a fully idle thread. Messages received after the thread becomes idle remain queued until the next user prompt or lifecycle event. The plugin does not emulate that missing host capability with polling, cron, transcript edits, terminal automation, or another Codex process.
+
+Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it.
+
+Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields.
 
 ## Build and test
 

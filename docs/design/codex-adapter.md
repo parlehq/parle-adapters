@@ -1,6 +1,6 @@
 # Codex Adapter
 
-Status: implemented as a thin MCP plugin
+Status: implemented with a host-neutral hook delivery bridge
 Date: 2026-07-29
 Owner repo: `parlehq/parle-adapters`
 
@@ -8,11 +8,13 @@ Owner repo: `parlehq/parle-adapters`
 
 Codex is a Type 2 MCP host with a native plugin marketplace and Agent Skills. Parle support uses the existing host-agnostic stdio MCP server inside a native Codex plugin. It does not add another HTTP client, credential parser, session implementation, config writer, or installer.
 
-The adapter owns only:
+The adapter owns:
 
 - Codex plugin metadata and repository marketplace discovery
 - a copied, byte-checked MCP server artifact
 - focused Codex skill guidance
+- trusted Codex lifecycle-hook packaging
+- host-thread binding through Codex MCP request metadata
 - install documentation and package-local validation
 
 Parle protocol behavior, profile resolution, redaction, tool schemas, session lifecycle, and API errors remain in Parle core, `@parlehq/agent-client`, and `@parlehq/mcp-server`.
@@ -55,14 +57,16 @@ codex plugin add parle-codex-plugin@parlehq
 
 The installed `.mcp.json` launches the bundled server from the plugin root. The MCP server resolves the Parle profile catalog directly. No credential value is copied into Codex configuration.
 
-## Responsive delivery boundary
+## Responsive delivery
 
-Version 0.1.0 is necessarily pull-based. Codex CLI 0.146.0 reports the general `hooks` feature as stable, but its plugin manifest rejects bundled hooks and the former `plugin_hooks` feature is removed. A plugin-shaped adapter therefore cannot ship responsive delivery through lifecycle hooks.
+Codex CLI 0.146.0 supports trusted plugin-bundled lifecycle hooks under the stable general `hooks` feature. The removed `plugin_hooks` flag was a former feature gate, not evidence that current plugin hooks are unsupported.
 
-Possible future architectures are user-level `hooks.json`, a resumed `codex exec` flow, or the experimental app-server protocol. Each is a separate runtime design. Hooks alone would still not provide safe delivery: a correct bridge needs wake handling, bounded queueing, lease-before-ack ordering, session binding, trust review, and explicit failure semantics.
+The plugin enables the shared MCP server's host-neutral `hook-bridge` delivery mode. The bridge owns wake SSE handling, zero-wait responsive drain, bounded queueing, lease-before-ack ordering, and failure state. Codex MCP request metadata binds the bridge to the exact Codex thread before lifecycle hooks can take a delivery. Plugin hooks inject server-framed content at user-prompt, tool, and stop boundaries.
 
-That runtime would no longer be a mechanical wrapper. It should be added only after field evidence justifies the capability and the design reuses shared delivery primitives without inventing polling, cron, transcript editing, or terminal automation. The Codex skill explicitly overrides the shared `parle_connect` next-step hint: it never arms a watcher and uses manual `parle_inbox` reads only when requested.
+The remaining boundary is idle-time initiation. Codex does not expose a supported plugin API for starting a new turn when no lifecycle event is running. Messages that arrive while fully idle remain queued until the next user prompt or hook boundary. The adapter does not invent polling, cron, transcript editing, terminal automation, or a second Codex process to bypass that boundary. A future app-server or remote-control design may close it, but that is a separate trust and lifecycle architecture.
+
+Codex's status line accepts only Codex-owned item identifiers. Plugins cannot register a dynamic footer segment. The canonical supported status surface is `parle_status`, which reports watcher state from the owned bridge.
 
 ## Validation
 
-The package byte-checks its tracked MCP artifact against the shared MCP build. Tests lock the exact skill frontmatter key set, plugin metadata, marketplace routing and policy, MCP launch shape, safety guidance, and the forced no-hook delivery boundary. The tracked artifact has an explicit `.gitignore` exception and the manifest version is checked against the package version. Release validation also installs the real package into a temporary Codex home and inspects the resulting plugin and MCP surfaces.
+The package byte-checks its tracked MCP and hook artifacts against the shared MCP build. Tests lock the exact skill frontmatter key set, plugin metadata, marketplace routing and policy, MCP launch shape, safety guidance, host-thread binding, hook injection, and lease-before-ack behavior. The tracked artifacts have explicit `.gitignore` exceptions and the manifest version is checked against the package version. Release validation also installs the real package into a temporary Codex home and inspects the resulting plugin, hook, and MCP surfaces.

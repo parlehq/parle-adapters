@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -30,6 +30,13 @@ const expectedTools = [
 test("direct-run detection handles URL-encoded paths", () => {
   const path = "/tmp/Application Support/parle-mcp.js";
   assert.equal(isDirectRun(pathToFileURL(path).href, path), true);
+});
+
+test("Codex request metadata resolves an exact host session binding", () => {
+  assert.equal(hostSessionIdFromMeta({ threadId: "thread-direct" }), "thread-direct");
+  assert.equal(hostSessionIdFromMeta({ "x-codex-turn-metadata": { session_id: "thread-session", thread_id: "thread-fallback" } }), "thread-session");
+  assert.equal(hostSessionIdFromMeta({ "x-codex-turn-metadata": { thread_id: "thread-fallback" } }), "thread-fallback");
+  assert.equal(hostSessionIdFromMeta({}), undefined);
 });
 
 test("watcher arguments accept only documented positional and profile forms", () => {

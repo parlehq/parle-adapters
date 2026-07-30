@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.36 (2026-07-29)
+
+Refresh the shared MCP artifact with the host-neutral hook delivery bridge. Claude Code watcher behavior is unchanged.
+
 ## 0.5.35
 
 Report one process-ephemeral MCP client instance on agent-token JSON, wake, watcher bootstrap, and watcher poll requests. Runtime snapshots publish the same identifier.

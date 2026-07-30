@@ -1,0 +1,56 @@
+{
+  "description": "Inject queued Parle responsive delivery at supported Codex lifecycle boundaries.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "timeout": 5,
+            "statusMessage": "Checking Parle delivery",
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "timeout": 5,
+            "statusMessage": "Checking Parle delivery",
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "timeout": 5,
+            "statusMessage": "Checking Parle delivery",
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/hooks/parle-hook.mjs --scope codex-plugin",
+            "timeout": 5,
+            "statusMessage": "Checking Parle delivery"
+          }
+        ]
+      }
+    ]
+  }
+}

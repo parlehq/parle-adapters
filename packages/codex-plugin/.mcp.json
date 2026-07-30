@@ -5,7 +5,11 @@
       "args": [
         "./dist/parle-mcp.js"
       ],
-      "cwd": "."
+      "cwd": ".",
+      "env": {
+        "PARLE_RESPONSIVE_DELIVERY": "hook-bridge",
+        "PARLE_HOOK_BRIDGE_SCOPE": "codex-plugin"
+      }
     }
   }
 }

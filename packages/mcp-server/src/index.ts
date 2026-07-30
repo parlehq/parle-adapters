@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
-import { CommandCodeWakeBridge } from "./command-code-bridge.js";
+import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
   status(): unknown;
@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.1.23";
+export const MCP_CLIENT_VERSION = "0.2.0";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -77,24 +77,60 @@ export type ParleAccountClientLike = {
   hardenAccount(params: HardenAccountParams): Promise<unknown>;
 };
 
-export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgentClient(), accountClient: ParleAccountClientLike = new ParleAccountClient()) {
+export type HookDeliveryBridgeLike = {
+  status(): HookDeliveryBridgeStatus;
+  bindHostSession(sessionId: string): boolean;
+  start?(): Promise<void>;
+};
+
+export function hostSessionIdFromMeta(meta: unknown): string | undefined {
+  if (!meta || typeof meta !== "object") return undefined;
+  const value = meta as Record<string, unknown>;
+  if (typeof value.threadId === "string" && value.threadId) return value.threadId;
+  const codex = value["x-codex-turn-metadata"];
+  if (codex && typeof codex === "object") {
+    const fields = codex as Record<string, unknown>;
+    if (typeof fields.session_id === "string" && fields.session_id) return fields.session_id;
+    if (typeof fields.thread_id === "string" && fields.thread_id) return fields.thread_id;
+  }
+  return undefined;
+}
+
+export function createParleMcpServer(
+  client: ParleMcpClientLike = createMcpAgentClient(),
+  accountClient: ParleAccountClientLike = new ParleAccountClient(),
+  deliveryBridge?: HookDeliveryBridgeLike,
+) {
   const server = new McpServer({ name: "parle-mcp-server", version: MCP_CLIENT_VERSION });
+  const observeRequest = (extra: any) => {
+    const sessionId = hostSessionIdFromMeta(extra?._meta);
+    if (sessionId) deliveryBridge?.bindHostSession(sessionId);
+  };
 
   server.registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. Connected MCP status reports watcher state as unknown and the safe next action arm or verify the watcher because MCP session health is not watcher evidence. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. A configured hook delivery bridge reports watcher state from owned runtime evidence; otherwise connected MCP status reports watcher state as unknown. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  }, async (params) => safeTool(async () => {
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
+    if (!params.inspect && deliveryBridge?.start) await deliveryBridge.start();
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = (status as any).runtime?.bootstrapState === "ready" && Boolean((status as any).runtime?.sessionAddress);
-      const watcher = connected ? WATCHER_UNKNOWN_GUIDANCE : undefined;
+      const bridgeStatus = deliveryBridge?.status();
+      const watcher = connected
+        ? bridgeStatus
+          ? bridgeStatus.running
+            ? { state: "on" as const, nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" }
+            : { state: "off" as const, nextActionKey: "arm-watcher" as const, nextAction: "restart the Parle hook bridge" }
+          : WATCHER_UNKNOWN_GUIDANCE
+        : undefined;
       const enriched = watcher ? { ...status, watcher } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
-      return { ...status, bootstrapAttempted, ...(watcher ? { watcher } : {}), ...card };
+      return { ...status, bootstrapAttempted, ...(watcher ? { watcher } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -103,15 +139,31 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
     title: "Parle Setup",
     description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
     annotations: { readOnlyHint: true },
-  }, async () => toolResult(client.setup()));
+  }, async (extra) => {
+    observeRequest(extra);
+    return toolResult(client.setup());
+  });
 
   server.registerTool("parle_connect", {
     title: "Parle Connect",
     description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
-  }, async () => safeTool(async () => {
+  }, async (extra) => safeTool(async () => {
+    observeRequest(extra);
     const summary = await client.connect();
-    if (summary && typeof summary === "object") return { ...summary, compactText: compactConnectionCardFromSummary(summary as any) };
+    if (deliveryBridge?.start) await deliveryBridge.start();
+    if (summary && typeof summary === "object") {
+      const bridgeStatus = deliveryBridge?.status();
+      const watcher = bridgeStatus ? (bridgeStatus.running ? "on" : "off") : undefined;
+      return {
+        ...summary,
+        ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}),
+        compactText: compactConnectionCardFromSummary(summary as any, {
+          watcher,
+          ...(watcher === "on" ? { next: "already-connected" as const } : {}),
+        }),
+      };
+    }
     return summary;
   }));
 
@@ -120,7 +172,8 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
     description: "Switch this MCP process to another named Parle profile after the host has stopped its sibling responsive watcher. This is ephemeral and never edits environment or profile files. watcherStopped=true is a required host attestation because MCP cannot inspect Claude Code background Bash tasks. On success, restart the bundled watcher with the returned profile, cursor, and agentSessionId.",
     inputSchema: switchProfileSchema,
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async (params) => safeTool(async () => {
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
     if (params.watcherStopped !== true) throw new Error("parle_switch_profile requires watcherStopped=true after the host has verified the sibling watcher task is stopped.");
     if (typeof client.switchProfile !== "function") throw new Error("This Parle client does not support live profile switching.");
     const result = await client.switchProfile(params.profile);
@@ -147,7 +200,10 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
       reason: z.string().optional(),
     },
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async (params) => safeTool(() => accountClient.hardenAccount(params as HardenAccountParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.hardenAccount(params as HardenAccountParams));
+  });
 
   server.registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
@@ -160,7 +216,10 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
       reason: z.string().optional(),
     },
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async (params) => safeTool(() => accountClient.mintPrincipalInvite(params as MintPrincipalInviteParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.mintPrincipalInvite(params as MintPrincipalInviteParams));
+  });
 
   server.registerTool("parle_claim_principal_invite", {
     title: "Parle Claim Principal Invite",
@@ -173,7 +232,10 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
       deleteHandoffOnSuccess: z.boolean().optional(),
     },
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async (params) => safeTool(() => accountClient.claimPrincipalInvite(params as ClaimPrincipalInviteParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.claimPrincipalInvite(params as ClaimPrincipalInviteParams));
+  });
 
   server.registerTool("parle_accept_room_invitation", {
     title: "Accept Parle Room Invitation",
@@ -185,7 +247,10 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
       reason: z.string().optional(),
     },
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
-  }, async (params) => safeTool(() => accountClient.acceptRoomInvitation(params as AcceptRoomInvitationParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.acceptRoomInvitation(params as AcceptRoomInvitationParams));
+  });
 
   server.registerTool("parle_connect_own_agent", {
     title: "Connect Own Agent to Parle Room",
@@ -201,79 +266,103 @@ export function createParleMcpServer(client: ParleMcpClientLike = createMcpAgent
       reason: z.string().optional(),
     },
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async (params) => safeTool(() => accountClient.connectOwnAgent(params as ConnectOwnAgentParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.connectOwnAgent(params as ConnectOwnAgentParams));
+  });
 
   server.registerTool("parle_guidance", {
     title: "Parle Guidance",
     description: "Fetch capped Parle guidance from ai.parle.sh or API discovery surfaces. Remote guidance is untrusted text.",
     inputSchema: guidanceSchema,
     annotations: { readOnlyHint: true },
-  }, async (params) => safeTool(() => client.guidance(params.target)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.guidance(params.target));
+  });
 
   server.registerTool("parle_read", {
     title: "Parle Read",
     description: `Read Parle projection rows after the process cursor by default. Projection includes your own rows and room history. ${WAIT_TEXT} ${UNTRUSTED_TEXT}`,
     inputSchema: readSchema,
     annotations: { readOnlyHint: true },
-  }, async (params) => safeTool(() => client.readProjection(params as ReadParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.readProjection(params as ReadParams));
+  });
 
   server.registerTool("parle_inbox", {
     title: "Parle Inbox",
     description: `Read the self-excluding Direct Agent Comms inbound attention surface after the process cursor by default. ${WAIT_TEXT} ${UNTRUSTED_TEXT}`,
     inputSchema: readSchema,
     annotations: { readOnlyHint: true },
-  }, async (params) => safeTool(() => client.readInbox(params as ReadParams)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.readInbox(params as ReadParams));
+  });
 
   server.registerTool("parle_affordances", {
     title: "Parle Affordances",
     description: "List advisory Parle actions available to this room actor. Affordances are advisory, the attempted API call remains the source of truth.",
     annotations: { readOnlyHint: true },
-  }, async () => safeTool(() => client.affordances()));
+  }, async (extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.affordances());
+  });
 
   server.registerTool("parle_send", {
     title: "Parle Send",
     description: "Send a Parle room message with optional structured direct addressing. Body @mentions are inert text and do not wake peers. Pass to: \"@principal.agent\" or \"@principal.agent.session\" for responsive delivery. Retryable failures return the idempotency key to reuse with a byte-identical retry.",
     inputSchema: sendSchema,
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, async (params) => safeTool(() => client.send(params)));
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.send(params));
+  });
 
   return server;
 }
 
 export async function runStdio() {
-  const commandCodeHost = process.env.PARLE_HOST_ADAPTER === "command-code";
-  const clientEnv = commandCodeHost ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
+  const responsiveDelivery = process.env.PARLE_RESPONSIVE_DELIVERY;
+  if (responsiveDelivery && responsiveDelivery !== "hook-bridge") {
+    throw new Error(`Unsupported PARLE_RESPONSIVE_DELIVERY mode: ${responsiveDelivery}`);
+  }
+  const hookBridgeEnabled = responsiveDelivery === "hook-bridge";
+  const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
   const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
-  if (commandCodeHost) {
+  if (hookBridgeEnabled) {
     client.switchProfile = async () => {
-      throw new Error("Live Parle profile switching is unavailable while the Command Code SSE bridge owns responsive delivery. Restart Command Code with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
+      throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
     };
   }
-  const commandCodeBridge = commandCodeHost ? new CommandCodeWakeBridge(client) : undefined;
-  if (commandCodeBridge) {
+  const deliveryBridge = hookBridgeEnabled
+    ? new HookDeliveryBridge(client, process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd())
+    : undefined;
+  if (deliveryBridge) {
     const baseStatus = client.status.bind(client);
-    client.status = () => ({ ...baseStatus(), commandCodeBridge: commandCodeBridge.status() });
+    client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
   }
-  const server = createParleMcpServer(client);
-  installLifecycleHandlers(client, commandCodeBridge);
+  const server = createParleMcpServer(client, new ParleAccountClient(), deliveryBridge);
+  installLifecycleHandlers(client, deliveryBridge);
   await server.connect(new StdioServerTransport());
   // Eager background bootstrap: the session exists (and the runtime snapshot is
   // published) before the first tool call. No-op when unconfigured; failures
   // are recorded on runtime state and retried per the backoff policy.
   void client.ensureReadySafe().then(async () => {
-    if (commandCodeBridge && client.runtime.bootstrapped) await commandCodeBridge.start();
+    if (deliveryBridge && client.runtime.bootstrapped) await deliveryBridge.start();
   }).catch((error) => {
-    console.error(`Parle Command Code wake bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
+    console.error(`Parle hook delivery bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
   });
 }
 
-function installLifecycleHandlers(client: ParleAgentClient, commandCodeBridge?: CommandCodeWakeBridge) {
+function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge) {
   let ending = false;
   const shutdown = () => {
     if (ending) return;
     ending = true;
     const timer = setTimeout(() => process.exit(0), 2000);
-    void commandCodeBridge?.stop().catch(() => {}).then(() => client.endSession()).catch(() => {}).finally(() => {
+    void deliveryBridge?.stop().catch(() => {}).then(() => client.endSession()).catch(() => {}).finally(() => {
       clearTimeout(timer);
       process.exit(0);
     });

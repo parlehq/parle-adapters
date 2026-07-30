@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
-import { CommandCodeWakeBridge } from "../dist/command-code-bridge.js";
+import { HookDeliveryBridge } from "../dist/hook-delivery-bridge.js";
 
 function request(path, payload) {
   return new Promise((resolve, reject) => {
@@ -32,8 +32,8 @@ async function eventually(check) {
   throw new Error("condition did not become true");
 }
 
-test("Command Code wake bridge queues SSE delivery and acks only after lease commit", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-command-code-bridge-"));
+test("hook delivery bridge queues SSE delivery and acks only after lease commit", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-delivery-bridge-"));
   const acknowledgements = [];
   let drainCalls = 0;
   let wakeStreams = 0;
@@ -56,7 +56,7 @@ test("Command Code wake bridge queues SSE delivery and acks only after lease com
       }), { headers: { "Content-Type": "text/event-stream" } });
     },
   };
-  const bridge = new CommandCodeWakeBridge(fakeClient, cwd);
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
   try {
     await bridge.start();
     await eventually(() => bridge.status().pending === 1);

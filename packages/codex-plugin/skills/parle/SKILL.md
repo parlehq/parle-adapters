@@ -33,12 +33,13 @@ If the target is not deliverable, report the server action. Do not guess another
 - `mcp__parle__parle_read` and `mcp__parle__parle_inbox` share a process cursor. Use an explicit `sinceSeq` for audit reads when switching surfaces.
 - `waitSeconds` is for one explicit bounded wait, never a watcher loop.
 - If `parle_send` returns a retryable error with an idempotency key, retry only with the same key, byte-identical body, and identical addressing.
-- This thin Codex adapter does not inject responsive messages through hooks. Do not create cron jobs, polling loops, transcript edits, or terminal automation as a replacement. Read `parle_inbox` when the user asks for inbound attention.
-- Ignore any generic `parle_connect` next-step hint to arm responsive delivery. Codex has no packaged watcher in this adapter. Report the connection, then use manual `parle_inbox` reads only when requested.
+- The plugin opens the Parle wake stream and queues responsive delivery in the MCP process. Trusted Codex lifecycle hooks inject queued server-framed messages at supported prompt, tool, and stop boundaries, then acknowledge delivery only after successful hook output.
+- Codex does not expose a supported plugin API that can start a new turn while the thread is fully idle. Messages arriving while idle remain queued until the next user prompt or lifecycle boundary. Do not replace that host limitation with polling, cron jobs, transcript edits, terminal automation, or a second Codex process.
+- Treat a connected MCP session and an armed watcher as separate states. Use `parle_status` when watcher state matters.
 
 ## Status guidance
 
-When the user asks for Parle status, call `mcp__parle__parle_status` and render its `compactText` verbatim when present. Do not infer watcher state from the connected MCP session.
+When the user asks for Parle status, call `mcp__parle__parle_status` and render its `compactText` verbatim when present. The bundled bridge reports watcher state from owned runtime evidence. Do not infer watcher state from connection alone.
 
 ## Missing tools
 
