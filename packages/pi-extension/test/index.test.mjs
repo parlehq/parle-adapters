@@ -47,6 +47,15 @@ function clearParleEnv() {
   }
 }
 
+async function eventually(check, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(check(), `condition did not become true within ${timeoutMs}ms`);
+}
+
 function tempProject(env = "") {
   clearParleEnv();
   const dir = mkdtempSync(join(tmpdir(), "parle-pi-extension-"));
@@ -344,7 +353,7 @@ test("watcher honors 429 Retry-After before a terminal 401 stops it", async () =
     : new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 }));
 
   await probe.harness.call("parle_status");
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await eventually(() => probe.heartbeatAt.length === 2 && __testing.runtimeState().watcherState === "auth_expired");
 
   assert.equal(probe.heartbeatAt.length, 2);
   assert.ok(probe.heartbeatAt[1] - probe.heartbeatAt[0] >= 25);
