@@ -1,0 +1,27 @@
+{
+  "parle_version": "2026-07-07",
+  "headers": [
+    {
+      "name": "Parle-Client-Name",
+      "type": "string",
+      "required": false,
+      "description": "Validated npm package name."
+    },
+    {
+      "name": "Parle-Client-Version",
+      "type": "string",
+      "required": false,
+      "description": "Validated SemVer package release."
+    },
+    {
+      "name": "Parle-Client-Instance",
+      "type": "string",
+      "format": "uuid",
+      "required": false,
+      "description": "Process-ephemeral UUIDv4 or UUIDv7."
+    }
+  ],
+  "max_bytes_per_field": 96,
+  "invalid_behavior": "omit invalid fields, set client_metadata_invalid=true, preserve response behavior",
+  "authorization_use": "diagnostic only; never authorization, moderation, limits, quotas, or trust"
+}

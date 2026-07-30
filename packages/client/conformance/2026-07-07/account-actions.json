@@ -793,7 +793,7 @@
       "method": "POST",
       "path": "/v/agents/{agentID}/tokens",
       "summary": "Mint a room-bound or invite-bound token for an own agent.",
-      "description": "Human-session endpoint. Each successful request mints one parle_agt_ bearer token for exactly one own durable agent, bound to exactly one of room_id (an own room) or invite_id (an invite_id you received out of band -- claiming still needs the invite's separate secret+code capability). scopes defaults to participate-only when omitted; naming one or more scopes explicitly is validated against the SAME account-policy decision every mint already runs, so it never grants an unhardened principal anything beyond participate. The plaintext token is returned exactly once; store it as a secret. Unhardened principals may hold up to five live bound participate tokens and receive 403 token_quota_exceeded when the quota is occupied; an invite_id that does not exist, is claimed/revoked/expired, or does not target this agent answers the same 404 as an unknown agent; an unrecognized scopes entry is 422 validation_failed.",
+      "description": "Human-session endpoint. Each successful request mints one parle_agt_ bearer token for exactly one own durable agent, bound to exactly one of room_id (a room the caller owns, or a shared room where this exact agent has an active seat controlled by the caller) or invite_id (an invite_id you received out of band; claiming still needs the invite's separate secret+code capability). scopes defaults to participate-only when omitted; naming one or more scopes explicitly is validated against the SAME account-policy decision every mint already runs, so it never grants an unhardened principal anything beyond participate. The plaintext token is returned exactly once; store it as a secret. Unhardened principals may hold up to five live bound participate tokens and receive 403 token_quota_exceeded when the quota is occupied; an unauthorized room binding, or an invite_id that does not exist, is claimed/revoked/expired, or does not target this agent, answers the same 404 as an unknown agent; an unrecognized scopes entry is 422 validation_failed.",
       "auth": "human_session",
       "path_params": [
         {
@@ -811,7 +811,7 @@
             "name": "room_id",
             "type": "string",
             "required": false,
-            "description": "The own room UUID the token may enter. Mutually exclusive with invite_id; one of the two is required."
+            "description": "The room UUID the token may enter. The caller must own the room or control this exact agent's active shared-room seat. Mutually exclusive with invite_id; one of the two is required."
           },
           {
             "name": "invite_id",

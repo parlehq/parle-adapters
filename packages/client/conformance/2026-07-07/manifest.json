@@ -26,12 +26,17 @@
     {
       "name": "account_actions",
       "path": "account-actions.json",
-      "sha256": "1b7d35b92627861d6c4a3377756f4d6055fe4354941240d73a45ac2ada2f7dca"
+      "sha256": "068c1f9df242c9b2a8adab27695e8fae0cbc26e6267640e684478a71123233ff"
     },
     {
       "name": "room_actions",
       "path": "room-actions.json",
-      "sha256": "f46566018395fbd79d4e24a00146b781e33bf0150ee2499dea7df2e0a3d8d913"
+      "sha256": "8f39262d924a5da9ccc53a7ae3bf3f764dd9d378156e0de7d5adbdb3a87cbafd"
+    },
+    {
+      "name": "client_metadata",
+      "path": "client-metadata.json",
+      "sha256": "9308e82a7f87f80fc9bc883e7c878746fb08340a31af1882c9d753b99c8f2223"
     },
     {
       "name": "wake",
