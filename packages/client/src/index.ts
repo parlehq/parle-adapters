@@ -1034,6 +1034,10 @@ export class ParleAgentClient {
   private recordTerminalCause(error: unknown): void {
     const api = error instanceof ParleApiError ? error : undefined;
     if (!api || !["fix_client", "reauthorize", "stop"].includes(api.action || "")) return;
+    // A request-scoped error is about that one call, not the binding. Latching
+    // on it would let a caller mistake such as an omitted roomId stop this
+    // session's automatic work, including its wake stream, for good.
+    if (api.scope === "request") return;
     const sameBinding = this.automaticTerminalBinding === this.bindingKey();
     this.automaticTerminalBinding = this.bindingKey();
     this.runtime.terminalCause = {

@@ -1581,6 +1581,7 @@ function twoRoomClient(options = {}) {
       if (options.sessionDeny === room) return json({ error: { code: "agent_mismatch", message: "session not valid here", action: "rebootstrap", scope: "agent_session" } }, 403);
       return json({ participant_id: `part-${room}`, room_handle: `${room}-room` }, 201);
     }
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
     if (path.includes("/projection")) return json({ watermark: path.includes(alpha) ? 10 : 20, messages: [] });
     if (path.includes("/inbound")) return json({ watermark: path.includes(alpha) ? 11 : 21, messages: [{ seq: path.includes(alpha) ? 11 : 21, event_id: `e-${path.includes(alpha) ? "alpha" : "beta"}` }] });
     if (path.endsWith("/messages")) return json({ seq: 99, event_id: "sent" }, 201);
@@ -1748,5 +1749,27 @@ test("a durable alias from persistent configuration warns about route takeover",
   } finally {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a caller-side request error never latches the session's automatic work", async () => {
+  // An omitted roomId is a mistake in one call. Latching the binding on it
+  // would stop the wake stream for the whole session, which is how a
+  // two-room production dogfood lost all responsive delivery.
+  const harness = twoRoomClient();
+  try {
+    await harness.client.connect();
+    await assert.rejects(harness.client.readInbox(), /roomId is required/);
+    await assert.rejects(harness.client.readInbox({ roomId: "019f0000-0000-7000-8000-000000000000" }), /is not configured/);
+    assert.equal(harness.client.status().runtime.terminalCause, undefined, "a request-scoped error is not a terminal cause");
+    // The session's automatic wake stream must still open.
+    const stream = await harness.client.openWakeStream();
+    assert.equal(stream.status, 200);
+    await stream.body?.cancel().catch(() => undefined);
+    // And room-explicit work still succeeds.
+    const inbox = await harness.client.readInbox({ roomId: harness.beta });
+    assert.equal(inbox.roomId, harness.beta);
+  } finally {
+    harness.cleanup();
   }
 });

@@ -33815,6 +33815,8 @@ var ParleAgentClient = class _ParleAgentClient {
     const api = error51 instanceof ParleApiError ? error51 : void 0;
     if (!api || !["fix_client", "reauthorize", "stop"].includes(api.action || ""))
       return;
+    if (api.scope === "request")
+      return;
     const sameBinding = this.automaticTerminalBinding === this.bindingKey();
     this.automaticTerminalBinding = this.bindingKey();
     this.runtime.terminalCause = {
