@@ -10,7 +10,6 @@
     "check:mcp-artifacts": "node scripts/check-reproducible-mcp-artifacts.mjs",
     "pack:desktop": "pnpm build:mcp && pnpm -F @parlehq/claude-desktop-extension pack:mcpb",
     "check:manifests": "node scripts/check-manifest-versions.mjs",
-    "sync-conformance": "node scripts/sync-conformance.mjs",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test"
   },

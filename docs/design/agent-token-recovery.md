@@ -2,6 +2,11 @@
 
 ## Status
 
+Superseded in part by Parle ADR-0087 and adapter issue #64. Every reference in
+this document to vendored conformance, fixture pins, local error registries, or
+fixture refresh is obsolete. Current implementation must use the live-contract
+rules in `docs/design/api-first-adapter-foundation.md`.
+
 Implementation-ready design refresh against:
 
 - `parlehq/parle` `786ae829d765517ffe1f55a66032f90c19687c71`

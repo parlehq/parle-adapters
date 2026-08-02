@@ -254,11 +254,11 @@ test("PARLE_ENABLED=0 skips inaccessible profile catalog inspection", { skip: pr
   }
 });
 
-test("Pi delegates API error taxonomy and version hints to the agent client", () => {
+test("Pi delegates tolerant error parsing and version hints to the agent client", () => {
   const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  assert.match(source, /ERROR_ACTIONS, ERROR_REGISTRY[^\n]*formatVersionErrorHint[^\n]*from "@parlehq\/agent-client"/);
+  assert.match(source, /formatVersionErrorHint, parseErrorEnvelope[^\n]*from "@parlehq\/agent-client"/);
   assert.doesNotMatch(source, /function formatVersionErrorHint/);
-  assert.doesNotMatch(source, /const ERROR_REGISTRY/);
+  assert.doesNotMatch(source, /ERROR_ACTIONS|ERROR_REGISTRY|ERROR_SCOPES/);
 });
 
 test("Pi shares wire defaults with the agent client", () => {
@@ -629,7 +629,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.39" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.40" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -934,7 +934,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.1.39");
+    assert.equal(call.headers["Parle-Client-Version"], "0.1.40");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1774,7 +1774,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.39");
+      assert.equal(init.headers["Parle-Client-Version"], "0.1.40");
       assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });

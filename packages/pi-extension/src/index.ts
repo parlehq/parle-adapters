@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, ERROR_ACTIONS, ERROR_REGISTRY, INBOX_REPLY_GUIDANCE, ParleAccountClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseKeyValueFile, parseProfiles, performProfileSwitch, processClientInstanceId, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type ErrorAction, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, performProfileSwitch, processClientInstanceId, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.1.39";
+const PI_EXTENSION_VERSION = "0.1.40";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
@@ -410,7 +410,7 @@ function redactedValue(value?: ConfigValue) {
   if (!value) return undefined;
   return {
     set: Boolean(value.value),
-    value: value.secret ? "<redacted>" : value.value,
+    value: value.secret ? "<redacted>" : value.value ? redactString(value.value) : value.value,
     source: value.source,
     key: value.key,
     secret: value.secret === true,
@@ -1078,25 +1078,16 @@ async function requestJson(cfg: ParleConfig, path: string, options: { method?: s
     const text = await response.text();
     const json = parseJsonMaybe(text);
     if (!response.ok) {
-      const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
-      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
-      const registry = code ? ERROR_REGISTRY[code] : undefined;
-      const action = typeof errorObj.action === "string" && (ERROR_ACTIONS as readonly string[]).includes(errorObj.action)
-        ? errorObj.action as ErrorAction
-        : registry?.action;
-      const retryAfterHeader = response.headers.get("retry-after");
-      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
-      const retryAfterMs = typeof errorObj.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms)
-        ? Math.max(0, Math.trunc(errorObj.retry_after_ms))
-        : Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.trunc(retryAfterSeconds * 1000)) : undefined;
-      const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text);
-      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
+      const envelope = parseErrorEnvelope(json);
+      const { code, action, scope, retryable, retryAfterMs } = envelope;
+      const msg = redactString(envelope.message || truncateText(redactString(text), 4096).text);
+      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(cfg, envelope.raw) : "";
       const err: any = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
       err.status = response.status;
       err.code = code;
       err.action = action;
-      err.scope = typeof errorObj.scope === "string" ? errorObj.scope : registry?.scope;
-      err.retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : registry?.retryable;
+      err.scope = scope;
+      err.retryable = retryable;
       err.retryAfterMs = retryAfterMs;
       throw err;
     }
@@ -1172,24 +1163,15 @@ async function fetchWakeStream(cfg: ParleConfig, signal: AbortSignal): Promise<R
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const json = parseJsonMaybe(text);
-    const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
-    const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
-    const registry = code ? ERROR_REGISTRY[code] : undefined;
-    const action = typeof errorObj.action === "string" && (ERROR_ACTIONS as readonly string[]).includes(errorObj.action)
-      ? errorObj.action as ErrorAction
-      : registry?.action;
-    const retryAfterHeader = response.headers.get("retry-after");
-    const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
-    const retryAfterMs = typeof errorObj.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms)
-      ? Math.max(0, Math.trunc(errorObj.retry_after_ms))
-      : Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.trunc(retryAfterSeconds * 1000)) : undefined;
-    const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text || response.statusText);
+    const envelope = parseErrorEnvelope(json);
+    const { code, action, scope, retryable, retryAfterMs } = envelope;
+    const msg = redactString(envelope.message || truncateText(redactString(text), 4096).text || response.statusText);
     const err: any = new Error(`Parle wake stream ${response.status}: ${msg}`);
     err.status = response.status;
     err.code = code;
     err.action = action;
-    err.scope = typeof errorObj.scope === "string" ? errorObj.scope : registry?.scope;
-    err.retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : registry?.retryable;
+    err.scope = scope;
+    err.retryable = retryable;
     err.retryAfterMs = retryAfterMs;
     throw err;
   }

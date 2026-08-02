@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { CONFORMANCE_PARLE_VERSION } from "./conformance-data.js";
+import { DEFAULT_VERSION } from "./protocol.js";
 import { CredentialProfile, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
 import { ParleHardeningClient, type HardenAccountParams } from "./hardening.js";
 
@@ -185,7 +185,7 @@ function resolveAccountConfig(cwd: string, env: Record<string, string | undefine
     if (selectedProfile) configuredApiBase = loadProfile(selectedProfile, catalogPath).apiBase;
   }
   const apiBase = assertSafeBase(configuredApiBase || DEFAULT_API_BASE, env);
-  const version = env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION;
+  const version = env.PARLE_VERSION || DEFAULT_VERSION;
   return { apiBase, version, sessionCookie, stateDir: dirname(catalogPath), catalogPath };
 }
 

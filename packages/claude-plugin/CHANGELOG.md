@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.5.42 (2026-08-01)
+
+Remove vendored Parle contracts and ship the release-pinned live-contract client with tolerant error parsing and conservative credential redaction.
+
 ## 0.5.41 (2026-07-30)
 
 Honor explicit `advanceCursor: true` on `sinceSeq` reads, preserve unread state on empty explicit commits, and document audit versus commit cursor behavior.

@@ -2,6 +2,7 @@ import {
   appendFileSync,
   chmodSync,
   copyFileSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -39,6 +40,7 @@ function copyWorkingTree(targetRoot) {
 
   for (const relativePath of listed.split("\0").filter(Boolean)) {
     const source = resolve(repoRoot, relativePath);
+    if (!existsSync(source)) continue;
     const target = resolve(targetRoot, relativePath);
     const stat = lstatSync(source);
     mkdirSync(dirname(target), { recursive: true });
@@ -63,13 +65,13 @@ function assertArtifactsMatch(root) {
 
 function seedStaleClientDist(root) {
   run("pnpm", ["-F", "@parlehq/agent-client", "build"], root);
-  const fixturePath = resolve(root, "packages/client/dist/conformance-data.js");
+  const fixturePath = resolve(root, "packages/client/dist/protocol.js");
   const compiled = readFileSync(fixturePath, "utf8");
   const changed = compiled.replace(
-    /CONFORMANCE_PARLE_VERSION\s*=\s*"[^"]+"/,
-    `CONFORMANCE_PARLE_VERSION = "${staleSentinel}"`,
+    /DEFAULT_VERSION\s*=\s*"[^"]+"/,
+    `DEFAULT_VERSION = "${staleSentinel}"`,
   );
-  if (changed === compiled) throw new Error("Could not seed the stale client dist fixture because the compiled conformance version shape changed.");
+  if (changed === compiled) throw new Error("Could not seed the stale client dist fixture because the compiled protocol version shape changed.");
   writeFileSync(fixturePath, changed);
 }
 

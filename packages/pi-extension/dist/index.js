@@ -11,104 +11,27 @@ function processClientInstanceId() {
   return processClientInstance;
 }
 
-// ../client/dist/error-contract.js
-var ERROR_ACTIONS = [
-  "retry",
-  "retry_with_backoff",
-  "backoff",
-  "rebootstrap",
-  "reauthorize",
-  "fix_client",
-  "stop"
-];
-function retryable(action) {
-  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
+// ../client/dist/error-envelope.js
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
 }
-var entries = {
-  malformed_request: { status: 400, action: "fix_client", scope: "request" },
-  unsupported_parle_version: { status: 400, action: "fix_client", scope: "request" },
-  payload_too_large: { status: 413, action: "fix_client", scope: "request" },
-  invalid_agent_token: { status: 401, action: "reauthorize", scope: "agent_token" },
-  invalid_agent_session: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  agent_session_expired: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  agent_session_ended: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  agent_session_superseded: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  participant_revoked: { status: 403, action: "stop", scope: "room_access" },
-  room_not_found: { status: 404, action: "stop", scope: "room_access" },
-  agent_session_mismatch: { status: 404, action: "stop", scope: "agent_session" },
-  moderation_pending: { status: 409, action: "retry_with_backoff", scope: "moderation" },
-  address_not_deliverable: { status: 422, action: "stop", scope: "room_access" },
-  delivery_ack_rejected: { status: 409, action: "stop", scope: "request" },
-  rate_limited: { status: 429, action: "backoff", scope: "rate_limit" },
-  server_error: { status: 500, action: "retry_with_backoff", scope: "server" },
-  service_unavailable: { status: 503, action: "retry_with_backoff", scope: "server" },
-  moderation_saturated: { status: 503, action: "backoff", scope: "rate_limit" },
-  participant_held_cap: { status: 503, action: "backoff", scope: "rate_limit" },
-  idempotency_conflict: { status: 409, action: "stop", scope: "request" },
-  validation_failed: { status: 422, action: "fix_client", scope: "request" },
-  csrf_rejected: { status: 403, action: "fix_client", scope: "request" },
-  already_member: { status: 409, action: "stop", scope: "room_access" },
-  approval_expired: { status: 409, action: "stop", scope: "request" },
-  forbidden: { status: 403, action: "stop", scope: "room_access" },
-  token_quota_exceeded: { status: 409, action: "stop", scope: "agent_token" },
-  step_up_required: { status: 403, action: "stop", scope: "request" },
-  link_conflict: { status: 409, action: "stop", scope: "request" },
-  too_many_steps: { status: 422, action: "fix_client", scope: "request" },
-  moderation_config_too_large: { status: 422, action: "fix_client", scope: "request" },
-  cursor_gap: { status: 409, action: "retry", scope: "request" },
-  stream_reset: { status: 409, action: "retry_with_backoff", scope: "server" }
-};
-var ERROR_REGISTRY = Object.fromEntries(Object.entries(entries).map(([code, entry]) => [code, { ...entry, retryable: retryable(entry.action) }]));
+function parseErrorEnvelope(value) {
+  const outer = value && typeof value === "object" ? value : {};
+  const candidate = outer.error && typeof outer.error === "object" ? outer.error : outer;
+  const delay = candidate.retry_after_ms;
+  return {
+    code: nonEmptyString(candidate.code),
+    message: nonEmptyString(candidate.message),
+    action: nonEmptyString(candidate.action),
+    scope: nonEmptyString(candidate.scope),
+    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : false,
+    retryAfterMs: typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? Math.trunc(delay) : void 0,
+    raw: candidate
+  };
+}
 
-// ../client/dist/conformance-data.js
-var CONFORMANCE_PARLE_VERSION = "2026-07-07";
-var CONFORMANCE_TOKEN_CLASSES = [
-  {
-    "name": "participant_bearer",
-    "prefix": "prt_",
-    "secret": true,
-    "shape": "prt_<43 base64url characters>",
-    "redaction_pattern": "prt_[A-Za-z0-9_-]{43}",
-    "redact_with": "prt_<redacted>",
-    "description": "Room-scoped participant bearer."
-  },
-  {
-    "name": "agent_bearer",
-    "prefix": "parle_agt_",
-    "secret": true,
-    "shape": "parle_agt_<43 base64url characters>",
-    "redaction_pattern": "parle_agt_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Room-bound agent bearer."
-  },
-  {
-    "name": "agent_session_credential",
-    "prefix": "parle_ses_",
-    "secret": true,
-    "shape": "parle_ses_<43 base64url characters>",
-    "redaction_pattern": "parle_ses_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Live agent-session credential."
-  },
-  {
-    "name": "invite_secret",
-    "prefix": "parle_inv_",
-    "secret": true,
-    "shape": "parle_inv_<43 base64url characters>",
-    "redaction_pattern": "parle_inv_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Invite claim secret."
-  },
-  {
-    "name": "human_session_cookie",
-    "prefix": "parle_sess_",
-    "secret": true,
-    "shape": "parle_sess_<43 base64url characters>",
-    "redaction_pattern": "parle_sess_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Human session cookie value."
-  }
-];
+// ../client/dist/protocol.js
+var DEFAULT_VERSION = "2026-07-07";
 
 // ../client/dist/profiles.js
 import { execFileSync } from "node:child_process";
@@ -471,7 +394,7 @@ function resolveHardeningConfig(cwd, env) {
   }
   return {
     apiBase: assertSafeApiBase(configuredApiBase || DEFAULT_API_BASE, env),
-    version: env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION,
+    version: env.PARLE_VERSION || DEFAULT_VERSION,
     sessionCookie,
     stateDir
   };
@@ -1306,7 +1229,7 @@ function resolveAccountConfig(cwd, env) {
       configuredApiBase = loadProfile(selectedProfile, catalogPath).apiBase;
   }
   const apiBase = assertSafeBase(configuredApiBase || DEFAULT_API_BASE2, env);
-  const version = env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION;
+  const version = env.PARLE_VERSION || DEFAULT_VERSION;
   return { apiBase, version, sessionCookie, stateDir: dirname3(catalogPath), catalogPath };
 }
 function validateUUID(raw, label) {
@@ -1955,7 +1878,6 @@ var ParleAccountClient = class {
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
-var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var READ_LIMIT_BYTES = 256 * 1024;
 var INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to sends an unaddressed message and will not wake that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 var RESERVED_PROTOCOL_HEADERS = /* @__PURE__ */ new Set([
@@ -2042,15 +1964,11 @@ function formatVersionErrorHint(cfg, errorObj) {
   const action = cfg.version.source === "default" ? "Upgrade the adapter." : "Unset the stale PARLE_VERSION override or upgrade the adapter.";
   return ` Sent Parle-Version ${sent} from ${cfg.version.source}; adapter default is ${DEFAULT_VERSION}.${server} ${action}`;
 }
-var TOKEN_REDACTION_RULES = CONFORMANCE_TOKEN_CLASSES.map((cls) => ({
-  pattern: new RegExp(cls.redaction_pattern, "g"),
-  replacement: cls.redact_with
-}));
+var PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
 function redactString(input) {
   let out = input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
-  for (const rule of TOKEN_REDACTION_RULES)
-    out = out.replace(rule.pattern, rule.replacement);
-  return out;
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
 function summarizeSendDelivery(details) {
   const moderation = details?.moderation;
@@ -2080,7 +1998,7 @@ function summarizeSendDelivery(details) {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.1.39";
+var PI_EXTENSION_VERSION = "0.1.40";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var RUNTIME_SCHEMA_VERSION2 = 1;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
@@ -2262,7 +2180,7 @@ function redactedValue(value) {
   if (!value) return void 0;
   return {
     set: Boolean(value.value),
-    value: value.secret ? "<redacted>" : value.value,
+    value: value.secret ? "<redacted>" : value.value ? redactString(value.value) : value.value,
     source: value.source,
     key: value.key,
     secret: value.secret === true,
@@ -2890,21 +2808,16 @@ async function requestJson(cfg, path, options = {}, state = runtime) {
     const text = await response.text();
     const json = parseJsonMaybe(text);
     if (!response.ok) {
-      const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
-      const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
-      const registry = code ? ERROR_REGISTRY[code] : void 0;
-      const action = typeof errorObj.action === "string" && ERROR_ACTIONS.includes(errorObj.action) ? errorObj.action : registry?.action;
-      const retryAfterHeader = response.headers.get("retry-after");
-      const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
-      const retryAfterMs = typeof errorObj.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) ? Math.max(0, Math.trunc(errorObj.retry_after_ms)) : Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.trunc(retryAfterSeconds * 1e3)) : void 0;
-      const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text);
-      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(cfg, errorObj) : "";
+      const envelope = parseErrorEnvelope(json);
+      const { code, action, scope, retryable, retryAfterMs } = envelope;
+      const msg = redactString(envelope.message || truncateText(redactString(text), 4096).text);
+      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(cfg, envelope.raw) : "";
       const err = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
       err.status = response.status;
       err.code = code;
       err.action = action;
-      err.scope = typeof errorObj.scope === "string" ? errorObj.scope : registry?.scope;
-      err.retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : registry?.retryable;
+      err.scope = scope;
+      err.retryable = retryable;
       err.retryAfterMs = retryAfterMs;
       throw err;
     }
@@ -2976,20 +2889,15 @@ async function fetchWakeStream(cfg, signal) {
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const json = parseJsonMaybe(text);
-    const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
-    const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
-    const registry = code ? ERROR_REGISTRY[code] : void 0;
-    const action = typeof errorObj.action === "string" && ERROR_ACTIONS.includes(errorObj.action) ? errorObj.action : registry?.action;
-    const retryAfterHeader = response.headers.get("retry-after");
-    const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : Number.NaN;
-    const retryAfterMs = typeof errorObj.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) ? Math.max(0, Math.trunc(errorObj.retry_after_ms)) : Number.isFinite(retryAfterSeconds) ? Math.max(0, Math.trunc(retryAfterSeconds * 1e3)) : void 0;
-    const msg = redactString(errorObj.message || truncateText(redactString(text), 4096).text || response.statusText);
+    const envelope = parseErrorEnvelope(json);
+    const { code, action, scope, retryable, retryAfterMs } = envelope;
+    const msg = redactString(envelope.message || truncateText(redactString(text), 4096).text || response.statusText);
     const err = new Error(`Parle wake stream ${response.status}: ${msg}`);
     err.status = response.status;
     err.code = code;
     err.action = action;
-    err.scope = typeof errorObj.scope === "string" ? errorObj.scope : registry?.scope;
-    err.retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : registry?.retryable;
+    err.scope = scope;
+    err.retryable = retryable;
     err.retryAfterMs = retryAfterMs;
     throw err;
   }
@@ -4389,9 +4297,9 @@ function parleExtension(pi) {
       } catch (error) {
         runtime.lastError = error instanceof Error ? error.message : String(error);
         setStatus(ctx, cfg);
-        const retryable2 = error?.status === 429 || typeof error?.status === "number" && error.status >= 500;
+        const retryable = error?.status === 429 || typeof error?.status === "number" && error.status >= 500;
         const hint = error?.status === 400 || error?.status === 422 ? "Direct addressing errors are not retryable. Check that to is a valid @principal.agent or @principal.agent.session address and that the target is a live room participant. Discover peer addresses from message author blocks via parle_read or parle_inbox, or ask the operator." : void 0;
-        return formatResult({ ok: false, retryable: retryable2, idempotencyKey: retryable2 ? idempotencyKey : "<redacted>", addressedTo: to, warning, hint, error: redactString(runtime.lastError || String(error)) });
+        return formatResult({ ok: false, retryable, idempotencyKey: retryable ? idempotencyKey : "<redacted>", addressedTo: to, warning, hint, error: redactString(runtime.lastError || String(error)) });
       }
     }
   });

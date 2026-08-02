@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { CONFORMANCE_PARLE_VERSION } from "./conformance-data.js";
+import { DEFAULT_VERSION } from "./protocol.js";
 import { loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
 
 const DEFAULT_API_BASE = "https://api.parle.sh";
@@ -239,7 +239,7 @@ function resolveHardeningConfig(cwd: string, env: Record<string, string | undefi
   }
   return {
     apiBase: assertSafeApiBase(configuredApiBase || DEFAULT_API_BASE, env),
-    version: env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION,
+    version: env.PARLE_VERSION || DEFAULT_VERSION,
     sessionCookie,
     stateDir,
   };

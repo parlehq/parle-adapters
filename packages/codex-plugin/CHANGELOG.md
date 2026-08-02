@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.8 (2026-08-01)
+
+- Remove vendored Parle contracts and refresh the canonical live-contract MCP artifact.
+
 ## 0.2.7 (2026-07-30)
 
 - Honor explicit `advanceCursor: true` on `sinceSeq` reads and preserve unread state on empty explicit commits.

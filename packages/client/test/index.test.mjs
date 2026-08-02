@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
@@ -9,9 +9,6 @@ import {
   DEFAULT_API_BASE,
   DEFAULT_VERSION,
   DEFAULT_WAKE_BASE,
-  ERROR_ACTIONS,
-  ERROR_REGISTRY,
-  ERROR_SCOPES,
   ParleAgentClient,
   processClientInstanceId,
   formatVersionErrorHint,
@@ -20,6 +17,7 @@ import {
   capProjectionMessages,
   clampWaitSeconds,
   compactServerWrappedContent,
+  parseErrorEnvelope,
   parseKeyValueFile,
   parseSSEBlocks,
   performProfileSwitch,
@@ -34,56 +32,29 @@ import {
   updateCursorFromMessages,
 } from "../dist/index.js";
 
-test("adapter DEFAULT_VERSION stays in lockstep with the pinned core fixture", () => {
-  const clientSrc = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+test("adapter owns one release-pinned DEFAULT_VERSION without a contract bundle", () => {
+  const protocolSrc = readFileSync(new URL("../src/protocol.ts", import.meta.url), "utf8");
   const piSrc = readFileSync(new URL("../../pi-extension/src/index.ts", import.meta.url), "utf8");
-  const watchScript = readFileSync(new URL("../../claude-plugin/skills/parle/scripts/parle-watch.sh", import.meta.url), "utf8");
   const mcpSrc = readFileSync(new URL("../../mcp-server/src/index.ts", import.meta.url), "utf8");
-  const pin = JSON.parse(readFileSync(new URL("../conformance.pin.json", import.meta.url), "utf8"));
-  const versionFixture = JSON.parse(readFileSync(new URL(`../conformance/${pin.parle_version}/version.json`, import.meta.url), "utf8"));
-  // The whole chain holds by construction: version fixture -> generated
-  // conformance-data.ts -> DEFAULT_VERSION -> Pi via client import.
-  assert.equal(DEFAULT_VERSION, versionFixture.parle_version);
-  assert.equal(DEFAULT_VERSION, pin.parle_version);
-  assert.match(clientSrc, /DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION/);
+  assert.equal(DEFAULT_VERSION, "2026-07-07");
+  assert.match(protocolSrc, /DEFAULT_VERSION = "2026-07-07"/);
   assert.match(piSrc, /DEFAULT_VERSION[^\n]*from "@parlehq\/agent-client"/);
   assert.doesNotMatch(piSrc, /const DEFAULT_VERSION =/);
-  assert.match(watchScript, /--parle-watch/);
   assert.match(mcpSrc, /PARLE_VERSION: config\.version\.value/);
+  for (const path of ["../conformance", "../conformance.pin.json", "../src/conformance-data.ts", "../src/error-contract.ts"]) {
+    assert.equal(existsSync(new URL(path, import.meta.url)), false, `${path} must stay deleted`);
+  }
 });
 
-test("vendored conformance fixtures match the pin and regenerate cleanly", async () => {
-  const { sha256, renderConformanceData } = await import("../../../scripts/sync-conformance.mjs");
-  const pin = JSON.parse(readFileSync(new URL("../conformance.pin.json", import.meta.url), "utf8"));
-  assert.equal(pin.fixture_schema_version, 1);
-  assert.match(pin.core_ref, /^[0-9a-f]{40}$/);
-  const dir = new URL(`../conformance/${pin.parle_version}/`, import.meta.url);
-  for (const [path, expected] of Object.entries(pin.files)) {
-    assert.equal(sha256(readFileSync(new URL(path, dir))), expected, `pin hash mismatch for ${path}`);
+test("redaction is structural and fails closed for lowercase Parle credential families", () => {
+  const tail = "A".repeat(24);
+  for (const prefix of ["parle_agt_", "parle_ses_", "parle_login_", "parle_future_"]) {
+    assert.equal(redactString(prefix + tail), "<redacted-token>");
   }
-  const manifest = JSON.parse(readFileSync(new URL("manifest.json", dir), "utf8"));
-  assert.equal(manifest.parle_version, pin.parle_version);
-  assert.equal(manifest.fixture_schema_version, pin.fixture_schema_version);
-  for (const fixture of manifest.fixtures) assert.equal(pin.files[fixture.path], fixture.sha256);
-  const generated = readFileSync(new URL("../src/conformance-data.ts", import.meta.url), "utf8");
-  const rendered = renderConformanceData(
-    readFileSync(new URL("version.json", dir), "utf8"),
-    readFileSync(new URL("token-classes.json", dir), "utf8"),
-  );
-  assert.equal(generated, rendered, "src/conformance-data.ts is stale; re-run scripts/sync-conformance.mjs");
-});
-
-test("redaction follows the core conformance corpus", () => {
-  const pin = JSON.parse(readFileSync(new URL("../conformance.pin.json", import.meta.url), "utf8"));
-  const tokens = JSON.parse(readFileSync(new URL(`../conformance/${pin.parle_version}/token-classes.json`, import.meta.url), "utf8"));
-  for (const cls of tokens.token_classes) {
-    for (const example of cls.examples) {
-      assert.equal(redactString(example.input), example.expected, `token class ${cls.name}`);
-    }
-  }
-  for (const example of tokens.protocol_redaction_examples) {
-    assert.equal(redactString(example.input), example.expected, `protocol example: ${example.input}`);
-  }
+  assert.equal(redactString("Authorization: Bearer foreign-token"), "Authorization: Bearer <redacted>");
+  assert.equal(redactString("parle_agt_short"), "parle_agt_short");
+  assert.equal(redactString("prt_" + tail), "prt_" + tail);
+  assert.equal(redactString("Basic opaque"), "Basic opaque");
 });
 
 test("client boundary scan ignores prose and detects forbidden import specifiers", () => {
@@ -690,17 +661,21 @@ test("send maps bootstrap setup errors into structured send failure", async () =
   assert.match(result.error, /PARLE_ROOM_AGENT_TOKEN is missing/);
 });
 
-test("shared error contract matches the pinned core error-registry fixture", () => {
-  const pin = JSON.parse(readFileSync(new URL("../conformance.pin.json", import.meta.url), "utf8"));
-  const fixture = JSON.parse(readFileSync(new URL(`../conformance/${pin.parle_version}/error-registry.json`, import.meta.url), "utf8"));
-  const registry = Object.fromEntries(fixture.errors.map(({ code, ...spec }) => [code, spec]));
-  assert.deepEqual(ERROR_REGISTRY, registry);
-  // The fixture carries per-error facts; every action/scope it uses must be a
-  // member of the shared closed sets.
-  for (const entry of fixture.errors) {
-    assert.equal(ERROR_ACTIONS.includes(entry.action), true, `unknown action ${entry.action}`);
-    assert.equal(ERROR_SCOPES.includes(entry.scope), true, `unknown scope ${entry.scope}`);
-  }
+test("shared error reader preserves unknown server semantics and fails conservatively", () => {
+  assert.deepEqual(parseErrorEnvelope({ error: {
+    code: "future_error", message: "future", action: "future_action",
+    scope: "future_scope", retryable: true, retry_after_ms: 1234,
+  } }), {
+    code: "future_error", message: "future", action: "future_action",
+    scope: "future_scope", retryable: true, retryAfterMs: 1234,
+    raw: { code: "future_error", message: "future", action: "future_action", scope: "future_scope", retryable: true, retry_after_ms: 1234 },
+  });
+  const missing = parseErrorEnvelope("not json");
+  assert.equal(missing.retryable, false);
+  assert.deepEqual(missing.raw, {});
+  assert.equal(missing.action, undefined);
+  assert.equal(missing.scope, undefined);
+  assert.equal(parseErrorEnvelope({ error: { action: "", scope: "", retryable: "yes" } }).retryable, false);
 });
 
 test("requestJson parses canonical error envelope action scope and retry delay", async () => {
@@ -726,18 +701,18 @@ test("rebootstrap guidance names a replacement session and distinguishes bearer 
   assert.match(source, /Reauthorize only when the agent token is invalid or revoked/);
 });
 
-test("requestJson uses Retry-After header when retry_after_ms is absent", async () => {
+test("requestJson does not reconstruct retry timing when retry_after_ms is absent", async () => {
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async () => new Response(JSON.stringify({ error: { code: "rate_limited", message: "slow down", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: null } }), { status: 429, headers: { "content-type": "application/json", "retry-after": "4" } }),
   });
   await assert.rejects(() => client.requestJson("/v/test", { retry: false }), (error) => {
-    assert.equal(error.retryAfterMs, 4000);
+    assert.equal(error.retryAfterMs, undefined);
     return true;
   });
 });
 
-test("requestJson honors Retry-After before retrying retryable GET failures", async () => {
+test("requestJson honors envelope retry_after_ms before retrying retryable GET failures", async () => {
   let attempts = 0;
   const sleeps = [];
   const client = new ParleAgentClient({
@@ -745,7 +720,7 @@ test("requestJson honors Retry-After before retrying retryable GET failures", as
     fetch: async () => {
       attempts += 1;
       if (attempts === 1) {
-        return new Response(JSON.stringify({ error: { code: "rate_limited", message: "slow down", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: null } }), { status: 429, headers: { "content-type": "application/json", "retry-after": "2" } });
+        return new Response(JSON.stringify({ error: { code: "rate_limited", message: "slow down", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 2000 } }), { status: 429, headers: { "content-type": "application/json" } });
       }
       return json({ ok: true });
     },
@@ -780,7 +755,7 @@ test("retryable send errors return idempotency key for byte-identical retry", as
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
-      if (u.includes("/messages")) return json({ error: { code: "rate_limited", message: "Bearer secret" } }, 429);
+      if (u.includes("/messages")) return json({ error: { code: "rate_limited", message: "Bearer secret", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 1000 } }, 429);
       return json({});
     },
   });
@@ -908,7 +883,7 @@ test("connect-time 401 carries a stale-token hint when the on-disk token differs
     const client = new ParleAgentClient({
       cwd: dir,
       env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "old-snapshot-token" },
-      fetch: async () => json({ error: { code: "unauthenticated", message: "missing or invalid credential" } }, 401),
+      fetch: async () => json({ error: { code: "unauthenticated", message: "missing or invalid credential", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }, 401),
     });
     await assert.rejects(() => client.connect(), (error) => {
       assert.equal(error.status, 401);

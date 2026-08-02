@@ -11201,9 +11201,9 @@ function assertNever(_x) {
 }
 function assert(_) {
 }
-function getEnumValues(entries2) {
-  const numericValues = Object.values(entries2).filter((v) => typeof v === "number");
-  const values = Object.entries(entries2).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
+function getEnumValues(entries) {
+  const numericValues = Object.values(entries).filter((v) => typeof v === "number");
+  const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
   return values;
 }
 function joinValues(array2, separator = "|") {
@@ -21663,18 +21663,18 @@ function _set(Class2, valueType, params) {
 }
 // @__NO_SIDE_EFFECTS__
 function _enum(Class2, values, params) {
-  const entries2 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new Class2({
     type: "enum",
-    entries: entries2,
+    entries,
     ...normalizeParams(params)
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _nativeEnum(Class2, entries2, params) {
+function _nativeEnum(Class2, entries, params) {
   return new Class2({
     type: "enum",
-    entries: entries2,
+    entries,
     ...normalizeParams(params)
   });
 }
@@ -24565,17 +24565,17 @@ var ZodEnum2 = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   };
 });
 function _enum2(values, params) {
-  const entries2 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new ZodEnum2({
     type: "enum",
-    entries: entries2,
+    entries,
     ...util_exports.normalizeParams(params)
   });
 }
-function nativeEnum(entries2, params) {
+function nativeEnum(entries, params) {
   return new ZodEnum2({
     type: "enum",
-    entries: entries2,
+    entries,
     ...util_exports.normalizeParams(params)
   });
 }
@@ -31063,113 +31063,27 @@ function assertClientInstanceId(value) {
   return value.toLowerCase();
 }
 
-// ../client/dist/error-contract.js
-var ERROR_ACTIONS = [
-  "retry",
-  "retry_with_backoff",
-  "backoff",
-  "rebootstrap",
-  "reauthorize",
-  "fix_client",
-  "stop"
-];
-var ERROR_SCOPES = [
-  "request",
-  "agent_token",
-  "agent_session",
-  "room_access",
-  "moderation",
-  "rate_limit",
-  "server"
-];
-function retryable(action) {
-  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
+// ../client/dist/error-envelope.js
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
 }
-var entries = {
-  malformed_request: { status: 400, action: "fix_client", scope: "request" },
-  unsupported_parle_version: { status: 400, action: "fix_client", scope: "request" },
-  payload_too_large: { status: 413, action: "fix_client", scope: "request" },
-  invalid_agent_token: { status: 401, action: "reauthorize", scope: "agent_token" },
-  invalid_agent_session: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  agent_session_expired: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  agent_session_ended: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  agent_session_superseded: { status: 401, action: "rebootstrap", scope: "agent_session" },
-  participant_revoked: { status: 403, action: "stop", scope: "room_access" },
-  room_not_found: { status: 404, action: "stop", scope: "room_access" },
-  agent_session_mismatch: { status: 404, action: "stop", scope: "agent_session" },
-  moderation_pending: { status: 409, action: "retry_with_backoff", scope: "moderation" },
-  address_not_deliverable: { status: 422, action: "stop", scope: "room_access" },
-  delivery_ack_rejected: { status: 409, action: "stop", scope: "request" },
-  rate_limited: { status: 429, action: "backoff", scope: "rate_limit" },
-  server_error: { status: 500, action: "retry_with_backoff", scope: "server" },
-  service_unavailable: { status: 503, action: "retry_with_backoff", scope: "server" },
-  moderation_saturated: { status: 503, action: "backoff", scope: "rate_limit" },
-  participant_held_cap: { status: 503, action: "backoff", scope: "rate_limit" },
-  idempotency_conflict: { status: 409, action: "stop", scope: "request" },
-  validation_failed: { status: 422, action: "fix_client", scope: "request" },
-  csrf_rejected: { status: 403, action: "fix_client", scope: "request" },
-  already_member: { status: 409, action: "stop", scope: "room_access" },
-  approval_expired: { status: 409, action: "stop", scope: "request" },
-  forbidden: { status: 403, action: "stop", scope: "room_access" },
-  token_quota_exceeded: { status: 409, action: "stop", scope: "agent_token" },
-  step_up_required: { status: 403, action: "stop", scope: "request" },
-  link_conflict: { status: 409, action: "stop", scope: "request" },
-  too_many_steps: { status: 422, action: "fix_client", scope: "request" },
-  moderation_config_too_large: { status: 422, action: "fix_client", scope: "request" },
-  cursor_gap: { status: 409, action: "retry", scope: "request" },
-  stream_reset: { status: 409, action: "retry_with_backoff", scope: "server" }
-};
-var ERROR_REGISTRY = Object.fromEntries(Object.entries(entries).map(([code, entry]) => [code, { ...entry, retryable: retryable(entry.action) }]));
+function parseErrorEnvelope(value) {
+  const outer = value && typeof value === "object" ? value : {};
+  const candidate = outer.error && typeof outer.error === "object" ? outer.error : outer;
+  const delay2 = candidate.retry_after_ms;
+  return {
+    code: nonEmptyString(candidate.code),
+    message: nonEmptyString(candidate.message),
+    action: nonEmptyString(candidate.action),
+    scope: nonEmptyString(candidate.scope),
+    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : false,
+    retryAfterMs: typeof delay2 === "number" && Number.isFinite(delay2) && delay2 >= 0 ? Math.trunc(delay2) : void 0,
+    raw: candidate
+  };
+}
 
-// ../client/dist/conformance-data.js
-var CONFORMANCE_PARLE_VERSION = "2026-07-07";
-var CONFORMANCE_TOKEN_CLASSES = [
-  {
-    "name": "participant_bearer",
-    "prefix": "prt_",
-    "secret": true,
-    "shape": "prt_<43 base64url characters>",
-    "redaction_pattern": "prt_[A-Za-z0-9_-]{43}",
-    "redact_with": "prt_<redacted>",
-    "description": "Room-scoped participant bearer."
-  },
-  {
-    "name": "agent_bearer",
-    "prefix": "parle_agt_",
-    "secret": true,
-    "shape": "parle_agt_<43 base64url characters>",
-    "redaction_pattern": "parle_agt_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Room-bound agent bearer."
-  },
-  {
-    "name": "agent_session_credential",
-    "prefix": "parle_ses_",
-    "secret": true,
-    "shape": "parle_ses_<43 base64url characters>",
-    "redaction_pattern": "parle_ses_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Live agent-session credential."
-  },
-  {
-    "name": "invite_secret",
-    "prefix": "parle_inv_",
-    "secret": true,
-    "shape": "parle_inv_<43 base64url characters>",
-    "redaction_pattern": "parle_inv_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Invite claim secret."
-  },
-  {
-    "name": "human_session_cookie",
-    "prefix": "parle_sess_",
-    "secret": true,
-    "shape": "parle_sess_<43 base64url characters>",
-    "redaction_pattern": "parle_sess_[A-Za-z0-9_-]{43}",
-    "redact_with": "<redacted-token>",
-    "description": "Human session cookie value."
-  }
-];
+// ../client/dist/protocol.js
+var DEFAULT_VERSION = "2026-07-07";
 
 // ../client/dist/profiles.js
 import { execFileSync } from "node:child_process";
@@ -31532,7 +31446,7 @@ function resolveHardeningConfig(cwd, env) {
   }
   return {
     apiBase: assertSafeApiBase(configuredApiBase || DEFAULT_API_BASE, env),
-    version: env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION,
+    version: env.PARLE_VERSION || DEFAULT_VERSION,
     sessionCookie,
     stateDir
   };
@@ -32367,7 +32281,7 @@ function resolveAccountConfig(cwd, env) {
       configuredApiBase = loadProfile(selectedProfile, catalogPath).apiBase;
   }
   const apiBase = assertSafeBase(configuredApiBase || DEFAULT_API_BASE2, env);
-  const version2 = env.PARLE_VERSION || CONFORMANCE_PARLE_VERSION;
+  const version2 = env.PARLE_VERSION || DEFAULT_VERSION;
   return { apiBase, version: version2, sessionCookie, stateDir: dirname3(catalogPath), catalogPath };
 }
 function validateUUID(raw, label) {
@@ -33117,7 +33031,6 @@ function compactStatusCardFromStatus(status) {
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
-var DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
 var INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to sends an unaddressed message and will not wake that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
@@ -33295,51 +33208,6 @@ function formatVersionErrorHint(cfg, errorObj) {
   const action = cfg.version.source === "default" ? "Upgrade the adapter." : "Unset the stale PARLE_VERSION override or upgrade the adapter.";
   return ` Sent Parle-Version ${sent} from ${cfg.version.source}; adapter default is ${DEFAULT_VERSION}.${server} ${action}`;
 }
-function parseRetryAfterMs(header) {
-  if (!header)
-    return void 0;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0)
-    return Math.trunc(seconds * 1e3);
-  const dateMs = Date.parse(header);
-  if (!Number.isNaN(dateMs))
-    return Math.max(0, dateMs - Date.now());
-  return void 0;
-}
-function parseEnvelopeRetryAfterMs(errorObj, response) {
-  if (typeof errorObj?.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) && errorObj.retry_after_ms >= 0)
-    return Math.trunc(errorObj.retry_after_ms);
-  if (typeof errorObj?.retry_after_seconds === "number" && Number.isFinite(errorObj.retry_after_seconds) && errorObj.retry_after_seconds >= 0)
-    return Math.trunc(errorObj.retry_after_seconds * 1e3);
-  return parseRetryAfterMs(response.headers.get("retry-after"));
-}
-function asErrorAction(value) {
-  return typeof value === "string" && ERROR_ACTIONS.includes(value) ? value : void 0;
-}
-function asErrorScope(value) {
-  return typeof value === "string" && ERROR_SCOPES.includes(value) ? value : void 0;
-}
-function defaultActionForStatus(status) {
-  if (status === 401)
-    return "reauthorize";
-  if (status === 429)
-    return "backoff";
-  if (status >= 500)
-    return "retry_with_backoff";
-  return "stop";
-}
-function defaultScopeForStatus(status) {
-  if (status === 401)
-    return "agent_token";
-  if (status === 429)
-    return "rate_limit";
-  if (status >= 500)
-    return "server";
-  return "request";
-}
-function actionRetryable(action) {
-  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
-}
 var REQUEST_RETRY_ATTEMPTS = 5;
 var REQUEST_RETRY_WINDOW_MS = 6e4;
 function defaultSleep(ms, signal) {
@@ -33386,20 +33254,20 @@ function formatDuration(ms) {
   const seconds = Math.ceil(ms / 1e3);
   return seconds === 1 ? "1 second" : `${seconds} seconds`;
 }
-var TOKEN_REDACTION_RULES = CONFORMANCE_TOKEN_CLASSES.map((cls) => ({
-  pattern: new RegExp(cls.redaction_pattern, "g"),
-  replacement: cls.redact_with
-}));
+var PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
+function isParleCredential(value) {
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return PARLE_CREDENTIAL_RE.test(value);
+}
 function redactString(input) {
   let out = input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
-  for (const rule of TOKEN_REDACTION_RULES)
-    out = out.replace(rule.pattern, rule.replacement);
-  return out;
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
 function redactedValue(value) {
   if (!value?.value)
     return { source: value?.source || "missing", configured: false };
-  const sensitiveShape = /parle_agt_|parle_ses_|prt_|__Host-parle_session/.test(value.value);
+  const sensitiveShape = isParleCredential(value.value) || value.value.includes("__Host-parle_session");
   return { source: value.source, configured: true, value: sensitiveShape ? redactString(value.value) : value.value };
 }
 function redactedSecretValue(value) {
@@ -33691,7 +33559,7 @@ var ParleAgentClient = class _ParleAgentClient {
       try {
         return await this.requestJsonOnce(pathOrUrl, options, method);
       } catch (error51) {
-        if (!(error51 instanceof ParleApiError) || !retryableRequest || !error51.retryable || attempt >= REQUEST_RETRY_ATTEMPTS)
+        if (!(error51 instanceof ParleApiError) || error51.code === "unsupported_parle_version" || !retryableRequest || !error51.retryable || attempt >= REQUEST_RETRY_ATTEMPTS)
           throw error51;
         const elapsed = Math.max(0, this.now().getTime() - startedMs);
         const delay2 = retryDelayMs(error51, attempt);
@@ -33744,22 +33612,17 @@ var ParleAgentClient = class _ParleAgentClient {
     const json2 = parseJsonMaybe(options.rawResponse ? rawText : text);
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json2;
-      const errorObj = redactedJson?.error && typeof redactedJson.error === "object" ? redactedJson.error : {};
-      const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
-      const registry2 = code ? ERROR_REGISTRY[code] : void 0;
-      const action = asErrorAction(errorObj.action) || registry2?.action || defaultActionForStatus(response.status);
-      const scope = asErrorScope(errorObj.scope) || registry2?.scope || defaultScopeForStatus(response.status);
-      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
-      const retryable2 = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
-      const msg = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(this.cfg, errorObj) : "";
+      const envelope = parseErrorEnvelope(redactedJson);
+      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
       if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
         if (hint)
           message += ` ${hint}`;
       }
-      throw new ParleApiError(message, { status: response.status, code, action, scope, retryAfterMs, retryable: retryable2, details: redactedJson });
+      throw new ParleApiError(message, { status: response.status, code, action, scope, retryAfterMs, retryable, details: redactedJson });
     }
     return json2;
   }
@@ -34216,15 +34079,10 @@ var ParleAgentClient = class _ParleAgentClient {
       const rawText = await response.text().catch(() => "");
       const text = redactString(rawText);
       const json2 = parseJsonMaybe(text);
-      const errorObj = json2?.error && typeof json2.error === "object" ? json2.error : {};
-      const code = typeof errorObj.code === "string" ? errorObj.code : void 0;
-      const registry2 = code ? ERROR_REGISTRY[code] : void 0;
-      const action = asErrorAction(errorObj.action) || registry2?.action || defaultActionForStatus(response.status);
-      const scope = asErrorScope(errorObj.scope) || registry2?.scope || defaultScopeForStatus(response.status);
-      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
-      const retryable2 = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
-      const message = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable: retryable2, details: json2 });
+      const envelope = parseErrorEnvelope(json2);
+      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json2 });
     }, signal);
   }
   async drainResponsiveDelivery(signal) {
@@ -34646,7 +34504,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.2.5";
+var MCP_CLIENT_VERSION = "0.2.6";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

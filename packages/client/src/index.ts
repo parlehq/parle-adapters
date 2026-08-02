@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
-import { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
-import { CONFORMANCE_PARLE_VERSION, CONFORMANCE_TOKEN_CLASSES } from "./conformance-data.js";
+import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
+import { DEFAULT_VERSION } from "./protocol.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export * from "./account.js";
@@ -12,13 +12,12 @@ export * from "./hardening.js";
 export * from "./format.js";
 export * from "./runtime-file.js";
 export * from "./process-instance.js";
-export { ERROR_ACTIONS, ERROR_REGISTRY, ERROR_SCOPES, type ErrorAction, type ErrorScope } from "./error-contract.js";
-export { CONFORMANCE_PARLE_VERSION, CONFORMANCE_TOKEN_CLASSES, type ConformanceTokenClass } from "./conformance-data.js";
+export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
+export { DEFAULT_VERSION } from "./protocol.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
-export const DEFAULT_VERSION = CONFORMANCE_PARLE_VERSION;
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
@@ -407,47 +406,6 @@ export function formatVersionErrorHint(cfg: { version: { value?: string; source:
   return ` Sent Parle-Version ${sent} from ${cfg.version.source}; adapter default is ${DEFAULT_VERSION}.${server} ${action}`;
 }
 
-function parseRetryAfterMs(header: string | null): number | undefined {
-  if (!header) return undefined;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.trunc(seconds * 1000);
-  const dateMs = Date.parse(header);
-  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
-  return undefined;
-}
-
-function parseEnvelopeRetryAfterMs(errorObj: any, response: Response): number | undefined {
-  if (typeof errorObj?.retry_after_ms === "number" && Number.isFinite(errorObj.retry_after_ms) && errorObj.retry_after_ms >= 0) return Math.trunc(errorObj.retry_after_ms);
-  if (typeof errorObj?.retry_after_seconds === "number" && Number.isFinite(errorObj.retry_after_seconds) && errorObj.retry_after_seconds >= 0) return Math.trunc(errorObj.retry_after_seconds * 1000);
-  return parseRetryAfterMs(response.headers.get("retry-after"));
-}
-
-function asErrorAction(value: unknown): ErrorAction | undefined {
-  return typeof value === "string" && (ERROR_ACTIONS as readonly string[]).includes(value) ? value as ErrorAction : undefined;
-}
-
-function asErrorScope(value: unknown): ErrorScope | undefined {
-  return typeof value === "string" && (ERROR_SCOPES as readonly string[]).includes(value) ? value as ErrorScope : undefined;
-}
-
-function defaultActionForStatus(status: number): ErrorAction {
-  if (status === 401) return "reauthorize";
-  if (status === 429) return "backoff";
-  if (status >= 500) return "retry_with_backoff";
-  return "stop";
-}
-
-function defaultScopeForStatus(status: number): ErrorScope {
-  if (status === 401) return "agent_token";
-  if (status === 429) return "rate_limit";
-  if (status >= 500) return "server";
-  return "request";
-}
-
-function actionRetryable(action: ErrorAction): boolean {
-  return action === "retry" || action === "retry_with_backoff" || action === "backoff";
-}
-
 const REQUEST_RETRY_ATTEMPTS = 5;
 const REQUEST_RETRY_WINDOW_MS = 60_000;
 
@@ -500,14 +458,14 @@ function formatDuration(ms: number): string {
   return seconds === 1 ? "1 second" : `${seconds} seconds`;
 }
 
-// Protocol-header rules are harness-mechanical context redaction and run
-// first so header values redact as header secrets. Token-class rules are
-// table-driven from the pinned core conformance fixtures (parlehq/parle #457),
-// so the accepted shapes and replacements are core-owned, not hand-maintained.
-const TOKEN_REDACTION_RULES = CONFORMANCE_TOKEN_CLASSES.map((cls) => ({
-  pattern: new RegExp(cls.redaction_pattern, "g"),
-  replacement: cls.redact_with,
-}));
+// Structural header rules run first. The one conservative Parle credential
+// shape then catches known and future lowercase families without a registry.
+const PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
+
+function isParleCredential(value: string): boolean {
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return PARLE_CREDENTIAL_RE.test(value);
+}
 
 export function redactString(input: string): string {
   let out = input
@@ -515,13 +473,13 @@ export function redactString(input: string): string {
     .replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>")
     .replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>")
     .replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
-  for (const rule of TOKEN_REDACTION_RULES) out = out.replace(rule.pattern, rule.replacement);
-  return out;
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
 
 export function redactedValue(value?: ConfigValue): { source: string; configured: boolean; value?: string } {
   if (!value?.value) return { source: value?.source || "missing", configured: false };
-  const sensitiveShape = /parle_agt_|parle_ses_|prt_|__Host-parle_session/.test(value.value);
+  const sensitiveShape = isParleCredential(value.value) || value.value.includes("__Host-parle_session");
   return { source: value.source, configured: true, value: sensitiveShape ? redactString(value.value) : value.value };
 }
 
@@ -839,7 +797,7 @@ export class ParleAgentClient {
       try {
         return await this.requestJsonOnce(pathOrUrl, options, method);
       } catch (error: any) {
-        if (!(error instanceof ParleApiError) || !retryableRequest || !error.retryable || attempt >= REQUEST_RETRY_ATTEMPTS) throw error;
+        if (!(error instanceof ParleApiError) || error.code === "unsupported_parle_version" || !retryableRequest || !error.retryable || attempt >= REQUEST_RETRY_ATTEMPTS) throw error;
         const elapsed = Math.max(0, this.now().getTime() - startedMs);
         const delay = retryDelayMs(error, attempt);
         if (elapsed + delay > REQUEST_RETRY_WINDOW_MS) throw error;
@@ -887,15 +845,10 @@ export class ParleAgentClient {
     const json = parseJsonMaybe(options.rawResponse ? rawText : text);
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json;
-      const errorObj = redactedJson?.error && typeof redactedJson.error === "object" ? redactedJson.error : {};
-      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
-      const registry = code ? ERROR_REGISTRY[code] : undefined;
-      const action = asErrorAction(errorObj.action) || registry?.action || defaultActionForStatus(response.status);
-      const scope = asErrorScope(errorObj.scope) || registry?.scope || defaultScopeForStatus(response.status);
-      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
-      const retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
-      const msg = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      const versionHint = response.status === 400 && /version/i.test(`${code || ""} ${msg}`) ? formatVersionErrorHint(this.cfg, errorObj) : "";
+      const envelope = parseErrorEnvelope(redactedJson);
+      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
       if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
@@ -1383,14 +1336,9 @@ export class ParleAgentClient {
       const rawText = await response.text().catch(() => "");
       const text = redactString(rawText);
       const json = parseJsonMaybe(text);
-      const errorObj = json?.error && typeof json.error === "object" ? json.error : {};
-      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
-      const registry = code ? ERROR_REGISTRY[code] : undefined;
-      const action = asErrorAction(errorObj.action) || registry?.action || defaultActionForStatus(response.status);
-      const scope = asErrorScope(errorObj.scope) || registry?.scope || defaultScopeForStatus(response.status);
-      const retryAfterMs = parseEnvelopeRetryAfterMs(errorObj, response);
-      const retryable = typeof errorObj.retryable === "boolean" ? errorObj.retryable : actionRetryable(action);
-      const message = redactString(errorObj.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+      const envelope = parseErrorEnvelope(json);
+      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json });
     }, signal);
   }
