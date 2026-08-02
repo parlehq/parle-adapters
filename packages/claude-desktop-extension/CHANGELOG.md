@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 (2026-08-02)
+
+Refresh the canonical MCP runtime for the mandatory 2026-08-01 session lifecycle, proactive generation-fenced rollover, and session-following responsive bridge.
+
 ## 0.5.34 (2026-08-01)
 
 Remove vendored Parle contracts and refresh the canonical live-contract MCP artifact.

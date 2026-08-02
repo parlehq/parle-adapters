@@ -23,6 +23,14 @@ It must not import Pi, Claude, MCP SDK, Claude Desktop bundle code, or GalexC-sp
 
 Adapters own host-specific registration, schemas, lifecycle hooks, UI text, and guidance strings.
 
+## Session lifecycle
+
+The release is pinned to `Parle-Version: 2026-08-01`. Session creation always sends `{}`. When `PARLE_SESSION_ALIAS` is configured, the client creates an anonymous candidate, enters the configured room, verifies candidate wake readiness, reads the alias generation through bounded self-session inventory, and submits one exact generation-fenced claim. A failed claim is never replayed. Recovery prepares a fresh candidate and re-reads inventory.
+
+The client schedules proactive replacement at `max(created_at, expires_at - 5 minutes - jitter)`, where deterministic jitter is below 60 seconds and derived from `agent_session_id`. Timers are injectable, single-flight, bounded after failures, and unreferenced under Node. Session revision events let bridges restart owned wake streams after a committed swap.
+
+Responsive delivery reports the server-selected `delivery.cursor_scope` as `session` or `alias`. This is separate from the adapter projection cursor. Alias scope preserves server-owned unacknowledged redelivery across prepared generations. Anonymous replacement may preserve the adapter projection cursor, but exact-session responsive state does not transfer.
+
 ## Credential profiles
 
 Keep room-bound credentials in a UTF-8 INI profile catalog. The resolver checks `~/.parle/profiles` first, then falls back to project-local `./.parle/profiles`:

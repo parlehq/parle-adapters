@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 (2026-08-02)
+
+- Refresh the bundled MCP runtime for the mandatory 2026-08-01 session lifecycle.
+- Follow shared-client session revisions in the responsive hook bridge and preserve alias-scoped redelivery.
+
 ## 0.2.7 (2026-08-01)
 
 - Remove vendored Parle contracts and refresh the canonical live-contract MCP artifact.

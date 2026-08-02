@@ -20,6 +20,8 @@ import {
   ParleApiError,
   parseSSEBlocks,
   type ResponsiveDeliveryMessage,
+  type ResponsiveCursorScope,
+  type SessionCommitPlan,
 } from "@parlehq/agent-client";
 
 const MAX_PENDING = 100;
@@ -41,7 +43,14 @@ export type HookDeliveryBridgeStatus = {
   lastError?: string;
 };
 
-type PendingMessage = ResponsiveDeliveryMessage & { key: string };
+type PendingMessage = ResponsiveDeliveryMessage & {
+  key: string;
+  sessionRevision: number;
+  cursorScope?: ResponsiveCursorScope;
+  roomId: string;
+  sessionAlias?: string;
+  agentSessionId: string;
+};
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
 
 function deliveryKey(message: Pick<ResponsiveDeliveryMessage, "seq" | "event_id">): string {
@@ -98,6 +107,10 @@ export class HookDeliveryBridge {
   private baselineSkipped = 0;
   private lastError?: string;
   private hostSessionId?: string;
+  private currentWakeAbort?: AbortController;
+  private unsubscribeSessionRevision?: () => void;
+  private unsubscribeCommitGuard?: () => void;
+  private drainInFlight?: Promise<void>;
 
   constructor(
     private readonly client: ParleAgentClient,
@@ -136,6 +149,11 @@ export class HookDeliveryBridge {
 
   async stop(): Promise<void> {
     this.abortController.abort();
+    this.currentWakeAbort?.abort();
+    this.unsubscribeSessionRevision?.();
+    this.unsubscribeSessionRevision = undefined;
+    this.unsubscribeCommitGuard?.();
+    this.unsubscribeCommitGuard = undefined;
     const server = this.server;
     this.server = undefined;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -147,7 +165,14 @@ export class HookDeliveryBridge {
   private async startBridge(): Promise<void> {
     try {
       this.lastError = undefined;
+      this.unsubscribeCommitGuard = (this.client as any).onBeforeSessionCommit?.((plan: SessionCommitPlan) => this.guardSessionCommit(plan));
       await this.client.ensureBootstrapped(this.abortController.signal);
+      this.unsubscribeSessionRevision = (this.client as any).onSessionRevision?.(() => {
+        this.currentWakeAbort?.abort();
+        void this.drain().catch((error) => {
+          if (!this.abortController.signal.aborted) this.lastError = error instanceof Error ? error.message : String(error);
+        });
+      });
       await this.baseline();
       await this.listen();
       this.loop = this.watchLoop();
@@ -165,8 +190,13 @@ export class HookDeliveryBridge {
     let skipped = 0;
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
       const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      if (delivery.messages.length === 0) break;
-      for (const message of delivery.messages) {
+      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+      if (messages.length === 0) break;
+      if (delivery?.delivery?.cursor_scope === "alias") {
+        if (this.enqueue(messages, delivery?.delivery?.cursor_scope) === 0) break;
+        continue;
+      }
+      for (const message of messages) {
         skipped += 1;
         if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
         await this.client.ackResponsiveDelivery(message, this.abortController.signal);
@@ -289,8 +319,7 @@ export class HookDeliveryBridge {
   }
 
   private take(): unknown {
-    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = undefined;
-    if (this.lease) return { ok: true, busy: true, messages: [] };
+    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
     const messages: PendingMessage[] = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
@@ -302,7 +331,7 @@ export class HookDeliveryBridge {
     return {
       ok: true,
       leaseId: this.lease.id,
-      messages: messages.map(({ key: _key, ...message }) => message),
+      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
     };
   }
 
@@ -311,6 +340,10 @@ export class HookDeliveryBridge {
     if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Parle hook bridge delivery lease is missing or expired");
     let committed = 0;
     for (const message of lease.messages) {
+      // This synchronous fence runs immediately before each credentialed ack.
+      // It makes stale exact-session work impossible to acknowledge with a
+      // successor credential even if a future lifecycle path bypasses guards.
+      this.assertMessageCurrent(message);
       await this.client.ackResponsiveDelivery(message, this.abortController.signal);
       const head = this.pending[0];
       if (!head || head.key !== message.key) throw new Error("Parle hook bridge pending queue changed during commit");
@@ -326,14 +359,17 @@ export class HookDeliveryBridge {
     const signal = this.abortController.signal;
     while (!signal.aborted) {
       try {
+        const wakeAbort = new AbortController();
+        this.currentWakeAbort = wakeAbort;
+        const wakeSignal = AbortSignal.any([signal, wakeAbort.signal]);
         await this.client.withRebootstrap(async () => {
-          const response = await this.client.openWakeStream(signal);
+          const response = await this.client.openWakeStream(wakeSignal);
           const reader = response.body?.getReader();
           if (!reader) throw new Error("Parle wake stream response body is not readable");
           this.lastError = undefined;
           const decoder = new TextDecoder();
           let buffer = "";
-          while (!signal.aborted) {
+          while (!wakeSignal.aborted) {
             const { value, done } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
@@ -341,10 +377,14 @@ export class HookDeliveryBridge {
             buffer = parsed.rest;
             for (const event of parsed.events) if (event.event === "wake") await this.drain();
           }
-        }, signal);
+        }, wakeSignal);
         this.lastError = undefined;
+        this.currentWakeAbort = undefined;
       } catch (error: any) {
+        const revisionRestart = Boolean(this.currentWakeAbort?.signal.aborted && !signal.aborted);
+        this.currentWakeAbort = undefined;
         if (signal.aborted) break;
+        if (revisionRestart) continue;
         this.lastError = error instanceof Error ? error.message : String(error);
         if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || "")) throw error;
         const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
@@ -353,22 +393,79 @@ export class HookDeliveryBridge {
     }
   }
 
+  private liveLease(): Lease | undefined {
+    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = undefined;
+    return this.lease;
+  }
+
+  private pendingWork(): PendingMessage[] {
+    const lease = this.liveLease();
+    return lease ? [...this.pending, ...lease.messages] : [...this.pending];
+  }
+
+  private guardSessionCommit(plan: SessionCommitPlan): void {
+    const work = this.pendingWork();
+    if (work.length === 0) return;
+    if (plan.reason === "profile_switch") {
+      throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
+    }
+    const aliasTransfers = Boolean(plan.previous.sessionAlias
+      && plan.candidate.sessionAlias === plan.previous.sessionAlias
+      && plan.candidate.responsiveContinuity === "alias"
+      && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && item.roomId === plan.previous.roomId));
+    if (!aliasTransfers) {
+      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
+    }
+  }
+
+  private assertMessageCurrent(message: PendingMessage): void {
+    const runtime = (this.client as any).runtime || {};
+    if (message.roomId !== String(runtime.roomId || "")) throw new Error("Parle hook delivery belongs to a prior room binding");
+    if (message.cursorScope === "alias") {
+      if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
+      return;
+    }
+    if (message.sessionRevision !== Number(runtime.sessionRevision || 0) || message.agentSessionId !== String(runtime.agentSessionId || "")) {
+      throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
+    }
+  }
+
+  private enqueue(messages: ResponsiveDeliveryMessage[], cursorScope?: ResponsiveCursorScope): number {
+    const runtime = (this.client as any).runtime || {};
+    let queued = 0;
+    for (const message of messages) {
+      const key = deliveryKey(message);
+      if (this.queuedKeys.has(key)) continue;
+      if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
+      this.pending.push({
+        ...message,
+        key,
+        sessionRevision: Number(runtime.sessionRevision || 0),
+        cursorScope,
+        roomId: String(runtime.roomId || ""),
+        sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
+        agentSessionId: String(runtime.agentSessionId || ""),
+      });
+      this.queuedKeys.add(key);
+      queued += 1;
+    }
+    return queued;
+  }
+
   private async drain(): Promise<void> {
+    if (this.drainInFlight) return this.drainInFlight;
+    const run = this.doDrain();
+    this.drainInFlight = run;
+    try { await run; } finally { this.drainInFlight = undefined; }
+  }
+
+  private async doDrain(): Promise<void> {
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
       const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
       if (delivery.messages.length === 0) return;
-      let queued = 0;
-      for (const message of delivery.messages) {
-        const key = deliveryKey(message);
-        if (this.queuedKeys.has(key)) continue;
-        if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
-        this.pending.push({ ...message, key });
-        this.queuedKeys.add(key);
-        queued += 1;
-      }
       // The server cursor advances only after hook commit acks the queued rows.
       // A repeated all-known batch is therefore the drain boundary, not a stall.
-      if (queued === 0) return;
+      if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope) === 0) return;
     }
     throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }

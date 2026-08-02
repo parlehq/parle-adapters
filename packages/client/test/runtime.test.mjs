@@ -70,7 +70,7 @@ test("concurrent bootstrap callers converge on a single session mint", async () 
 });
 
 test("bootstrap failure records failed state with backoff and ensureReadySafe respects the window", async () => {
-  let nowMs = Date.parse("2026-07-07T00:00:00Z");
+  let nowMs = Date.parse("2026-08-01T00:00:00Z");
   let attempts = 0;
   const client = new ParleAgentClient({
     env: ENV,

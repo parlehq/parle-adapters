@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -69,6 +69,7 @@ function writeSnapshot(cwd, agentSessionId, overrides = {}) {
     // longer than the tolerance. Snapshots for other pids (process.ppid)
     // override this with undefined so the unverifiable claim is omitted.
     processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    clientInstanceId: "019f2946-aef5-47ad-a41d-747ce0fd6a14",
     state: "ready",
     sessionAddress: "@p.a.s1",
     agentSessionId,
@@ -78,7 +79,10 @@ function writeSnapshot(cwd, agentSessionId, overrides = {}) {
     adapter: { name: "test" },
     ...overrides,
   };
-  writeFileSync(join(dir, `${snapshot.pid}.json`), JSON.stringify(snapshot));
+  const path = join(dir, `${snapshot.pid}.json`);
+  const temporary = join(dir, `.snapshot-${snapshot.pid}.tmp`);
+  writeFileSync(temporary, JSON.stringify(snapshot));
+  renameSync(temporary, path);
 }
 
 function runWatch(cwd, apiBase, args, extraEnv = {}) {
@@ -106,6 +110,15 @@ function runWatch(cwd, apiBase, args, extraEnv = {}) {
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function waitFor(predicate, message, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(25);
+  }
+  assert.fail(message);
 }
 
 function runWorkerScenario(outputs) {
@@ -138,7 +151,7 @@ process.stdout.write(outputs[Math.min(index, outputs.length - 1)]);
       PARLE_ROOM_AGENT_TOKEN: "parle_agt_test",
       PARLE_WATCH_AGENT_SESSION: "parle_ses_test",
       PARLE_WATCH_CLIENT_INSTANCE_ID: "019f2946-aef5-47ad-a41d-747ce0fd6a13",
-      PARLE_VERSION: "2026-07-07",
+      PARLE_VERSION: "2026-08-01",
       PARLE_WATCH_REQUEST_HELPER: helper,
       PARLE_WATCH_PARENT_PID: String(process.pid),
       PARLE_WATCH_SESSION_LIVENESS: "0",
@@ -377,6 +390,162 @@ test("watch --profile selects the switched profile and freezes its token outside
   }
 });
 
+test("launcher restarts only its worker when the dedicated watcher credential rolls", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-credential-rollover-"));
+  const firstSessionId = "019f2946-aef5-77ad-a41d-747ce0fd6a21";
+  const secondSessionId = "019f2946-aef5-77ad-a41d-747ce0fd6a22";
+  const firstCredential = "parle_ses_watch_first_private";
+  const secondCredential = "parle_ses_watch_second_private";
+  let sessionCreates = 0;
+  let firstWorkerPolls = 0;
+  let secondWorkerPolls = 0;
+  let filteredSecondPolls = 0;
+  let firstInvalidated = false;
+  let activity = "hold";
+  let releaseSecondSession;
+  const ended = [];
+  const sendJson = (res, status, body) => {
+    if (res.destroyed || res.writableEnded) return;
+    res.writeHead(status, { "Content-Type": "application/json", Connection: "close" });
+    res.end(JSON.stringify(body));
+  };
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://watch.test");
+    const credential = req.headers["parle-agent-session"];
+    if (req.method === "POST" && url.pathname === "/v/agent/sessions") {
+      sessionCreates += 1;
+      const respond = () => sendJson(res, 201, sessionCreates === 1 ? {
+        agent_session_id: firstSessionId,
+        session_credential: firstCredential,
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60_000).toISOString(),
+        address: "@p.a.watch-first",
+      } : {
+        agent_session_id: secondSessionId,
+        session_credential: secondCredential,
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+        address: "@p.a.watch-second",
+      });
+      if (sessionCreates === 1 || firstWorkerPolls > 0) respond();
+      else if (sessionCreates === 2) releaseSecondSession = respond;
+      else sendJson(res, 500, { error: { action: "stop", code: "restart_storm" } });
+      return;
+    }
+    if (req.method === "POST" && url.pathname.endsWith("/participants")) {
+      assert.ok(credential === firstCredential || credential === secondCredential);
+      sendJson(res, 201, { participant_id: credential === firstCredential ? "participant-first" : "participant-second", room_handle: "watch-room" });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/v/agent/wake") {
+      assert.equal(credential, secondCredential);
+      res.writeHead(200, { "Content-Type": "text/event-stream", Connection: "close" });
+      res.end(": ready\n\n");
+      return;
+    }
+    if (req.method === "GET" && url.pathname.endsWith("/responsive-delivery")) {
+      assert.equal(credential, secondCredential);
+      sendJson(res, 200, { delivery: { cursor_scope: "session", last_acked_seq: 0 }, messages: [] });
+      return;
+    }
+    if (req.method === "POST" && url.pathname.endsWith("/end")) {
+      const sessionId = url.pathname.split("/").at(-2);
+      ended.push([sessionId, credential]);
+      if (sessionId === firstSessionId) firstInvalidated = true;
+      res.writeHead(204, { Connection: "close" });
+      res.end();
+      return;
+    }
+    if (req.method === "GET" && url.pathname.endsWith("/projection")) {
+      const wait = url.searchParams.get("wait");
+      if (credential === firstCredential) {
+        if (firstInvalidated) {
+          sendJson(res, 401, { error: { action: "rebootstrap", code: "agent_session_ended" } });
+          return;
+        }
+        if (wait === "25") {
+          firstWorkerPolls += 1;
+          sendJson(res, 200, { messages: [], watermark: 1 });
+          const release = releaseSecondSession;
+          releaseSecondSession = undefined;
+          if (release) setImmediate(release);
+          return;
+        }
+        sendJson(res, 200, { messages: [], watermark: 1 });
+        return;
+      }
+      assert.equal(credential, secondCredential);
+      assert.equal(wait, "25");
+      secondWorkerPolls += 1;
+      let body = { messages: [], watermark: 1 };
+      if (activity === "filtered") {
+        filteredSecondPolls += 1;
+        body = { messages: [{ seq: 2, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: "another-primary-session" } }], watermark: 2 };
+      } else if (activity === "relevant") {
+        body = { messages: [{ seq: 3, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: "primary-session" } }], watermark: 3 };
+      }
+      setTimeout(() => sendJson(res, 200, body), 20);
+      return;
+    }
+    sendJson(res, 404, { error: { action: "fix_client", code: "unexpected_path" } });
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  try {
+    const apiBase = `http://127.0.0.1:${server.address().port}`;
+    const watch = runWatch(cwd, apiBase, ["1", "primary-session"], {
+      PARLE_WAKE_BASE: apiBase,
+      PARLE_WATCH_SESSION_LIVENESS: "0",
+    });
+    await waitFor(() => firstWorkerPolls > 0, "first worker never polled with its initial credential");
+    await waitFor(() => secondWorkerPolls >= 2, "replacement worker did not continue polling with the successor credential");
+    await waitFor(() => firstInvalidated, "rollover did not retire the first dedicated watcher session");
+    assert.equal(watch.child.exitCode, null, `launcher returned during internal rollover: ${watch.err()}${watch.out()}`);
+    assert.equal(sessionCreates, 2, "one rollover must produce one replacement session");
+    assert.equal(watch.out().includes(firstCredential) || watch.out().includes(secondCredential), false);
+    assert.equal(watch.err().includes(firstCredential) || watch.err().includes(secondCredential), false);
+
+    activity = "filtered";
+    await waitFor(() => filteredSecondPolls > 0, "replacement worker did not apply the primary-session filter");
+    await sleep(100);
+    assert.equal(watch.child.exitCode, null, "other-session direct must remain filtered after credential rollover");
+
+    activity = "relevant";
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.match(watch.out(), /relevant activity/);
+    assert.deepEqual(ended, [
+      [firstSessionId, firstCredential],
+      [secondSessionId, secondCredential],
+    ]);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolveClose) => server.close(resolveClose));
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("external termination is final and ends the current dedicated session once", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-external-stop-"));
+  let sessionCreates = 0;
+  let heldRequests = 0;
+  let endCalls = 0;
+  const server = await stubServer({ messages: [], watermark: 1 }, (req, url) => {
+    if (req.method === "POST" && url.pathname === "/v/agent/sessions") sessionCreates += 1;
+    if (req.method === "GET" && url.pathname.endsWith("/projection") && url.searchParams.get("wait") === "25") heldRequests += 1;
+    if (req.method === "POST" && url.pathname.endsWith("/end")) endCalls += 1;
+  });
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"], { PARLE_WATCH_SESSION_LIVENESS: "0" });
+    await waitFor(() => heldRequests > 0, "watcher worker did not start before external termination");
+    watch.child.kill("SIGTERM");
+    assert.equal(await watch.exited, 128);
+    assert.equal(sessionCreates, 1, "external termination must not respawn the worker or mint another session");
+    assert.equal(endCalls, 1, "external termination must end the current session once");
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("one-argument watch preserves direct config and wakes on the caller's own row", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-watch-direct-"));
   const token = "parle_agt_direct_argv_secret";
@@ -442,18 +611,127 @@ test("watch exits 3 when its session was present and then removed", { skip: !hav
   }
 });
 
-test("an expired own-session snapshot exits 3 as scheduled expiry, era gate not required", { skip: !havePython && "python3/kill unavailable" }, async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-"));
-  // The snapshot itself proves the session is gone (past expiresAt), so the
-  // watch exits affirmatively even though it never saw the session live.
-  writeSnapshot(cwd, "session-mine", { expiresAt: new Date(Date.now() - 1000).toISOString(), pid: 99999999 });
-  writeSnapshot(cwd, "session-other", { pid: process.ppid, processStartedAt: undefined });
-  const server = await stubServer({ messages: [], watermark: 1 });
+test("watch follows the same live runtime through proactive rollover and updates its filter", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-rollover-"));
+  const oldSession = "session-old";
+  const newSession = "session-new";
+  let phase = "hold";
+  let heldRequests = 0;
+  let filteredResponses = 0;
+  writeSnapshot(cwd, oldSession);
+  const server = await stubServer((req) => {
+    if (phase === "filtered") {
+      filteredResponses += 1;
+      return {
+        messages: [{ seq: 2, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: oldSession } }],
+        watermark: 2,
+      };
+    }
+    if (phase === "wake") {
+      return {
+        messages: [{ seq: 3, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: newSession } }],
+        watermark: 3,
+      };
+    }
+    return { messages: [], watermark: 1 };
+  }, (_req, url) => {
+    if (url.pathname.endsWith("/projection") && url.searchParams.get("wait") === "25") heldRequests += 1;
+  });
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", oldSession]);
+    await waitFor(() => heldRequests >= 2, "watch did not observe the old live runtime");
+
+    // Production runtime publication uses the same atomic replacement: the
+    // path, pid, process start, and client instance stay fixed while the id
+    // changes after the candidate commits.
+    writeSnapshot(cwd, newSession);
+    await waitFor(() => watch.err().includes(`followed primary runtime rollover from ${oldSession} to ${newSession}`), "watch did not follow the verified runtime transition");
+    assert.equal(watch.child.exitCode, null, watch.err());
+
+    phase = "filtered";
+    await waitFor(() => filteredResponses > 0, "watch did not receive the old-session direct after rollover");
+    await sleep(150);
+    assert.equal(watch.child.exitCode, null, "old-session direct should be filtered after rollover");
+
+    phase = "wake";
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.match(watch.out(), /relevant activity/);
+    assert.doesNotMatch(watch.err(), /verdict=/);
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("watch classifies an in-flight projection under a verified successor snapshot", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-inflight-primary-"));
+  const oldSession = "session-inflight-old";
+  const newSession = "session-inflight-new";
+  let heldResponse;
+  writeSnapshot(cwd, oldSession);
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://watch.test");
+    let response;
+    if (req.method === "POST" && url.pathname === "/v/agent/sessions") {
+      response = {
+        agent_session_id: "019f2946-aef5-77ad-a41d-747ce0fd6a31",
+        session_credential: "parle_ses_watch_inflight_private",
+        address: "@p.a.watcher",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      };
+    } else if (req.method === "POST" && url.pathname.endsWith("/participants")) {
+      response = { participant_id: "019f2946-aef5-77ad-a41d-747ce0fd6a32" };
+    } else if (req.method === "POST" && url.pathname.endsWith("/end")) {
+      res.writeHead(204, { Connection: "close" });
+      res.end();
+      return;
+    } else if (url.pathname.endsWith("/projection") && url.searchParams.get("wait") === "0") {
+      response = { messages: [], watermark: 1 };
+    } else if (url.pathname.endsWith("/projection") && url.searchParams.get("wait") === "25") {
+      heldResponse = res;
+      return;
+    } else {
+      response = { error: { action: "fix_client", code: "unexpected_path" } };
+    }
+    res.writeHead(200, { "Content-Type": "application/json", Connection: "close" });
+    res.end(JSON.stringify(response));
+  });
+  await new Promise((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", oldSession]);
+    await waitFor(() => Boolean(heldResponse), "watch did not hold an in-flight primary projection");
+    writeSnapshot(cwd, newSession);
+    heldResponse.writeHead(200, { "Content-Type": "application/json", Connection: "close" });
+    heldResponse.end(JSON.stringify({
+      messages: [{ seq: 2, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: newSession } }],
+      watermark: 2,
+    }));
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.match(watch.out(), /relevant activity/);
+    assert.match(watch.err(), /after an in-flight projection/);
+  } finally {
+    server.closeAllConnections?.();
+    await new Promise((resolveClose) => server.close(resolveClose));
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("an observed old snapshot that expires without rewrite exits 3 as failed rollover evidence", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-expiry-"));
+  let heldRequests = 0;
+  writeSnapshot(cwd, "session-mine");
+  const server = await stubServer({ messages: [], watermark: 1 }, (_req, url) => {
+    if (url.pathname.endsWith("/projection") && url.searchParams.get("wait") === "25") heldRequests += 1;
+  });
   try {
     const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", "session-mine"]);
+    await waitFor(() => heldRequests > 0, "watch did not observe the old snapshot live before expiry");
+    writeSnapshot(cwd, "session-mine", { expiresAt: new Date(Date.now() - 1000).toISOString() });
     const code = await watch.exited;
     assert.equal(code, 3);
-    assert.match(watch.err(), /expected pre-expiry rollover/);
+    assert.match(watch.err(), /failed proactive rollover evidence/);
+    assert.doesNotMatch(watch.err(), /expected pre-expiry rollover/);
     assert.match(watch.err(), /parle-watch forensics: watched=session-mine verdict=MINE_EXPIRED/);
     assert.match(watch.err(), /mine=yes/);
   } finally {

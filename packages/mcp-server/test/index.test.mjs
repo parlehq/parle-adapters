@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherRequestWire } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -39,6 +39,12 @@ test("Codex request metadata resolves an exact host session binding", () => {
   assert.equal(hostSessionIdFromMeta({}), undefined);
 });
 
+test("simultaneous relevant exit and watcher revision is final without exact internal-stop provenance", () => {
+  assert.equal(watcherExitRequiresInternalRestart(4, 5), false, "revision advancement alone cannot suppress natural exit 0");
+  assert.equal(watcherExitRequiresInternalRestart(4, 5, 5), true, "the exact live child stop request permits an internal restart");
+  assert.equal(watcherExitRequiresInternalRestart(5, 5, 5), false, "a stale request cannot restart a later child");
+});
+
 test("watcher arguments accept only documented positional and profile forms", () => {
   assert.deepEqual(parseWatcherArgs(["0"]), { workerArgs: ["0"] });
   assert.deepEqual(parseWatcherArgs(["007"]), { workerArgs: ["007"] });
@@ -58,7 +64,7 @@ const watcherEnv = {
   PARLE_ROOM_AGENT_TOKEN: "parle_agt_watch_secret",
   PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
   PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
-  PARLE_VERSION: "2026-07-07",
+  PARLE_VERSION: "2026-08-01",
   PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
   PARLE_INTEGRATION_VERSION: "0.5.39",
 };

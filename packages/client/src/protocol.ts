@@ -1,1 +1,1 @@
-export const DEFAULT_VERSION = "2026-07-07";
+export const DEFAULT_VERSION = "2026-08-01";

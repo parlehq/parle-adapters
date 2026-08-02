@@ -160,7 +160,7 @@ test("principal invite preview and complete use the private bundle and delete it
     writeFileSync(handoffPath, JSON.stringify({
       schemaVersion: 1,
       kind: "parle-principal-invite",
-      apiVersion: "2026-07-07",
+      apiVersion: "2026-08-01",
       inviteId: INVITE_ID,
       roomId: ROOM_ID,
       secret: SECRET,
@@ -205,7 +205,7 @@ test("a successful claim consumes the handoff even when advisory response fields
     const inviteDir = join(f.home, ".parle", "invites");
     mkdirSync(inviteDir, { mode: 0o700 });
     const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-07-07", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
+    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-01", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ accepted: true }, 201) });
     const result = await client.claimPrincipalInvite({ action: "complete", handoffPath, confirmMutation: true, reason: "claim" });
     assert.equal(result.state, "completed");
@@ -224,7 +224,7 @@ test("claim failures redact the capability and preserve the handoff", async () =
     const inviteDir = join(f.home, ".parle", "invites");
     mkdirSync(inviteDir, { mode: 0o700 });
     const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-07-07", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
+    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-01", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ error: { code: "unauthenticated", message: `bad ${SECRET} ${CODE}` } }, 401) });
     await assert.rejects(client.claimPrincipalInvite({ action: "complete", handoffPath, confirmMutation: true, reason: "claim" }), (error) => {
       assert.equal(error.message.includes(SECRET), false);

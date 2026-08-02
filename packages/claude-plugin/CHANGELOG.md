@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.0 (2026-08-02)
+
+- Require `Parle-Version: 2026-08-01` and remove alias-at-mint from the bundled runtime.
+- Add generation-fenced proactive session rollover and restart the hook bridge wake stream on runtime swaps.
+- Preserve alias-scoped unacknowledged responsive delivery across prepared generations.
+- Keep the standalone watcher live across a verified in-process primary session rollover and atomically follow the new session filter.
+- Keep the launcher waiting across its dedicated watcher-session rollover by restarting only the private worker with the successor credential.
+
 ## 0.5.42 (2026-08-01)
 
 Remove vendored Parle contracts and ship the release-pinned live-contract client with tolerant error parsing and conservative credential redaction.
@@ -144,7 +152,7 @@ Watcher liveness detects recycled writer pids via process-start-time verificatio
 
 Watcher liveness classifies own-snapshot evidence and dumps forensics before every exit 3 (adapters#22 follow-up; script-only, no MCP bundle change).
 
-- Own-file evidence now beats absence: a snapshot carrying the watched id that is past (or within the 30s guard band of) `expiresAt`, or whose writer pid is dead, is affirmative "gone" and exits 3 without requiring the era gate -- an exit near a scheduled `expiresAt` is documented as expected pre-expiry rollover (galexc-intercom seq 603: both field incidents were exactly this). A present-but-not-ready snapshot (bootstrap retry or failure in progress) holds as inconclusive with a one-time note instead of counting toward DEAD, closing the transient-filter false-exit class identified in seq 601. This also restores the affirmative exit for the arming-with-a-dead-id case that 0.5.13 traded away, whenever the dead session's snapshot is still on disk.
+- Own-file evidence now beats absence: a snapshot carrying the watched id that is past (or within the 30s guard band of) `expiresAt`, or whose writer pid is dead, is affirmative "gone" and exits 3 without requiring the era gate -- an exit near a scheduled `expiresAt` was documented at the time as rollover evidence (galexc-intercom seq 603: both field incidents matched this symptom). A present-but-not-ready snapshot (bootstrap retry or failure in progress) holds as inconclusive with a one-time note instead of counting toward DEAD, closing the transient-filter false-exit class identified in seq 601. This also restores the affirmative exit for the arming-with-a-dead-id case that 0.5.13 traded away, whenever the dead session's snapshot is still on disk.
 - Every exit 3 is preceded by a redaction-safe per-file forensics dump on stderr (path, schema, state, pid liveness, TTL, mine yes/no), so a disputed verdict is arguable from evidence; the first field incident burned three hypotheses because the exit destroyed its own evidence (seq 602).
 - Exit-3 guidance in the script and SKILL.md adds the TTL check: `parle_connect` reporting the session alive with seconds to spare near `expiresAt` confirms the verdict rather than refuting it (seq 600).
 - Root-cause note for the record: `writeRuntimeFile` is re-invoked on every bootstrap transition (success and failure), so "session id in no runtime file while the server lives" is the expected state for an idle session past its `expiresAt` -- the file self-invalidates and any sibling adapter's startup prune legitimately removes it. No client change needed.

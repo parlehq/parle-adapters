@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.2.6";
+export const MCP_CLIENT_VERSION = "0.3.0";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -457,6 +457,10 @@ export class WatcherUsageError extends Error {
   }
 }
 
+export function watcherExitRequiresInternalRestart(spawnRevision: number, desiredRevision: number, requestedRevision?: number): boolean {
+  return requestedRevision !== undefined && requestedRevision > spawnRevision && requestedRevision <= desiredRevision;
+}
+
 export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs: [string] | [string, string] } {
   let profile: string | undefined;
   let positional = args;
@@ -479,7 +483,8 @@ export async function runWatcher(metaUrl: string, args: string[], cwd = process.
   // Shared rooms require the room-bound token and a live entered agent session.
   // The watcher owns a dedicated short-lived session so the primary MCP
   // credential never crosses the stdio process boundary. Its credential moves
-  // only through this private child environment and is retired on every exit.
+  // only through a private child environment. Superseded credentials are
+  // retired by rollover; the current session is retired on final exit.
   // Resolve the already-frozen direct binding away from the host cwd so a
   // project .env profile selector cannot conflict when this helper client
   // reads configuration a second time.
@@ -488,35 +493,99 @@ export async function runWatcher(metaUrl: string, args: string[], cwd = process.
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
   const watcherClient = createMcpAgentClient({ cwd: dirname(fileURLToPath(metaUrl)), env: childEnv });
+  let child: ReturnType<typeof spawn> | undefined;
+  let childRevision = 0;
+  let desiredRevision = 0;
+  let externalSignal: NodeJS.Signals | undefined;
+  let forceStop: ReturnType<typeof setTimeout> | undefined;
+  let internalRestart: { child: ReturnType<typeof spawn>; revision: number } | undefined;
+  const signalWorker = (target: ReturnType<typeof spawn>, signal: NodeJS.Signals): void => {
+    // Give the shell and its current one-shot request helper one signal boundary.
+    // A separate process group prevents an old helper from retaining a retired
+    // credential after an internal worker restart.
+    if (process.platform !== "win32" && target.pid) {
+      try {
+        process.kill(-target.pid, signal);
+        return;
+      } catch {}
+    }
+    target.kill(signal);
+  };
+  const stopWorker = (signal: NodeJS.Signals): boolean => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return false;
+    const stoppingChild = child;
+    signalWorker(stoppingChild, signal);
+    if (!forceStop) {
+      forceStop = setTimeout(() => {
+        forceStop = undefined;
+        signalWorker(stoppingChild, "SIGKILL");
+      }, 1000);
+      forceStop.unref();
+    }
+    return true;
+  };
+  const unsubscribeRevision = watcherClient.onSessionRevision((event) => {
+    if (event.revision <= desiredRevision) return;
+    desiredRevision = event.revision;
+    if (!externalSignal && child && event.revision > childRevision && stopWorker("SIGTERM")) {
+      // Provenance belongs to this exact live child. A revision by itself is
+      // never enough to suppress a natural exit that already completed.
+      internalRestart = { child, revision: event.revision };
+    }
+  });
+  const forward = (signal: NodeJS.Signals) => {
+    if (externalSignal) return;
+    externalSignal = signal;
+    stopWorker(signal);
+  };
   try {
     await watcherClient.bootstrap();
-    const watcherAuth = watcherClient.watcherSessionAuth();
-    childEnv.PARLE_WATCH_AGENT_SESSION = watcherAuth.sessionCredential;
     childEnv.PARLE_WATCH_REQUEST_HELPER = fileURLToPath(metaUrl);
     childEnv.PARLE_WATCH_PARENT_PID = String(process.pid);
-    const child = spawn("sh", [worker, ...workerArgs], { cwd, env: childEnv, stdio: "inherit" });
-    let forceStop: ReturnType<typeof setTimeout> | undefined;
-    const forward = (signal: NodeJS.Signals) => {
-      child.kill(signal);
-      // The shell may be waiting on its one-shot Node request helper. Bound host
-      // shutdown even when that grandchild delays signal delivery; it separately
-      // monitors this launcher's pid and aborts once the launcher exits.
-      forceStop = setTimeout(() => child.kill("SIGKILL"), 1000);
-      forceStop.unref();
-    };
-    process.once("SIGINT", forward);
-    process.once("SIGTERM", forward);
-    try {
-      return await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
+    process.on("SIGINT", forward);
+    process.on("SIGTERM", forward);
+    while (!externalSignal) {
+      const spawnRevision = desiredRevision;
+      const watcherAuth = watcherClient.watcherSessionAuth();
+      const workerEnv = { ...childEnv, PARLE_WATCH_AGENT_SESSION: watcherAuth.sessionCredential };
+      childRevision = spawnRevision;
+      const launchedChild = spawn("sh", [worker, ...workerArgs], {
+        cwd,
+        env: workerEnv,
+        stdio: "inherit",
+        detached: process.platform !== "win32",
       });
-    } finally {
-      if (forceStop) clearTimeout(forceStop);
-      process.removeListener("SIGINT", forward);
-      process.removeListener("SIGTERM", forward);
+      child = launchedChild;
+      let result: number;
+      try {
+        result = await new Promise<number>((resolve, reject) => {
+          launchedChild.once("error", reject);
+          launchedChild.once("exit", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
+        });
+      } finally {
+        if (forceStop) clearTimeout(forceStop);
+        forceStop = undefined;
+        child = undefined;
+      }
+      const restartWasRequested = internalRestart?.child === launchedChild
+        && watcherExitRequiresInternalRestart(spawnRevision, desiredRevision, internalRestart.revision);
+      if (internalRestart?.child === launchedChild) internalRestart = undefined;
+      if (externalSignal) return result;
+      if (restartWasRequested) {
+        // The worker cursor is private in-memory shell state. Replaying the
+        // original since_seq after this daily credential rollover is safe:
+        // projection filtering is idempotent and the public argv stays stable.
+        continue;
+      }
+      return result;
     }
+    return 128;
   } finally {
+    unsubscribeRevision();
+    if (forceStop) clearTimeout(forceStop);
+    process.removeListener("SIGINT", forward);
+    process.removeListener("SIGTERM", forward);
+    if (child && child.exitCode === null && child.signalCode === null) signalWorker(child, "SIGKILL");
     await watcherClient.endSession().catch(() => {});
   }
 }

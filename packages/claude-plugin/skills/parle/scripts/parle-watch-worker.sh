@@ -21,18 +21,25 @@
 # so the server still cannot tell this script that the filtered session has
 # died (host reload, session end). When my_agent_session_id
 # is set, each cycle also checks the local .parle/runtime/*.json snapshots
-# the adapters publish. Own-snapshot evidence is classified before absence
-# counts for anything: a snapshot carrying this id that is expired (or within
-# the 30s guard band) or whose writer pid is dead or verifiably recycled
-# (process start time mismatches processStartedAt, checked via /proc then
-# ps etime where available) is AFFIRMATIVE evidence the session is gone and
-# exits 3 regardless of history; one that is present but not ready (bootstrap
-# retry or failure in progress) holds as inconclusive.
-# Plain absence is era-gated: only after this watch has itself seen the
-# session live in a snapshot does present-then-absent (for two consecutive
-# checks) exit 3. A session id that was NEVER present is inconclusive -- host
-# predating snapshot publishing, another cwd, or a missing file for a live
-# server (observed in the field, adapters#22) -- so the watch notes it once
+# the adapters publish. After observing the primary session live, the watcher
+# binds it to that exact runtime file and live writer identity. If that file is
+# atomically rewritten by the same pid, with a matching validated process
+# start and clientInstanceId, to a new live agentSessionId, the watcher follows the
+# transition and updates its local filter before the next projection request.
+# Unrelated sibling snapshots can never trigger that transition.
+#
+# Own-snapshot evidence is classified before absence counts for anything: a
+# snapshot carrying this id that is expired (or within the 30s guard band) or
+# whose writer pid is dead or verifiably recycled (process start time
+# mismatches processStartedAt, checked via /proc then ps etime where available)
+# is AFFIRMATIVE evidence the session is gone and exits 3 regardless of
+# history; one that is present but not ready (bootstrap retry or failure in
+# progress) holds as inconclusive. Plain absence is era-gated: only after this
+# watch has itself seen the session live in a snapshot does present-then-absent
+# (for two consecutive checks) exit 3. A session id that was NEVER present is
+# inconclusive -- the host may predate snapshot publishing, use another cwd,
+# or lack a runtime file for a live server (observed in the field,
+# adapters#22) -- so the watch notes it once
 # on stderr and keeps holding. No snapshots at all is likewise indeterminate
 # (direct-HTTP sessions publish none). Every exit 3 is preceded by a
 # redaction-safe per-file forensics dump on stderr so a disputed verdict is
@@ -43,11 +50,11 @@
 # Exit:  0 = relevant activity past since_seq, 2 = terminal or repeated
 #        failures, 3 = my_agent_session_id is gone from this host (reconnect
 #        with parle_connect and arm a fresh watch; do not re-arm with the old
-#        id or watermark). An exit 3 near the session's scheduled expiresAt
-#        is expected pre-expiry rollover, not a heuristic failure. If
-#        parle_connect says the same session is alive, check the remaining
-#        TTL: seconds to spare confirms the rollover; plenty of TTL means a
-#        false verdict -- re-arm with PARLE_WATCH_SESSION_LIVENESS=0
+#        id or watermark). If the same observed snapshot reaches its expiry
+#        guard band without a verified in-process rewrite, exit 3 is failed
+#        rollover evidence, not expected proactive rollover. If parle_connect
+#        says the same session is alive with plenty of TTL, re-arm with
+#        PARLE_WATCH_SESSION_LIVENESS=0 while investigating the false verdict.
 #
 # The public parle-watch.sh entrypoint always launches this private worker
 # through the bundled Node resolver. It applies the shared client precedence
@@ -79,13 +86,20 @@ session_liveness() {
   [ -n "$me" ] || { echo LIVE; return; }
   [ "${PARLE_WATCH_SESSION_LIVENESS:-1}" = "0" ] && { echo LIVE; return; }
   [ -d ./.parle/runtime ] || { echo UNKNOWN; return; }
-  python3 - "$me" <<'PY' 2>/dev/null || echo UNKNOWN
+  python3 - "$me" "$bound_pid" "$bound_started" "$bound_client" "$bound_path" <<'PY' 2>/dev/null || echo UNKNOWN
 import calendar, glob, json, os, re, subprocess, sys, time
 
 me = sys.argv[1]
+bound_pid = sys.argv[2]
+bound_started = sys.argv[3]
+bound_client = sys.argv[4]
+bound_path = sys.argv[5]
+has_bound = bool(bound_pid and bound_started and bound_client and bound_path)
 now = time.time()
 sibling_live = 0
 mine = []
+transition = None
+initial_live = None
 # ISO-8601 UTC as written by JS toISOString(); parsed portably because the
 # host python3 can be as old as 3.6 (no datetime.fromisoformat).
 ISO_UTC = re.compile(r"^(\d{4}-\d{2}-\d{2})[Tt](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:[Zz]|\+00:00)$")
@@ -151,7 +165,23 @@ def pid_alive(snap):
             return False
     return True
 
-for path in glob.glob("./.parle/runtime/*.json"):
+def same_bound_writer(path, snap):
+    if not has_bound or path != bound_path or str(snap.get("pid", "")) != bound_pid:
+        return False
+    prior_start = iso_epoch(bound_started)
+    next_start = iso_epoch(snap.get("processStartedAt", ""))
+    if prior_start is None or next_start is None or abs(next_start - prior_start) > START_TOLERANCE:
+        return False
+    if str(snap.get("clientInstanceId", "")) != bound_client:
+        return False
+    return True
+
+def live_wire(state, path, snap):
+    print("%s|%s|%s|%s|%s|%s" % (
+        state, snap.get("agentSessionId", ""), snap.get("pid", ""),
+        snap.get("processStartedAt", ""), snap.get("clientInstanceId", ""), path))
+
+for path in sorted(glob.glob("./.parle/runtime/*.json")):
     try:
         with open(path) as f:
             snap = json.load(f)
@@ -160,33 +190,39 @@ for path in glob.glob("./.parle/runtime/*.json"):
     if not isinstance(snap, dict) or snap.get("schemaVersion") != 1:
         continue
     expires = iso_epoch(snap.get("expiresAt", ""))
-    if snap.get("agentSessionId") == me:
-        # Own-file evidence beats absence: expiry and a dead (or recycled)
-        # writer pid are affirmative "gone"; anything else non-live holds as
-        # inconclusive.
-        alive = pid_alive(snap)
+    alive = pid_alive(snap)
+    live = snap.get("state") == "ready" and expires is not None and expires > now + 30 and alive is True
+    exact_bound = same_bound_writer(path, snap)
+    if snap.get("agentSessionId") == me and (not has_bound or exact_bound):
+        # Once bound, only the exact observed runtime can provide own-file
+        # evidence. A same-id sibling remains unrelated.
         if expires is not None and expires <= now + 30:
             mine.append("MINE_EXPIRED")
         elif alive is False:
             mine.append("MINE_PIDDEAD")
-        elif snap.get("state") == "ready" and expires is not None and alive:
-            print("LIVE")
-            sys.exit(0)
+        elif live:
+            initial_live = (path, snap)
         else:
             mine.append("MINE_UNREADY")
         continue
-    if snap.get("state") != "ready":
-        continue
-    if expires is None or expires <= now + 30:
-        continue
-    if pid_alive(snap) is not True:
-        continue
-    sibling_live += 1
+    if live and exact_bound:
+        candidate_id = snap.get("agentSessionId")
+        if isinstance(candidate_id, str) and candidate_id and candidate_id != me:
+            transition = (path, snap)
+            continue
+    if live:
+        sibling_live += 1
 
+if initial_live is not None:
+    live_wire("LIVE", initial_live[0], initial_live[1])
+    sys.exit(0)
 for state in ("MINE_UNREADY", "MINE_EXPIRED", "MINE_PIDDEAD"):
     if state in mine:
         print(state)
         sys.exit(0)
+if transition is not None:
+    live_wire("ROLLED", transition[0], transition[1])
+    sys.exit(0)
 print("DEAD" if sibling_live else "UNKNOWN")
 PY
 }
@@ -301,6 +337,12 @@ unready_liveness=0
 seen_live=0
 noted_never_present=0
 noted_unready=0
+# Identity of the primary runtime snapshot observed by this watch. A proactive
+# session-id transition is accepted only from this same verified live writer.
+bound_pid=""
+bound_started=""
+bound_client=""
+bound_path=""
 parse_wire() {
   status=${wire%%
 *}
@@ -334,9 +376,32 @@ while :; do
   # Do not outlive a launcher terminated with SIGKILL. The request helper also
   # monitors this pid so an in-flight long poll aborts promptly.
   kill -0 "$PARLE_WATCH_PARENT_PID" 2>/dev/null || exit 2
-  liveness_state=$(session_liveness)
+  liveness_result=$(session_liveness)
+  liveness_state=${liveness_result%%|*}
   case "$liveness_state" in
-    LIVE)
+    LIVE|ROLLED)
+      case "$liveness_result" in
+        *'|'*)
+          live_fields=${liveness_result#*|}
+          observed_me=${live_fields%%|*}; live_fields=${live_fields#*|}
+          observed_pid=${live_fields%%|*}; live_fields=${live_fields#*|}
+          observed_started=${live_fields%%|*}; live_fields=${live_fields#*|}
+          observed_client=${live_fields%%|*}; observed_path=${live_fields#*|}
+          if [ -n "$observed_started" ] && [ -n "$observed_client" ]; then
+            bound_pid=$observed_pid
+            bound_started=$observed_started
+            bound_client=$observed_client
+            bound_path=$observed_path
+          fi
+          if [ "$liveness_state" = "ROLLED" ]; then
+            old_me=$me
+            # One shell assignment changes the filter before any subsequent
+            # projection request or row classification.
+            me=$observed_me
+            echo "Parle note: followed primary runtime rollover from $old_me to $me on verified live writer pid $bound_pid." >&2
+          fi
+          ;;
+      esac
       [ -n "$me" ] && seen_live=1
       dead_liveness=0; gone_liveness=0; unready_liveness=0
       ;;
@@ -356,7 +421,7 @@ while :; do
       if [ "$gone_liveness" -ge 2 ]; then
         liveness_forensics "$liveness_state"
         if [ "$liveness_state" = "MINE_EXPIRED" ]; then
-          echo "Parle stopped: agent session $me is within the 30-second guard band of (or past) its scheduled expiresAt in this host's runtime snapshot. This is expected pre-expiry rollover, not a heuristic failure. Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId; do not re-arm with this session id or watermark." >&2
+          echo "Parle stopped: agent session $me reached the 30-second guard band of (or passed) its scheduled expiresAt without a verified same-process runtime rewrite. This is failed proactive rollover evidence. Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId; do not re-arm with this session id or watermark." >&2
         else
           echo "Parle stopped: the host process that published agent session $me's runtime snapshot is no longer running. Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId; do not re-arm with this session id or watermark." >&2
         fi
@@ -454,6 +519,30 @@ while :; do
         ;;
     esac
   fi
+
+  # The verified primary runtime may roll while the held projection request is
+  # in flight. Recheck after the response and before classifying rows or
+  # advancing since. A same-writer transition changes the filter for this exact
+  # returned batch, so a successor direct cannot be skipped behind the watermark.
+  post_liveness=$(session_liveness)
+  post_state=${post_liveness%%|*}
+  if [ "$post_state" = "ROLLED" ]; then
+    post_fields=${post_liveness#*|}
+    post_me=${post_fields%%|*}; post_fields=${post_fields#*|}
+    post_pid=${post_fields%%|*}; post_fields=${post_fields#*|}
+    post_started=${post_fields%%|*}; post_fields=${post_fields#*|}
+    post_client=${post_fields%%|*}; post_path=${post_fields#*|}
+    if [ -n "$post_me" ] && [ -n "$post_started" ] && [ -n "$post_client" ]; then
+      old_me=$me
+      bound_pid=$post_pid
+      bound_started=$post_started
+      bound_client=$post_client
+      bound_path=$post_path
+      me=$post_me
+      echo "Parle note: followed primary runtime rollover from $old_me to $me on verified live writer pid $bound_pid after an in-flight projection." >&2
+    fi
+  fi
+
   fails=0
   out=$(printf '%s' "$resp" | python3 -c '
 import json, sys

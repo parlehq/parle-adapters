@@ -30961,7 +30961,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // ../client/dist/index.js
 import { readFileSync as readFileSync5, existsSync as existsSync4 } from "node:fs";
 import { join as join5 } from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -31083,7 +31083,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-07-07";
+var DEFAULT_VERSION = "2026-08-01";
 
 // ../client/dist/profiles.js
 import { execFileSync } from "node:child_process";
@@ -33057,7 +33057,12 @@ async function performProfileSwitch(plan) {
     return { switched: false, profile: target.profile, roomId: target.roomId, reason: "already_active", watcherRestarted: false, warnings: [] };
   }
   const prepared = await plan.prepare(target);
-  plan.commit(prepared, target);
+  try {
+    plan.commit(prepared, target);
+  } catch (error51) {
+    await plan.discardPrepared?.(prepared, target);
+    throw error51;
+  }
   const warnings = [];
   try {
     await plan.retireOldSession();
@@ -33074,6 +33079,30 @@ async function performProfileSwitch(plan) {
     }
   }
   return { switched: true, profile: target.profile, roomId: target.roomId, watcherRestarted, warnings };
+}
+var ROLLOVER_LEAD_MS = 5 * 6e4;
+var ROLLOVER_JITTER_RANGE_MS = 6e4;
+var ROLLOVER_MAX_FAILURES = 3;
+var ROLLOVER_RETRY_MS = 5e3;
+var ROLLOVER_COOLDOWN_MS = 6e4;
+var CLAIM_RECOVERY_ATTEMPTS = 3;
+var MAX_TIMER_DELAY_MS = 2147e6;
+var SESSION_INVENTORY_MAX_PAGES = 100;
+function deterministicSessionJitterMs(agentSessionId) {
+  const digest = createHash2("sha256").update(agentSessionId).digest();
+  return digest.readUInt32BE(0) % ROLLOVER_JITTER_RANGE_MS;
+}
+function sessionRolloverAtMs(session) {
+  const id = session.agent_session_id || session.agentSessionId || "";
+  const created = Date.parse(session.created_at || session.createdAt || "");
+  const expires = Date.parse(session.expires_at || session.expiresAt || "");
+  if (!id || !Number.isFinite(created) || !Number.isFinite(expires))
+    return void 0;
+  return Math.max(created, expires - ROLLOVER_LEAD_MS - deterministicSessionJitterMs(id));
+}
+function responsiveCursorScope(delivery) {
+  const scope = delivery?.delivery?.cursor_scope;
+  return scope === "session" || scope === "alias" ? scope : void 0;
 }
 function responsiveDeliveryKey(message) {
   const seq = message?.seq;
@@ -33101,6 +33130,8 @@ var ParleApiError = class extends Error {
     this.retryable = options.retryable ?? false;
     this.details = options.details;
   }
+};
+var AliasClaimOutcomeUnknownError = class extends ParleApiError {
 };
 function parseKeyValueFile(text) {
   const out = {};
@@ -33401,6 +33432,8 @@ var ParleAgentClient = class _ParleAgentClient {
   now;
   sleepImpl;
   randomUUID;
+  setTimer;
+  clearTimer;
   clientName;
   clientVersion;
   clientInstanceId;
@@ -33412,6 +33445,9 @@ var ParleAgentClient = class _ParleAgentClient {
     bootstrapState: "unstarted",
     sessionHandle: "",
     sessionAddress: null,
+    sessionGeneration: 0,
+    sessionRevision: 0,
+    createdAt: "",
     agentSessionId: "",
     expiresAt: "",
     participantId: "",
@@ -33422,10 +33458,18 @@ var ParleAgentClient = class _ParleAgentClient {
   bootstrapInFlight = null;
   profileSwitchInFlight = false;
   activeProfile;
+  lifecycleTail = Promise.resolve();
+  lifecycleEpoch = 0;
+  ended = false;
+  prefetchedWake;
   rebootstrapEpisode = null;
   consecutiveBootstrapFailures = 0;
   unreadInFlight = false;
   unreadPollTimer = null;
+  rolloverTimer = null;
+  rolloverInFlight = null;
+  sessionRevisionListeners = /* @__PURE__ */ new Set();
+  sessionCommitGuards = /* @__PURE__ */ new Set();
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   automaticTerminalBinding;
@@ -33438,6 +33482,8 @@ var ParleAgentClient = class _ParleAgentClient {
     this.now = options.now || (() => /* @__PURE__ */ new Date());
     this.sleepImpl = options.sleep || defaultSleep;
     this.randomUUID = options.randomUUID || randomUUID2;
+    this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
+    this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
@@ -33503,6 +33549,25 @@ var ParleAgentClient = class _ParleAgentClient {
   selectedEnvironment(profile = this.activeProfile) {
     return profile ? { ...this.env, PARLE_PROFILE: profile } : this.env;
   }
+  async withLifecycleExclusion(fn) {
+    const previous = this.lifecycleTail;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    this.lifecycleTail = previous.catch(() => void 0).then(() => gate);
+    await previous.catch(() => void 0);
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+  assertLifecycleActive(epoch = this.lifecycleEpoch) {
+    if (this.ended || epoch !== this.lifecycleEpoch) {
+      throw new ParleApiError("Parle client lifecycle has ended", { code: "client_ended", action: "stop", scope: "agent_session" });
+    }
+  }
   bindingKey(cfg = this.cfg) {
     return [cfg.roomId?.value || "", cfg.agentToken?.value || "", cfg.apiBase.value || "", cfg.wakeBase.value || "", cfg.profile?.value || ""].join("\0");
   }
@@ -33510,6 +33575,13 @@ var ParleAgentClient = class _ParleAgentClient {
     this.automaticTerminalBinding = void 0;
     this.runtime.terminalCause = void 0;
     this.runtime.nextRetryAt = void 0;
+  }
+  clearRolloverStormProtection(reschedule = false) {
+    const wasCooling = Boolean(this.runtime.rolloverLatched);
+    this.runtime.rolloverFailures = 0;
+    this.runtime.rolloverLatched = false;
+    if (reschedule && wasCooling && this.runtime.bootstrapped && !this.ended)
+      this.scheduleRollover();
   }
   recordTerminalCause(error51) {
     const api = error51 instanceof ParleApiError ? error51 : void 0;
@@ -33537,8 +33609,10 @@ var ParleAgentClient = class _ParleAgentClient {
     if (oldBinding === this.bindingKey(next))
       return false;
     this.cfg = next;
-    if (oldBinding !== this.bindingKey())
+    if (oldBinding !== this.bindingKey()) {
       this.clearAutomaticTerminalLatch();
+      this.clearRolloverStormProtection();
+    }
     this.runtime.lastBootstrapError = void 0;
     this.publishRuntimeState();
     return true;
@@ -33592,8 +33666,9 @@ var ParleAgentClient = class _ParleAgentClient {
         throw new ParleApiError("Parle setup needed: PARLE_ROOM_AGENT_TOKEN is missing", { code: "setup_needed" });
       headers.Authorization = `Bearer ${this.cfg.agentToken.value}`;
     }
-    if (options.session && this.runtime.sessionHandle)
-      headers["Parle-Agent-Session"] = this.runtime.sessionHandle;
+    const sessionCredential = options.sessionCredential || (options.session ? this.runtime.sessionHandle : "");
+    if (sessionCredential)
+      headers["Parle-Agent-Session"] = sessionCredential;
     const timeout = options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : void 0;
     const signal = options.signal && timeout ? AbortSignal.any([options.signal, timeout]) : options.signal || timeout;
     let response;
@@ -33626,13 +33701,16 @@ var ParleAgentClient = class _ParleAgentClient {
     }
     return json2;
   }
-  // Single-flight: concurrent callers (eager startup, racing first tool call,
-  // 401 rebootstrap) converge on one in-flight session mint instead of minting
-  // duplicates with last-writer-wins runtime state.
+  // Lifecycle mutations share one exclusion queue. Public methods acquire it;
+  // internal helpers never reacquire it, which keeps rebootstrap and profile
+  // preparation from deadlocking their callers.
   async bootstrap(signal, preserveCursor = false) {
     if (this.bootstrapInFlight)
       return this.bootstrapInFlight;
-    const run = this.doBootstrap(signal, preserveCursor);
+    const run = this.withLifecycleExclusion(async () => {
+      this.assertLifecycleActive();
+      return this.doBootstrapLocked(signal, preserveCursor);
+    });
     this.bootstrapInFlight = run;
     try {
       return await run;
@@ -33640,48 +33718,40 @@ var ParleAgentClient = class _ParleAgentClient {
       this.bootstrapInFlight = null;
     }
   }
-  async doBootstrap(signal, preserveCursor = false, allowConfigReload = true) {
+  async doBootstrapLocked(signal, preserveCursor = false, allowConfigReload = true) {
+    const epoch = this.lifecycleEpoch;
+    const previous = { ...this.runtime };
+    const oldWasLive = previous.bootstrapped && Boolean(previous.sessionHandle);
     this.runtime.bootstrapState = "starting";
     this.publishRuntimeState();
     try {
       this.assertConfigured();
-      const previousCursor = this.runtime.cursor;
-      const body = {};
-      if (this.cfg.sessionAlias?.value)
-        body.alias = this.cfg.sessionAlias.value;
-      const session = await this.requestJson("/v/agent/sessions", { method: "POST", body, signal, rawResponse: true });
-      this.runtime.sessionHandle = String(session.session_credential || "");
-      this.runtime.sessionAddress = typeof session.address === "string" ? session.address : null;
-      this.runtime.agentSessionId = String(session.agent_session_id || "");
-      this.runtime.expiresAt = String(session.expires_at || "");
-      this.runtime.roomId = this.cfg.roomId.value;
-      const entry = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/participants`, { method: "POST", session: true, signal });
-      this.runtime.participantId = String(entry.participant_id || "");
-      this.runtime.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : this.cfg.roomHandle?.value;
-      this.runtime.bootstrapped = true;
-      if (preserveCursor)
-        this.runtime.cursor = previousCursor;
-      else {
-        const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/projection?wait=0`, { session: true, signal });
-        this.runtime.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
-        if (typeof projection?.held_backlog?.held_count === "number")
-          this.runtime.heldBacklogCount = projection.held_backlog.held_count;
+      const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
+      try {
+        this.assertLifecycleActive(epoch);
+        this.assertSessionCommitAllowed(previous, prepared.state, "bootstrap");
+      } catch (error51) {
+        await this.cancelCandidateWake(prepared.wake);
+        if (!prepared.state.sessionAlias)
+          await this.retireSession(prepared.state).catch(() => void 0);
+        throw error51;
       }
-      this.bootstrapGeneration += 1;
-      this.runtime.bootstrapState = "ready";
-      this.runtime.lastBootstrapError = void 0;
+      const unusedPreviousWake = this.commitCandidate(prepared, epoch);
+      await this.completeCandidateHandoff(previous, prepared.state, "bootstrap", signal, unusedPreviousWake, oldWasLive);
       this.clearAutomaticTerminalLatch();
+      this.clearRolloverStormProtection();
       this.consecutiveBootstrapFailures = 0;
-      this.publishRuntimeState();
-      this.scheduleUnreadPoll();
       return { ...this.runtime };
     } catch (error51) {
       if (allowConfigReload && error51 instanceof ParleApiError && error51.action === "reauthorize" && this.refreshConfigIfAgentTokenChanged()) {
-        return this.doBootstrap(signal, preserveCursor, false);
+        return this.doBootstrapLocked(signal, preserveCursor, false);
       }
       this.consecutiveBootstrapFailures += 1;
       const api = error51 instanceof ParleApiError ? error51 : void 0;
-      this.runtime.bootstrapState = "failed";
+      if (!oldWasLive)
+        this.runtime.bootstrapState = "failed";
+      else
+        this.runtime.bootstrapState = "ready";
       this.runtime.lastBootstrapError = redactString(error51 instanceof Error ? error51.message : String(error51));
       this.recordTerminalCause(error51);
       const terminalLatched = this.automaticTerminalBinding === this.bindingKey() && Boolean(this.runtime.terminalCause);
@@ -33691,6 +33761,218 @@ var ParleAgentClient = class _ParleAgentClient {
       this.publishRuntimeState();
       throw error51;
     }
+  }
+  async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness) {
+    const previousCursor = this.runtime.cursor;
+    const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
+    const candidate = {
+      bootstrapped: false,
+      bootstrapState: "starting",
+      sessionHandle: String(session.session_credential || ""),
+      sessionAddress: typeof session.address === "string" ? session.address : null,
+      sessionGeneration: 0,
+      sessionRevision: this.runtime.sessionRevision,
+      createdAt: String(session.created_at || ""),
+      agentSessionId: String(session.agent_session_id || ""),
+      expiresAt: String(session.expires_at || ""),
+      participantId: "",
+      roomId: this.cfg.roomId.value,
+      cursor: preserveCursor ? previousCursor : 0
+    };
+    let candidateWake;
+    try {
+      const entry = await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/participants`, {
+        method: "POST",
+        sessionCredential: candidate.sessionHandle,
+        signal,
+        retry: false
+      });
+      candidate.participantId = String(entry.participant_id || "");
+      candidate.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : this.cfg.roomHandle?.value;
+      if (!preserveCursor) {
+        const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/projection?wait=0`, {
+          sessionCredential: candidate.sessionHandle,
+          signal,
+          retry: false
+        });
+        candidate.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
+        if (typeof projection?.held_backlog?.held_count === "number")
+          candidate.heldBacklogCount = projection.held_backlog.held_count;
+      }
+      if (alias || requireWakeReadiness)
+        candidateWake = await this.establishCandidateWakeReadiness(candidate.sessionHandle, signal);
+      if (alias) {
+        const expectedGeneration = await this.currentAliasGeneration(alias, signal);
+        const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal);
+        candidate.sessionAlias = alias;
+        candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
+        candidate.sessionAddress = typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress;
+        candidate.createdAt = String(claimed.created_at || candidate.createdAt);
+        candidate.expiresAt = String(claimed.expires_at || candidate.expiresAt);
+        candidate.responsiveContinuity = "alias";
+      } else if (requireWakeReadiness) {
+        candidate.responsiveContinuity = "exact_session_not_transferred";
+      }
+      candidate.bootstrapped = true;
+      candidate.bootstrapState = "ready";
+      return { state: candidate, wake: candidateWake };
+    } catch (error51) {
+      await this.cancelCandidateWake(candidateWake);
+      if (!(error51 instanceof AliasClaimOutcomeUnknownError))
+        await this.retireSession(candidate).catch(() => void 0);
+      throw error51;
+    }
+  }
+  async findInventorySession(predicate, signal) {
+    let after;
+    for (let pageNumber = 0; pageNumber < SESSION_INVENTORY_MAX_PAGES; pageNumber += 1) {
+      const path = after ? `/v/agent/sessions?after=${encodeURIComponent(after)}` : "/v/agent/sessions";
+      const page = await this.requestJson(path, { signal, retry: true });
+      const sessions = Array.isArray(page.sessions) ? page.sessions : [];
+      const match = sessions.find(predicate);
+      if (match)
+        return match;
+      if (page.next === null || page.next === void 0)
+        return void 0;
+      if (typeof page.next !== "string" || page.next.length === 0)
+        throw new ParleApiError("Parle session inventory returned an invalid continuation cursor", { code: "invalid_response", action: "fix_client", scope: "server" });
+      after = page.next;
+    }
+    throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
+  }
+  async currentAliasGeneration(alias, signal) {
+    const match = await this.findInventorySession((item) => item?.alias === alias && Number.isInteger(item?.generation) && item.generation >= 0, signal);
+    return match?.generation ?? 0;
+  }
+  async claimAliasWithRecovery(candidate, alias, expectedGeneration, signal) {
+    const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
+    const body = { alias, expected_generation: expectedGeneration };
+    let lastError;
+    for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.requestJson(path, {
+          method: "POST",
+          body,
+          sessionCredential: candidate.sessionHandle,
+          signal,
+          rawResponse: true,
+          retry: false
+        });
+      } catch (error51) {
+        if (error51 instanceof ParleApiError && error51.status === 409)
+          throw error51;
+        const responseLost = !(error51 instanceof ParleApiError) || error51.status === void 0 || error51.status >= 500;
+        if (!responseLost)
+          throw error51;
+        lastError = error51;
+        try {
+          const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === expectedGeneration + 1, signal);
+          if (committed)
+            return committed;
+        } catch {
+        }
+        if (signal?.aborted)
+          break;
+      }
+    }
+    const detail = lastError instanceof Error ? redactString(lastError.message) : "claim response unavailable";
+    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and inventory confirmation: ${detail}`, {
+      code: "alias_claim_outcome_unknown",
+      action: "retry_with_backoff",
+      scope: "agent_session",
+      retryable: true
+    });
+  }
+  async establishCandidateWakeReadiness(sessionCredential, signal) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal?.aborted)
+      controller.abort();
+    else
+      signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const response = await this.openWakeStreamForCredential(sessionCredential, controller.signal, false);
+      return { sessionCredential, response, controller };
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  }
+  async cancelCandidateWake(slot) {
+    if (!slot)
+      return;
+    slot.controller.abort();
+    await slot.response.body?.cancel().catch(() => void 0);
+  }
+  assertSessionCommitAllowed(previous, candidate, reason) {
+    const plan = { reason, previous: Object.freeze({ ...previous }), candidate: Object.freeze({ ...candidate }) };
+    for (const guard of this.sessionCommitGuards)
+      guard(plan);
+  }
+  commitCandidate(prepared, epoch) {
+    this.assertLifecycleActive(epoch);
+    this.stopUnreadPolling();
+    const unusedPreviousWake = this.prefetchedWake;
+    this.prefetchedWake = prepared.wake;
+    const revision = this.runtime.sessionRevision + 1;
+    this.lifecycleEpoch += 1;
+    this.runtime = { ...prepared.state, sessionRevision: revision, rolloverFailures: 0, rolloverLatched: false, lastBootstrapError: void 0 };
+    this.bootstrapGeneration += 1;
+    this.publishRuntimeState();
+    this.scheduleUnreadPoll();
+    this.scheduleRollover();
+    return unusedPreviousWake;
+  }
+  async completeCandidateHandoff(previous, candidate, reason, signal, unusedPreviousWake, drainImmediately) {
+    if (drainImmediately) {
+      try {
+        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/responsive-delivery?wait=0`, { sessionCredential: candidate.sessionHandle, signal, retry: false });
+        this.recordResponsiveCursorScope(delivery);
+      } catch (error51) {
+        this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+        this.publishRuntimeState();
+      }
+    }
+    if (candidate.sessionAlias) {
+      try {
+        await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/participants`, {
+          method: "POST",
+          sessionCredential: candidate.sessionHandle,
+          signal,
+          retry: false
+        });
+      } catch (error51) {
+        this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+        this.publishRuntimeState();
+      }
+    }
+    this.publishSessionRevision(reason);
+    await this.cancelCandidateWake(unusedPreviousWake);
+    if (!previous.sessionAlias && previous.agentSessionId && previous.agentSessionId !== candidate.agentSessionId) {
+      await this.retireSession(previous).catch(() => void 0);
+    }
+  }
+  publishSessionRevision(reason) {
+    const event = {
+      revision: this.runtime.sessionRevision,
+      agentSessionId: this.runtime.agentSessionId,
+      generation: this.runtime.sessionGeneration,
+      ...this.runtime.sessionAlias ? { alias: this.runtime.sessionAlias } : {},
+      reason
+    };
+    for (const listener of this.sessionRevisionListeners) {
+      try {
+        listener(event);
+      } catch {
+      }
+    }
+  }
+  onSessionRevision(listener) {
+    this.sessionRevisionListeners.add(listener);
+    return () => this.sessionRevisionListeners.delete(listener);
+  }
+  onBeforeSessionCommit(guard) {
+    this.sessionCommitGuards.add(guard);
+    return () => this.sessionCommitGuards.delete(guard);
   }
   async ensureBootstrapped(signal) {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle)
@@ -33718,90 +34000,109 @@ var ParleAgentClient = class _ParleAgentClient {
       throw new Error("A Parle profile switch is already in progress.");
     this.profileSwitchInFlight = true;
     try {
-      if (this.bootstrapInFlight)
-        await this.bootstrapInFlight;
-      const previousCfg = this.cfg;
-      const previousRuntime = { ...this.runtime };
-      const previousProfile = this.activeProfile;
-      let targetCfg;
-      const result = await performProfileSwitch({
-        resolve: () => {
-          targetCfg = resolveConfig(this.cwd, this.selectedEnvironment(profile));
-          if (!targetCfg.roomId?.value || !targetCfg.agentToken?.value) {
-            throw new Error(`Parle profile ${profile} does not provide a complete room binding.`);
-          }
-          if (previousCfg.sessionAlias?.value || targetCfg.sessionAlias?.value) {
-            throw new Error("Live profile switching is unavailable while PARLE_SESSION_ALIAS is configured because scratch preparation must not supersede the active named route. Restart the host with the target profile instead.");
-          }
-          const sameBinding = previousCfg.roomId?.value === targetCfg.roomId.value && previousCfg.agentToken?.value === targetCfg.agentToken.value && previousCfg.apiBase.value === targetCfg.apiBase.value && previousCfg.wakeBase.value === targetCfg.wakeBase.value;
-          return { profile, roomId: targetCfg.roomId.value, changed: previousProfile !== profile || !sameBinding || !this.runtime.bootstrapped };
-        },
-        prepare: async () => {
-          const prepared = new _ParleAgentClient({
-            cwd: this.cwd,
-            env: this.selectedEnvironment(profile),
-            fetch: this.fetchImpl,
-            now: this.now,
-            sleep: this.sleepImpl,
-            randomUUID: this.randomUUID,
-            clientName: this.clientName,
-            clientVersion: this.clientVersion,
-            clientInstanceId: this.clientInstanceId,
-            integrationName: this.integrationName,
-            integrationVersion: this.integrationVersion
+      return await this.withLifecycleExclusion(async () => {
+        this.assertLifecycleActive();
+        const epoch = this.lifecycleEpoch;
+        const previousCfg = this.cfg;
+        const previousRuntime = { ...this.runtime };
+        const previousProfile = this.activeProfile;
+        let targetCfg;
+        let scratch;
+        let committed = false;
+        try {
+          const result = await performProfileSwitch({
+            resolve: () => {
+              targetCfg = resolveConfig(this.cwd, this.selectedEnvironment(profile));
+              if (!targetCfg.roomId?.value || !targetCfg.agentToken?.value) {
+                throw new Error(`Parle profile ${profile} does not provide a complete room binding.`);
+              }
+              if (previousCfg.sessionAlias?.value || targetCfg.sessionAlias?.value) {
+                throw new Error("Live profile switching is unavailable while PARLE_SESSION_ALIAS is configured because scratch preparation must not supersede the active named route. Restart the host with the target profile instead.");
+              }
+              const sameBinding = previousCfg.roomId?.value === targetCfg.roomId.value && previousCfg.agentToken?.value === targetCfg.agentToken.value && previousCfg.apiBase.value === targetCfg.apiBase.value && previousCfg.wakeBase.value === targetCfg.wakeBase.value;
+              return { profile, roomId: targetCfg.roomId.value, changed: previousProfile !== profile || !sameBinding || !this.runtime.bootstrapped };
+            },
+            prepare: async () => {
+              scratch = new _ParleAgentClient({
+                cwd: this.cwd,
+                env: this.selectedEnvironment(profile),
+                fetch: this.fetchImpl,
+                now: this.now,
+                sleep: this.sleepImpl,
+                randomUUID: this.randomUUID,
+                setTimer: this.setTimer,
+                clearTimer: this.clearTimer,
+                clientName: this.clientName,
+                clientVersion: this.clientVersion,
+                clientInstanceId: this.clientInstanceId,
+                integrationName: this.integrationName,
+                integrationVersion: this.integrationVersion
+              });
+              await scratch.bootstrap(signal, false);
+              return scratch;
+            },
+            commit: (prepared) => {
+              this.assertLifecycleActive(epoch);
+              this.assertSessionCommitAllowed(previousRuntime, prepared.runtime, "profile_switch");
+              this.stopUnreadPolling();
+              this.stopRolloverTimer();
+              prepared.stopUnreadPolling();
+              prepared.stopRolloverTimer();
+              const unusedPreviousWake = this.prefetchedWake;
+              this.prefetchedWake = void 0;
+              void this.cancelCandidateWake(unusedPreviousWake);
+              this.cfg = prepared.cfg;
+              this.activeProfile = profile;
+              this.lifecycleEpoch += 1;
+              this.runtime = { ...prepared.runtime, sessionRevision: previousRuntime.sessionRevision + 1 };
+              this.bootstrapGeneration += 1;
+              this.rebootstrapEpisode = null;
+              this.consecutiveBootstrapFailures = 0;
+              this.clearAutomaticTerminalLatch();
+              this.clearRolloverStormProtection();
+              this.publishRuntimeState();
+              this.publishSessionRevision("profile_switch");
+              this.scheduleUnreadPoll();
+              this.scheduleRollover();
+              committed = true;
+            },
+            retireOldSession: async () => {
+              if (!previousRuntime.agentSessionId || !previousRuntime.sessionHandle)
+                return;
+              const prior = new _ParleAgentClient({
+                cwd: this.cwd,
+                env: this.env,
+                fetch: this.fetchImpl,
+                now: this.now,
+                sleep: this.sleepImpl,
+                randomUUID: this.randomUUID,
+                clientName: this.clientName,
+                clientVersion: this.clientVersion,
+                clientInstanceId: this.clientInstanceId,
+                integrationName: this.integrationName,
+                integrationVersion: this.integrationVersion
+              });
+              prior.cfg = previousCfg;
+              prior.runtime = previousRuntime;
+              await prior.endSession(signal);
+            }
           });
-          try {
-            await prepared.bootstrap(signal, false);
-          } catch (error51) {
-            await prepared.endSession().catch(() => void 0);
-            throw error51;
-          }
-          return prepared;
-        },
-        commit: (prepared) => {
-          this.stopUnreadPolling();
-          this.cfg = prepared.cfg;
-          this.activeProfile = profile;
-          this.runtime = { ...prepared.runtime };
-          this.bootstrapGeneration += 1;
-          this.rebootstrapEpisode = null;
-          this.consecutiveBootstrapFailures = 0;
-          this.clearAutomaticTerminalLatch();
-          this.publishRuntimeState();
-          this.scheduleUnreadPoll();
-        },
-        retireOldSession: async () => {
-          if (!previousRuntime.agentSessionId || !previousRuntime.sessionHandle)
-            return;
-          const prior = new _ParleAgentClient({
-            cwd: this.cwd,
-            env: this.env,
-            fetch: this.fetchImpl,
-            now: this.now,
-            sleep: this.sleepImpl,
-            randomUUID: this.randomUUID,
-            clientName: this.clientName,
-            clientVersion: this.clientVersion,
-            clientInstanceId: this.clientInstanceId,
-            integrationName: this.integrationName,
-            integrationVersion: this.integrationVersion
-          });
-          prior.cfg = previousCfg;
-          prior.runtime = previousRuntime;
-          await prior.endSession(signal);
+          return {
+            ...result,
+            previousProfile,
+            roomHandle: this.runtime.roomHandle,
+            sessionAddress: this.runtime.sessionAddress,
+            agentSessionId: this.runtime.agentSessionId,
+            participantId: this.runtime.participantId,
+            expiresAt: this.runtime.expiresAt,
+            cursor: this.runtime.cursor,
+            watcherRestartRequired: result.switched
+          };
+        } finally {
+          if (scratch && !committed)
+            await scratch.endSession().catch(() => void 0);
         }
       });
-      return {
-        ...result,
-        previousProfile,
-        roomHandle: this.runtime.roomHandle,
-        sessionAddress: this.runtime.sessionAddress,
-        agentSessionId: this.runtime.agentSessionId,
-        participantId: this.runtime.participantId,
-        expiresAt: this.runtime.expiresAt,
-        cursor: this.runtime.cursor,
-        watcherRestartRequired: result.switched
-      };
     } finally {
       this.profileSwitchInFlight = false;
     }
@@ -33809,6 +34110,107 @@ var ParleAgentClient = class _ParleAgentClient {
   sessionExpired() {
     const expiry = this.runtime.expiresAt ? new Date(this.runtime.expiresAt) : null;
     return expiry !== null && !Number.isNaN(expiry.getTime()) && expiry <= this.now();
+  }
+  sessionStillLive() {
+    const expiry = Date.parse(this.runtime.expiresAt || "");
+    return Number.isFinite(expiry) && expiry > this.now().getTime();
+  }
+  stopRolloverTimer() {
+    if (this.rolloverTimer)
+      this.clearTimer(this.rolloverTimer);
+    this.rolloverTimer = null;
+  }
+  scheduleRollover(delayOverrideMs, cooldown = false) {
+    this.stopRolloverTimer();
+    if (this.ended || !this.runtime.bootstrapped || this.runtime.rolloverLatched && !cooldown)
+      return;
+    if (cooldown && !this.sessionStillLive())
+      return;
+    const rolloverAt = sessionRolloverAtMs(this.runtime);
+    if (rolloverAt === void 0 && delayOverrideMs === void 0)
+      return;
+    const delay2 = delayOverrideMs ?? Math.max(0, rolloverAt - this.now().getTime());
+    this.rolloverTimer = this.setTimer(() => {
+      this.rolloverTimer = null;
+      if (this.ended)
+        return;
+      if (cooldown) {
+        if (!this.sessionStillLive())
+          return;
+        this.runtime.rolloverLatched = false;
+      }
+      if (delayOverrideMs === void 0 && rolloverAt > this.now().getTime()) {
+        this.scheduleRollover();
+        return;
+      }
+      void this.performProactiveRollover().catch(() => void 0);
+    }, Math.min(delay2, MAX_TIMER_DELAY_MS));
+    this.rolloverTimer.unref?.();
+  }
+  recordRolloverFailure(error51, forceCooldown = false) {
+    const failures = (this.runtime.rolloverFailures || 0) + 1;
+    const cooldown = forceCooldown || failures >= ROLLOVER_MAX_FAILURES;
+    this.runtime.rolloverFailures = failures;
+    this.runtime.rolloverLatched = cooldown;
+    this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+    this.publishRuntimeState();
+    if (this.sessionStillLive()) {
+      this.scheduleRollover(cooldown ? ROLLOVER_COOLDOWN_MS : ROLLOVER_RETRY_MS * failures, cooldown);
+    }
+  }
+  async performProactiveRollover(signal) {
+    if (this.rolloverInFlight)
+      return this.rolloverInFlight;
+    const run = this.withLifecycleExclusion(async () => {
+      this.assertLifecycleActive();
+      return this.doProactiveRolloverLocked(signal);
+    });
+    this.rolloverInFlight = run;
+    try {
+      return await run;
+    } finally {
+      this.rolloverInFlight = null;
+    }
+  }
+  async doProactiveRolloverLocked(signal) {
+    this.stopRolloverTimer();
+    if (!this.runtime.bootstrapped || !this.runtime.sessionHandle)
+      throw new ParleApiError("Parle rollover requires a live current session", { code: "session_unavailable", action: "rebootstrap", scope: "agent_session" });
+    if (this.runtime.rolloverLatched)
+      throw new ParleApiError("Parle proactive rollover is cooling down after a bounded failure storm", { code: "rollover_cooling_down", action: "backoff", scope: "agent_session", retryable: true, retryAfterMs: ROLLOVER_COOLDOWN_MS });
+    const epoch = this.lifecycleEpoch;
+    const old = { ...this.runtime };
+    let prepared;
+    try {
+      prepared = await this.prepareCandidate(old.sessionAlias || this.cfg.sessionAlias?.value, signal, true, true);
+    } catch (error51) {
+      this.recordRolloverFailure(error51);
+      throw error51;
+    }
+    try {
+      this.assertLifecycleActive(epoch);
+      this.assertSessionCommitAllowed(old, prepared.state, "rollover");
+    } catch (error51) {
+      await this.cancelCandidateWake(prepared.wake);
+      if (!prepared.state.sessionAlias)
+        await this.retireSession(prepared.state).catch(() => void 0);
+      this.recordRolloverFailure(error51, true);
+      throw error51;
+    }
+    const unusedPreviousWake = this.commitCandidate(prepared, epoch);
+    await this.completeCandidateHandoff(old, prepared.state, "rollover", signal, unusedPreviousWake, true);
+    return { ...this.runtime };
+  }
+  async retireSession(state, signal) {
+    if (!state.agentSessionId || !state.sessionHandle)
+      return;
+    await this.requestJson(`/v/agent/sessions/${encodeURIComponent(state.agentSessionId)}/end`, {
+      method: "POST",
+      sessionCredential: state.sessionHandle,
+      signal,
+      timeoutMs: 2e3,
+      retry: false
+    });
   }
   resetRebootstrapEpisodeIfHealthy() {
     const episode = this.rebootstrapEpisode;
@@ -33946,26 +34348,39 @@ var ParleAgentClient = class _ParleAgentClient {
   }
   async endSession(signal) {
     this.stopUnreadPolling();
-    const { agentSessionId, sessionHandle } = this.runtime;
-    try {
-      if (agentSessionId && sessionHandle) {
-        await this.requestJson(`/v/agent/sessions/${encodeURIComponent(agentSessionId)}/end`, { method: "POST", session: true, signal, timeoutMs: 2e3 });
+    this.stopRolloverTimer();
+    return this.withLifecycleExclusion(async () => {
+      this.stopUnreadPolling();
+      this.stopRolloverTimer();
+      this.ended = true;
+      this.lifecycleEpoch += 1;
+      const { agentSessionId, sessionHandle } = this.runtime;
+      const unusedWake = this.prefetchedWake;
+      this.prefetchedWake = void 0;
+      await this.cancelCandidateWake(unusedWake);
+      try {
+        if (agentSessionId && sessionHandle) {
+          await this.requestJson(`/v/agent/sessions/${encodeURIComponent(agentSessionId)}/end`, { method: "POST", sessionCredential: sessionHandle, signal, timeoutMs: 2e3, retry: false });
+        }
+      } finally {
+        this.runtime = {
+          bootstrapped: false,
+          bootstrapState: "unstarted",
+          sessionHandle: "",
+          sessionAddress: null,
+          sessionGeneration: 0,
+          sessionRevision: this.runtime.sessionRevision,
+          createdAt: "",
+          agentSessionId: "",
+          expiresAt: "",
+          participantId: "",
+          roomId: "",
+          roomHandle: void 0,
+          cursor: 0
+        };
+        this.discardRuntimeFile();
       }
-    } finally {
-      this.runtime = {
-        bootstrapped: false,
-        bootstrapState: "unstarted",
-        sessionHandle: "",
-        sessionAddress: null,
-        agentSessionId: "",
-        expiresAt: "",
-        participantId: "",
-        roomId: "",
-        roomHandle: void 0,
-        cursor: 0
-      };
-      this.discardRuntimeFile();
-    }
+    });
   }
   // @parle-interpretation parlehq/parle#434
   // Deliberately factual until the core session lifecycle and delivery baseline
@@ -33991,6 +34406,8 @@ var ParleAgentClient = class _ParleAgentClient {
     const reused = this.runtime.bootstrapped && Boolean(this.runtime.sessionHandle) && !this.sessionExpired();
     if (!reused)
       await this.bootstrap(signal);
+    else
+      this.clearRolloverStormProtection(true);
     return this.connectionSummary(reused);
   }
   sessionEstablishedBlock() {
@@ -34007,38 +34424,40 @@ var ParleAgentClient = class _ParleAgentClient {
     this.resetRebootstrapEpisodeIfHealthy();
     await this.ensureBootstrapped(signal);
     try {
-      return await fn();
+      const result = await fn();
+      this.clearRolloverStormProtection(true);
+      return result;
     } catch (error51) {
       if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap") {
         this.recordTerminalCause(error51);
         throw error51;
       }
       const failedSessionHandle = this.runtime.sessionHandle || "<missing-session>";
-      const existing = this.rebootstrapEpisode;
-      if (existing?.failedSessionHandle === failedSessionHandle && (existing.attempted || existing.terminal)) {
-        if (this.bootstrapInFlight && !existing.terminal) {
-          await this.bootstrapInFlight;
-          return fn();
+      await this.withLifecycleExclusion(async () => {
+        this.assertLifecycleActive();
+        if (this.runtime.bootstrapped && this.runtime.sessionHandle && this.runtime.sessionHandle !== failedSessionHandle)
+          return;
+        const existing = this.rebootstrapEpisode;
+        if (existing?.failedSessionHandle === failedSessionHandle && (existing.attempted || existing.terminal))
+          throw error51;
+        this.rebootstrapEpisode = { failedSessionHandle, attempted: true };
+        this.runtime.bootstrapState = "starting";
+        this.publishRuntimeState();
+        try {
+          await this.doBootstrapLocked(signal, true);
+          this.rebootstrapEpisode = { failedSessionHandle, attempted: true, healthySinceMs: this.now().getTime() };
+        } catch (bootstrapError) {
+          if (bootstrapError instanceof ParleApiError && ["fix_client", "reauthorize", "stop"].includes(bootstrapError.action || "")) {
+            this.rebootstrapEpisode = { failedSessionHandle, attempted: true, terminal: true };
+            this.runtime.lastBootstrapError = terminalStatusFor(bootstrapError);
+            this.publishRuntimeState();
+          }
+          throw bootstrapError;
         }
-        throw error51;
-      }
-      this.rebootstrapEpisode = { failedSessionHandle, attempted: true };
-      this.runtime.bootstrapped = false;
-      this.runtime.sessionHandle = "";
-      this.runtime.bootstrapState = "starting";
-      this.publishRuntimeState();
-      try {
-        await this.bootstrap(signal, true);
-        this.rebootstrapEpisode = { failedSessionHandle, attempted: true, healthySinceMs: this.now().getTime() };
-      } catch (bootstrapError) {
-        if (bootstrapError instanceof ParleApiError && ["fix_client", "reauthorize", "stop"].includes(bootstrapError.action || "")) {
-          this.rebootstrapEpisode = { failedSessionHandle, attempted: true, terminal: true };
-          this.runtime.lastBootstrapError = terminalStatusFor(bootstrapError);
-          this.publishRuntimeState();
-        }
-        throw bootstrapError;
-      }
-      return fn();
+      });
+      const result = await fn();
+      this.clearRolloverStormProtection(true);
+      return result;
     }
   }
   async openWakeStream(signal) {
@@ -34051,42 +34470,72 @@ var ParleAgentClient = class _ParleAgentClient {
         scope: cause?.scope
       });
     }
-    return this.withRebootstrap(async () => {
-      this.assertConfigured();
-      const url2 = wakeUrl(this.cfg);
-      const headers = {
-        Accept: "text/event-stream",
-        "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
-        "Parle-Client-Name": this.clientName,
-        ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
-        "Parle-Client-Instance": this.clientInstanceId,
-        ...this.integrationName ? { "Parle-Integration-Name": this.integrationName } : {},
-        ...this.integrationVersion ? { "Parle-Integration-Version": this.integrationVersion } : {},
-        Authorization: `Bearer ${this.cfg.agentToken.value}`,
-        "Parle-Agent-Session": this.runtime.sessionHandle
-      };
-      let response;
-      try {
-        response = await this.fetchImpl(url2, { method: "GET", headers, signal });
-      } catch (error51) {
-        if (error51?.name === "AbortError" || signal?.aborted)
-          throw error51;
-        throw new ParleApiError("Parle wake stream could not be opened", { code: "network_error", action: "retry_with_backoff", scope: "server", retryable: true });
-      }
-      this.runtime.lastHttpStatus = response.status;
-      if (response.ok)
-        return response;
-      const rawText = await response.text().catch(() => "");
-      const text = redactString(rawText);
-      const json2 = parseJsonMaybe(text);
-      const envelope = parseErrorEnvelope(json2);
-      const { code, action, scope, retryAfterMs, retryable } = envelope;
-      const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json2 });
-    }, signal);
+    return this.withRebootstrap(() => this.openWakeStreamForCredential(this.runtime.sessionHandle, signal), signal);
+  }
+  consumePrefetchedWake(sessionCredential, signal) {
+    const slot = this.prefetchedWake;
+    if (!slot)
+      return void 0;
+    if (slot.sessionCredential !== sessionCredential) {
+      this.prefetchedWake = void 0;
+      void this.cancelCandidateWake(slot);
+      return void 0;
+    }
+    this.prefetchedWake = void 0;
+    if (signal?.aborted)
+      slot.controller.abort();
+    else
+      signal?.addEventListener("abort", () => slot.controller.abort(), { once: true });
+    return slot.response;
+  }
+  async openWakeStreamForCredential(sessionCredential, signal, allowPrefetch = true) {
+    this.assertConfigured();
+    if (allowPrefetch) {
+      const prefetched = this.consumePrefetchedWake(sessionCredential, signal);
+      if (prefetched)
+        return prefetched;
+    }
+    const headers = {
+      Accept: "text/event-stream",
+      "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+      "Parle-Client-Name": this.clientName,
+      ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
+      "Parle-Client-Instance": this.clientInstanceId,
+      ...this.integrationName ? { "Parle-Integration-Name": this.integrationName } : {},
+      ...this.integrationVersion ? { "Parle-Integration-Version": this.integrationVersion } : {},
+      Authorization: `Bearer ${this.cfg.agentToken.value}`,
+      "Parle-Agent-Session": sessionCredential
+    };
+    let response;
+    try {
+      response = await this.fetchImpl(wakeUrl(this.cfg), { method: "GET", headers, signal });
+    } catch (error51) {
+      if (error51?.name === "AbortError" || signal?.aborted)
+        throw error51;
+      throw new ParleApiError("Parle wake stream could not be opened", { code: "network_error", action: "retry_with_backoff", scope: "server", retryable: true });
+    }
+    this.runtime.lastHttpStatus = response.status;
+    if (response.ok)
+      return response;
+    const rawText = await response.text().catch(() => "");
+    const text = redactString(rawText);
+    const json2 = parseJsonMaybe(text);
+    const envelope = parseErrorEnvelope(json2);
+    const { code, action, scope, retryAfterMs, retryable } = envelope;
+    const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
+    throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json2 });
+  }
+  recordResponsiveCursorScope(delivery) {
+    const scope = responsiveCursorScope(delivery);
+    if (scope)
+      this.runtime.responsiveCursorScope = scope;
   }
   async drainResponsiveDelivery(signal) {
-    return this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false }), signal);
+    return this.withRebootstrap(async () => {
+      const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
+      this.recordResponsiveCursorScope(delivery);
+      return delivery;
+    }, signal);
   }
   async ackResponsiveDelivery(message, signal) {
     if (!responsiveDeliveryKey(message))
@@ -34167,7 +34616,7 @@ var ParleAgentClient = class _ParleAgentClient {
 };
 
 // src/hook-delivery-bridge.ts
-import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
 import {
   accessSync,
   chmodSync as chmodSync3,
@@ -34208,7 +34657,7 @@ function delay(ms, signal) {
   });
 }
 function hookBridgeStateDir(scope) {
-  const key = createHash2("sha256").update(scope).digest("hex").slice(0, 16);
+  const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
   return join6(homedir2(), ".local", "state", "parle", "hook-bridge", key);
 }
 function hookBridgeSocketPath(scope, pid = process.pid) {
@@ -34248,6 +34697,10 @@ var HookDeliveryBridge = class {
   baselineSkipped = 0;
   lastError;
   hostSessionId;
+  currentWakeAbort;
+  unsubscribeSessionRevision;
+  unsubscribeCommitGuard;
+  drainInFlight;
   status() {
     return {
       running: Boolean(this.server?.listening && !this.abortController.signal.aborted),
@@ -34276,6 +34729,11 @@ var HookDeliveryBridge = class {
   }
   async stop() {
     this.abortController.abort();
+    this.currentWakeAbort?.abort();
+    this.unsubscribeSessionRevision?.();
+    this.unsubscribeSessionRevision = void 0;
+    this.unsubscribeCommitGuard?.();
+    this.unsubscribeCommitGuard = void 0;
     const server = this.server;
     this.server = void 0;
     if (server) await new Promise((resolve) => server.close(() => resolve()));
@@ -34286,7 +34744,14 @@ var HookDeliveryBridge = class {
   async startBridge() {
     try {
       this.lastError = void 0;
+      this.unsubscribeCommitGuard = this.client.onBeforeSessionCommit?.((plan) => this.guardSessionCommit(plan));
       await this.client.ensureBootstrapped(this.abortController.signal);
+      this.unsubscribeSessionRevision = this.client.onSessionRevision?.(() => {
+        this.currentWakeAbort?.abort();
+        void this.drain().catch((error51) => {
+          if (!this.abortController.signal.aborted) this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        });
+      });
       await this.baseline();
       await this.listen();
       this.loop = this.watchLoop();
@@ -34303,8 +34768,13 @@ var HookDeliveryBridge = class {
     let skipped = 0;
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
       const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      if (delivery.messages.length === 0) break;
-      for (const message of delivery.messages) {
+      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+      if (messages.length === 0) break;
+      if (delivery?.delivery?.cursor_scope === "alias") {
+        if (this.enqueue(messages, delivery?.delivery?.cursor_scope) === 0) break;
+        continue;
+      }
+      for (const message of messages) {
         skipped += 1;
         if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
         await this.client.ackResponsiveDelivery(message, this.abortController.signal);
@@ -34422,8 +34892,7 @@ var HookDeliveryBridge = class {
     throw new Error("unknown Parle hook bridge action");
   }
   take() {
-    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = void 0;
-    if (this.lease) return { ok: true, busy: true, messages: [] };
+    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
     const messages = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
@@ -34435,7 +34904,7 @@ var HookDeliveryBridge = class {
     return {
       ok: true,
       leaseId: this.lease.id,
-      messages: messages.map(({ key: _key, ...message }) => message)
+      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message)
     };
   }
   async commit(leaseId) {
@@ -34443,6 +34912,7 @@ var HookDeliveryBridge = class {
     if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Parle hook bridge delivery lease is missing or expired");
     let committed = 0;
     for (const message of lease.messages) {
+      this.assertMessageCurrent(message);
       await this.client.ackResponsiveDelivery(message, this.abortController.signal);
       const head = this.pending[0];
       if (!head || head.key !== message.key) throw new Error("Parle hook bridge pending queue changed during commit");
@@ -34457,14 +34927,17 @@ var HookDeliveryBridge = class {
     const signal = this.abortController.signal;
     while (!signal.aborted) {
       try {
+        const wakeAbort = new AbortController();
+        this.currentWakeAbort = wakeAbort;
+        const wakeSignal = AbortSignal.any([signal, wakeAbort.signal]);
         await this.client.withRebootstrap(async () => {
-          const response = await this.client.openWakeStream(signal);
+          const response = await this.client.openWakeStream(wakeSignal);
           const reader = response.body?.getReader();
           if (!reader) throw new Error("Parle wake stream response body is not readable");
           this.lastError = void 0;
           const decoder = new TextDecoder();
           let buffer = "";
-          while (!signal.aborted) {
+          while (!wakeSignal.aborted) {
             const { value, done } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
@@ -34472,10 +34945,14 @@ var HookDeliveryBridge = class {
             buffer = parsed.rest;
             for (const event of parsed.events) if (event.event === "wake") await this.drain();
           }
-        }, signal);
+        }, wakeSignal);
         this.lastError = void 0;
+        this.currentWakeAbort = void 0;
       } catch (error51) {
+        const revisionRestart = Boolean(this.currentWakeAbort?.signal.aborted && !signal.aborted);
+        this.currentWakeAbort = void 0;
         if (signal.aborted) break;
+        if (revisionRestart) continue;
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
         if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || "")) throw error51;
         const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
@@ -34483,20 +34960,72 @@ var HookDeliveryBridge = class {
       }
     }
   }
+  liveLease() {
+    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = void 0;
+    return this.lease;
+  }
+  pendingWork() {
+    const lease = this.liveLease();
+    return lease ? [...this.pending, ...lease.messages] : [...this.pending];
+  }
+  guardSessionCommit(plan) {
+    const work = this.pendingWork();
+    if (work.length === 0) return;
+    if (plan.reason === "profile_switch") {
+      throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
+    }
+    const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && item.roomId === plan.previous.roomId));
+    if (!aliasTransfers) {
+      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
+    }
+  }
+  assertMessageCurrent(message) {
+    const runtime = this.client.runtime || {};
+    if (message.roomId !== String(runtime.roomId || "")) throw new Error("Parle hook delivery belongs to a prior room binding");
+    if (message.cursorScope === "alias") {
+      if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
+      return;
+    }
+    if (message.sessionRevision !== Number(runtime.sessionRevision || 0) || message.agentSessionId !== String(runtime.agentSessionId || "")) {
+      throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
+    }
+  }
+  enqueue(messages, cursorScope) {
+    const runtime = this.client.runtime || {};
+    let queued = 0;
+    for (const message of messages) {
+      const key = deliveryKey(message);
+      if (this.queuedKeys.has(key)) continue;
+      if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
+      this.pending.push({
+        ...message,
+        key,
+        sessionRevision: Number(runtime.sessionRevision || 0),
+        cursorScope,
+        roomId: String(runtime.roomId || ""),
+        sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0,
+        agentSessionId: String(runtime.agentSessionId || "")
+      });
+      this.queuedKeys.add(key);
+      queued += 1;
+    }
+    return queued;
+  }
   async drain() {
+    if (this.drainInFlight) return this.drainInFlight;
+    const run = this.doDrain();
+    this.drainInFlight = run;
+    try {
+      await run;
+    } finally {
+      this.drainInFlight = void 0;
+    }
+  }
+  async doDrain() {
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
       const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
       if (delivery.messages.length === 0) return;
-      let queued = 0;
-      for (const message of delivery.messages) {
-        const key = deliveryKey(message);
-        if (this.queuedKeys.has(key)) continue;
-        if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
-        this.pending.push({ ...message, key });
-        this.queuedKeys.add(key);
-        queued += 1;
-      }
-      if (queued === 0) return;
+      if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope) === 0) return;
     }
     throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }
@@ -34504,7 +35033,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.2.6";
+var MCP_CLIENT_VERSION = "0.3.0";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -34862,6 +35391,9 @@ var WatcherUsageError = class extends Error {
     this.name = "WatcherUsageError";
   }
 };
+function watcherExitRequiresInternalRestart(spawnRevision, desiredRevision, requestedRevision) {
+  return requestedRevision !== void 0 && requestedRevision > spawnRevision && requestedRevision <= desiredRevision;
+}
 function parseWatcherArgs(args) {
   let profile;
   let positional = args;
@@ -34881,32 +35413,91 @@ async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env)
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
   const watcherClient = createMcpAgentClient({ cwd: dirname5(fileURLToPath(metaUrl)), env: childEnv });
+  let child;
+  let childRevision = 0;
+  let desiredRevision = 0;
+  let externalSignal;
+  let forceStop;
+  let internalRestart;
+  const signalWorker = (target, signal) => {
+    if (process.platform !== "win32" && target.pid) {
+      try {
+        process.kill(-target.pid, signal);
+        return;
+      } catch {
+      }
+    }
+    target.kill(signal);
+  };
+  const stopWorker = (signal) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return false;
+    const stoppingChild = child;
+    signalWorker(stoppingChild, signal);
+    if (!forceStop) {
+      forceStop = setTimeout(() => {
+        forceStop = void 0;
+        signalWorker(stoppingChild, "SIGKILL");
+      }, 1e3);
+      forceStop.unref();
+    }
+    return true;
+  };
+  const unsubscribeRevision = watcherClient.onSessionRevision((event) => {
+    if (event.revision <= desiredRevision) return;
+    desiredRevision = event.revision;
+    if (!externalSignal && child && event.revision > childRevision && stopWorker("SIGTERM")) {
+      internalRestart = { child, revision: event.revision };
+    }
+  });
+  const forward = (signal) => {
+    if (externalSignal) return;
+    externalSignal = signal;
+    stopWorker(signal);
+  };
   try {
     await watcherClient.bootstrap();
-    const watcherAuth = watcherClient.watcherSessionAuth();
-    childEnv.PARLE_WATCH_AGENT_SESSION = watcherAuth.sessionCredential;
     childEnv.PARLE_WATCH_REQUEST_HELPER = fileURLToPath(metaUrl);
     childEnv.PARLE_WATCH_PARENT_PID = String(process.pid);
-    const child = spawn("sh", [worker, ...workerArgs], { cwd, env: childEnv, stdio: "inherit" });
-    let forceStop;
-    const forward = (signal) => {
-      child.kill(signal);
-      forceStop = setTimeout(() => child.kill("SIGKILL"), 1e3);
-      forceStop.unref();
-    };
-    process.once("SIGINT", forward);
-    process.once("SIGTERM", forward);
-    try {
-      return await new Promise((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
+    process.on("SIGINT", forward);
+    process.on("SIGTERM", forward);
+    while (!externalSignal) {
+      const spawnRevision = desiredRevision;
+      const watcherAuth = watcherClient.watcherSessionAuth();
+      const workerEnv = { ...childEnv, PARLE_WATCH_AGENT_SESSION: watcherAuth.sessionCredential };
+      childRevision = spawnRevision;
+      const launchedChild = spawn("sh", [worker, ...workerArgs], {
+        cwd,
+        env: workerEnv,
+        stdio: "inherit",
+        detached: process.platform !== "win32"
       });
-    } finally {
-      if (forceStop) clearTimeout(forceStop);
-      process.removeListener("SIGINT", forward);
-      process.removeListener("SIGTERM", forward);
+      child = launchedChild;
+      let result;
+      try {
+        result = await new Promise((resolve, reject) => {
+          launchedChild.once("error", reject);
+          launchedChild.once("exit", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
+        });
+      } finally {
+        if (forceStop) clearTimeout(forceStop);
+        forceStop = void 0;
+        child = void 0;
+      }
+      const restartWasRequested = internalRestart?.child === launchedChild && watcherExitRequiresInternalRestart(spawnRevision, desiredRevision, internalRestart.revision);
+      if (internalRestart?.child === launchedChild) internalRestart = void 0;
+      if (externalSignal) return result;
+      if (restartWasRequested) {
+        continue;
+      }
+      return result;
     }
+    return 128;
   } finally {
+    unsubscribeRevision();
+    if (forceStop) clearTimeout(forceStop);
+    process.removeListener("SIGINT", forward);
+    process.removeListener("SIGTERM", forward);
+    if (child && child.exitCode === null && child.signalCode === null) signalWorker(child, "SIGKILL");
     await watcherClient.endSession().catch(() => {
     });
   }
@@ -35022,5 +35613,6 @@ export {
   resolveWatcherEnvironment,
   runStdio,
   runWatcher,
+  watcherExitRequiresInternalRestart,
   watcherRequestWire
 };

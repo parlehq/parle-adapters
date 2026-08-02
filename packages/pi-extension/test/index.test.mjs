@@ -47,7 +47,7 @@ function clearParleEnv() {
   }
 }
 
-async function eventually(check, timeoutMs = 1_000) {
+async function eventually(check, timeoutMs = 3_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (check()) return;
@@ -92,7 +92,7 @@ test("status ignores persisted PARLE_VERSION and warns", async () => {
   globalThis.fetch = async () => { throw new Error("offline test"); };
   const harness = installHarness(cwd);
   const status = await harness.call("parle_status");
-  assert.equal(status.details.version.value, "2026-07-07");
+  assert.equal(status.details.version.value, "2026-08-01");
   assert.equal(status.details.version.source, "default");
   assert.equal(status.details.roomId.value, "room-1");
   assert.match(status.details.warnings.join("\n"), /Ignoring PARLE_VERSION from project \.env/);
@@ -349,14 +349,14 @@ test("watcher stops after one terminal invalid-token heartbeat", async () => {
 
 test("watcher honors 429 Retry-After before a terminal 401 stops it", async () => {
   const probe = installWatcherFailureHarness((attempt) => attempt === 1
-    ? new Response(JSON.stringify({ error: { code: "rate_limited", message: "back off", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 30 } }), { status: 429 })
+    ? new Response(JSON.stringify({ error: { code: "rate_limited", message: "back off", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 100 } }), { status: 429 })
     : new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 }));
 
   await probe.harness.call("parle_status");
   await eventually(() => probe.heartbeatAt.length === 2 && __testing.runtimeState().watcherState === "auth_expired");
 
   assert.equal(probe.heartbeatAt.length, 2);
-  assert.ok(probe.heartbeatAt[1] - probe.heartbeatAt[0] >= 25);
+  assert.ok(probe.heartbeatAt[1] - probe.heartbeatAt[0] >= 90);
   assert.equal(__testing.runtimeState().watcherState, "auth_expired");
   assert.equal(__testing.runtimeState().nextRetryAt, undefined, "the admitted terminal fault replaces the retry gate");
   assert.equal(__testing.runtimeState().terminalCause.action, "reauthorize");
@@ -464,10 +464,16 @@ test("only the named explicit recovery paths establish a healthy parked-session 
     let sessionCreates = 0;
     globalThis.fetch = async (url, init = {}) => {
       const u = String(url);
-      if (u.endsWith("/v/agent/sessions")) {
+      if (u.endsWith("/v/agent/sessions") && (init.method || "GET") === "POST") {
         sessionCreates += 1;
-        const body = init.body ? JSON.parse(init.body) : {};
-        return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "later", address: body.alias ? `@p.a.${body.alias}` : `@p.a.session-${sessionCreates}`, alias: body.alias }), { status: 201 });
+        assert.deepEqual(JSON.parse(init.body), {});
+        return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "later", address: `@p.a.session-${sessionCreates}`, generation: 0 }), { status: 201 });
+      }
+      if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ sessions: [], next: null }), { status: 200 });
+      if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
+      if (u.endsWith("/claim-alias")) {
+        const body = JSON.parse(init.body);
+        return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias: body.alias, generation: 1, address: `@p.a.${body.alias}`, expires_at: "later" }), { status: 200 });
       }
       if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
       if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
@@ -629,17 +635,23 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.equal(snapshot.roomId, "room-1");
   assert.equal(snapshot.roomHandle, "galexc-intercom");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.1.40" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.2.0" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
 test("footer prefers alias route when session uses an alias", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_SESSION_ALIAS=parle-landing\nPARLE_WATCH_ENABLED=0\n");
-  globalThis.fetch = async (url, init) => {
+  globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) {
-      assert.equal(JSON.parse(String(init.body)).alias, "parle-landing");
-      return new Response(JSON.stringify({ agent_session_id: "as-alias", session_credential: "parle_ses_alias-session", session_handle: "raw-session", alias: "parle-landing", generation: 2, expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
+    if (u.endsWith("/v/agent/sessions") && (init.method || "GET") === "POST") {
+      assert.deepEqual(JSON.parse(String(init.body)), {});
+      return new Response(JSON.stringify({ agent_session_id: "as-alias", session_credential: "parle_ses_alias-session", session_handle: "raw-session", generation: 0, expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-session" }), { status: 201 });
+    }
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ sessions: [{ alias: "parle-landing", generation: 1 }], next: null }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
+    if (u.endsWith("/claim-alias")) {
+      assert.deepEqual(JSON.parse(String(init.body)), { alias: "parle-landing", expected_generation: 1 });
+      return new Response(JSON.stringify({ agent_session_id: "as-alias", alias: "parle-landing", generation: 2, expires_at: "2026-07-04T00:00:00Z", address: "@p.a.parle-landing" }), { status: 200 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias", room_id: "room-1", room_handle: "actual-room", agent_session_id: "as-alias" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
@@ -660,13 +672,18 @@ test("parle_session_alias prepares the replacement before retiring the active se
   const order = [];
   globalThis.fetch = async (url, init) => {
     const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) {
+    if (u.endsWith("/v/agent/sessions") && (init.method || "GET") === "POST") {
       sessionCreates += 1;
-      const body = init.body ? JSON.parse(String(init.body)) : {};
-      const alias = body.alias;
-      order.push(`create:${alias || "unaliased"}`);
-      if (alias) __testing.patchRuntime({ cursor: 14 });
-      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `raw-${sessionCreates}`, alias, generation: alias ? 3 : 0, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
+      assert.deepEqual(JSON.parse(String(init.body)), {});
+      order.push("create:unaliased");
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `raw-${sessionCreates}`, generation: 0, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
+    }
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ sessions: [{ alias: "parle-landing", generation: 2 }], next: null }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
+    if (u.endsWith("/claim-alias")) {
+      order.push("claim:parle-landing");
+      assert.deepEqual(JSON.parse(String(init.body)), { alias: "parle-landing", expected_generation: 2 });
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias: "parle-landing", generation: 3, expires_at: "2026-07-04T00:00:00Z", address: "@p.a.parle-landing" }), { status: 200 });
     }
     if (u.endsWith("/end")) {
       order.push("retire:as-1");
@@ -678,14 +695,211 @@ test("parle_session_alias prepares the replacement before retiring the active se
   };
   const harness = installHarness(cwd);
   await harness.call("parle_status");
+  __testing.patchRuntime({ cursor: 14 });
   const result = await harness.call("parle_session_alias", { alias: "parle-landing" });
-  assert.deepEqual(order, ["create:unaliased", "create:parle-landing", "retire:as-1"]);
+  assert.deepEqual(order, ["create:unaliased", "create:unaliased", "claim:parle-landing", "retire:as-1"]);
   assert.equal(result.details.sessionAddress, "@p.a.parle-landing");
   assert.equal(result.details.alias, "parle-landing");
   assert.equal(result.details.generation, 3);
   assert.equal(__testing.runtimeState().cursor, 14);
   assert.equal(__testing.resolveConfig(cwd).sessionAlias.value, "");
   assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
+});
+
+test("Pi proactively swaps a configured alias and immediately drains alias-scoped delivery", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_SESSION_ALIAS=main\nPARLE_WATCH_ENABLED=0\n");
+  let creates = 0;
+  let generation = 4;
+  let wakeReadiness = 0;
+  let drains = 0;
+  let participantEntries = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions") && (init.method || "GET") === "POST") {
+      creates += 1;
+      assert.deepEqual(JSON.parse(init.body), {});
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, session_credential: `parle_ses_${creates}`, generation: 0, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z", address: `@p.a.raw-${creates}` }), { status: 201 });
+    }
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ sessions: [{ alias: "main", generation }], next: null }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) { wakeReadiness += 1; return new Response(": ready\n\n"); }
+    if (u.endsWith("/claim-alias")) {
+      const body = JSON.parse(init.body);
+      assert.equal(body.expected_generation, generation);
+      generation += 1;
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, alias: "main", generation, address: "@p.a.main", created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 200 });
+    }
+    if (u.endsWith("/participants")) { participantEntries += 1; return new Response(JSON.stringify({ participant_id: `p-${creates}`, room_handle: "room" }), { status: 201 }); }
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 8, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) { drains += 1; return new Response(JSON.stringify({ delivery: { cursor_scope: "alias", last_acked_seq: 3 }, messages: [] }), { status: 200 }); }
+    if (u.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${u}`);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  const oldId = __testing.runtimeState().agentSessionId;
+  await __testing.performSessionRollover();
+  const state = __testing.runtimeState();
+  assert.notEqual(state.agentSessionId, oldId);
+  assert.equal(state.sessionGeneration, 6);
+  assert.equal(state.responsiveCursorScope, "alias");
+  assert.equal(state.responsiveContinuity, "alias");
+  assert.equal(wakeReadiness, 2);
+  const handedOffWake = await __testing.fetchWakeStream(__testing.resolveConfig(cwd), new AbortController().signal);
+  assert.match(await handedOffWake.text(), /ready/);
+  assert.equal(wakeReadiness, 2, "the successor watcher consumes the response opened before claim without another stream open");
+  assert.equal(drains, 1);
+  assert.equal(participantEntries, 4, "each alias claim is followed by the documented idempotent room-entry reconciliation");
+  __testing.resetRuntime();
+});
+
+test("Pi recovers a committed alias claim after its response is dropped", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_SESSION_ALIAS=main\nPARLE_WATCH_ENABLED=0\n");
+  let claims = 0;
+  let inventoryReads = 0;
+  let committed;
+  const ended = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const path = new URL(u).pathname;
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      return new Response(JSON.stringify({ agent_session_id: "pi-lost", session_credential: "parle_ses_pi_lost", generation: 0, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
+    }
+    if (path === "/v/agent/sessions") {
+      inventoryReads += 1;
+      const sessions = committed && inventoryReads > 2 ? [committed] : [{ agent_session_id: "prior", alias: "main", generation: 7 }];
+      return new Response(JSON.stringify({ sessions, next: null }));
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p" }), { status: 201 });
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path === "/v/agent/wake") return new Response("event: wake\ndata: {}\n\n");
+    if (path.endsWith("/claim-alias")) {
+      claims += 1;
+      const body = JSON.parse(init.body);
+      committed = { agent_session_id: "pi-lost", alias: "main", generation: body.expected_generation + 1, address: "@p.a.main", created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" };
+      if (claims === 1) throw new TypeError("response dropped after commit");
+      return new Response(JSON.stringify(committed));
+    }
+    if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
+    throw new Error(`unexpected ${u}`);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  assert.equal(__testing.runtimeState().agentSessionId, "pi-lost");
+  assert.equal(__testing.runtimeState().sessionGeneration, 8);
+  assert.equal(claims, 2);
+  assert.deepEqual(ended, [], "the ambiguously committed candidate was not retired");
+  __testing.resetRuntime();
+});
+
+test("Pi defers anonymous rollover while old exact-session injection is pending", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  let creates = 0;
+  const acknowledgements = [];
+  const ended = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") return new Response(JSON.stringify({ agent_session_id: `exact-${++creates}`, session_credential: `parle_ses_exact_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path === "/v/agent/wake") return new Response(": ready\n\n");
+    if (path.endsWith("/responsive-delivery/ack")) { acknowledgements.push(init.headers["Parle-Agent-Session"]); return new Response(JSON.stringify({ acked: true })); }
+    if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
+    throw new Error(`unexpected ${path}`);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  __testing.patchRuntime({ responsiveCursorScope: "session" });
+  const cfg = __testing.resolveConfig(cwd);
+  await __testing.queueResponsiveMessages(harness.ctx, cfg, [{ seq: 11, event_id: "old-exact", content: "pending" }]);
+  const oldId = __testing.runtimeState().agentSessionId;
+  await assert.rejects(__testing.performSessionRollover(), /deferred/);
+  assert.equal(__testing.runtimeState().agentSessionId, oldId);
+  assert.equal(__testing.runtimeState().pendingResponsiveCount, 1);
+  assert.deepEqual(acknowledgements, [], "pending exact work was not acknowledged with the prepared successor credential");
+  assert.deepEqual(ended, ["exact-2"], "the unused anonymous candidate is retired after guard deferral");
+  __testing.resetRuntime();
+});
+
+test("Pi shutdown joins an in-flight rollover and cannot be resurrected afterward", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  let creates = 0;
+  let releaseCandidate;
+  const candidateGate = new Promise((resolve) => { releaseCandidate = resolve; });
+  const ended = [];
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      creates += 1;
+      if (creates === 2) await candidateGate;
+      return new Response(JSON.stringify({ agent_session_id: `shutdown-${creates}`, session_credential: `parle_ses_shutdown_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path === "/v/agent/wake") return new Response(": ready\n\n");
+    if (path.endsWith("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: [] }));
+    if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
+    throw new Error(`unexpected ${path}`);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  const rollover = __testing.performSessionRollover();
+  await new Promise((resolve) => setImmediate(resolve));
+  const shutdown = harness.handlers.session_shutdown({}, harness.ctx);
+  releaseCandidate();
+  const rolloverError = await rollover.catch((error) => error);
+  await shutdown;
+  assert.match(rolloverError.message, /lifecycle has ended/);
+  assert.equal(__testing.runtimeState().bootstrapped, false);
+  assert.equal(__testing.runtimeState().agentSessionId, undefined);
+  assert.deepEqual(ended.sort(), ["shutdown-1", "shutdown-2"], "the fenced candidate and old current session are both retired");
+  await assert.rejects(__testing.performSessionRollover(), /lifecycle has ended/);
+  __testing.resetRuntime();
+});
+
+test("Pi rollover storm protection recovers on an unrefed quiet cooldown without a hot loop", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  let now = Date.parse("2099-01-01T00:10:00Z");
+  let creates = 0;
+  const timers = [];
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      creates += 1;
+      if (creates >= 2 && creates <= 4) throw new TypeError("temporary Pi rollover outage");
+      return new Response(JSON.stringify({ agent_session_id: `pi-cool-${creates}`, session_credential: `parle_ses_pi_cool_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-01T01:00:00Z" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p" }), { status: 201 });
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path === "/v/agent/wake") return new Response(": ready\n\n");
+    if (path.endsWith("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: [] }));
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const harness = installHarness(cwd);
+  __testing.setWatcherTiming({ wallNowMs: () => now });
+  __testing.setRolloverTiming({
+    setTimer(callback, delayMs) {
+      const timer = { callback, delayMs, cleared: false, unrefCalled: false, unref() { this.unrefCalled = true; } };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+  await harness.call("parle_status");
+  for (let attempt = 0; attempt < 3; attempt += 1) await assert.rejects(__testing.performSessionRollover(), /temporary Pi rollover outage/);
+  assert.equal(creates, 4);
+  assert.equal(__testing.runtimeState().rolloverLatched, true);
+  const cooldown = timers.at(-1);
+  assert.equal(cooldown.delayMs, 60_000);
+  assert.equal(cooldown.unrefCalled, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(creates, 4);
+  now += 60_000;
+  cooldown.callback();
+  await eventually(() => __testing.runtimeState().agentSessionId === "pi-cool-5");
+  assert.equal(__testing.runtimeState().rolloverLatched, false);
+  assert.equal(__testing.runtimeState().rolloverFailures, 0);
+  __testing.resetRuntime();
 });
 
 test("failed parle_session_alias preserves the active session and watcher", async () => {
@@ -704,12 +918,13 @@ test("failed parle_session_alias preserves the active session and watcher", asyn
       });
       return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
     }
-    if (u.endsWith("/v/agent/sessions")) {
+    if (u.endsWith("/v/agent/sessions") && (init.method || "GET") === "POST") {
       sessionCreates += 1;
-      const body = init.body ? JSON.parse(String(init.body)) : {};
-      if (body.alias) return new Response(JSON.stringify({ error: { code: "session_alias_reserved", message: "session alias is reserved", action: "stop", retryable: false } }), { status: 409 });
-      return new Response(JSON.stringify({ agent_session_id: "as-active", session_credential: "parle_ses_active", session_handle: "raw-active", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.raw-active" }), { status: 201 });
+      assert.deepEqual(JSON.parse(String(init.body)), {});
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, session_handle: `raw-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
     }
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ sessions: [], next: null }), { status: 200 });
+    if (u.endsWith("/claim-alias")) return new Response(JSON.stringify({ error: { code: "session_alias_reserved", message: "session alias is reserved", action: "stop", retryable: false } }), { status: 409 });
     if (u.endsWith("/end")) {
       endCalls += 1;
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -728,8 +943,8 @@ test("failed parle_session_alias preserves the active session and watcher", asyn
   await assert.rejects(harness.call("parle_session_alias", { alias: "reserved-alias" }), /session alias is reserved/);
   const after = __testing.runtimeState();
   assert.equal(sessionCreates, 2);
-  assert.equal(endCalls, 0);
-  assert.equal(wakeOpens, 1);
+  assert.equal(endCalls, 1, "the failed anonymous candidate is retired without touching the old current session");
+  assert.equal(wakeOpens, 2);
   assert.equal(after.agentSessionId, before.agentSessionId);
   assert.equal(after.sessionHandle, before.sessionHandle);
   assert.equal(after.sessionAddress, before.sessionAddress);
@@ -934,7 +1149,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.1.40");
+    assert.equal(call.headers["Parle-Client-Version"], "0.2.0");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1774,7 +1989,7 @@ test("heartbeat rebootstrap action replaces the session before the watcher can w
     if (u.includes("/heartbeat")) {
       heartbeatCalls += 1;
       assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.1.40");
+      assert.equal(init.headers["Parle-Client-Version"], "0.2.0");
       assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
       if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
       return new Response(null, { status: 204 });
@@ -1884,7 +2099,7 @@ test("mid-run unpinned rebootstrap baselines the new session before retry", asyn
   assert.equal(result.details.surface, "inbound");
   assert.equal(sessionCreates, 2);
   assert.equal(inboxCalls, 2);
-  assert.equal(baselineCalls, 1);
+  assert.equal(baselineCalls, 2, "replacement drains immediately, then the unpinned baseline confirms the empty acknowledgement boundary");
 });
 
 test("parle_send treats direct addressing failures as non-retryable with hint", async () => {
