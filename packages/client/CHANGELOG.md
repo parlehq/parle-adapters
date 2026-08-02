@@ -2,6 +2,7 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Add a deferred delivery outcome so hosts whose effective handling is asynchronous to the drain acknowledge only after they have acted.
 - Split delivery handling from acknowledgement: a failed ack retries only the ack, never the host handler, so a handled row cannot be injected twice.
 - Acknowledge a row once its bounded handler budget is exhausted, classified as an intentional skip, so one permanently failing message cannot wedge a room.
 - Queue one drain rerun per room instead of joining an in-flight drain, so a session replacement never loses its immediate post-replacement pass.

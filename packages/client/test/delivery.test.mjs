@@ -376,3 +376,33 @@ test("a session revision queues a drain instead of joining an in-flight one", as
     h.cleanup();
   }
 });
+
+test("a deferred row is not acknowledged until the host reports effective handling", async () => {
+  // Pi queues a row and injects it only when the assistant is idle, so a
+  // crash between drain and injection must leave the row redeliverable.
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 3, event_id: "queued" }] } });
+  const queued = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async ({ roomId, message }) => { queued.push({ roomId, message }); return "deferred"; },
+    reconnectDelayMs: 5,
+  });
+  try {
+    await h.client.connect();
+    await controller.start();
+    assert.equal(queued.length, 1);
+    assert.deepEqual(h.acks, [], "a deferred row is never acknowledged by the drain");
+    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).deferred, 1);
+    // A later drain must not re-offer the row to the handler.
+    await controller.drainForTest(ALPHA);
+    assert.equal(queued.length, 1, "a deferred row is never re-handled");
+    // The host reports injection; only now is it acknowledged.
+    assert.equal(await controller.completeDeferred(ALPHA, queued[0].message), true);
+    assert.deepEqual(h.acks.map(([, id]) => id), ["queued"]);
+    const status = controller.status().rooms.find((room) => room.roomId === ALPHA);
+    assert.equal(status.delivered, 1);
+    assert.equal(status.deferred, 0);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});

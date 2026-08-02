@@ -52,6 +52,12 @@ before. With several, omission fails closed and lists the configured rooms.
 There is no mutable current room, default room, wildcard send, aggregate inbox,
 or cross-room ordering promise. Ordering is guaranteed within a room only.
 
+A host handler returns `handled`, `intentionally_skipped`, or `deferred`.
+Deferral exists for hosts whose effective handling is asynchronous to the drain
+(Pi queues a row and injects it only when the assistant is idle): the row is
+neither acknowledged nor re-offered to the handler until the host reports
+completion, so a crash before injection leaves it redeliverable.
+
 Wake hints carry a `room_id`. A hint naming an unconfigured room is counted and
 ignored: an untrusted hint must never cause a fetch of a room this process does
 not configure. A hintless wake keeps the unconditional drain.

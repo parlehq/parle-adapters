@@ -7,7 +7,11 @@ import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, typ
 // reconnection, poison bounds, and diagnostics. Hosts supply only a handler
 // and keep their own injection concerns.
 
-export type DeliveryHandlerResult = "handled" | "intentionally_skipped";
+// "deferred" is for hosts whose effective handling is asynchronous to the
+// drain: Pi queues a row and injects it only when the assistant is idle.
+// Acknowledgement still follows effective handling; the host reports when that
+// happened by calling completeDeferred.
+export type DeliveryHandlerResult = "handled" | "intentionally_skipped" | "deferred";
 
 export type DeliveryHandlerInput = {
   roomId: string;
@@ -37,6 +41,7 @@ export type DeliveryRoomStatus = {
   delivered: number;
   skipped: number;
   poisoned: number;
+  deferred: number;
   lastError?: string;
 };
 
@@ -85,6 +90,10 @@ export class ResponsiveDeliveryController {
   private readonly poisonedKeys = new Set<string>();
   private readonly rerunRequested = new Set<string>();
   private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastError?: string }>();
+  // Rows a host accepted for later effective handling. They are never
+  // re-offered to the handler and never acknowledged until the host reports
+  // completion, so a crash before injection leaves the row redeliverable.
+  private readonly deferred = new Map<string, { roomId: string; message: ResponsiveDeliveryMessage }>();
   private readonly drainInFlight = new Map<string, Promise<void>>();
   private loop?: Promise<void>;
   private unsubscribeRevision?: () => void;
@@ -113,6 +122,7 @@ export class ResponsiveDeliveryController {
           delivered: stat.delivered,
           skipped: stat.skipped,
           poisoned: stat.poisoned,
+          deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
           ...(stat.lastError ? { lastError: stat.lastError } : {}),
         };
       }),
@@ -145,6 +155,27 @@ export class ResponsiveDeliveryController {
     this.unsubscribeRevision = undefined;
     await this.loop?.catch(() => undefined);
     this.loop = undefined;
+  }
+
+  // A host reports effective handling of a deferred row. Only then is the row
+  // acknowledged, and a failed acknowledgement is retried without re-running
+  // the host handler.
+  async completeDeferred(roomId: string, message: ResponsiveDeliveryMessage, outcome: Exclude<DeliveryHandlerResult, "deferred"> = "handled"): Promise<boolean> {
+    const key = deliveryKey(roomId, message);
+    if (this.seen.has(key)) return true;
+    const stat = this.stat(roomId);
+    try {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
+    } catch (error) {
+      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    this.deferred.delete(key);
+    this.handled.delete(key);
+    this.remember(key);
+    if (outcome === "intentionally_skipped") stat.skipped += 1;
+    else stat.delivered += 1;
+    return true;
   }
 
   // Test seam for drain coalescing and acknowledgement retry, which are not
@@ -331,6 +362,10 @@ export class ResponsiveDeliveryController {
         });
         this.handled.set(key, outcome);
         this.attempts.delete(key);
+        if (outcome === "deferred") {
+          this.deferred.set(key, { roomId: room.roomId, message });
+          return true;
+        }
       } catch (error) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
@@ -346,6 +381,7 @@ export class ResponsiveDeliveryController {
         stat.poisoned += 1;
       }
     }
+    if (outcome === "deferred") return true;
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
     } catch (error) {
