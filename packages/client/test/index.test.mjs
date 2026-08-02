@@ -1646,3 +1646,75 @@ test("live profile switching fails closed in multi-room mode", async () => {
     harness.cleanup();
   }
 });
+
+test("a profile switch and data-plane calls cannot interleave across a rebinding", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-serialize-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-serialize-project-"));
+  try {
+    mkdirSync(join(home, ".parle"), { mode: 0o700 });
+    writeFileSync(join(home, ".parle", "profiles"), ALIAS_CATALOG, { mode: 0o600 });
+    const order = [];
+    let releaseTargetSession;
+    const targetGate = new Promise((resolve) => { releaseTargetSession = resolve; });
+    const fetch = async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      const target = init.headers?.Authorization === "Bearer parle_agt_target";
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+        if (target) await targetGate;
+        return json({ agent_session_id: target ? "as-target" : "as-old", session_credential: target ? "parle_ses_target" : "parle_ses_old", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: target ? "@p.a.target" : "@p.a.old" }, 201);
+      }
+      if (path.endsWith("/participants")) return json({ participant_id: "p-1", room_handle: target ? "target-room" : "old-room" }, 201);
+      if (path.includes("/projection")) return json({ watermark: 1, messages: [] });
+      if (path.includes("/inbound")) { order.push(["read", init.headers?.Authorization]); return json({ watermark: 2, messages: [] }); }
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    };
+    const client = new ParleAgentClient({ cwd, env: { HOME: home, PARLE_PROFILE: "default" }, fetch });
+    await client.connect();
+    const switching = client.switchProfile("target");
+    // The read is issued while the switch is mid-preparation. It must not land
+    // between the room rebinding and its publication.
+    const reading = client.readInbox().then(() => order.push(["read-resolved", client.cfg.roomId.value]));
+    releaseTargetSession();
+    await Promise.all([switching, reading]);
+    assert.deepEqual(order.at(-1), ["read-resolved", "019f7b46-178f-7a5a-9f7b-b4af2e045261"]);
+    assert.deepEqual(order.filter(([kind]) => kind === "read").map(([, auth]) => auth), ["Bearer parle_agt_target"], "the read used the committed binding, never a half-swapped one");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("a session that cannot reclaim its configured alias reports an actionable warning", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-alias-recovery-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-alias-recovery-project-"));
+  try {
+    mkdirSync(join(home, ".parle"), { mode: 0o700 });
+    writeFileSync(join(home, ".parle", "profiles"), ALIAS_CATALOG, { mode: 0o600 });
+    const client = new ParleAgentClient({
+      cwd,
+      env: { HOME: home, PARLE_PROFILE: "default", PARLE_SESSION_ALIAS: "main" },
+      fetch: async (url, init = {}) => {
+        const path = new URL(String(url)).pathname;
+        if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json({ agent_session_id: "as-1", session_credential: "parle_ses_1", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.handle" }, 201);
+        if (path.endsWith("/participants")) return json({ participant_id: "p-1", room_handle: "old-room" }, 201);
+        if (path.includes("/projection")) return json({ watermark: 1, messages: [] });
+        if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+        if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation: 1, current_agent_session_id: "someone-else" });
+        // The server reports a different route than the one this process
+        // configured. A replacement process must not treat that as success.
+        if (path.endsWith("/claim-alias")) return json({ agent_session_id: "as-1", alias: "other", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
+        if (path.endsWith("/end")) return new Response(null, { status: 204 });
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    await client.connect();
+    const warning = client.status().warnings.find((entry) => entry.includes("durable alias"));
+    assert.match(warning || "", /did not reclaim its configured durable alias main/);
+    assert.match(warning || "", /holds other instead/);
+    assert.match(warning || "", /reconnect/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
