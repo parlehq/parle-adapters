@@ -21,6 +21,7 @@ import {
   parseSSEBlocks,
   type ResponsiveDeliveryMessage,
   type ResponsiveCursorScope,
+  type ResponsiveDeliveryReadFence,
   type SessionCommitPlan,
 } from "@parlehq/agent-client";
 
@@ -52,6 +53,7 @@ type PendingMessage = ResponsiveDeliveryMessage & {
   agentSessionId: string;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
+type DeliveryReadFence = ResponsiveDeliveryReadFence;
 
 function deliveryKey(message: Pick<ResponsiveDeliveryMessage, "seq" | "event_id">): string {
   return `${message.seq}:${message.event_id}`;
@@ -111,6 +113,7 @@ export class HookDeliveryBridge {
   private unsubscribeSessionRevision?: () => void;
   private unsubscribeCommitGuard?: () => void;
   private drainInFlight?: Promise<void>;
+  private readonly activeDeliveryReads = new Set<DeliveryReadFence>();
 
   constructor(
     private readonly client: ParleAgentClient,
@@ -189,17 +192,22 @@ export class HookDeliveryBridge {
   private async baseline(): Promise<void> {
     let skipped = 0;
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-      if (messages.length === 0) break;
-      if (delivery?.delivery?.cursor_scope === "alias") {
-        if (this.enqueue(messages, delivery?.delivery?.cursor_scope) === 0) break;
-        continue;
-      }
-      for (const message of messages) {
-        skipped += 1;
-        if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
-        await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
+      try {
+        const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+        if (messages.length === 0) break;
+        if (delivery?.delivery?.cursor_scope === "alias") {
+          if (this.enqueue(messages, delivery?.delivery?.cursor_scope, readFence) === 0) break;
+          continue;
+        }
+        for (const message of messages) {
+          skipped += 1;
+          if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
+          this.assertReadFenceCurrent(readFence);
+          await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+        }
+      } finally {
+        release();
       }
     }
     this.baselineSkipped = skipped;
@@ -404,21 +412,51 @@ export class HookDeliveryBridge {
   }
 
   private guardSessionCommit(plan: SessionCommitPlan): void {
-    const work = this.pendingWork();
+    const activeReads = plan.reason === "bootstrap" ? [] : [...this.activeDeliveryReads];
+    const work = [...this.pendingWork(), ...activeReads];
     if (work.length === 0) return;
     if (plan.reason === "profile_switch") {
-      throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
+      throw new Error("Parle profile switch is deferred while hook delivery is pending, leased, or being read");
     }
     const aliasTransfers = Boolean(plan.previous.sessionAlias
       && plan.candidate.sessionAlias === plan.previous.sessionAlias
       && plan.candidate.responsiveContinuity === "alias"
       && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && item.roomId === plan.previous.roomId));
     if (!aliasTransfers) {
-      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
+      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending, leased, or being read");
     }
   }
 
-  private assertMessageCurrent(message: PendingMessage): void {
+  private deliveryReadFence(): DeliveryReadFence {
+    const runtime = (this.client as any).runtime || {};
+    return {
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: runtime.responsiveCursorScope,
+      roomId: String(runtime.roomId || ""),
+      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
+      agentSessionId: String(runtime.agentSessionId || ""),
+    };
+  }
+
+  private async readResponsiveDelivery(): Promise<{ delivery: any; fence: DeliveryReadFence; release: () => void }> {
+    const fenced = (this.client as any).drainResponsiveDeliveryWithFence;
+    if (typeof fenced === "function") return fenced.call(this.client, this.abortController.signal);
+    const fence = this.deliveryReadFence();
+    this.activeDeliveryReads.add(fence);
+    const release = () => this.activeDeliveryReads.delete(fence);
+    try {
+      return {
+        delivery: await this.client.drainResponsiveDelivery(this.abortController.signal),
+        fence,
+        release,
+      };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  private assertReadFenceCurrent(message: DeliveryReadFence): void {
     const runtime = (this.client as any).runtime || {};
     if (message.roomId !== String(runtime.roomId || "")) throw new Error("Parle hook delivery belongs to a prior room binding");
     if (message.cursorScope === "alias") {
@@ -430,8 +468,11 @@ export class HookDeliveryBridge {
     }
   }
 
-  private enqueue(messages: ResponsiveDeliveryMessage[], cursorScope?: ResponsiveCursorScope): number {
-    const runtime = (this.client as any).runtime || {};
+  private assertMessageCurrent(message: PendingMessage): void {
+    this.assertReadFenceCurrent(message);
+  }
+
+  private enqueue(messages: ResponsiveDeliveryMessage[], cursorScope: ResponsiveCursorScope | undefined, readFence: DeliveryReadFence): number {
     let queued = 0;
     for (const message of messages) {
       const key = deliveryKey(message);
@@ -440,11 +481,11 @@ export class HookDeliveryBridge {
       this.pending.push({
         ...message,
         key,
-        sessionRevision: Number(runtime.sessionRevision || 0),
+        sessionRevision: readFence.sessionRevision,
         cursorScope,
-        roomId: String(runtime.roomId || ""),
-        sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
-        agentSessionId: String(runtime.agentSessionId || ""),
+        roomId: readFence.roomId,
+        sessionAlias: readFence.sessionAlias,
+        agentSessionId: readFence.agentSessionId,
       });
       this.queuedKeys.add(key);
       queued += 1;
@@ -461,11 +502,15 @@ export class HookDeliveryBridge {
 
   private async doDrain(): Promise<void> {
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      if (delivery.messages.length === 0) return;
-      // The server cursor advances only after hook commit acks the queued rows.
-      // A repeated all-known batch is therefore the drain boundary, not a stall.
-      if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope) === 0) return;
+      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
+      try {
+        if (delivery.messages.length === 0) return;
+        // The server cursor advances only after hook commit acks the queued rows.
+        // A repeated all-known batch is therefore the drain boundary, not a stall.
+        if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope, readFence) === 0) return;
+      } finally {
+        release();
+      }
     }
     throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }

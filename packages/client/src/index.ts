@@ -295,6 +295,14 @@ export type SessionCommitPlan = {
   candidate: Readonly<RuntimeState>;
 };
 
+export type ResponsiveDeliveryReadFence = {
+  sessionRevision: number;
+  cursorScope?: ResponsiveCursorScope;
+  roomId: string;
+  sessionAlias?: string;
+  agentSessionId: string;
+};
+
 type CandidateWakeSlot = {
   sessionCredential: string;
   response: Response;
@@ -745,6 +753,7 @@ export class ParleAgentClient {
   private rolloverInFlight: Promise<RuntimeState> | null = null;
   private readonly sessionRevisionListeners = new Set<(event: SessionRevisionEvent) => void>();
   private readonly sessionCommitGuards = new Set<(plan: SessionCommitPlan) => void>();
+  private readonly activeResponsiveReads = new Set<ResponsiveDeliveryReadFence>();
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   private automaticTerminalBinding?: string;
@@ -1110,12 +1119,17 @@ export class ParleAgentClient {
     throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
   }
 
+  private async ownAliasFacts(alias: string, signal?: AbortSignal): Promise<{ alias: string; generation: number; currentAgentSessionId?: string }> {
+    const facts = await this.requestJson(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
+    const current = facts?.current_agent_session_id;
+    if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || (current !== null && current !== undefined && typeof current !== "string")) {
+      throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
+    }
+    return { alias, generation: facts.generation, ...(typeof current === "string" ? { currentAgentSessionId: current } : {}) };
+  }
+
   private async currentAliasGeneration(alias: string, signal?: AbortSignal): Promise<number> {
-    const match = await this.findInventorySession((item) => item?.alias === alias && Number.isInteger(item?.generation) && item.generation >= 0, signal);
-    // Inventory contains live owners only. Returning zero for a missing durable
-    // alias is the documented core-owned recovery limitation, not generation
-    // inference. See the implementation report's unresolved blocker.
-    return match?.generation ?? 0;
+    return (await this.ownAliasFacts(alias, signal)).generation;
   }
 
   private async claimAliasWithRecovery(candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal): Promise<any> {
@@ -1133,19 +1147,22 @@ export class ParleAgentClient {
         if (!responseLost) throw error;
         lastError = error;
         try {
-          const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId
-            && item?.alias === alias
-            && item?.generation === expectedGeneration + 1, signal);
-          if (committed) return committed;
+          const aliasFacts = await this.ownAliasFacts(alias, signal);
+          if (aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
+            const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId
+              && item?.alias === alias
+              && item?.generation === aliasFacts.generation, signal);
+            if (committed) return committed;
+          }
         } catch {
-          // Inventory is confirmation, not a substitute mutation. A failed
-          // confirmation may consume only the remaining bounded exact replays.
+          // Alias lookup and live inventory are confirmation, not substitute
+          // mutations. Failure does not broaden the exact replay budget.
         }
         if (signal?.aborted) break;
       }
     }
     const detail = lastError instanceof Error ? redactString(lastError.message) : "claim response unavailable";
-    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and inventory confirmation: ${detail}`, {
+    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${detail}`, {
       code: "alias_claim_outcome_unknown", action: "retry_with_backoff", scope: "agent_session", retryable: true,
     });
   }
@@ -1171,6 +1188,16 @@ export class ParleAgentClient {
 
   private assertSessionCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: SessionRevisionEvent["reason"]): void {
     const plan: SessionCommitPlan = { reason, previous: Object.freeze({ ...previous }), candidate: Object.freeze({ ...candidate }) };
+    if (this.activeResponsiveReads.size > 0 && reason !== "bootstrap") {
+      if (reason === "profile_switch") throw new Error("Parle profile switch is deferred while responsive delivery is being read");
+      const aliasTransfers = Boolean(previous.sessionAlias
+        && candidate.sessionAlias === previous.sessionAlias
+        && candidate.responsiveContinuity === "alias"
+        && [...this.activeResponsiveReads].every((fence) => fence.cursorScope === "alias"
+          && fence.sessionAlias === previous.sessionAlias
+          && fence.roomId === previous.roomId));
+      if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is being read");
+    }
     for (const guard of this.sessionCommitGuards) guard(plan);
   }
 
@@ -1810,12 +1837,36 @@ export class ParleAgentClient {
     if (scope) this.runtime.responsiveCursorScope = scope;
   }
 
-  async drainResponsiveDelivery(signal?: AbortSignal): Promise<any> {
+  async drainResponsiveDeliveryWithFence(signal?: AbortSignal): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
     return this.withRebootstrap(async () => {
-      const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
-      this.recordResponsiveCursorScope(delivery);
-      return delivery;
+      const fence: ResponsiveDeliveryReadFence = {
+        sessionRevision: this.runtime.sessionRevision || 0,
+        cursorScope: this.runtime.responsiveCursorScope,
+        roomId: this.runtime.roomId,
+        sessionAlias: this.runtime.sessionAlias,
+        agentSessionId: this.runtime.agentSessionId,
+      };
+      this.activeResponsiveReads.add(fence);
+      let retained = false;
+      const release = () => this.activeResponsiveReads.delete(fence);
+      try {
+        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
+        this.recordResponsiveCursorScope(delivery);
+        retained = true;
+        return { delivery, fence, release };
+      } finally {
+        if (!retained) release();
+      }
     }, signal);
+  }
+
+  async drainResponsiveDelivery(signal?: AbortSignal): Promise<any> {
+    const read = await this.drainResponsiveDeliveryWithFence(signal);
+    try {
+      return read.delivery;
+    } finally {
+      read.release();
+    }
   }
 
   async ackResponsiveDelivery(message: ResponsiveDeliveryMessage, signal?: AbortSignal): Promise<any> {

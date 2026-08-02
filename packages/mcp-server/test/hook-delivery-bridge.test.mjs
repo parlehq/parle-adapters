@@ -242,6 +242,58 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
   }
 });
 
+test("hook delivery bridge blocks exact-session rollover while a responsive read is in flight", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-inflight-read-fence-"));
+  let commitGuard;
+  let drains = 0;
+  let wakeStreams = 0;
+  let readStarted = false;
+  let releaseRead;
+  const heldRead = new Promise((resolve) => { releaseRead = resolve; });
+  const fakeClient = {
+    runtime: {
+      sessionRevision: 1,
+      roomId: "room-1",
+      agentSessionId: "old-session",
+      sessionAlias: undefined,
+      responsiveCursorScope: "session",
+    },
+    ensureBootstrapped: async () => {},
+    onBeforeSessionCommit: (guard) => { commitGuard = guard; return () => { commitGuard = undefined; }; },
+    onSessionRevision: () => () => {},
+    withRebootstrap: async (fn) => fn(),
+    drainResponsiveDelivery: async () => {
+      drains += 1;
+      if (drains === 1) return { delivery: { cursor_scope: "session" }, messages: [] };
+      readStarted = true;
+      return heldRead;
+    },
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => {
+      wakeStreams += 1;
+      if (wakeStreams === 1) return new Response("event: wake\ndata: {}\n\n");
+      return new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => controller.close(), { once: true }); } }));
+    },
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    await eventually(() => readStarted);
+    const candidate = {
+      ...fakeClient.runtime,
+      sessionRevision: 2,
+      agentSessionId: "successor",
+      responsiveContinuity: "exact_session_not_transferred",
+    };
+    assert.throws(() => commitGuard({ reason: "rollover", previous: { ...fakeClient.runtime }, candidate }), /being read/);
+    releaseRead({ delivery: { cursor_scope: "session" }, messages: [{ seq: 13, event_id: "old-inflight", content: "old work" }] });
+    await eventually(() => bridge.status().pending === 1);
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("hook delivery bridge records runtime publication failure without throwing", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-runtime-failure-"));
   const fakeClient = {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 (2026-08-02)
+
+- Retry transient startup bootstrap failures automatically after the server deadline without requiring a tool call.
+- Fence responsive reads at request start so exact-session rows cannot cross rollover before entering the pending queue.
+
 ## 0.2.0 (2026-08-02)
 
 - Require the 2026-08-01 wire contract and remove alias-at-mint.

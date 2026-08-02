@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.3.0";
+export const MCP_CLIENT_VERSION = "0.3.1";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -359,23 +359,84 @@ export async function runStdio() {
     client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
   }
   const server = createParleMcpServer(client, new ParleAccountClient(), deliveryBridge);
-  installLifecycleHandlers(client, deliveryBridge);
   await server.connect(new StdioServerTransport());
-  // Eager background bootstrap: the session exists (and the runtime snapshot is
-  // published) before the first tool call. No-op when unconfigured; failures
-  // are recorded on runtime state and retried per the backoff policy.
-  void client.ensureReadySafe().then(async () => {
-    if (deliveryBridge && client.runtime.bootstrapped) await deliveryBridge.start();
-  }).catch((error) => {
-    console.error(`Parle hook delivery bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
+  // Eager background bootstrap creates the session before the first tool call.
+  // A retryable startup failure arms one unreferenced deadline at a time from
+  // the shared client's server-derived nextRetryAt. Terminal or unconfigured
+  // states have no retry deadline and therefore schedule no automatic work.
+  const stopEagerBootstrap = scheduleEagerBootstrap(client, deliveryBridge, {
+    onError(error) {
+      console.error(`Parle hook delivery bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
+    },
   });
+  installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap);
 }
 
-function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge) {
+type EagerBootstrapTimer = ReturnType<typeof setTimeout>;
+type EagerBootstrapOptions = {
+  setTimer?: (callback: () => void, delayMs: number) => EagerBootstrapTimer;
+  clearTimer?: (timer: EagerBootstrapTimer) => void;
+  now?: () => number;
+  onError?: (error: unknown) => void;
+};
+
+export function scheduleEagerBootstrap(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge, options: EagerBootstrapOptions = {}): () => void {
+  const setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
+  const clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
+  const now = options.now || (() => Date.now());
+  let timer: EagerBootstrapTimer | undefined;
+  let stopped = false;
+  let running = false;
+  let attempts = 0;
+  const maxAttempts = 5;
+
+  const schedule = (delayMs: number) => {
+    if (stopped || attempts >= maxAttempts) return;
+    const delay = Math.min(Math.max(1, delayMs), 2_147_483_647);
+    timer = setTimer(() => {
+      timer = undefined;
+      void arm().catch(options.onError || (() => undefined));
+    }, delay);
+    timer.unref?.();
+  };
+
+  const arm = async () => {
+    if (stopped || running || attempts >= maxAttempts) return;
+    running = true;
+    attempts += 1;
+    try {
+      await client.ensureReadySafe();
+      if (stopped) return;
+      if (client.runtime.bootstrapped) {
+        if (deliveryBridge) await deliveryBridge.start();
+        return;
+      }
+      const retryAt = client.runtime.nextRetryAt ? Date.parse(client.runtime.nextRetryAt) : Number.NaN;
+      if (client.runtime.bootstrapState !== "failed" || !Number.isFinite(retryAt)) return;
+      const retryDelay = retryAt - now();
+      schedule(retryDelay > 0 ? retryDelay : 1_000);
+    } catch (error) {
+      options.onError?.(error);
+      schedule(1_000 * (2 ** Math.min(attempts - 1, 6)));
+    } finally {
+      running = false;
+    }
+  };
+
+  void arm();
+  return () => {
+    stopped = true;
+    if (timer) clearTimer(timer);
+    timer = undefined;
+  };
+}
+
+function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge, stopEagerBootstrap: () => void = () => {}) {
   let ending = false;
   const shutdown = () => {
     if (ending) return;
     ending = true;
+    stopEagerBootstrap();
     const timer = setTimeout(() => process.exit(0), 2000);
     void deliveryBridge?.stop().catch(() => {}).then(() => client.endSession()).catch(() => {}).finally(() => {
       clearTimeout(timer);

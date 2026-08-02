@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.6.1 (2026-08-02)
+
+- Refresh the bundled MCP bridge with request-start responsive read fencing.
+
 ## 0.6.0 (2026-08-02)
 
 - Require `Parle-Version: 2026-08-01` and remove alias-at-mint from the bundled runtime.

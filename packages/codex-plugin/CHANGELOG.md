@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.1 (2026-08-02)
+
+- Refresh the bundled MCP bridge with request-start responsive read fencing.
+
 ## 0.3.0 (2026-08-02)
 
 - Refresh the bundled MCP runtime for the mandatory 2026-08-01 session lifecycle.

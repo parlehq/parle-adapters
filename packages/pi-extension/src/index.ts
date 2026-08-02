@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.2.0";
+const PI_EXTENSION_VERSION = "0.2.1";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
@@ -241,6 +241,7 @@ type DeliveryFence = {
 type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; ackThrough?: any; fence: DeliveryFence; injected?: boolean };
 type CandidateWakeSlot = { sessionCredential: string; response: Response; controller: AbortController };
 const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
+const activeResponsiveReads = new Set<DeliveryFence>();
 const preparedWakeSlots = new WeakMap<RuntimeState, CandidateWakeSlot>();
 let responsiveFlushRunning = false;
 let prefetchedWake: CandidateWakeSlot | undefined;
@@ -1241,26 +1242,45 @@ async function fetchWakeStream(cfg: ParleConfig, signal: AbortSignal): Promise<R
 async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
   runtime.lastWakeHintAt = new Date().toISOString();
   runtime.lastDeliveryFetchAt = runtime.lastWakeHintAt;
-  const delivery = await withRebootstrap(ctx, cfg, async () => requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal }), signal);
-  recordWatcherSuccess();
-  const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-  const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-  if (heldCount > 0) {
-    runtime.watcherState = "held";
-    runtime.lastHeldBacklogAt = new Date().toISOString();
-  }
-  if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-  if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
-  if (messages.length === 0) {
-    runtime.lastEmptyWakeAt = new Date().toISOString();
+  let responseFence: DeliveryFence | undefined;
+  try {
+    const read = await withRebootstrap(ctx, cfg, async () => {
+      const fence = deliveryFence();
+      responseFence = fence;
+      activeResponsiveReads.add(fence);
+      try {
+        const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal });
+        return { delivery, fence };
+      } catch (error) {
+        activeResponsiveReads.delete(fence);
+        if (responseFence === fence) responseFence = undefined;
+        throw error;
+      }
+    }, signal);
+    const delivery = read.delivery;
+    responseFence = read.fence;
+    recordWatcherSuccess();
+    const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+    const heldCount = Number(delivery?.held_backlog?.held_count || 0);
+    if (heldCount > 0) {
+      runtime.watcherState = "held";
+      runtime.lastHeldBacklogAt = new Date().toISOString();
+    }
+    if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
+    if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
+    if (messages.length === 0) {
+      runtime.lastEmptyWakeAt = new Date().toISOString();
+      setStatus(ctx, cfg);
+      return;
+    }
+    const responsePreamble = typeof delivery?.preamble === "string" ? delivery.preamble : undefined;
+    await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, responseFence!);
+    await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
+    runtime.watcherState = "watching";
     setStatus(ctx, cfg);
-    return;
+  } finally {
+    if (responseFence) activeResponsiveReads.delete(responseFence);
   }
-  const responsePreamble = typeof delivery?.preamble === "string" ? delivery.preamble : undefined;
-  await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal);
-  await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
-  runtime.watcherState = "watching";
-  setStatus(ctx, cfg);
 }
 
 async function consumeWakeStream(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal) {
@@ -1316,11 +1336,17 @@ async function findInventorySession(cfg: ParleConfig, predicate: (item: any) => 
   throw new Error(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`);
 }
 
+async function ownAliasFacts(cfg: ParleConfig, alias: string, signal?: AbortSignal): Promise<{ alias: string; generation: number; currentAgentSessionId?: string }> {
+  const facts = await requestJson(cfg, `/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal });
+  const current = facts?.current_agent_session_id;
+  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || (current !== null && current !== undefined && typeof current !== "string")) {
+    throw new Error("Parle session alias lookup returned invalid facts");
+  }
+  return { alias, generation: facts.generation, ...(typeof current === "string" ? { currentAgentSessionId: current } : {}) };
+}
+
 async function currentAliasGeneration(cfg: ParleConfig, alias: string, signal?: AbortSignal): Promise<number> {
-  const match = await findInventorySession(cfg, (item) => item?.alias === alias && Number.isInteger(item?.generation) && item.generation >= 0, signal);
-  // Inventory exposes live owners only. Missing durable alias generations are
-  // an unresolved core-owned recovery blocker and are never guessed locally.
-  return match?.generation ?? 0;
+  return (await ownAliasFacts(cfg, alias, signal)).generation;
 }
 
 async function claimAliasWithRecovery(cfg: ParleConfig, candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal): Promise<any> {
@@ -1338,10 +1364,13 @@ async function claimAliasWithRecovery(cfg: ParleConfig, candidate: RuntimeState,
       if (!responseLost) throw error;
       lastError = error;
       try {
-        const committed = await findInventorySession(cfg, (item) => item?.agent_session_id === candidate.agentSessionId
-          && item?.alias === alias
-          && item?.generation === expectedGeneration + 1, signal);
-        if (committed) return committed;
+        const aliasFacts = await ownAliasFacts(cfg, alias, signal);
+        if (aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
+          const committed = await findInventorySession(cfg, (item) => item?.agent_session_id === candidate.agentSessionId
+            && item?.alias === alias
+            && item?.generation === aliasFacts.generation, signal);
+          if (committed) return committed;
+        }
       } catch {
         // Confirmation failure consumes no authority and does not broaden the
         // exact replay budget.
@@ -1349,7 +1378,7 @@ async function claimAliasWithRecovery(cfg: ParleConfig, candidate: RuntimeState,
       if (signal?.aborted) break;
     }
   }
-  const error: any = new Error(`Parle alias claim outcome remains unknown after bounded exact replay and inventory confirmation: ${redactString(lastError instanceof Error ? lastError.message : "claim response unavailable")}`);
+  const error: any = new Error(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${redactString(lastError instanceof Error ? lastError.message : "claim response unavailable")}`);
   error.code = "alias_claim_outcome_unknown";
   error.action = "retry_with_backoff";
   error.scope = "agent_session";
@@ -1492,18 +1521,18 @@ function pendingDeliveryWork(): PendingResponsiveMessage[] {
 
 function assertPiCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: "bootstrap" | "rollover" | "profile_switch" | "alias_switch", allowRequestedShutdown = false) {
   if (lifecycleEnded || (shutdownRequested && !allowRequestedShutdown)) throw new Error("Parle Pi lifecycle has ended");
-  const work = pendingDeliveryWork();
+  const work = [...pendingDeliveryWork().map((item) => item.fence), ...activeResponsiveReads];
   if (reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
-    throw new Error("Parle profile switch is deferred while responsive delivery is pending or injecting");
+    throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
   }
   if (work.length === 0 && !responsiveFlushRunning) return;
   const aliasTransfers = Boolean(previous.sessionAlias
     && candidate.sessionAlias === previous.sessionAlias
     && candidate.responsiveContinuity === "alias"
-    && work.every((item) => item.fence.cursorScope === "alias"
-      && item.fence.sessionAlias === previous.sessionAlias
-      && item.fence.roomId === previous.roomId));
-  if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is pending or injecting");
+    && work.every((fence) => fence.cursorScope === "alias"
+      && fence.sessionAlias === previous.sessionAlias
+      && fence.roomId === previous.roomId));
+  if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is pending, injecting, or being read");
 }
 
 async function completePiCandidateHandoff(cfg: ParleConfig, previous: RuntimeState, candidate: RuntimeState, signal: AbortSignal | undefined, unusedPreviousWake: CandidateWakeSlot | undefined, drainImmediately: boolean) {
@@ -2063,30 +2092,35 @@ async function ackResponsiveMessage(cfg: ParleConfig, message: any, signal?: Abo
 async function baselineResponsiveDelivery(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
   let skipped = 0;
   while (!signal?.aborted) {
-    const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal });
-    const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-    const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-    if (heldCount > 0) {
-      runtime.watcherState = "held";
-      runtime.lastHeldBacklogAt = new Date().toISOString();
-    }
-    if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-    if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
     const responseFence = deliveryFence();
-    if (messages.length === 0) break;
-    for (const message of messages) {
-      const key = deliveryKey(message);
-      if (!key) {
-        runtime.lastError = "responsive delivery row missing seq or event_id during baseline";
-        runtime.lastWatcherErrorAt = new Date().toISOString();
-        runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
-        setStatus(ctx, cfg);
-        await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => undefined);
-        return;
+    activeResponsiveReads.add(responseFence);
+    try {
+      const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal });
+      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+      const heldCount = Number(delivery?.held_backlog?.held_count || 0);
+      if (heldCount > 0) {
+        runtime.watcherState = "held";
+        runtime.lastHeldBacklogAt = new Date().toISOString();
       }
-      await ackResponsiveMessage(cfg, message, signal, responseFence);
-      skipped += 1;
-      if (skipped > WATCH_BASELINE_ACK_LIMIT) throw new Error("responsive delivery baseline exceeded ack limit");
+      if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
+      if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
+      if (messages.length === 0) break;
+      for (const message of messages) {
+        const key = deliveryKey(message);
+        if (!key) {
+          runtime.lastError = "responsive delivery row missing seq or event_id during baseline";
+          runtime.lastWatcherErrorAt = new Date().toISOString();
+          runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
+          setStatus(ctx, cfg);
+          await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => undefined);
+          return;
+        }
+        await ackResponsiveMessage(cfg, message, signal, responseFence);
+        skipped += 1;
+        if (skipped > WATCH_BASELINE_ACK_LIMIT) throw new Error("responsive delivery baseline exceeded ack limit");
+      }
+    } finally {
+      activeResponsiveReads.delete(responseFence);
     }
   }
   runtime.baselineSkipped = (runtime.baselineSkipped || 0) + skipped;
@@ -2243,9 +2277,8 @@ function clearPendingResponsiveMessages() {
   updatePendingResponsiveState();
 }
 
-async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any[], responsePreamble?: string, signal?: AbortSignal) {
+async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any[], responsePreamble?: string, signal?: AbortSignal, responseFence = deliveryFence()) {
   let ackablePrefix: any | undefined;
-  const responseFence = deliveryFence();
   let blockedByPending = pendingResponsiveMessages.length > 0;
   let lastPending = pendingResponsiveMessages.at(-1);
   const pendingKeys = new Set(pendingResponsiveMessages.map((item) => item.key));
@@ -2316,6 +2349,7 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
 }
 
 async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal, runId: number) {
+  let restartAfterBootstrapFailure = false;
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
@@ -2354,8 +2388,15 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
   } catch (error: any) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
-      runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalWatcherState(error) || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+      const terminalState = terminalWatcherState(error);
+      runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       setStatus(ctx, cfg);
+      if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
+        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
+        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : undefined;
+        await watcherSleep(parkDelay === undefined ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => undefined);
+        if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher()) restartAfterBootstrapFailure = true;
+      }
     }
   } finally {
     if (runId === activeWatcherRunId) {
@@ -2366,6 +2407,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
         runtime.watcherState = "off";
       }
       setStatus(ctx, cfg);
+      if (restartAfterBootstrapFailure && !shutdownRequested && !lifecycleEnded) startWatcher(pi, ctx, cfg);
     }
   }
 }
@@ -2626,6 +2668,7 @@ export const __testing = {
     seenKeys.clear();
     seenKeyOrder.length = 0;
     clearPendingResponsiveMessages();
+    activeResponsiveReads.clear();
     watcherAbort?.abort();
     watcherAbort = undefined;
     watcherTask = undefined;

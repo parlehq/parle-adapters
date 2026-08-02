@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-08-02)
+
+Refresh the bundled MCP bridge with request-start responsive read fencing.
+
 ## 0.6.0 (2026-08-02)
 
 Refresh the canonical MCP runtime for the mandatory 2026-08-01 session lifecycle, proactive generation-fenced rollover, and session-following responsive bridge.

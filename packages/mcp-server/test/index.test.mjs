@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, scheduleEagerBootstrap, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -26,6 +26,104 @@ const expectedTools = [
   "parle_status",
   "parle_switch_profile",
 ];
+
+test("eager MCP bootstrap retries autonomously at the shared-client deadline", async () => {
+  let now = 1_000;
+  let attempts = 0;
+  let bridgeStarts = 0;
+  const timers = [];
+  const client = {
+    runtime: { bootstrapped: false, bootstrapState: "unstarted" },
+    async ensureReadySafe() {
+      attempts += 1;
+      if (attempts === 1) {
+        this.runtime = { bootstrapped: false, bootstrapState: "failed", nextRetryAt: new Date(now + 100).toISOString() };
+      } else {
+        this.runtime = { bootstrapped: true, bootstrapState: "ready" };
+      }
+      return true;
+    },
+  };
+  const stop = scheduleEagerBootstrap(client, { async start() { bridgeStarts += 1; } }, {
+    now: () => now,
+    setTimer(callback, delayMs) {
+      const timer = { callback, delayMs, unrefCalled: false, unref() { this.unrefCalled = true; } };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer() {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 1);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delayMs, 100);
+  assert.equal(timers[0].unrefCalled, true);
+  now += 100;
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 2);
+  assert.equal(bridgeStarts, 1);
+  stop();
+});
+
+test("eager MCP bootstrap stops after a bounded persistent outage", async () => {
+  let attempts = 0;
+  let now = 1_000;
+  const timers = [];
+  const client = {
+    runtime: { bootstrapped: false, bootstrapState: "failed" },
+    async ensureReadySafe() {
+      attempts += 1;
+      this.runtime.nextRetryAt = new Date(now + 100).toISOString();
+    },
+  };
+  scheduleEagerBootstrap(client, undefined, {
+    now: () => now,
+    setTimer(callback, delayMs) {
+      const timer = { callback, delayMs, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer() {},
+  });
+  for (let index = 0; index < 5; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    if (index < 4) {
+      now += timers[index].delayMs;
+      timers[index].callback();
+    }
+  }
+  assert.equal(attempts, 5);
+  assert.equal(timers.length, 4, "the fifth failed attempt does not arm an unbounded poll");
+});
+
+test("eager MCP bootstrap retries a transient bridge start failure", async () => {
+  let starts = 0;
+  const timers = [];
+  const errors = [];
+  const client = { runtime: { bootstrapped: true, bootstrapState: "ready" }, async ensureReadySafe() {} };
+  scheduleEagerBootstrap(client, {
+    async start() {
+      starts += 1;
+      if (starts === 1) throw new Error("bridge unavailable");
+    },
+  }, {
+    setTimer(callback, delayMs) {
+      const timer = { callback, delayMs, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer() {},
+    onError(error) { errors.push(error); },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers[0].delayMs, 1_000);
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(starts, 2);
+  assert.equal(errors.length, 1);
+  assert.equal(timers.length, 1);
+});
 
 test("direct-run detection handles URL-encoded paths", () => {
   const path = "/tmp/Application Support/parle-mcp.js";

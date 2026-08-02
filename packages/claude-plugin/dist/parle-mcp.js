@@ -33470,6 +33470,7 @@ var ParleAgentClient = class _ParleAgentClient {
   rolloverInFlight = null;
   sessionRevisionListeners = /* @__PURE__ */ new Set();
   sessionCommitGuards = /* @__PURE__ */ new Set();
+  activeResponsiveReads = /* @__PURE__ */ new Set();
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   automaticTerminalBinding;
@@ -33840,9 +33841,16 @@ var ParleAgentClient = class _ParleAgentClient {
     }
     throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
   }
+  async ownAliasFacts(alias, signal) {
+    const facts = await this.requestJson(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
+    const current = facts?.current_agent_session_id;
+    if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || current !== null && current !== void 0 && typeof current !== "string") {
+      throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
+    }
+    return { alias, generation: facts.generation, ...typeof current === "string" ? { currentAgentSessionId: current } : {} };
+  }
   async currentAliasGeneration(alias, signal) {
-    const match = await this.findInventorySession((item) => item?.alias === alias && Number.isInteger(item?.generation) && item.generation >= 0, signal);
-    return match?.generation ?? 0;
+    return (await this.ownAliasFacts(alias, signal)).generation;
   }
   async claimAliasWithRecovery(candidate, alias, expectedGeneration, signal) {
     const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
@@ -33866,9 +33874,12 @@ var ParleAgentClient = class _ParleAgentClient {
           throw error51;
         lastError = error51;
         try {
-          const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === expectedGeneration + 1, signal);
-          if (committed)
-            return committed;
+          const aliasFacts = await this.ownAliasFacts(alias, signal);
+          if (aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
+            const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === aliasFacts.generation, signal);
+            if (committed)
+              return committed;
+          }
         } catch {
         }
         if (signal?.aborted)
@@ -33876,7 +33887,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }
     }
     const detail = lastError instanceof Error ? redactString(lastError.message) : "claim response unavailable";
-    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and inventory confirmation: ${detail}`, {
+    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${detail}`, {
       code: "alias_claim_outcome_unknown",
       action: "retry_with_backoff",
       scope: "agent_session",
@@ -33905,6 +33916,13 @@ var ParleAgentClient = class _ParleAgentClient {
   }
   assertSessionCommitAllowed(previous, candidate, reason) {
     const plan = { reason, previous: Object.freeze({ ...previous }), candidate: Object.freeze({ ...candidate }) };
+    if (this.activeResponsiveReads.size > 0 && reason !== "bootstrap") {
+      if (reason === "profile_switch")
+        throw new Error("Parle profile switch is deferred while responsive delivery is being read");
+      const aliasTransfers = Boolean(previous.sessionAlias && candidate.sessionAlias === previous.sessionAlias && candidate.responsiveContinuity === "alias" && [...this.activeResponsiveReads].every((fence) => fence.cursorScope === "alias" && fence.sessionAlias === previous.sessionAlias && fence.roomId === previous.roomId));
+      if (!aliasTransfers)
+        throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is being read");
+    }
     for (const guard of this.sessionCommitGuards)
       guard(plan);
   }
@@ -34530,12 +34548,36 @@ var ParleAgentClient = class _ParleAgentClient {
     if (scope)
       this.runtime.responsiveCursorScope = scope;
   }
-  async drainResponsiveDelivery(signal) {
+  async drainResponsiveDeliveryWithFence(signal) {
     return this.withRebootstrap(async () => {
-      const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
-      this.recordResponsiveCursorScope(delivery);
-      return delivery;
+      const fence = {
+        sessionRevision: this.runtime.sessionRevision || 0,
+        cursorScope: this.runtime.responsiveCursorScope,
+        roomId: this.runtime.roomId,
+        sessionAlias: this.runtime.sessionAlias,
+        agentSessionId: this.runtime.agentSessionId
+      };
+      this.activeResponsiveReads.add(fence);
+      let retained = false;
+      const release = () => this.activeResponsiveReads.delete(fence);
+      try {
+        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
+        this.recordResponsiveCursorScope(delivery);
+        retained = true;
+        return { delivery, fence, release };
+      } finally {
+        if (!retained)
+          release();
+      }
     }, signal);
+  }
+  async drainResponsiveDelivery(signal) {
+    const read = await this.drainResponsiveDeliveryWithFence(signal);
+    try {
+      return read.delivery;
+    } finally {
+      read.release();
+    }
   }
   async ackResponsiveDelivery(message, signal) {
     if (!responsiveDeliveryKey(message))
@@ -34701,6 +34743,7 @@ var HookDeliveryBridge = class {
   unsubscribeSessionRevision;
   unsubscribeCommitGuard;
   drainInFlight;
+  activeDeliveryReads = /* @__PURE__ */ new Set();
   status() {
     return {
       running: Boolean(this.server?.listening && !this.abortController.signal.aborted),
@@ -34767,17 +34810,22 @@ var HookDeliveryBridge = class {
   async baseline() {
     let skipped = 0;
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-      if (messages.length === 0) break;
-      if (delivery?.delivery?.cursor_scope === "alias") {
-        if (this.enqueue(messages, delivery?.delivery?.cursor_scope) === 0) break;
-        continue;
-      }
-      for (const message of messages) {
-        skipped += 1;
-        if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
-        await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
+      try {
+        const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
+        if (messages.length === 0) break;
+        if (delivery?.delivery?.cursor_scope === "alias") {
+          if (this.enqueue(messages, delivery?.delivery?.cursor_scope, readFence) === 0) break;
+          continue;
+        }
+        for (const message of messages) {
+          skipped += 1;
+          if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
+          this.assertReadFenceCurrent(readFence);
+          await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+        }
+      } finally {
+        release();
       }
     }
     this.baselineSkipped = skipped;
@@ -34969,17 +35017,45 @@ var HookDeliveryBridge = class {
     return lease ? [...this.pending, ...lease.messages] : [...this.pending];
   }
   guardSessionCommit(plan) {
-    const work = this.pendingWork();
+    const activeReads = plan.reason === "bootstrap" ? [] : [...this.activeDeliveryReads];
+    const work = [...this.pendingWork(), ...activeReads];
     if (work.length === 0) return;
     if (plan.reason === "profile_switch") {
-      throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
+      throw new Error("Parle profile switch is deferred while hook delivery is pending, leased, or being read");
     }
     const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && item.roomId === plan.previous.roomId));
     if (!aliasTransfers) {
-      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
+      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending, leased, or being read");
     }
   }
-  assertMessageCurrent(message) {
+  deliveryReadFence() {
+    const runtime = this.client.runtime || {};
+    return {
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: runtime.responsiveCursorScope,
+      roomId: String(runtime.roomId || ""),
+      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0,
+      agentSessionId: String(runtime.agentSessionId || "")
+    };
+  }
+  async readResponsiveDelivery() {
+    const fenced = this.client.drainResponsiveDeliveryWithFence;
+    if (typeof fenced === "function") return fenced.call(this.client, this.abortController.signal);
+    const fence = this.deliveryReadFence();
+    this.activeDeliveryReads.add(fence);
+    const release = () => this.activeDeliveryReads.delete(fence);
+    try {
+      return {
+        delivery: await this.client.drainResponsiveDelivery(this.abortController.signal),
+        fence,
+        release
+      };
+    } catch (error51) {
+      release();
+      throw error51;
+    }
+  }
+  assertReadFenceCurrent(message) {
     const runtime = this.client.runtime || {};
     if (message.roomId !== String(runtime.roomId || "")) throw new Error("Parle hook delivery belongs to a prior room binding");
     if (message.cursorScope === "alias") {
@@ -34990,8 +35066,10 @@ var HookDeliveryBridge = class {
       throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
     }
   }
-  enqueue(messages, cursorScope) {
-    const runtime = this.client.runtime || {};
+  assertMessageCurrent(message) {
+    this.assertReadFenceCurrent(message);
+  }
+  enqueue(messages, cursorScope, readFence) {
     let queued = 0;
     for (const message of messages) {
       const key = deliveryKey(message);
@@ -35000,11 +35078,11 @@ var HookDeliveryBridge = class {
       this.pending.push({
         ...message,
         key,
-        sessionRevision: Number(runtime.sessionRevision || 0),
+        sessionRevision: readFence.sessionRevision,
         cursorScope,
-        roomId: String(runtime.roomId || ""),
-        sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0,
-        agentSessionId: String(runtime.agentSessionId || "")
+        roomId: readFence.roomId,
+        sessionAlias: readFence.sessionAlias,
+        agentSessionId: readFence.agentSessionId
       });
       this.queuedKeys.add(key);
       queued += 1;
@@ -35023,9 +35101,13 @@ var HookDeliveryBridge = class {
   }
   async doDrain() {
     for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      if (delivery.messages.length === 0) return;
-      if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope) === 0) return;
+      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
+      try {
+        if (delivery.messages.length === 0) return;
+        if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope, readFence) === 0) return;
+      } finally {
+        release();
+      }
     }
     throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }
@@ -35033,7 +35115,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.3.0";
+var MCP_CLIENT_VERSION = "0.3.1";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -35311,19 +35393,68 @@ async function runStdio() {
     client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
   }
   const server = createParleMcpServer(client, new ParleAccountClient(), deliveryBridge);
-  installLifecycleHandlers(client, deliveryBridge);
   await server.connect(new StdioServerTransport());
-  void client.ensureReadySafe().then(async () => {
-    if (deliveryBridge && client.runtime.bootstrapped) await deliveryBridge.start();
-  }).catch((error51) => {
-    console.error(`Parle hook delivery bridge stopped: ${redactString(error51 instanceof Error ? error51.message : String(error51))}`);
+  const stopEagerBootstrap = scheduleEagerBootstrap(client, deliveryBridge, {
+    onError(error51) {
+      console.error(`Parle hook delivery bridge stopped: ${redactString(error51 instanceof Error ? error51.message : String(error51))}`);
+    }
   });
+  installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap);
 }
-function installLifecycleHandlers(client, deliveryBridge) {
+function scheduleEagerBootstrap(client, deliveryBridge, options = {}) {
+  const setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
+  const clearTimer = options.clearTimer || ((timer2) => clearTimeout(timer2));
+  const now = options.now || (() => Date.now());
+  let timer;
+  let stopped = false;
+  let running = false;
+  let attempts = 0;
+  const maxAttempts = 5;
+  const schedule = (delayMs) => {
+    if (stopped || attempts >= maxAttempts) return;
+    const delay2 = Math.min(Math.max(1, delayMs), 2147483647);
+    timer = setTimer(() => {
+      timer = void 0;
+      void arm().catch(options.onError || (() => void 0));
+    }, delay2);
+    timer.unref?.();
+  };
+  const arm = async () => {
+    if (stopped || running || attempts >= maxAttempts) return;
+    running = true;
+    attempts += 1;
+    try {
+      await client.ensureReadySafe();
+      if (stopped) return;
+      if (client.runtime.bootstrapped) {
+        if (deliveryBridge) await deliveryBridge.start();
+        return;
+      }
+      const retryAt = client.runtime.nextRetryAt ? Date.parse(client.runtime.nextRetryAt) : Number.NaN;
+      if (client.runtime.bootstrapState !== "failed" || !Number.isFinite(retryAt)) return;
+      const retryDelay = retryAt - now();
+      schedule(retryDelay > 0 ? retryDelay : 1e3);
+    } catch (error51) {
+      options.onError?.(error51);
+      schedule(1e3 * 2 ** Math.min(attempts - 1, 6));
+    } finally {
+      running = false;
+    }
+  };
+  void arm();
+  return () => {
+    stopped = true;
+    if (timer) clearTimer(timer);
+    timer = void 0;
+  };
+}
+function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = () => {
+}) {
   let ending = false;
   const shutdown = () => {
     if (ending) return;
     ending = true;
+    stopEagerBootstrap();
     const timer = setTimeout(() => process.exit(0), 2e3);
     void deliveryBridge?.stop().catch(() => {
     }).then(() => client.endSession()).catch(() => {
@@ -35613,6 +35744,7 @@ export {
   resolveWatcherEnvironment,
   runStdio,
   runWatcher,
+  scheduleEagerBootstrap,
   watcherExitRequiresInternalRestart,
   watcherRequestWire
 };

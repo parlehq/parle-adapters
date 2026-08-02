@@ -52,10 +52,9 @@ test("anonymous session creation sends a closed empty object and the current ver
   await client.endSession().catch(() => undefined);
 });
 
-test("alias bootstrap prepares wake, walks inventory, and claims the discovered generation", async () => {
+test("alias bootstrap prepares wake, reads the durable fence, and claims the discovered generation", async () => {
   const order = [];
   const claims = [];
-  let inventoryPage = 0;
   const client = new ParleAgentClient({
     env: ENV,
     fetch: async (url, init = {}) => {
@@ -68,12 +67,9 @@ test("alias bootstrap prepares wake, walks inventory, and claims the discovered 
       }
       if (path.endsWith("/participants")) { order.push("enter"); return json({ participant_id: "part-candidate" }, 201); }
       if (path === "/v/agent/wake") { order.push("wake"); return new Response(": ready\n\n", { status: 200 }); }
-      if (path === "/v/agent/sessions") {
-        inventoryPage += 1;
-        order.push(`inventory-${inventoryPage}`);
-        if (inventoryPage === 1) return json({ sessions: [{ alias: null, generation: 0 }], next: "page-2" });
-        assert.equal(parsed.searchParams.get("after"), "page-2");
-        return json({ sessions: [{ alias: "main", generation: 7 }], next: null });
+      if (path === "/v/agent/session-aliases/main") {
+        order.push("alias-lookup");
+        return json({ alias: "main", generation: 7, current_agent_session_id: "prior" });
       }
       if (path.endsWith("/claim-alias")) {
         order.push("claim");
@@ -86,14 +82,42 @@ test("alias bootstrap prepares wake, walks inventory, and claims the discovered 
     },
   });
   await client.connect();
-  assert.deepEqual(order.slice(0, 6), ["create", "enter", "wake", "inventory-1", "inventory-2", "claim"]);
+  assert.deepEqual(order.slice(0, 5), ["create", "enter", "wake", "alias-lookup", "claim"]);
   assert.deepEqual(claims, [{ alias: "main", expected_generation: 7 }]);
   assert.equal(client.runtime.sessionGeneration, 8);
   assert.equal(client.runtime.sessionAddress, "@p.a.main");
   await client.endSession();
 });
 
-test("proactive alias replacement is single-flight and advances from inventory generation", async () => {
+test("alias bootstrap recovers the generation after the prior owner disappears from live inventory", async () => {
+  let inventoryReads = 0;
+  let claimedGeneration;
+  const client = new ParleAgentClient({
+    env: ENV,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session("after-expiry"), 201);
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation: 9, current_agent_session_id: "expired-owner" });
+      if (path === "/v/agent/sessions") { inventoryReads += 1; return json({ sessions: [], next: null }); }
+      if (path.endsWith("/participants")) return json({ participant_id: "part-after-expiry" }, 201);
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/claim-alias")) {
+        claimedGeneration = JSON.parse(init.body).expected_generation;
+        return json({ ...session("after-expiry", 10), alias: "main", address: "@p.a.main" });
+      }
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  await client.connect();
+  assert.equal(claimedGeneration, 9);
+  assert.equal(inventoryReads, 0, "generation recovery does not depend on a live prior owner");
+  assert.equal(client.runtime.sessionGeneration, 10);
+  await client.endSession();
+});
+
+test("proactive alias replacement is single-flight and advances from the durable alias generation", async () => {
   let creates = 0;
   let claimGeneration = 2;
   let releaseCreate;
@@ -108,7 +132,7 @@ test("proactive alias replacement is single-flight and advances from inventory g
         if (creates === 2) await createGate;
         return json(session(`candidate-${creates}`), 201);
       }
-      if (path === "/v/agent/sessions") return json({ sessions: claimGeneration ? [{ alias: "main", generation: claimGeneration }] : [], next: null });
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation: claimGeneration, current_agent_session_id: claimGeneration ? `candidate-${Math.max(1, creates - 1)}` : null });
       if (path.endsWith("/participants")) return json({ participant_id: `part-${creates}` }, 201);
       if (path === "/v/agent/wake") return new Response(": ready\n\n");
       if (path.endsWith("/claim-alias")) {
@@ -147,7 +171,7 @@ test("a stale claim conflict is terminal for that candidate and recovery uses a 
     fetch: async (url, init = {}) => {
       const path = new URL(String(url)).pathname;
       if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session(`c-${++creates}`), 201);
-      if (path === "/v/agent/sessions") return json({ sessions: [{ alias: "main", generation }], next: null });
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation, current_agent_session_id: generation ? "prior" : null });
       if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
       if (path === "/v/agent/wake") return new Response(": ready\n\n");
       if (path.endsWith("/claim-alias")) {
@@ -177,7 +201,7 @@ test("a stale claim conflict is terminal for that candidate and recovery uses a 
   await client.endSession();
 });
 
-test("lost alias claim response recovers by exact replay without retiring the committed candidate", async () => {
+test("lost alias claim response recovers by durable alias confirmation without retiring the committed candidate", async () => {
   let creates = 0;
   let claims = 0;
   let inventoryReads = 0;
@@ -189,10 +213,14 @@ test("lost alias claim response recovers by exact replay without retiring the co
       const path = new URL(String(url)).pathname;
       const credential = init.headers?.["Parle-Agent-Session"];
       if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session(`lost-${++creates}`), 201);
+      if (path === "/v/agent/session-aliases/main") {
+        return json(committed
+          ? { alias: "main", generation: 5, current_agent_session_id: committed.agent_session_id }
+          : { alias: "main", generation: 4, current_agent_session_id: "prior" });
+      }
       if (path === "/v/agent/sessions") {
         inventoryReads += 1;
-        const sessions = committed && inventoryReads > 2 ? [{ ...committed }] : [{ alias: "main", generation: 4, agent_session_id: "prior" }];
-        return json({ sessions, next: null });
+        return json({ sessions: committed ? [{ ...committed }] : [], next: null });
       }
       if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
       if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
@@ -205,7 +233,7 @@ test("lost alias claim response recovers by exact replay without retiring the co
           committed = { ...session(candidateId, body.expected_generation + 1), alias: body.alias, address: "@p.a.main" };
           throw new TypeError("response dropped after commit");
         }
-        assert.equal(candidateId, committed.agent_session_id, "recovery replays the exact original candidate request");
+        assert.equal(candidateId, committed.agent_session_id, "any replay remains bound to the original candidate");
         assert.deepEqual(body, { alias: "main", expected_generation: 4 });
         return json(committed);
       }
@@ -217,7 +245,7 @@ test("lost alias claim response recovers by exact replay without retiring the co
   await client.connect();
   assert.equal(client.runtime.agentSessionId, "lost-1");
   assert.equal(client.runtime.sessionGeneration, 5);
-  assert.equal(claims, 2);
+  assert.equal(claims, 1, "durable alias plus live inventory confirmation avoids an unnecessary replay");
   assert.deepEqual(ended, [], "an ambiguously committed candidate is never retired during recovery");
   await client.endSession();
 });
@@ -231,7 +259,7 @@ test("candidate wake is prefetched across claim, consumed once, and room entry r
     fetch: async (url, init = {}) => {
       const path = new URL(String(url)).pathname;
       if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session("prefetched"), 201);
-      if (path === "/v/agent/sessions") return json({ sessions: [], next: null });
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation: 0, current_agent_session_id: null });
       if (path.endsWith("/participants")) { order.push("enter"); return json({ participant_id: "p" }, 201); }
       if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
       if (path === "/v/agent/wake") { wakeOpens += 1; return wakeOpens === 1 ? prefetched : new Response(": replacement\n\n"); }
@@ -283,6 +311,66 @@ test("lifecycle exclusion joins rollover before end and the ended fence prevents
   assert.deepEqual(ended, ["life-1", "life-2"], "rollover retires the predecessor and end retires the joined successor");
   await assert.rejects(client.performProactiveRollover(), /lifecycle has ended/);
   await assert.rejects(client.bootstrap(), /lifecycle has ended/);
+});
+
+test("a completed responsive read stays fenced until its caller binds the result", async () => {
+  let creates = 0;
+  const ended = [];
+  const client = new ParleAgentClient({
+    env: { ...ENV, PARLE_SESSION_ALIAS: undefined },
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions") return json(session(`read-fence-${++creates}`), 201);
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "session" }, messages: [{ seq: 1, event_id: "old-work" }] });
+      if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
+      throw new Error(`unexpected ${path} ${init.method || "GET"}`);
+    },
+  });
+  await client.connect();
+  const read = await client.drainResponsiveDeliveryWithFence();
+  assert.equal(read.delivery.messages[0].event_id, "old-work");
+  await assert.rejects(client.performProactiveRollover(), /being read/);
+  assert.equal(client.runtime.agentSessionId, "read-fence-1");
+  read.release();
+  await client.endSession();
+  assert.deepEqual(ended, ["read-fence-2", "read-fence-1"], "the blocked candidate and original session are both retired");
+});
+
+test("a retained responsive fence permits ack-triggered rebootstrap without self-blocking", async () => {
+  let creates = 0;
+  let ackAttempts = 0;
+  const client = new ParleAgentClient({
+    env: { ...ENV, PARLE_SESSION_ALIAS: undefined },
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions") return json(session(`ack-bootstrap-${++creates}`), 201);
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "session" }, messages: [{ seq: 1, event_id: "baseline-work" }] });
+      if (path.endsWith("/responsive-delivery/ack")) {
+        ackAttempts += 1;
+        if (ackAttempts === 1) return json({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session" } }, 401);
+        return json({ delivery: { cursor_scope: "session", last_acked_seq: 1 } });
+      }
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path} ${init.method || "GET"}`);
+    },
+  });
+  await client.connect();
+  const read = await client.drainResponsiveDeliveryWithFence();
+  try {
+    await client.ackResponsiveDelivery(read.delivery.messages[0]);
+  } finally {
+    read.release();
+  }
+  assert.equal(creates, 2);
+  assert.equal(ackAttempts, 2);
+  assert.equal(client.runtime.agentSessionId, "ack-bootstrap-2");
+  await client.endSession();
 });
 
 test("bounded rollover storm protection retries after a quiet cooldown without a hot loop", async () => {
@@ -367,6 +455,34 @@ test("rollover scheduling uses the injectable timer and unreferences it", async 
   assert.equal(scheduled.length, 1);
   assert.equal(scheduled[0].delayMs, expectedAt - Date.parse("2026-08-01T00:10:00Z"));
   assert.equal(unrefCalls, 1);
+  await client.endSession();
+});
+
+test("a responsive read can rebootstrap its own expired anonymous session without self-blocking", async () => {
+  let creates = 0;
+  let drains = 0;
+  const client = new ParleAgentClient({
+    env: { ...ENV, PARLE_SESSION_ALIAS: "" },
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session(`read-rebootstrap-${++creates}`), 201);
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/responsive-delivery")) {
+        drains += 1;
+        if (drains === 1) return json({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session" } }, 401);
+        return json({ delivery: { cursor_scope: "session" }, messages: [{ seq: 1, event_id: "successor-row" }] });
+      }
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  await client.connect();
+  const delivery = await client.drainResponsiveDelivery();
+  assert.equal(creates, 2);
+  assert.equal(client.runtime.agentSessionId, "read-rebootstrap-2");
+  assert.equal(delivery.messages[0].event_id, "successor-row");
   await client.endSession();
 });
 

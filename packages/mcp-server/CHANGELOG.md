@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 (2026-08-02)
+
+- Fence responsive reads at request start so exact-session work cannot cross rollover before entering the pending queue.
+- Retry eager startup bootstrap automatically at the server deadline without waiting for a later tool call.
+
 ## 0.3.0 (2026-08-02)
 
 - Consume the 2026-08-01 shared session lifecycle.
