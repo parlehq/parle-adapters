@@ -2,6 +2,9 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Add the shared responsive delivery controller: one session wake stream, per-room drain, dedupe by room and event, ack only after handling, bounded poison guard, and diagnostics (issue #63 S4).
+- Serialize data-plane calls against binding changes, resolving rooms inside that gate (#28).
+- Warn when a rebootstrapped session does not reclaim its configured durable alias (#49).
 - Hard cut: the session runtime owns no room state. Cursors, participants, handles, unread counts, and health live only in rooms[], with no primary-room projection.
 - Report rooms[] from connect summaries, profile-switch results, and the session-established block.
 - Add PARLE_PROFILES multi-room configuration with fail-closed preflight validation (issue #63 S1).

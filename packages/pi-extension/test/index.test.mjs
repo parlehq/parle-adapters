@@ -2439,3 +2439,16 @@ test("bootstrapped terminal heartbeat latches status and stale runs cannot repla
   __testing.recordAutomaticFailure({ status: 400, action: "fix_client", message: "stale" }, __testing.resolveConfig(probe.harness.cwd), -1);
   assert.equal(__testing.runtimeState().terminalCause.message, cause.message);
 });
+
+test("profile switch publication keys off claim authority, not the alias field", async () => {
+  const project = aliasSwitchProject({ targetAliasOwner: "as-old" });
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+  // A pending injection would fail the commit guard. It must not run once the
+  // claim has committed, because the alias address already routes to the
+  // target session and local publication has to be non-throwing.
+  const switched = await harness.call("parle_switch_profile", { profile: "target" });
+  assert.equal(switched.details.switched, true);
+  assert.equal(project.claimed().length, 1);
+  assert.equal(harness.statuses.at(-1).label.includes("@p.a.main-target"), true);
+});

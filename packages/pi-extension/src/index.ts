@@ -249,6 +249,10 @@ const preparedWakeSlots = new WeakMap<RuntimeState, CandidateWakeSlot>();
 // supersession is inferred from this session id, never from token strings,
 // because a rotated token still belongs to the same durable agent.
 const preparedAliasOwners = new WeakMap<RuntimeState, { priorAliasOwnerSessionId?: string }>();
+// Explicit claim authority. A prepared state carrying sessionAlias is not the
+// same fact as a claim having committed, and publication ordering must key off
+// the claim itself rather than infer it from a field.
+const preparedClaimAuthority = new WeakSet<RuntimeState>();
 // Held between a pre-claim guard and its local publication. Responsive reads
 // open outside the lifecycle exclusion, so without this the guard could pass
 // and a read could still start before the switch publishes.
@@ -1501,7 +1505,8 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
       preparedAliasOwners.set(state, { priorAliasOwnerSessionId: aliasFacts.currentAgentSessionId });
       if (preClaimGuardReason) assertPiCommitAllowed(previous, { ...prepared, sessionAlias: alias, responsiveContinuity: "alias" }, preClaimGuardReason);
       const claimed = await claimAliasWithRecovery(cfg, prepared, alias, expectedGeneration, signal);
-      prepared.sessionAlias = alias;
+      preparedClaimAuthority.add(state);
+      prepared.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
       prepared.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
       prepared.sessionAddress = sessionRouteAddress(cfg, { ...session, ...claimed, alias });
       prepared.createdAt = String(claimed.created_at || prepared.createdAt || "");
@@ -1798,10 +1803,10 @@ async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: 
       return { cfg, state };
     },
     commit(value) {
-      // The host owns this synchronous final guard when nothing was claimed.
-      // Once the claim commits, the address already routes here and local
-      // publication must not throw, so the guard runs pre-claim instead.
-      if (!value.state.sessionAlias) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
+      // The host owns this synchronous final guard when no claim committed.
+      // Once it has, the address already routes here and local publication must
+      // not throw, so the guard runs pre-claim instead.
+      if (!preparedClaimAuthority.has(value.state)) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
       const candidateWake = preparedWakeSlots.get(value.state);
       preparedWakeSlots.delete(value.state);
       const unusedPreviousWake = prefetchedWake;

@@ -33577,6 +33577,13 @@ var ParleAgentClient = class _ParleAgentClient {
   // exclusion, so without this barrier the pre-claim guard would be advisory:
   // a read could open after the guard passed and before publication.
   publicationBarrier;
+  // Data-plane calls and binding changes must not interleave (issue #28). Room
+  // work takes the shared side; a profile switch takes the exclusive side, so
+  // no read, send, or ack can straddle a room rebinding. A scratch client is a
+  // separate instance, so its own bootstrap is never blocked by this gate.
+  dataPlaneActive = 0;
+  dataPlaneIdle;
+  bindingChangeInFlight;
   // Supplied by the caller that owns the transition. Invoked inside candidate
   // preparation after every non-mutating call has succeeded and immediately
   // before the alias claim, which is the only authority-transferring step.
@@ -33585,6 +33592,7 @@ var ParleAgentClient = class _ParleAgentClient {
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   automaticTerminalBinding;
+  missingAliasWarning;
   constructor(options = {}) {
     this.env = options.env || process.env;
     this.cwd = options.cwd ?? process.cwd();
@@ -33644,7 +33652,7 @@ var ParleAgentClient = class _ParleAgentClient {
           ...room?.lastError ? { lastError: room.lastError } : {}
         };
       }),
-      warnings: [...this.cfg.warnings, ...this.staleTokenHint() ? [this.staleTokenHint()] : [], ...this.unreadIntervalHint() ? [this.unreadIntervalHint()] : []]
+      warnings: [...this.cfg.warnings, ...this.staleTokenHint() ? [this.staleTokenHint()] : [], ...this.unreadIntervalHint() ? [this.unreadIntervalHint()] : [], ...this.missingAliasWarning ? [this.missingAliasWarning] : []]
     };
   }
   setup() {
@@ -33755,6 +33763,41 @@ var ParleAgentClient = class _ParleAgentClient {
       throw new ParleApiError("Parle setup needed: PARLE_ROOM_AGENT_TOKEN is missing", { code: "setup_needed" });
     assertSafeBase2(this.cfg.apiBase.value || DEFAULT_API_BASE3, this.env);
     assertSafeBase2(this.cfg.wakeBase.value || this.cfg.apiBase.value || DEFAULT_WAKE_BASE, this.env);
+  }
+  async withDataPlane(fn) {
+    while (this.bindingChangeInFlight)
+      await this.bindingChangeInFlight.catch(() => void 0);
+    this.dataPlaneActive += 1;
+    try {
+      return await fn();
+    } finally {
+      this.dataPlaneActive -= 1;
+      if (this.dataPlaneActive === 0) {
+        const idle = this.dataPlaneIdle;
+        this.dataPlaneIdle = void 0;
+        idle?.();
+      }
+    }
+  }
+  async withBindingChange(fn) {
+    while (this.bindingChangeInFlight)
+      await this.bindingChangeInFlight.catch(() => void 0);
+    let release;
+    this.bindingChangeInFlight = new Promise((resolve) => {
+      release = resolve;
+    });
+    try {
+      if (this.dataPlaneActive > 0) {
+        await new Promise((resolve) => {
+          this.dataPlaneIdle = resolve;
+        });
+      }
+      return await fn();
+    } finally {
+      const settle = release;
+      this.bindingChangeInFlight = void 0;
+      settle();
+    }
   }
   // Room UUID is the only routing selector; handles and profile labels are
   // display metadata. With several rooms configured, omission fails closed
@@ -33931,6 +33974,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }
       const unusedPreviousWake = this.commitCandidate(prepared, epoch);
       await this.completeCandidateHandoff(previous, prepared.state, "bootstrap", signal, unusedPreviousWake, oldWasLive);
+      this.assertExpectedAliasRecovered();
       this.clearAutomaticTerminalLatch();
       this.clearRolloverStormProtection();
       this.consecutiveBootstrapFailures = 0;
@@ -33954,6 +33998,20 @@ var ParleAgentClient = class _ParleAgentClient {
       this.publishRuntimeState();
       throw error51;
     }
+  }
+  // A replacement process that comes back without its configured durable route
+  // looks healthy while peers address a session that no longer exists, so the
+  // gap is reported rather than left silent (issue #49).
+  assertExpectedAliasRecovered() {
+    const expected = this.cfg.sessionAlias?.value;
+    if (!expected || this.runtime.sessionAlias === expected) {
+      this.missingAliasWarning = void 0;
+      return;
+    }
+    const held = this.runtime.sessionAlias ? ` The session holds ${this.runtime.sessionAlias} instead.` : "";
+    this.missingAliasWarning = `Parle session did not reclaim its configured durable alias ${expected}; peers addressing that route will not reach this session.${held} Check whether another live session holds the alias, then reconnect.`;
+    this.runtime.lastError = this.missingAliasWarning;
+    this.publishRuntimeState();
   }
   async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness) {
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
@@ -34032,7 +34090,7 @@ var ParleAgentClient = class _ParleAgentClient {
         this.preClaimGuard?.({ ...candidate, sessionAlias: alias, responsiveContinuity: "alias" });
         const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal);
         aliasClaimed = true;
-        candidate.sessionAlias = alias;
+        candidate.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
         candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
         candidate.sessionAddress = typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress;
         candidate.createdAt = String(claimed.created_at || candidate.createdAt);
@@ -34301,7 +34359,7 @@ var ParleAgentClient = class _ParleAgentClient {
       throw new Error("A Parle profile switch is already in progress.");
     this.profileSwitchInFlight = true;
     try {
-      return await this.withLifecycleExclusion(async () => {
+      return await this.withBindingChange(() => this.withLifecycleExclusion(async () => {
         this.assertLifecycleActive();
         const epoch = this.lifecycleEpoch;
         const previousCfg = this.cfg;
@@ -34424,7 +34482,7 @@ var ParleAgentClient = class _ParleAgentClient {
           if (scratch && !committed)
             await scratch.endSession().catch(() => void 0);
         }
-      });
+      }));
     } finally {
       this.profileSwitchInFlight = false;
     }
@@ -34927,9 +34985,8 @@ var ParleAgentClient = class _ParleAgentClient {
   }
   async readSurface(surface, params, signal) {
     const generation = this.bootstrapGeneration;
-    const roomCfg = this.roomTarget(params.roomId);
-    const roomId = roomCfg.roomId.value;
-    return this.withRebootstrap(async () => {
+    return this.withDataPlane(() => this.withRebootstrap(async () => {
+      const roomId = this.roomTarget(params.roomId).roomId.value;
       const room = this.roomRuntime(roomId);
       const since = typeof params.sinceSeq === "number" ? params.sinceSeq : room.cursor || 0;
       const wait = clampWaitSeconds(params.waitSeconds);
@@ -34949,29 +35006,33 @@ var ParleAgentClient = class _ParleAgentClient {
       const baseNote = wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text.";
       const note = surface === "inbound" ? `${baseNote} ${INBOX_REPLY_GUIDANCE}` : baseNote;
       return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}, note };
-    }, signal);
+    }, signal));
   }
   async affordances(signalOrParams, maybeSignal) {
     const params = signalOrParams && !(signalOrParams instanceof AbortSignal) ? signalOrParams : {};
     const signal = signalOrParams instanceof AbortSignal ? signalOrParams : maybeSignal;
-    const roomId = this.roomTarget(params.roomId).roomId.value;
     const generation = this.bootstrapGeneration;
-    const result = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/affordances`, { session: true, roomId, signal }), signal);
+    let roomId = "";
+    const result = await this.withDataPlane(() => this.withRebootstrap(() => {
+      roomId = this.roomTarget(params.roomId).roomId.value;
+      return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/affordances`, { session: true, roomId, signal });
+    }, signal));
     return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, roomId, session: this.sessionEstablishedBlock() } : result;
   }
   async send(params, signal) {
     const idempotencyKey = params.idempotencyKey || this.randomUUID();
     const generation = this.bootstrapGeneration;
-    const roomId = this.roomTarget(params.roomId).roomId.value;
+    let roomId = "";
     const body = { type: "message_submitted", payload: { body: params.body } };
     if (params.to)
       body.addressing = { audience: "direct", to: params.to };
     try {
-      return await this.withRebootstrap(async () => {
+      return await this.withDataPlane(() => this.withRebootstrap(async () => {
+        roomId = this.roomTarget(params.roomId).roomId.value;
         const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", session: true, roomId, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
         const deliveryStatus = summarizeSendDelivery(result);
         return { ...result, roomId, idempotencyKey, warning: addressingWarning(params.body, params.to), ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
-      }, signal);
+      }, signal));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
         return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey: error51.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error51.message) };

@@ -2066,6 +2066,7 @@ var pendingResponsiveMessages = [];
 var activeResponsiveReads = /* @__PURE__ */ new Set();
 var preparedWakeSlots = /* @__PURE__ */ new WeakMap();
 var preparedAliasOwners = /* @__PURE__ */ new WeakMap();
+var preparedClaimAuthority = /* @__PURE__ */ new WeakSet();
 var piPublicationBarrier;
 var responsiveFlushRunning = false;
 var prefetchedWake;
@@ -2920,7 +2921,7 @@ function withTimeoutSignal(parent, timeoutMs) {
     timedOut: () => didTimeout
   };
 }
-function parseSSEBlocks(buffer) {
+function parseSSEBlocks2(buffer) {
   const events = [];
   const normalized = buffer.replace(/\r\n/g, "\n");
   const parts = normalized.split("\n\n");
@@ -3039,7 +3040,7 @@ async function consumeWakeStream(pi, ctx, cfg, signal) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const parsed = parseSSEBlocks(buffer);
+      const parsed = parseSSEBlocks2(buffer);
       buffer = parsed.rest;
       for (const event of parsed.events) {
         if (event.event === "wake") await handleWakeHint(pi, ctx, cfg, signal);
@@ -3214,7 +3215,8 @@ async function bootstrap(ctx, cfg, signal, preserveCursor = false, aliasOverride
       preparedAliasOwners.set(state, { priorAliasOwnerSessionId: aliasFacts.currentAgentSessionId });
       if (preClaimGuardReason) assertPiCommitAllowed(previous, { ...prepared, sessionAlias: alias, responsiveContinuity: "alias" }, preClaimGuardReason);
       const claimed = await claimAliasWithRecovery(cfg, prepared, alias, expectedGeneration, signal);
-      prepared.sessionAlias = alias;
+      preparedClaimAuthority.add(state);
+      prepared.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
       prepared.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
       prepared.sessionAddress = sessionRouteAddress(cfg, { ...session, ...claimed, alias });
       prepared.createdAt = String(claimed.created_at || prepared.createdAt || "");
@@ -3482,7 +3484,7 @@ async function switchProfileLocked(pi, ctx, profile, signal) {
       return { cfg, state };
     },
     commit(value) {
-      if (!value.state.sessionAlias) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
+      if (!preparedClaimAuthority.has(value.state)) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
       const candidateWake = preparedWakeSlots.get(value.state);
       preparedWakeSlots.delete(value.state);
       const unusedPreviousWake = prefetchedWake;
@@ -4332,7 +4334,7 @@ var __testing = {
   handleWakeHint,
   queueResponsiveMessages,
   flushPendingResponsiveMessages,
-  parseSSEBlocks,
+  parseSSEBlocks: parseSSEBlocks2,
   fetchWakeStream,
   parleRequest,
   requestJson,
