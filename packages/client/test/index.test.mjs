@@ -1628,6 +1628,23 @@ test("multi-room room-scoped calls fail closed without roomId and never cross be
   }
 });
 
+test("eager multi-room bootstrap succeeds without reinjecting a profile selector conflict", async () => {
+  const harness = twoRoomClient();
+  try {
+    // ensureReadySafe re-resolves configuration before bootstrapping. In
+    // multi-room mode that re-resolution must run against PARLE_PROFILES
+    // alone; reinjecting the bearer room's profile as PARLE_PROFILE made
+    // every automatic bootstrap fail the selector conflict while explicit
+    // connect still worked, so hook-bridge hosts never armed on startup.
+    const attempted = await harness.client.ensureReadySafe();
+    assert.equal(attempted, true);
+    assert.equal(harness.client.runtime.bootstrapped, true);
+    assert.deepEqual(harness.client.runtime.rooms.map((room) => room.state), ["ready", "ready"]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("an ordinary room denial degrades only that room", async () => {
   const harness = twoRoomClient({ denyEntry: "beta" });
   try {

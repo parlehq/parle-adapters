@@ -34043,7 +34043,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.roomConfigs = roomSet.rooms;
     this.cfg = roomSet.rooms[0];
     this.multiRoom = roomSet.mode === "multi";
-    this.activeProfile = this.cfg.profile?.value;
+    this.activeProfile = this.multiRoom ? void 0 : this.cfg.profile?.value;
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => /* @__PURE__ */ new Date());
     this.sleepImpl = options.sleep || defaultSleep2;
@@ -35814,7 +35814,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.5.0";
+var MCP_CLIENT_VERSION = "0.5.1";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

@@ -903,7 +903,11 @@ export class ParleAgentClient {
     // single-room mode, is simply the room.
     this.cfg = roomSet.rooms[0];
     this.multiRoom = roomSet.mode === "multi";
-    this.activeProfile = this.cfg.profile?.value;
+    // activeProfile drives single-room profile selection and switching only.
+    // In multi-room mode the environment's PARLE_PROFILES selector is already
+    // the whole binding; re-injecting the bearer room's profile name as
+    // PARLE_PROFILE would make every re-resolution fail the selector conflict.
+    this.activeProfile = this.multiRoom ? undefined : this.cfg.profile?.value;
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => new Date());
     this.sleepImpl = options.sleep || defaultSleep;

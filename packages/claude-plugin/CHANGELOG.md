@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 (2026-08-02)
+
+- Refresh the bundled MCP server so eager multi-room bootstrap arms the hook bridge on startup.
+
 ## 0.7.1 (2026-08-02)
 
 - Refresh the bundled MCP server for shared-controller hook delivery with preserved lease, fence, and baseline semantics.

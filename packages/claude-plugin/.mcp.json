@@ -7,7 +7,7 @@
       ],
       "env": {
         "PARLE_INTEGRATION_NAME": "@parlehq/claude-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.7.1"
+        "PARLE_INTEGRATION_VERSION": "0.7.2"
       },
       "alwaysLoad": true
     }

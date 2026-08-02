@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2026-08-02)
+
+- Keep multi-room re-resolution on the PARLE_PROFILES selector alone. Reinjecting the bearer room profile as PARLE_PROFILE made every automatic bootstrap (eager startup, status auto-connect) fail a self-inflicted selector conflict while explicit connect still worked, so hook-bridge hosts never armed on startup.
+
 ## 0.3.0 (2026-08-02)
 
 - Pass the server-selected cursor scope to delivery handlers so hosts can apply startup policy to session-scoped backlog.

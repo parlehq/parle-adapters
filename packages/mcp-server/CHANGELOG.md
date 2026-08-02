@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 (2026-08-02)
+
+- Refresh the bundled shared client so eager multi-room bootstrap arms the hook bridge on startup instead of failing a self-inflicted profile selector conflict.
+
 ## 0.5.0 (2026-08-02)
 
 - Move the hook delivery bridge onto the shared responsive delivery controller: the controller owns wake, room routing, per-room drain, deduplication, and acknowledgement, while the bridge keeps the socket protocol, lease, commit fences, and session-commit guard.

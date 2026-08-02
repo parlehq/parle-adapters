@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2026-08-02)
+
+- Refresh the bundled shared client so eager multi-room bootstrap no longer fails a self-inflicted profile selector conflict.
+
 ## 0.3.0 (2026-08-02)
 
 - Adopt the shared alias authority module and delete Pi's duplicated claim, lookup, and session-inventory code.
