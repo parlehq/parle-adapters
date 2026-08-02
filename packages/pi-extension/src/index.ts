@@ -1885,6 +1885,11 @@ async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: strin
 
 async function useSessionAliasLocked(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal) {
   assertSessionAlias(alias);
+  // Replacement has to be explicit and recoverable (issue #27): the caller
+  // learns which route it left behind and that peers holding it are now
+  // addressing a retired session.
+  const priorAlias = runtime.sessionAlias;
+  const priorAddress = runtime.sessionAddress;
   assertPiCommitAllowed(runtime, { ...runtime, sessionAlias: alias, responsiveContinuity: "alias" }, "alias_switch");
   const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
   const recovering = await prepareRateLimitRecovery(ctx);
@@ -1940,12 +1945,21 @@ async function useSessionAliasLocked(pi: any, ctx: any, cfg: ParleConfig, alias:
 
     if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
     else startWatcher(pi, ctx, cfg);
+    const replaced = Boolean(priorAlias && priorAlias !== runtime.sessionAlias);
     return {
       status: "alias_active",
       alias: runtime.sessionAlias,
       generation: runtime.sessionGeneration,
       sessionAddress: runtime.sessionAddress,
       expiresAt: runtime.expiresAt,
+      ...(priorAlias ? { priorAlias } : {}),
+      ...(priorAddress ? { priorSessionAddress: priorAddress } : {}),
+      ...(replaced
+        ? {
+            warning: `This session left the alias ${priorAlias}. Peers still addressing @...${priorAlias} reach a retired route; tell them the new address, or run parle_session_alias with ${priorAlias} to reclaim it.`,
+            recovery: `parle_session_alias alias=${priorAlias}`,
+          }
+        : {}),
     };
   } catch (error) {
     restoreRateLimitRecoveryWatcher(pi, ctx, cfg, recovering, priorHealthy);

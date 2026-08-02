@@ -1732,3 +1732,21 @@ test("a session that cannot reclaim its configured alias reports an actionable w
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("a durable alias from persistent configuration warns about route takeover", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-alias-source-"));
+  const home = mkdtempSync(join(tmpdir(), "parle-alias-source-home-"));
+  try {
+    writeFileSync(join(cwd, ".env"), "PARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_SESSION_ALIAS=main\n");
+    const persistent = resolveConfig(cwd, { HOME: home });
+    assert.equal(persistent.sessionAlias.source, ".env");
+    assert.match(persistent.warnings.join(" "), /every process started here takes over that named route/);
+    // The process environment is the deliberate, per-launch way to claim one.
+    const explicit = resolveConfig(cwd, { HOME: home, PARLE_SESSION_ALIAS: "main" });
+    assert.equal(explicit.sessionAlias.source, "env");
+    assert.equal(explicit.warnings.some((warning) => warning.includes("takes over that named route")), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});

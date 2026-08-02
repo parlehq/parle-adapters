@@ -2,6 +2,7 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Report the alias a session left behind, why peers holding it are stranded, and how to reclaim it (#27).
 - Key profile-switch publication off explicit claim authority instead of inferring it from the alias field.
 - Publish runtime snapshot schema v2 with rooms[].
 - Allow a configured session alias across a live profile switch, with the pre-claim guard, publication barrier, and source retirement rules from the shared client.

@@ -472,6 +472,18 @@ function firstConfigValue(name: string, sources: Array<{ name: string; values: R
   return { value: fallback, source: fallback === undefined ? "missing" : "default" };
 }
 
+// A durable alias in persistent configuration is an alias-theft footgun
+// (issue #44): every future process started in that project silently
+// supersedes the named route. Process environment is the deliberate,
+// per-launch way to claim one.
+function aliasConfig(sources: Array<{ name: string; values: Record<string, string | undefined> }>, warnings: string[]): ConfigValue {
+  const alias = firstConfigValue("PARLE_SESSION_ALIAS", sources);
+  if (alias.value && alias.source !== "env") {
+    warnings.push(`PARLE_SESSION_ALIAS is set to ${alias.value} in ${alias.source}, so every process started here takes over that named route and supersedes the previous session. Set it in the process environment for a deliberate singleton role instead.`);
+  }
+  return alias;
+}
+
 function versionConfig(env: Record<string, string | undefined>, dotEnv: Record<string, string>, warnings: string[]): ConfigValue {
   if (env.PARLE_VERSION) {
     // An env value equal to the default is not an override; env-snapshotting
@@ -529,7 +541,7 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
     roomHandle: profile ? undefined : firstConfigValue("PARLE_ROOM_HANDLE", sources),
     agentToken: profile ? profileValue("PARLE_ROOM_AGENT_TOKEN", profile.agentToken) : firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
     agentTokenId: profile ? profileValue("PARLE_AGENT_TOKEN_ID", profile.agentTokenId) : firstConfigValue("PARLE_AGENT_TOKEN_ID", sources),
-    sessionAlias: firstConfigValue("PARLE_SESSION_ALIAS", sources),
+    sessionAlias: aliasConfig(sources, warnings),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     unreadPollIntervalSeconds: firstConfigValue("PARLE_UNREAD_POLL_INTERVAL_SECONDS", sources, "60"),
     profile: profileSelector.value ? profileSelector : undefined,

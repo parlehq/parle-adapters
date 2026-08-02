@@ -2,6 +2,7 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Warn when PARLE_SESSION_ALIAS comes from persistent configuration rather than the process environment (#44).
 - Add a deferred delivery outcome so hosts whose effective handling is asynchronous to the drain acknowledge only after they have acted.
 - Split delivery handling from acknowledgement: a failed ack retries only the ack, never the host handler, so a handled row cannot be injected twice.
 - Acknowledge a row once its bounded handler budget is exhausted, classified as an intentional skip, so one permanently failing message cannot wedge a room.

@@ -2452,3 +2452,39 @@ test("profile switch publication keys off claim authority, not the alias field",
   assert.equal(project.claimed().length, 1);
   assert.equal(harness.statuses.at(-1).label.includes("@p.a.main-target"), true);
 });
+
+test("replacing an active alias reports the route left behind and how to reclaim it", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  let sessionCreates = 0;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    const path = new URL(u).pathname;
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      sessionCreates += 1;
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "2099-01-01T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
+    }
+    if (path.startsWith("/v/agent/session-aliases/")) {
+      return new Response(JSON.stringify({ alias: path.split("/").at(-1), generation: 1, current_agent_session_id: "prior" }), { status: 200 });
+    }
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+    if (path.endsWith("/claim-alias")) {
+      const alias = JSON.parse(String(init.body)).alias;
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias, generation: 2, expires_at: "2099-01-01T00:00:00Z", address: `@p.a.${alias}` }), { status: 200 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${sessionCreates}` }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
+    if (path.endsWith("/end")) return new Response(JSON.stringify({ ended: true }), { status: 200 });
+    throw new Error(`unexpected ${u}`);
+  };
+  const harness = installHarness(cwd);
+  const first = await harness.call("parle_session_alias", { alias: "workshop" });
+  assert.equal(first.details.alias, "workshop");
+  assert.equal(first.details.warning, undefined, "the first claim replaces nothing");
+  const second = await harness.call("parle_session_alias", { alias: "standup" });
+  assert.equal(second.details.alias, "standup");
+  assert.equal(second.details.priorAlias, "workshop");
+  assert.match(second.details.warning, /left the alias workshop/);
+  assert.match(second.details.warning, /reach a retired route/);
+  assert.equal(second.details.recovery, "parle_session_alias alias=workshop");
+});

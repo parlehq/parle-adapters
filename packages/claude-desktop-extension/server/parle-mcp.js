@@ -33207,6 +33207,13 @@ function firstConfigValue(name, sources, fallback) {
   }
   return { value: fallback, source: fallback === void 0 ? "missing" : "default" };
 }
+function aliasConfig(sources, warnings) {
+  const alias = firstConfigValue("PARLE_SESSION_ALIAS", sources);
+  if (alias.value && alias.source !== "env") {
+    warnings.push(`PARLE_SESSION_ALIAS is set to ${alias.value} in ${alias.source}, so every process started here takes over that named route and supersedes the previous session. Set it in the process environment for a deliberate singleton role instead.`);
+  }
+  return alias;
+}
 function versionConfig(env, dotEnv, warnings) {
   if (env.PARLE_VERSION) {
     if (env.PARLE_VERSION !== DEFAULT_VERSION) {
@@ -33253,7 +33260,7 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     roomHandle: profile ? void 0 : firstConfigValue("PARLE_ROOM_HANDLE", sources),
     agentToken: profile ? profileValue("PARLE_ROOM_AGENT_TOKEN", profile.agentToken) : firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
     agentTokenId: profile ? profileValue("PARLE_AGENT_TOKEN_ID", profile.agentTokenId) : firstConfigValue("PARLE_AGENT_TOKEN_ID", sources),
-    sessionAlias: firstConfigValue("PARLE_SESSION_ALIAS", sources),
+    sessionAlias: aliasConfig(sources, warnings),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     unreadPollIntervalSeconds: firstConfigValue("PARLE_UNREAD_POLL_INTERVAL_SECONDS", sources, "60"),
     profile: profileSelector.value ? profileSelector : void 0,
