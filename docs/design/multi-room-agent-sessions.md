@@ -18,7 +18,8 @@ direct room-binding variables.
 Every rejection happens before any network activity, because a mixed-origin or
 duplicated set cannot be repaired once a session credential exists:
 
-- an empty list, a duplicate profile name, or a duplicate room ID
+- a separator-only value such as `,` or ` , `, which names no profiles
+- a duplicate profile name or a duplicate room ID
 - a missing profile
 - mixed API or wake origins across the set
 

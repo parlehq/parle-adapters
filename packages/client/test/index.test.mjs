@@ -1504,6 +1504,19 @@ test("PARLE_PROFILES resolves an explicit ordered room set", () => {
   }
 });
 
+test("an empty PARLE_PROFILES is treated as unset, a separator-only one is not", () => {
+  const empty = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILES: "", PARLE_PROFILE: "alpha" });
+  try {
+    // Config resolution treats "" as absent everywhere; an exported-but-empty
+    // variable must not fail a session that is otherwise configured.
+    const set = resolveRoomSet(empty.cwd, empty.env);
+    assert.equal(set.mode, "single");
+    assert.equal(set.rooms[0].roomId.value, "019f2946-aef5-77ad-a41d-747ce0fd6a1e");
+  } finally {
+    empty.cleanup();
+  }
+});
+
 test("an unset PARLE_PROFILES keeps single-room resolution unchanged", () => {
   const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILE: "alpha" });
   try {
@@ -1520,7 +1533,8 @@ test("PARLE_PROFILES rejects unsafe configuration before any network activity", 
   const cases = [
     [{ PARLE_PROFILES: "alpha,beta", PARLE_PROFILE: "alpha" }, /conflicts with PARLE_PROFILE/],
     [{ PARLE_PROFILES: "alpha,beta", PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e" }, /conflicts with direct room configuration/],
-    [{ PARLE_PROFILES: " , " }, /is empty/],
+    [{ PARLE_PROFILES: " , " }, /names no profiles/],
+    [{ PARLE_PROFILES: "," }, /names no profiles/],
     [{ PARLE_PROFILES: "alpha,alpha" }, /more than once/],
     [{ PARLE_PROFILES: "alpha,missing" }, /missing/],
   ];

@@ -2,6 +2,8 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Recover a room whose entry succeeded but whose projection initialization failed, instead of stranding a real participant binding.
+- Reject a separator-only PARLE_PROFILES before any network activity; an empty value stays equivalent to unset.
 - Add the shared responsive delivery controller: one session wake stream, per-room drain, dedupe by room and event, ack only after handling, bounded poison guard, and diagnostics (issue #63 S4).
 - Serialize data-plane calls against binding changes, resolving rooms inside that gate (#28).
 - Warn when a rebootstrapped session does not reclaim its configured durable alias (#49).

@@ -33298,7 +33298,7 @@ function resolveRoomSet(cwd = process.cwd(), env = process.env) {
   }
   const names = selector.value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
   if (names.length === 0)
-    throw new Error(`PARLE_PROFILES from ${selector.source} is empty. Name each profile explicitly; the catalog is never selected implicitly.`);
+    throw new Error(`PARLE_PROFILES from ${selector.source} names no profiles. Name each profile explicitly; the catalog is never selected implicitly.`);
   const duplicateName = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicateName)
     throw new Error(`PARLE_PROFILES lists ${duplicateName} more than once. Each profile may appear only once.`);
@@ -34333,6 +34333,51 @@ var ParleAgentClient = class _ParleAgentClient {
   async ensureBootstrapped(signal) {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle)
       await this.bootstrap(signal);
+  }
+  // Room entry and projection initialization are separate failures. A room can
+  // hold a real participant binding while its cursor was never initialized,
+  // which leaves it degraded but genuinely entered: the server will deliver to
+  // it and wake on it. Recovery reconciles entry (idempotent) and re-reads the
+  // watermark instead of treating the room as never entered.
+  async recoverRoom(roomId, signal) {
+    const cfg = this.roomTarget(roomId);
+    const room = this.roomRuntime(roomId);
+    if (room.state === "ready")
+      return true;
+    if (!this.runtime.bootstrapped || !this.runtime.sessionHandle)
+      return false;
+    try {
+      const entry = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/participants`, {
+        method: "POST",
+        roomId,
+        session: true,
+        signal,
+        retry: false
+      });
+      room.participantId = String(entry.participant_id || room.participantId || "");
+      if (typeof entry.room_handle === "string" && entry.room_handle)
+        room.roomHandle = entry.room_handle;
+      else if (!room.roomHandle && cfg.roomHandle?.value)
+        room.roomHandle = cfg.roomHandle.value;
+      const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/projection?wait=0`, {
+        roomId,
+        session: true,
+        signal,
+        retry: false
+      });
+      room.cursor = typeof projection.watermark === "number" ? projection.watermark : room.cursor;
+      if (typeof projection?.held_backlog?.held_count === "number")
+        room.heldBacklogCount = projection.held_backlog.held_count;
+      room.state = "ready";
+      room.lastError = void 0;
+      this.publishRoomRuntimes();
+      this.publishRuntimeState();
+      return true;
+    } catch (error51) {
+      room.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+      this.publishRoomRuntimes();
+      return false;
+    }
   }
   /**
    * Internal bridge for a colocated watcher process. The returned credential is

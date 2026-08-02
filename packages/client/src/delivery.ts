@@ -207,18 +207,37 @@ export class ResponsiveDeliveryController {
       // A malformed hint is diagnostic noise, never a delivery failure.
     }
     if (!hinted) return this.drainAll();
-    const room = this.readyRooms().find((entry) => entry.roomId === hinted);
+    // "Configured" is the test, not "ready": a room whose entry succeeded and
+    // whose projection initialization failed is genuinely entered, so the
+    // server delivers and wakes on it. Ignoring its hint would strand it.
+    const room = this.configuredRooms().find((entry) => entry.roomId === hinted);
     if (!room) {
       this.ignoredWakeHints += 1;
       this.lastIgnoredWakeRoomId = hinted;
       return;
     }
-    await this.drainRoom(room);
+    await this.drainDeliverable(room);
   }
 
   private async drainAll(): Promise<void> {
     // Ordering is guaranteed within a room only, so rooms drain concurrently.
-    await Promise.all(this.readyRooms().map((room) => this.drainRoom(room).catch(() => undefined)));
+    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room).catch(() => undefined)));
+  }
+
+  // A degraded room is recovered before it is drained. Recovery reconciles
+  // room entry and re-reads the watermark; a room that cannot be recovered is
+  // left degraded with its error recorded rather than silently skipped.
+  private async drainDeliverable(room: RoomRuntime): Promise<void> {
+    if (room.state !== "ready") {
+      const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
+      if (!recovered) {
+        const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
+        this.stat(room.roomId).lastError = live?.lastError || "room is degraded and could not be reinitialized";
+        return;
+      }
+    }
+    const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
+    await this.drainRoom(current);
   }
 
   private drainRoom(room: RoomRuntime): Promise<void> {

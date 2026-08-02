@@ -573,6 +573,11 @@ export function resolveRoomSet(cwd = process.cwd(), env: Record<string, string |
     { name: "env", values: env },
     { name: ".env", values: dotEnv },
   ];
+  // An empty PARLE_PROFILES is indistinguishable from unset by design: config
+  // resolution treats "" as absent everywhere, so an exported-but-empty
+  // variable falls back to single-room selection instead of failing a shell
+  // that merely exported the name. A present-but-separator-only value is a
+  // real selector with no profiles in it and is rejected below.
   const selector = firstConfigValue("PARLE_PROFILES", sources);
   if (!selector.value) return { mode: "single", rooms: [resolveConfig(cwd, env)], warnings: [] };
 
@@ -587,7 +592,7 @@ export function resolveRoomSet(cwd = process.cwd(), env: Record<string, string |
   }
 
   const names = selector.value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
-  if (names.length === 0) throw new Error(`PARLE_PROFILES from ${selector.source} is empty. Name each profile explicitly; the catalog is never selected implicitly.`);
+  if (names.length === 0) throw new Error(`PARLE_PROFILES from ${selector.source} names no profiles. Name each profile explicitly; the catalog is never selected implicitly.`);
   const duplicateName = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicateName) throw new Error(`PARLE_PROFILES lists ${duplicateName} more than once. Each profile may appear only once.`);
 
@@ -1645,6 +1650,40 @@ export class ParleAgentClient {
 
   async ensureBootstrapped(signal?: AbortSignal) {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) await this.bootstrap(signal);
+  }
+
+  // Room entry and projection initialization are separate failures. A room can
+  // hold a real participant binding while its cursor was never initialized,
+  // which leaves it degraded but genuinely entered: the server will deliver to
+  // it and wake on it. Recovery reconciles entry (idempotent) and re-reads the
+  // watermark instead of treating the room as never entered.
+  async recoverRoom(roomId: string, signal?: AbortSignal): Promise<boolean> {
+    const cfg = this.roomTarget(roomId);
+    const room = this.roomRuntime(roomId);
+    if (room.state === "ready") return true;
+    if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) return false;
+    try {
+      const entry = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/participants`, {
+        method: "POST", roomId, session: true, signal, retry: false,
+      });
+      room.participantId = String(entry.participant_id || room.participantId || "");
+      if (typeof entry.room_handle === "string" && entry.room_handle) room.roomHandle = entry.room_handle;
+      else if (!room.roomHandle && cfg.roomHandle?.value) room.roomHandle = cfg.roomHandle.value;
+      const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/projection?wait=0`, {
+        roomId, session: true, signal, retry: false,
+      });
+      room.cursor = typeof projection.watermark === "number" ? projection.watermark : room.cursor;
+      if (typeof projection?.held_backlog?.held_count === "number") room.heldBacklogCount = projection.held_backlog.held_count;
+      room.state = "ready";
+      room.lastError = undefined;
+      this.publishRoomRuntimes();
+      this.publishRuntimeState();
+      return true;
+    } catch (error) {
+      room.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.publishRoomRuntimes();
+      return false;
+    }
   }
 
   /**

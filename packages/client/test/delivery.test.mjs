@@ -176,3 +176,114 @@ test("deduplication by room and event survives redelivery of the same row", asyn
     h.cleanup();
   }
 });
+
+test("a room entered without projection initialization is recovered, not stranded", async () => {
+  // Entry succeeds and projection fails, so the room holds a real participant
+  // binding while its cursor was never initialized. The server still delivers
+  // and wakes on it, so it must be reinitialized rather than skipped.
+  let projectionFailures = 1;
+  const h = harness({ rooms: { [ALPHA]: [], [BETA]: [{ seq: 1, event_id: "b1" }] } });
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path.includes(BETA) && path.includes("/projection") && projectionFailures > 0) {
+        projectionFailures -= 1;
+        return json({ error: { code: "unavailable", message: "projection unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 503);
+      }
+      return baseFetch(url, init);
+    },
+  });
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async ({ roomId, message }) => { handled.push([roomId, message.event_id]); return "handled"; },
+    reconnectDelayMs: 5,
+  });
+  try {
+    await client.connect();
+    const degraded = client.runtime.rooms.find((room) => room.roomId === BETA);
+    assert.equal(degraded.state, "degraded", "projection failure degrades the room");
+    assert.ok(degraded.participantId, "but the participant binding is real");
+    await controller.start();
+    assert.deepEqual(handled, [[BETA, "b1"]], "the recovered room drains its backlog");
+    assert.equal(client.runtime.rooms.find((room) => room.roomId === BETA).state, "ready");
+    // A hint for a degraded-but-entered room is never counted as unknown.
+    assert.equal(controller.status().ignoredWakeHints, 0);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("a replacement session supersedes a prior alias owner without replay or wedge", async () => {
+  // Own-session continuity (issue #49): the configured alias already has a
+  // prior owner, the replacement claims it from the authoritative generation,
+  // and alias-scoped delivery continues across the generation boundary with
+  // one effective action per row.
+  const home = mkdtempSync(join(tmpdir(), "parle-alias-continuity-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-alias-continuity-project-"));
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(join(home, ".parle", "profiles"), `[alpha]\nroom_id = ${ALPHA}\nagent_token = parle_agt_alpha\n`, { mode: 0o600 });
+  let generation = 4;
+  let sessions = 0;
+  const claims = [];
+  let queue = [{ seq: 7, event_id: "carried" }];
+  const acks = [];
+  const client = new ParleAgentClient({
+    cwd,
+    env: { HOME: home, PARLE_PROFILE: "alpha", PARLE_SESSION_ALIAS: "main" },
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+        sessions += 1;
+        return json({ agent_session_id: `as-${sessions}`, session_credential: `parle_ses_${sessions}`, created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: `@p.a.handle-${sessions}` }, 201);
+      }
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation, current_agent_session_id: sessions > 1 ? `as-${sessions - 1}` : "prior-owner" });
+      if (path.endsWith("/claim-alias")) {
+        claims.push({ session: path.split("/")[4], expected: JSON.parse(init.body).expected_generation });
+        generation += 1;
+        return json({ agent_session_id: `as-${sessions}`, alias: "main", generation, address: "@p.a.main", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
+      }
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${sessions}`, room_handle: "alpha-room" }, 201);
+      if (path === "/v/agent/wake") return new Response(new ReadableStream({ start() {} }), { status: 200 });
+      if (path.includes("/projection")) return json({ watermark: 6, messages: [] });
+      if (path.endsWith("/responsive-delivery/ack")) {
+        const body = JSON.parse(init.body);
+        acks.push(body.event_id);
+        queue = queue.filter((row) => row.event_id !== body.event_id);
+        return json({ acked: true });
+      }
+      if (path.includes("/responsive-delivery")) return json({ delivery: { cursor_scope: "alias" }, messages: queue });
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+    reconnectDelayMs: 5,
+  });
+  try {
+    await client.connect();
+    assert.deepEqual(claims, [{ session: "as-1", expected: 4 }], "the replacement claims from the authoritative generation");
+    assert.equal(client.runtime.sessionAlias, "main");
+    await controller.start();
+    assert.deepEqual(handled, ["carried"]);
+    assert.equal(client.runtime.responsiveCursorScope, "alias", "alias-scoped continuity is preserved");
+    // Roll the session: the same alias is reclaimed and the server may replay
+    // the row to the new participant. It must not be handled twice.
+    queue = [{ seq: 7, event_id: "carried" }];
+    await client.performProactiveRollover();
+    assert.equal(claims.length, 2);
+    assert.equal(claims[1].expected, 5, "the replacement fences on the advanced generation");
+    await client.drainResponsiveDelivery(undefined, ALPHA);
+    assert.deepEqual(handled, ["carried"], "one effective action across the generation boundary");
+    assert.equal(client.runtime.sessionAlias, "main", "the route survives replacement");
+  } finally {
+    await controller.stop();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
