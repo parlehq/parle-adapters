@@ -406,3 +406,41 @@ test("a deferred row is not acknowledged until the host reports effective handli
     h.cleanup();
   }
 });
+
+test("a pending deferred row does not spin the drain", async () => {
+  // A row awaiting host completion is re-offered by the server on every drain.
+  // Counting it as progress would run the room to its batch cap each time.
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 5, event_id: "waiting" }] } });
+  let drains = 0;
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path.includes(ALPHA) && path.includes("/responsive-delivery") && !path.endsWith("/ack")) drains += 1;
+      return baseFetch(url, init);
+    },
+  });
+  let handled = 0;
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async () => { handled += 1; return "deferred"; },
+    maxDrainBatches: 25,
+    reconnectDelayMs: 5,
+  });
+  try {
+    await client.connect();
+    await controller.start();
+    assert.equal(handled, 1);
+    // Two calls: the batch that deferred the row, then the one that finds only
+    // the pending row and stops.
+    assert.ok(drains <= 3, `drain terminated promptly (${drains} calls)`);
+    const before = drains;
+    await controller.drainForTest(ALPHA);
+    assert.equal(handled, 1, "the pending row is never re-handled");
+    assert.ok(drains - before <= 2, "a later drain also terminates");
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});

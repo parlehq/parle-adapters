@@ -1,4 +1,4 @@
-import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, type ResponsiveDeliveryMessage, type RoomRuntime } from "./index.js";
+import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, type ResponsiveCursorScope, type ResponsiveDeliveryMessage, type RoomRuntime } from "./index.js";
 
 // Shared responsive delivery controller (issue #63 S4, ADR-0059).
 //
@@ -17,6 +17,11 @@ export type DeliveryHandlerInput = {
   roomId: string;
   roomHandle?: string;
   profile?: string;
+  // Server-selected cursor scope for the batch this row arrived in. Hosts need
+  // it for startup policy: alias-scoped delivery is durable across sessions and
+  // must be handled, while session-scoped backlog from a replaced session is
+  // ordinarily skipped rather than replayed into a user's context.
+  cursorScope?: ResponsiveCursorScope;
   message: ResponsiveDeliveryMessage;
 };
 
@@ -137,7 +142,7 @@ export class ResponsiveDeliveryController {
     await this.client.ensureBootstrapped(this.abort.signal);
     // A committed session replacement invalidates the open stream. Restart it
     // and drain immediately: the replacement participant may already have rows.
-    this.unsubscribeRevision = this.client.onSessionRevision(() => {
+    this.unsubscribeRevision = (this.client as any).onSessionRevision?.(() => {
       this.wakeAbort?.abort();
       void this.drainAll().catch(() => undefined);
     });
@@ -330,12 +335,15 @@ export class ResponsiveDeliveryController {
       }
       const messages: ResponsiveDeliveryMessage[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
       if (messages.length === 0) return;
+      const cursorScope: ResponsiveCursorScope | undefined = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias"
+        ? delivery.delivery.cursor_scope
+        : undefined;
       let progressed = 0;
       for (const message of messages) {
         if (this.abort.signal.aborted) return;
         const key = deliveryKey(room.roomId, message);
         if (this.seen.has(key)) continue;
-        if (await this.processRow(room, message, key)) progressed += 1;
+        if (await this.processRow(room, message, key, cursorScope)) progressed += 1;
       }
       // A batch where nothing could be handled or acknowledged is this drain's
       // boundary. The room is not stopped: the next wake or revision drains it
@@ -349,15 +357,20 @@ export class ResponsiveDeliveryController {
   // and an ack that failed must never re-run the handler: the host has already
   // acted on the row (Pi injects it), so replaying it would duplicate a visible
   // side effect. Deduplication therefore guards the handler, not the ack.
-  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string): Promise<boolean> {
+  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string, cursorScope?: ResponsiveCursorScope): Promise<boolean> {
     const stat = this.stat(room.roomId);
     let outcome = this.handled.get(key);
+    // A row already awaiting host completion is not progress. Counting it
+    // would spin the drain to its batch cap every time a room has pending
+    // deferred work.
+    if (outcome === "deferred") return false;
     if (outcome === undefined) {
       try {
         outcome = await this.handler({
           roomId: room.roomId,
           ...(room.roomHandle ? { roomHandle: room.roomHandle } : {}),
           ...(room.profile ? { profile: room.profile } : {}),
+          ...(cursorScope ? { cursorScope } : {}),
           message,
         });
         this.handled.set(key, outcome);
@@ -381,7 +394,6 @@ export class ResponsiveDeliveryController {
         stat.poisoned += 1;
       }
     }
-    if (outcome === "deferred") return true;
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
     } catch (error) {

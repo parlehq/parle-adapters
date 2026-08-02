@@ -2,6 +2,8 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Pass the server-selected cursor scope to delivery handlers so hosts can apply startup policy to session-scoped backlog.
+- Stop counting a pending deferred row as drain progress, which would run a room to its batch cap on every wake.
 - Never latch the session's automatic work on a request-scoped error, so a caller mistake such as an omitted roomId cannot stop the wake stream.
 - Extract durable alias authority into a shared, transport-agnostic module so its claim, conflict, and lost-response rules cannot drift between adapters.
 - Warn when PARLE_SESSION_ALIAS comes from persistent configuration rather than the process environment (#44).
