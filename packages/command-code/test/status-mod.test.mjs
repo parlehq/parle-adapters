@@ -17,11 +17,11 @@ function workspace(name) {
 
 function snapshot(overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state: "ready",
     pid: process.pid,
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-    roomHandle: "workshop",
+    rooms: [{ roomId: "room-1", roomHandle: "workshop", state: "ready" }],
     sessionAddress: "@gilman.galexc.abcdefgh",
     ...overrides,
   };
@@ -34,7 +34,7 @@ function writeSnapshot(cwd, name, value) {
 test("renders one live room-first Parle session with fresh unread state", () => {
   const cwd = workspace("single");
   try {
-    writeSnapshot(cwd, "one", snapshot({ unreadCount: 2, unreadAsOf: new Date().toISOString() }));
+    writeSnapshot(cwd, "one", snapshot({ rooms: [{ roomId: "room-1", roomHandle: "workshop", state: "ready", unreadCount: 2, unreadAsOf: new Date().toISOString() }] }));
     assert.equal(renderParleStatus(cwd), "#workshop ✓ @gilman.galexc.abcdefgh · 2 unread");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -112,14 +112,16 @@ test("registers future footer state, emits one delayed startup notice, and clear
   }
 });
 
-test("reads schema v2 snapshots and ignores unknown future schemas", () => {
+test("reads schema v2 snapshots and ignores retired or unknown schemas", () => {
   const cwd = workspace("schema-v2");
   try {
-    writeSnapshot(cwd, "v2", snapshot({ schemaVersion: 2, rooms: [{ roomId: "room-1", roomHandle: "workshop", state: "ready" }] }));
+    writeSnapshot(cwd, "v2", snapshot({}));
     assert.equal(renderParleStatus(cwd), "#workshop ✓ @gilman.galexc.abcdefgh");
     rmSync(join(cwd, ".parle", "runtime", "v2.json"), { force: true });
-    writeSnapshot(cwd, "v3", snapshot({ schemaVersion: 3 }));
-    assert.equal(renderParleStatus(cwd), null);
+    for (const retired of [1, 3]) {
+      writeSnapshot(cwd, "other", snapshot({ schemaVersion: retired }));
+      assert.equal(renderParleStatus(cwd), null, `schema ${retired} must not read as live`);
+    }
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

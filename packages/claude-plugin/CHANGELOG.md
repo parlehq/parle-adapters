@@ -2,6 +2,8 @@
 
 ## 0.7.0 (2026-08-02)
 
+- Hard cut to snapshot schema v2 in the statusline and watcher readers; v1 snapshots read as not live.
+- Label every room in the statusline and sum unread across the session's rooms.
 - Read runtime snapshot schema v2 in the statusline and watcher liveness readers.
 - Refresh the bundled MCP server for alias-aware live profile switching.
 

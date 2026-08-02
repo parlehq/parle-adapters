@@ -57,11 +57,18 @@ not configure. A hintless wake keeps the unconditional drain.
 
 ## Snapshots
 
-Runtime snapshot schema v2 adds `rooms[]` (room ID, handle, profile, state, and
-unread count) beside the primary binding fields. Writers emit v2; the statusline
-reader, Command Code footer reader, and watcher liveness reader all accept v1
-and v2, so a rollout cannot blank a display. No snapshot ever carries a token,
-session credential, or message body.
+Runtime snapshot schema v2 is a hard cut. A snapshot carries one session block
+and `rooms[]` (room ID, handle, profile, state, unread count). There are no v1
+primary-binding fields on a v2 snapshot and no v1 read path: the writer, the
+statusline reader, the Command Code footer reader, and the watcher liveness
+reader all ship together, and a v1 file reads as not live. No snapshot ever
+carries a token, session credential, or message body.
+
+The session runtime owns no room state at all. It has no cursor, participant,
+handle, or unread count, and it never implies a primary room. A single-room
+process simply has one entry in `rooms[]` and reads it through the same
+room-explicit API as a multi-room process. Catalog order stays a deterministic
+credential-selection input and is never an operator-visible primary binding.
 
 ## Interaction with profile switching
 

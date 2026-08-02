@@ -2,6 +2,7 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Publish runtime snapshot schema v2 with rooms[].
 - Allow a configured session alias across a live profile switch, with the pre-claim guard, publication barrier, and source retirement rules from the shared client.
 
 ## 0.2.2 (2026-08-02)

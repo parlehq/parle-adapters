@@ -5,7 +5,7 @@ import { compactConnectionCardFromSummary, compactStatusCardFromStatus, formatCo
 test("compact connection card renders approved connected shape", () => {
   assert.equal(formatCompactConnectionCard({
     sessionAddress: "@gilman.galexc.2avkwos36qa4kd5t",
-    roomHandle: "galexc-intercom",
+    rooms: [{ roomHandle: "galexc-intercom" }],
     watcher: "on",
   }), `========================================
 Connected to Parle
@@ -25,7 +25,7 @@ Next: open another session and send a message to this Session Address.
 test("compact connection card falls back to room id and renders unknown watcher honestly", () => {
   assert.equal(formatCompactConnectionCard({
     sessionAddress: "@p.a.s1",
-    roomId: "room-1",
+    rooms: [{ roomId: "room-1" }],
     watcher: "unknown",
   }), `========================================
 Connected to Parle
@@ -45,7 +45,7 @@ Next: open another session and send a message to this Session Address.
 test("compact connection card keeps session address when identity parse fails", () => {
   assert.equal(formatCompactConnectionCard({
     sessionAddress: "not-an-address",
-    roomHandle: "room-one",
+    rooms: [{ roomHandle: "room-one" }],
     watcher: "off",
     next: "read-inbox",
   }), `========================================
@@ -62,7 +62,7 @@ Next: read your inbox for messages addressed to this session.
 });
 
 test("compact connection card supports missing session address", () => {
-  assert.equal(formatCompactConnectionCard({ roomHandle: "room-one", next: "arm-watcher" }), `========================================
+  assert.equal(formatCompactConnectionCard({ rooms: [{ roomHandle: "room-one" }], next: "arm-watcher" }), `========================================
 Connected to Parle
 
 In room       #room-one
@@ -75,7 +75,7 @@ test("compact card helper derives reused next text from summary", () => {
   assert.equal(compactConnectionCardFromSummary({
     reusedExistingSession: true,
     sessionAddress: "@p.a.s1",
-    roomHandle: "room-one",
+    rooms: [{ roomHandle: "room-one" }],
   }), `========================================
 Connected to Parle
 
@@ -103,7 +103,7 @@ test("status card renders unknown watcher guidance plus unread for a live sessio
   assert.equal(compactStatusCardFromStatus({
     watcher: { state: "unknown", nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify the watcher" },
     config: { roomHandle: { value: "room-one" }, roomId: { value: "room-1", configured: true }, agentToken: { configured: true } },
-    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", roomId: "room-1", unreadCount: 2 },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one", unreadCount: 2 }] },
   }), `========================================
 Connected to Parle
 
@@ -124,7 +124,7 @@ test("status card omits zero unread and retains unknown watcher guidance", () =>
   const card = compactStatusCardFromStatus({
     watcher: { state: "unknown", nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify the watcher" },
     config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
-    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", roomId: "room-1", unreadCount: 0 },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one", unreadCount: 0 }] },
   });
   assert.doesNotMatch(card, /Unread/);
   assert.match(card, /Watcher       unknown/);
@@ -135,7 +135,7 @@ test("status card surfaces degraded responsive delivery", () => {
   const card = compactStatusCardFromStatus({
     watcher: { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" },
     config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
-    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", roomId: "room-1", unreadCount: 0 },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one", unreadCount: 0 }] },
   });
   assert.match(card, /Watcher       degraded/);
   assert.match(card, /Next: inspect the responsive delivery error and restart the host if it does not recover\./);
@@ -155,7 +155,7 @@ Next: run parle_connect to establish the session.
 test("absent watcher evidence omits the watcher line", () => {
   const card = compactStatusCardFromStatus({
     config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
-    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", roomId: "room-1", unreadCount: 0 },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one", unreadCount: 0 }] },
   });
   assert.doesNotMatch(card, /Watcher/);
   assert.match(card, /Next: read your inbox when you are ready\./);

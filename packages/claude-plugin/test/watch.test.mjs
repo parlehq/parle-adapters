@@ -62,7 +62,7 @@ function writeSnapshot(cwd, agentSessionId, overrides = {}) {
   const dir = join(cwd, ".parle", "runtime");
   mkdirSync(dir, { recursive: true });
   const snapshot = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     pid: process.pid,
     // The real start of this process, as the client writes it: a fabricated
     // "now" would trip the PID-reuse start-time check once the suite has run
@@ -73,7 +73,7 @@ function writeSnapshot(cwd, agentSessionId, overrides = {}) {
     state: "ready",
     sessionAddress: "@p.a.s1",
     agentSessionId,
-    roomId: "room-1",
+    rooms: [{ roomId: "room-1", state: "ready" }],
     updatedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     adapter: { name: "test" },

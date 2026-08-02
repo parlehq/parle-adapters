@@ -2020,9 +2020,9 @@ function summarizeSendDelivery(details) {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.2.2";
+var PI_EXTENSION_VERSION = "0.3.0";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
-var RUNTIME_SCHEMA_VERSION2 = 1;
+var RUNTIME_SCHEMA_VERSION2 = 2;
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
 var OPENAPI_URL = "https://api.parle.sh/openapi.json";
@@ -2427,8 +2427,12 @@ function publishRuntimeState(ctx, cfg = resolveConfig(ctx?.cwd || process.cwd())
       state,
       sessionAddress: runtime.sessionAddress || null,
       agentSessionId: runtime.agentSessionId || "",
-      roomId: runtime.roomId || cfg.roomId?.value || "",
-      roomHandle: runtime.roomHandle || cfg.roomHandle?.value,
+      rooms: [{
+        roomId: runtime.roomId || cfg.roomId?.value || "",
+        ...runtime.roomHandle || cfg.roomHandle?.value ? { roomHandle: runtime.roomHandle || cfg.roomHandle?.value } : {},
+        ...cfg.profile?.value ? { profile: cfg.profile.value } : {},
+        state: state === "ready" ? "ready" : "degraded"
+      }],
       updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
       expiresAt: runtime.expiresAt || "",
       ...runtime.lastError ? { lastError: redactString(runtime.lastError) } : {},

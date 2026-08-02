@@ -10,11 +10,13 @@ export const WATCHER_UNKNOWN_GUIDANCE = {
   nextAction: "arm or verify the watcher",
 };
 
+export type CompactCardRoom = { roomId?: string; roomHandle?: string; unreadCount?: number };
+
 export type CompactConnectionCardInput = {
   connectedLabel?: string;
   sessionAddress?: string | null;
-  roomHandle?: string;
-  roomId?: string;
+  // One entry per configured room. A single-room session simply has one.
+  rooms?: CompactCardRoom[];
   watcher?: CompactConnectionWatcher;
   unread?: number;
   next?: CompactConnectionNextKey | string;
@@ -23,8 +25,7 @@ export type CompactConnectionCardInput = {
 export type ConnectionSummaryLike = {
   reusedExistingSession?: boolean;
   sessionAddress?: string | null;
-  roomHandle?: string;
-  roomId?: string;
+  rooms?: CompactCardRoom[];
 };
 
 const DEFAULT_NEXT = "open another session and send a message to this Session Address.";
@@ -56,10 +57,11 @@ export function parseSessionAddress(address?: string | null): { principal: strin
   return { principal: match[1], agent: match[2] };
 }
 
-function roomLabel(input: CompactConnectionCardInput): string | undefined {
-  const raw = input.roomHandle || input.roomId;
-  if (!raw) return undefined;
-  return raw.startsWith("#") ? raw : `#${raw}`;
+function roomLabels(rooms?: CompactCardRoom[]): string[] {
+  return (rooms || [])
+    .map((room) => room.roomHandle || room.roomId)
+    .filter((raw): raw is string => Boolean(raw))
+    .map((raw) => (raw.startsWith("#") ? raw : `#${raw}`));
 }
 
 function line(label: string, value: string): string {
@@ -73,8 +75,9 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
     lines.push(line("You are", `@${parsed.principal}`));
     lines.push(line("Acting as", `@${parsed.principal}.${parsed.agent}`));
   }
-  const room = roomLabel(input);
-  if (room) lines.push(line("In room", room));
+  const rooms = roomLabels(input.rooms);
+  if (rooms.length === 1) lines.push(line("In room", rooms[0]));
+  else if (rooms.length > 1) lines.push(line("In rooms", rooms.join(", ")));
   if (input.watcher) lines.push(line("Watcher", input.watcher));
   if (typeof input.unread === "number" && input.unread > 0) lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
@@ -87,11 +90,10 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   return collapsed.join("\n");
 }
 
-export function compactConnectionCardFromSummary(summary: ConnectionSummaryLike, opts: Omit<CompactConnectionCardInput, "sessionAddress" | "roomHandle" | "roomId"> = {}): string {
+export function compactConnectionCardFromSummary(summary: ConnectionSummaryLike, opts: Omit<CompactConnectionCardInput, "sessionAddress" | "rooms"> = {}): string {
   return formatCompactConnectionCard({
     sessionAddress: summary.sessionAddress,
-    roomHandle: summary.roomHandle,
-    roomId: summary.roomId,
+    rooms: summary.rooms,
     next: opts.next || (summary.reusedExistingSession ? "already-connected" : undefined),
     watcher: opts.watcher,
     connectedLabel: opts.connectedLabel,
@@ -109,11 +111,11 @@ export type StatusLike = {
     roomId?: { value?: string; configured?: boolean };
     agentToken?: { configured?: boolean };
   };
+  rooms?: CompactCardRoom[];
   runtime?: {
     bootstrapState?: string;
     sessionAddress?: string | null;
-    roomId?: string;
-    unreadCount?: number;
+    rooms?: CompactCardRoom[];
   };
 };
 
@@ -125,11 +127,14 @@ export type StatusLike = {
 export function compactStatusCardFromStatus(status: StatusLike): string {
   const runtime = status.runtime;
   if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
-    const unread = typeof runtime.unreadCount === "number" ? runtime.unreadCount : undefined;
+    const rooms = status.rooms?.length ? status.rooms : runtime.rooms;
+    // Unread is summed across rooms: the card answers "does anything want me",
+    // and per-room detail lives in the status JSON.
+    const counts = (rooms || []).map((room) => room.unreadCount).filter((count): count is number => typeof count === "number");
+    const unread = counts.length ? counts.reduce((total, count) => total + count, 0) : undefined;
     return formatCompactConnectionCard({
       sessionAddress: runtime.sessionAddress,
-      roomHandle: status.config?.roomHandle?.value,
-      roomId: runtime.roomId || status.config?.roomId?.value,
+      rooms: rooms?.length ? rooms : (status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : undefined),
       unread,
       watcher: status.watcher?.state,
       next: status.watcher?.nextActionKey || (unread && unread > 0 ? "read-inbox" : "already-connected"),

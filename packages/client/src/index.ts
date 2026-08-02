@@ -97,13 +97,10 @@ export type RuntimeState = {
   createdAt: string;
   agentSessionId: string;
   expiresAt: string;
-  participantId: string;
-  roomId: string;
-  roomHandle?: string;
-  cursor: number;
-  // Every configured room, including the primary one whose fields are also
-  // projected above for single-room consumers.
-  rooms?: RoomRuntime[];
+  // Room state lives only here. The session is roomless, so it never owns a
+  // cursor, participant, handle, or unread count, and never implies a primary
+  // room. Single-room callers read the sole entry through the same API.
+  rooms: RoomRuntime[];
   lastHeartbeatAt?: string;
   lastHttpStatus?: number;
   lastError?: string;
@@ -112,11 +109,6 @@ export type RuntimeState = {
   // be replaced by later transient failures without reopening this latch.
   terminalCause?: TerminalCause;
   nextRetryAt?: string;
-  unreadCount?: number;
-  unreadAsOf?: string;
-  heldBacklogCount?: number;
-  lastAckedSeq?: number;
-  lastAckEventId?: string;
   responsiveCursorScope?: ResponsiveCursorScope;
   responsiveContinuity?: "alias" | "exact_session_not_transferred";
   rolloverFailures?: number;
@@ -206,14 +198,11 @@ export type RoomRuntime = {
 export type ConnectionSummary = {
   connected: boolean;
   reusedExistingSession: boolean;
-  roomId: string;
-  roomHandle?: string;
   sessionAddress: string | null;
   agentSessionId: string;
-  participantId: string;
   expiresAt: string;
-  cursor: number;
-  heldBacklogCount?: number;
+  // One entry per configured room. A single-room session simply has one.
+  rooms: RoomRuntime[];
   note: string;
   next: string;
 };
@@ -246,12 +235,10 @@ export type ProfileSwitchResult = {
 
 export type ClientProfileSwitchResult = ProfileSwitchResult & {
   previousProfile?: string;
-  roomHandle?: string;
   sessionAddress: string | null;
   agentSessionId: string;
-  participantId: string;
   expiresAt: string;
-  cursor: number;
+  rooms: RoomRuntime[];
   watcherRestartRequired: boolean;
 };
 
@@ -269,6 +256,11 @@ function sessionScopeEntryHint(error: unknown, roomCount: number): unknown {
   return new ParleApiError(`${error.message} This aborted the whole configured room set. Profiles referencing different durable agents are the most common cause, but the server denial does not identify one.`, {
     status: error.status, code: error.code, action: error.action, scope: error.scope, retryable: error.retryable, retryAfterMs: error.retryAfterMs, details: error.details,
   });
+}
+
+function sameRoomSet(a: RoomRuntime[], b: RoomRuntime[]): boolean {
+  const left = a.map((room) => room.roomId).sort().join(",");
+  return left === b.map((room) => room.roomId).sort().join(",") && left.length > 0;
 }
 
 function terminalCauseFor(api: ParleApiError, occurredAt = new Date().toISOString()): TerminalCause | undefined {
@@ -337,7 +329,6 @@ export type SessionEstablishedBlock = {
   established: "this_call";
   sessionAddress: string | null;
   agentSessionId: string;
-  participantId: string;
   expiresAt: string;
   next: string;
 };
@@ -885,9 +876,7 @@ export class ParleAgentClient {
     createdAt: "",
     agentSessionId: "",
     expiresAt: "",
-    participantId: "",
-    roomId: "",
-    cursor: 0,
+    rooms: [],
   };
   private bootstrapGeneration = 0;
   private bootstrapInFlight: Promise<RuntimeState> | null = null;
@@ -1154,21 +1143,13 @@ export class ParleAgentClient {
     return existing;
   }
 
-  // Single-room consumers read room fields straight off runtime. One writer
-  // keeps that projection in step with the primary RoomRuntime.
+  // rooms[] is the only room surface. Catalog order is a credential-selection
+  // input, not an operator-visible primary binding.
   private publishRoomRuntimes(): void {
     this.runtime.rooms = this.roomConfigs
       .map((room) => this.roomRuntimes.get(room.roomId?.value || ""))
       .filter((room): room is RoomRuntime => Boolean(room))
       .map((room) => ({ ...room }));
-    if (this.multiRoom) return;
-    const primary = this.roomRuntimes.get(this.cfg.roomId?.value || "");
-    if (!primary) return;
-    this.runtime.roomId = primary.roomId;
-    this.runtime.participantId = primary.participantId;
-    this.runtime.cursor = primary.cursor;
-    if (primary.roomHandle) this.runtime.roomHandle = primary.roomHandle;
-    if (primary.heldBacklogCount !== undefined) this.runtime.heldBacklogCount = primary.heldBacklogCount;
   }
 
   async requestJson(pathOrUrl: string, options: RequestOptions = {}): Promise<any> {
@@ -1305,7 +1286,6 @@ export class ParleAgentClient {
   }
 
   private async prepareCandidate(alias: string | undefined, signal: AbortSignal | undefined, preserveCursor: boolean, requireWakeReadiness: boolean): Promise<PreparedCandidate> {
-    const previousCursor = this.runtime.cursor;
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
     const candidate: RuntimeState = {
       bootstrapped: false,
@@ -1317,9 +1297,7 @@ export class ParleAgentClient {
       createdAt: String(session.created_at || ""),
       agentSessionId: String(session.agent_session_id || ""),
       expiresAt: String(session.expires_at || ""),
-      participantId: "",
-      roomId: this.cfg.roomId!.value!,
-      cursor: preserveCursor ? previousCursor : 0,
+      rooms: [],
     };
     let candidateWake: CandidateWakeSlot | undefined;
     let priorAliasOwnerSessionId: string | undefined;
@@ -1336,7 +1314,7 @@ export class ParleAgentClient {
           ...(roomCfg.profile?.value ? { profile: roomCfg.profile.value } : {}),
           ...(roomCfg.roomHandle?.value ? { roomHandle: roomCfg.roomHandle.value } : {}),
           participantId: "",
-          cursor: preserveCursor ? (this.roomRuntimes.get(roomId)?.cursor ?? (roomId === candidate.roomId ? previousCursor : 0)) : 0,
+          cursor: preserveCursor ? (this.roomRuntimes.get(roomId)?.cursor ?? 0) : 0,
           state: "degraded",
         };
         rooms.set(roomId, room);
@@ -1367,14 +1345,6 @@ export class ParleAgentClient {
         throw new ParleApiError(`Parle could not enter any configured room. ${[...rooms.values()].map((room) => `${room.roomId}: ${room.lastError || "unavailable"}`).join("; ")}`, {
           code: "room_entry_failed", action: "fix_client", scope: "request",
         });
-      }
-      const primary = rooms.get(candidate.roomId);
-      candidate.participantId = primary?.participantId || "";
-      if (primary?.roomHandle) candidate.roomHandle = primary.roomHandle;
-      else candidate.roomHandle = this.cfg.roomHandle?.value;
-      if (primary) {
-        candidate.cursor = primary.cursor;
-        if (primary.heldBacklogCount !== undefined) candidate.heldBacklogCount = primary.heldBacklogCount;
       }
       if (alias || requireWakeReadiness) candidateWake = await this.establishCandidateWakeReadiness(candidate.sessionHandle, signal);
       if (alias) {
@@ -1537,7 +1507,7 @@ export class ParleAgentClient {
         && candidate.responsiveContinuity === "alias"
         && [...this.activeResponsiveReads].every((fence) => fence.cursorScope === "alias"
           && fence.sessionAlias === previous.sessionAlias
-          && fence.roomId === previous.roomId));
+          && previous.rooms.some((room) => room.roomId === fence.roomId)));
       if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is being read");
     }
     for (const guard of this.sessionCommitGuards) guard(plan);
@@ -1560,20 +1530,25 @@ export class ParleAgentClient {
   }
 
   private async completeCandidateHandoff(previous: RuntimeState, candidate: RuntimeState, reason: SessionRevisionEvent["reason"], signal: AbortSignal | undefined, unusedPreviousWake: CandidateWakeSlot | undefined, drainImmediately: boolean): Promise<void> {
+    const readyRooms = candidate.rooms.filter((room) => room.state === "ready");
     if (drainImmediately) {
-      try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/responsive-delivery?wait=0`, { sessionCredential: candidate.sessionHandle, signal, retry: false });
-        this.recordResponsiveCursorScope(delivery);
-      } catch (error) {
-        this.runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-        this.publishRuntimeState();
+      for (const room of readyRooms) {
+        try {
+          const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(room.roomId)}/responsive-delivery?wait=0`, { roomId: room.roomId, sessionCredential: candidate.sessionHandle, signal, retry: false });
+          this.recordResponsiveCursorScope(delivery);
+        } catch (error) {
+          this.runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+          this.publishRuntimeState();
+        }
       }
     }
     if (candidate.sessionAlias) {
       try {
-        await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/participants`, {
-          method: "POST", sessionCredential: candidate.sessionHandle, signal, retry: false,
-        });
+        for (const room of readyRooms) {
+          await this.requestJson(`/v/rooms/${encodeURIComponent(room.roomId)}/participants`, {
+            method: "POST", roomId: room.roomId, sessionCredential: candidate.sessionHandle, signal, retry: false,
+          });
+        }
       } catch (error) {
         this.runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
         this.publishRuntimeState();
@@ -1721,6 +1696,10 @@ export class ParleAgentClient {
               this.prefetchedWake = undefined;
               void this.cancelCandidateWake(unusedPreviousWake);
               this.cfg = prepared.cfg;
+              // The room binding moves with the profile, so the room set and
+              // its runtimes are replaced together with the config.
+              this.roomConfigs = prepared.roomConfigs;
+              this.adoptRoomRuntimes(prepared.roomRuntimes);
               this.activeProfile = profile;
               this.lifecycleEpoch += 1;
               this.runtime = {
@@ -1731,7 +1710,7 @@ export class ParleAgentClient {
                 // same room. Across durable agents the address itself changes,
                 // so nothing is transferred.
                 ...(prepared.lastCandidateAliasFacts?.aliasClaimed
-                  ? { responsiveContinuity: (this.aliasSupersededSource(previousRuntime, prepared) && previousRuntime.roomId === prepared.runtime.roomId) ? "alias" as const : "exact_session_not_transferred" as const }
+                  ? { responsiveContinuity: (this.aliasSupersededSource(previousRuntime, prepared) && sameRoomSet(previousRuntime.rooms, prepared.runtime.rooms)) ? "alias" as const : "exact_session_not_transferred" as const }
                   : {}),
               };
               this.bootstrapGeneration += 1;
@@ -1776,12 +1755,10 @@ export class ParleAgentClient {
           return {
             ...result,
             previousProfile,
-            roomHandle: this.runtime.roomHandle,
             sessionAddress: this.runtime.sessionAddress,
             agentSessionId: this.runtime.agentSessionId,
-            participantId: this.runtime.participantId,
             expiresAt: this.runtime.expiresAt,
-            cursor: this.runtime.cursor,
+            rooms: this.runtime.rooms.map((room) => ({ ...room })),
             watcherRestartRequired: result.switched,
           };
         } finally {
@@ -1962,8 +1939,6 @@ export class ParleAgentClient {
         // agent_session_id is room-visible operational metadata, not a credential
         // (parlehq/parle#435); session_credential never leaves process memory.
         agentSessionId: this.runtime.agentSessionId,
-        roomId: this.runtime.roomId || this.cfg.roomId?.value || "",
-        roomHandle: this.runtime.roomHandle || this.cfg.roomHandle?.value,
         rooms: this.roomConfigs.map((cfg) => {
           const roomId = cfg.roomId?.value || "";
           const room = this.roomRuntimes.get(roomId);
@@ -1978,7 +1953,6 @@ export class ParleAgentClient {
         updatedAt: this.now().toISOString(),
         expiresAt: this.runtime.expiresAt,
         ...(this.runtime.lastBootstrapError ? { lastError: this.runtime.lastBootstrapError } : {}),
-        ...(typeof this.runtime.unreadCount === "number" ? { unreadCount: this.runtime.unreadCount, unreadAsOf: this.runtime.unreadAsOf } : {}),
         adapter: { name: this.publishRuntime.adapterName, version: this.publishRuntime.adapterVersion },
       });
     } catch {
@@ -2035,13 +2009,19 @@ export class ParleAgentClient {
     if (this.runtime.bootstrapState !== "ready" || this.unreadInFlight) return;
     this.unreadInFlight = true;
     try {
-      const sinceSeq = this.runtime.cursor || 0;
-      const response = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, signal, timeoutMs: 10_000, retry: false });
-      if ((this.runtime.cursor || 0) !== sinceSeq) return;
-      const rows = Array.isArray(response.messages) ? response.messages : [];
-      this.setUnread(rows.filter((row: any) => typeof row?.seq === "number" && row.seq > sinceSeq).length);
-    } catch {
-      // Observation failures are isolated from session state by design.
+      for (const room of this.runtime.rooms.filter((entry) => entry.state === "ready")) {
+        const roomId = room.roomId;
+        const sinceSeq = this.roomRuntime(roomId).cursor || 0;
+        try {
+          const response = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, roomId, signal, timeoutMs: 10_000, retry: false });
+          if ((this.roomRuntime(roomId).cursor || 0) !== sinceSeq) continue;
+          const rows = Array.isArray(response.messages) ? response.messages : [];
+          this.setUnread(rows.filter((row: any) => typeof row?.seq === "number" && row.seq > sinceSeq).length, roomId);
+        } catch {
+          // Observation failures are isolated from session state by design,
+          // and one room's failure never stops the others.
+        }
+      }
     } finally {
       this.unreadInFlight = false;
     }
@@ -2050,21 +2030,12 @@ export class ParleAgentClient {
   // Publish policy: republish on change, and on every nonzero observation so
   // the display freshness gate keeps a standing count visible. A steady zero
   // writes nothing (zero displays nothing, so it needs no freshness heartbeat).
-  private setUnread(count: number, roomId = this.cfg.roomId?.value): void {
-    const asOf = this.now().toISOString();
-    const room = roomId ? this.roomRuntime(roomId) : undefined;
-    const changed = room ? room.unreadCount !== count : this.runtime.unreadCount !== count;
-    if (room) {
-      room.unreadCount = count;
-      room.unreadAsOf = asOf;
-      this.publishRoomRuntimes();
-    }
-    // Session-level unread stays the primary room's count in single-room mode;
-    // multi-room consumers read per-room counts from rooms[].
-    if (!this.multiRoom) {
-      this.runtime.unreadCount = count;
-      this.runtime.unreadAsOf = asOf;
-    }
+  private setUnread(count: number, roomId: string): void {
+    const room = this.roomRuntime(roomId);
+    const changed = room.unreadCount !== count;
+    room.unreadCount = count;
+    room.unreadAsOf = this.now().toISOString();
+    this.publishRoomRuntimes();
     if (changed || count > 0) this.publishRuntimeState();
   }
 
@@ -2107,10 +2078,7 @@ export class ParleAgentClient {
           createdAt: "",
           agentSessionId: "",
           expiresAt: "",
-          participantId: "",
-          roomId: "",
-          roomHandle: undefined,
-          cursor: 0,
+          rooms: [],
         };
         this.discardRuntimeFile();
       }
@@ -2125,15 +2093,11 @@ export class ParleAgentClient {
     return {
       connected: this.runtime.bootstrapped,
       reusedExistingSession,
-      roomId: this.runtime.roomId,
-      roomHandle: this.runtime.roomHandle || this.cfg.roomHandle?.value,
       sessionAddress: this.runtime.sessionAddress,
       agentSessionId: this.runtime.agentSessionId,
-      participantId: this.runtime.participantId,
       expiresAt: this.runtime.expiresAt,
-      cursor: this.runtime.cursor,
-      ...(typeof this.runtime.heldBacklogCount === "number" ? { heldBacklogCount: this.runtime.heldBacklogCount } : {}),
-      note: "cursor is this process's read position; a fresh session initializes it at the projection watermark observed during bootstrap.",
+      rooms: this.runtime.rooms.map((room) => ({ ...room })),
+      note: "each room carries its own cursor: this process's read position in that room, initialized at the projection watermark observed during bootstrap.",
       next: CONNECT_NEXT_GUIDANCE,
     };
   }
@@ -2150,7 +2114,6 @@ export class ParleAgentClient {
       established: "this_call",
       sessionAddress: this.runtime.sessionAddress,
       agentSessionId: this.runtime.agentSessionId,
-      participantId: this.runtime.participantId,
       expiresAt: this.runtime.expiresAt,
       next: SESSION_ESTABLISHED_NEXT_GUIDANCE,
     };
@@ -2267,13 +2230,14 @@ export class ParleAgentClient {
     return scope;
   }
 
-  async drainResponsiveDeliveryWithFence(signal?: AbortSignal): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
+  async drainResponsiveDeliveryWithFence(signal?: AbortSignal, roomIdParam?: string): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
+    const roomId = this.roomTarget(roomIdParam).roomId!.value!;
     return this.withRebootstrap(async () => {
       this.assertResponsiveFenceAllowed();
       const fence: ResponsiveDeliveryReadFence = {
         sessionRevision: this.runtime.sessionRevision || 0,
         cursorScope: this.runtime.responsiveCursorScope,
-        roomId: this.runtime.roomId,
+        roomId,
         sessionAlias: this.runtime.sessionAlias,
         agentSessionId: this.runtime.agentSessionId,
       };
@@ -2281,7 +2245,7 @@ export class ParleAgentClient {
       let retained = false;
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
+        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?wait=0`, { session: true, roomId, signal, retry: false });
         fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
         retained = true;
         return { delivery, fence, release };
@@ -2291,8 +2255,8 @@ export class ParleAgentClient {
     }, signal);
   }
 
-  async drainResponsiveDelivery(signal?: AbortSignal): Promise<any> {
-    const read = await this.drainResponsiveDeliveryWithFence(signal);
+  async drainResponsiveDelivery(signal?: AbortSignal, roomId?: string): Promise<any> {
+    const read = await this.drainResponsiveDeliveryWithFence(signal, roomId);
     try {
       return read.delivery;
     } finally {

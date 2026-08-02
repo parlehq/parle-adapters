@@ -32962,11 +32962,8 @@ function parseSessionAddress(address) {
     return void 0;
   return { principal: match[1], agent: match[2] };
 }
-function roomLabel(input) {
-  const raw = input.roomHandle || input.roomId;
-  if (!raw)
-    return void 0;
-  return raw.startsWith("#") ? raw : `#${raw}`;
+function roomLabels(rooms) {
+  return (rooms || []).map((room) => room.roomHandle || room.roomId).filter((raw) => Boolean(raw)).map((raw) => raw.startsWith("#") ? raw : `#${raw}`);
 }
 function line(label, value) {
   return `${label.padEnd(14, " ")}${value}`;
@@ -32978,9 +32975,11 @@ function formatCompactConnectionCard(input) {
     lines.push(line("You are", `@${parsed.principal}`));
     lines.push(line("Acting as", `@${parsed.principal}.${parsed.agent}`));
   }
-  const room = roomLabel(input);
-  if (room)
-    lines.push(line("In room", room));
+  const rooms = roomLabels(input.rooms);
+  if (rooms.length === 1)
+    lines.push(line("In room", rooms[0]));
+  else if (rooms.length > 1)
+    lines.push(line("In rooms", rooms.join(", ")));
   if (input.watcher)
     lines.push(line("Watcher", input.watcher));
   if (typeof input.unread === "number" && input.unread > 0)
@@ -32995,8 +32994,7 @@ function formatCompactConnectionCard(input) {
 function compactConnectionCardFromSummary(summary, opts = {}) {
   return formatCompactConnectionCard({
     sessionAddress: summary.sessionAddress,
-    roomHandle: summary.roomHandle,
-    roomId: summary.roomId,
+    rooms: summary.rooms,
     next: opts.next || (summary.reusedExistingSession ? "already-connected" : void 0),
     watcher: opts.watcher,
     connectedLabel: opts.connectedLabel
@@ -33005,11 +33003,12 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
 function compactStatusCardFromStatus(status) {
   const runtime = status.runtime;
   if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
-    const unread = typeof runtime.unreadCount === "number" ? runtime.unreadCount : void 0;
+    const rooms = status.rooms?.length ? status.rooms : runtime.rooms;
+    const counts = (rooms || []).map((room) => room.unreadCount).filter((count) => typeof count === "number");
+    const unread = counts.length ? counts.reduce((total, count) => total + count, 0) : void 0;
     return formatCompactConnectionCard({
       sessionAddress: runtime.sessionAddress,
-      roomHandle: status.config?.roomHandle?.value,
-      roomId: runtime.roomId || status.config?.roomId?.value,
+      rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
       unread,
       watcher: status.watcher?.state,
       next: status.watcher?.nextActionKey || (unread && unread > 0 ? "read-inbox" : "already-connected")
@@ -33066,6 +33065,10 @@ function sessionScopeEntryHint(error51, roomCount) {
     retryAfterMs: error51.retryAfterMs,
     details: error51.details
   });
+}
+function sameRoomSet(a, b) {
+  const left = a.map((room) => room.roomId).sort().join(",");
+  return left === b.map((room) => room.roomId).sort().join(",") && left.length > 0;
 }
 function terminalCauseFor(api, occurredAt = (/* @__PURE__ */ new Date()).toISOString()) {
   if (!["fix_client", "reauthorize", "stop"].includes(api.action || ""))
@@ -33550,9 +33553,7 @@ var ParleAgentClient = class _ParleAgentClient {
     createdAt: "",
     agentSessionId: "",
     expiresAt: "",
-    participantId: "",
-    roomId: "",
-    cursor: 0
+    rooms: []
   };
   bootstrapGeneration = 0;
   bootstrapInFlight = null;
@@ -33811,22 +33812,10 @@ var ParleAgentClient = class _ParleAgentClient {
     }
     return existing;
   }
-  // Single-room consumers read room fields straight off runtime. One writer
-  // keeps that projection in step with the primary RoomRuntime.
+  // rooms[] is the only room surface. Catalog order is a credential-selection
+  // input, not an operator-visible primary binding.
   publishRoomRuntimes() {
     this.runtime.rooms = this.roomConfigs.map((room) => this.roomRuntimes.get(room.roomId?.value || "")).filter((room) => Boolean(room)).map((room) => ({ ...room }));
-    if (this.multiRoom)
-      return;
-    const primary = this.roomRuntimes.get(this.cfg.roomId?.value || "");
-    if (!primary)
-      return;
-    this.runtime.roomId = primary.roomId;
-    this.runtime.participantId = primary.participantId;
-    this.runtime.cursor = primary.cursor;
-    if (primary.roomHandle)
-      this.runtime.roomHandle = primary.roomHandle;
-    if (primary.heldBacklogCount !== void 0)
-      this.runtime.heldBacklogCount = primary.heldBacklogCount;
   }
   async requestJson(pathOrUrl, options = {}) {
     const method = options.method || (options.body === void 0 ? "GET" : "POST");
@@ -33967,7 +33956,6 @@ var ParleAgentClient = class _ParleAgentClient {
     }
   }
   async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness) {
-    const previousCursor = this.runtime.cursor;
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
     const candidate = {
       bootstrapped: false,
@@ -33979,9 +33967,7 @@ var ParleAgentClient = class _ParleAgentClient {
       createdAt: String(session.created_at || ""),
       agentSessionId: String(session.agent_session_id || ""),
       expiresAt: String(session.expires_at || ""),
-      participantId: "",
-      roomId: this.cfg.roomId.value,
-      cursor: preserveCursor ? previousCursor : 0
+      rooms: []
     };
     let candidateWake;
     let priorAliasOwnerSessionId;
@@ -33995,7 +33981,7 @@ var ParleAgentClient = class _ParleAgentClient {
           ...roomCfg.profile?.value ? { profile: roomCfg.profile.value } : {},
           ...roomCfg.roomHandle?.value ? { roomHandle: roomCfg.roomHandle.value } : {},
           participantId: "",
-          cursor: preserveCursor ? this.roomRuntimes.get(roomId)?.cursor ?? (roomId === candidate.roomId ? previousCursor : 0) : 0,
+          cursor: preserveCursor ? this.roomRuntimes.get(roomId)?.cursor ?? 0 : 0,
           state: "degraded"
         };
         rooms.set(roomId, room);
@@ -34036,17 +34022,6 @@ var ParleAgentClient = class _ParleAgentClient {
           action: "fix_client",
           scope: "request"
         });
-      }
-      const primary = rooms.get(candidate.roomId);
-      candidate.participantId = primary?.participantId || "";
-      if (primary?.roomHandle)
-        candidate.roomHandle = primary.roomHandle;
-      else
-        candidate.roomHandle = this.cfg.roomHandle?.value;
-      if (primary) {
-        candidate.cursor = primary.cursor;
-        if (primary.heldBacklogCount !== void 0)
-          candidate.heldBacklogCount = primary.heldBacklogCount;
       }
       if (alias || requireWakeReadiness)
         candidateWake = await this.establishCandidateWakeReadiness(candidate.sessionHandle, signal);
@@ -34217,7 +34192,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (this.activeResponsiveReads.size > 0 && reason !== "bootstrap") {
       if (reason === "profile_switch")
         throw new Error("Parle profile switch is deferred while responsive delivery is being read");
-      const aliasTransfers = Boolean(previous.sessionAlias && candidate.sessionAlias === previous.sessionAlias && candidate.responsiveContinuity === "alias" && [...this.activeResponsiveReads].every((fence) => fence.cursorScope === "alias" && fence.sessionAlias === previous.sessionAlias && fence.roomId === previous.roomId));
+      const aliasTransfers = Boolean(previous.sessionAlias && candidate.sessionAlias === previous.sessionAlias && candidate.responsiveContinuity === "alias" && [...this.activeResponsiveReads].every((fence) => fence.cursorScope === "alias" && fence.sessionAlias === previous.sessionAlias && previous.rooms.some((room) => room.roomId === fence.roomId)));
       if (!aliasTransfers)
         throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is being read");
     }
@@ -34240,23 +34215,29 @@ var ParleAgentClient = class _ParleAgentClient {
     return unusedPreviousWake;
   }
   async completeCandidateHandoff(previous, candidate, reason, signal, unusedPreviousWake, drainImmediately) {
+    const readyRooms = candidate.rooms.filter((room) => room.state === "ready");
     if (drainImmediately) {
-      try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/responsive-delivery?wait=0`, { sessionCredential: candidate.sessionHandle, signal, retry: false });
-        this.recordResponsiveCursorScope(delivery);
-      } catch (error51) {
-        this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
-        this.publishRuntimeState();
+      for (const room of readyRooms) {
+        try {
+          const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(room.roomId)}/responsive-delivery?wait=0`, { roomId: room.roomId, sessionCredential: candidate.sessionHandle, signal, retry: false });
+          this.recordResponsiveCursorScope(delivery);
+        } catch (error51) {
+          this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+          this.publishRuntimeState();
+        }
       }
     }
     if (candidate.sessionAlias) {
       try {
-        await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/participants`, {
-          method: "POST",
-          sessionCredential: candidate.sessionHandle,
-          signal,
-          retry: false
-        });
+        for (const room of readyRooms) {
+          await this.requestJson(`/v/rooms/${encodeURIComponent(room.roomId)}/participants`, {
+            method: "POST",
+            roomId: room.roomId,
+            sessionCredential: candidate.sessionHandle,
+            signal,
+            retry: false
+          });
+        }
       } catch (error51) {
         this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
         this.publishRuntimeState();
@@ -34383,6 +34364,8 @@ var ParleAgentClient = class _ParleAgentClient {
               this.prefetchedWake = void 0;
               void this.cancelCandidateWake(unusedPreviousWake);
               this.cfg = prepared.cfg;
+              this.roomConfigs = prepared.roomConfigs;
+              this.adoptRoomRuntimes(prepared.roomRuntimes);
               this.activeProfile = profile;
               this.lifecycleEpoch += 1;
               this.runtime = {
@@ -34392,7 +34375,7 @@ var ParleAgentClient = class _ParleAgentClient {
                 // superseded our own source session on the same alias in the
                 // same room. Across durable agents the address itself changes,
                 // so nothing is transferred.
-                ...prepared.lastCandidateAliasFacts?.aliasClaimed ? { responsiveContinuity: this.aliasSupersededSource(previousRuntime, prepared) && previousRuntime.roomId === prepared.runtime.roomId ? "alias" : "exact_session_not_transferred" } : {}
+                ...prepared.lastCandidateAliasFacts?.aliasClaimed ? { responsiveContinuity: this.aliasSupersededSource(previousRuntime, prepared) && sameRoomSet(previousRuntime.rooms, prepared.runtime.rooms) ? "alias" : "exact_session_not_transferred" } : {}
               };
               this.bootstrapGeneration += 1;
               this.rebootstrapEpisode = null;
@@ -34431,12 +34414,10 @@ var ParleAgentClient = class _ParleAgentClient {
           return {
             ...result,
             previousProfile,
-            roomHandle: this.runtime.roomHandle,
             sessionAddress: this.runtime.sessionAddress,
             agentSessionId: this.runtime.agentSessionId,
-            participantId: this.runtime.participantId,
             expiresAt: this.runtime.expiresAt,
-            cursor: this.runtime.cursor,
+            rooms: this.runtime.rooms.map((room) => ({ ...room })),
             watcherRestartRequired: result.switched
           };
         } finally {
@@ -34607,8 +34588,6 @@ var ParleAgentClient = class _ParleAgentClient {
         // agent_session_id is room-visible operational metadata, not a credential
         // (parlehq/parle#435); session_credential never leaves process memory.
         agentSessionId: this.runtime.agentSessionId,
-        roomId: this.runtime.roomId || this.cfg.roomId?.value || "",
-        roomHandle: this.runtime.roomHandle || this.cfg.roomHandle?.value,
         rooms: this.roomConfigs.map((cfg) => {
           const roomId = cfg.roomId?.value || "";
           const room = this.roomRuntimes.get(roomId);
@@ -34623,7 +34602,6 @@ var ParleAgentClient = class _ParleAgentClient {
         updatedAt: this.now().toISOString(),
         expiresAt: this.runtime.expiresAt,
         ...this.runtime.lastBootstrapError ? { lastError: this.runtime.lastBootstrapError } : {},
-        ...typeof this.runtime.unreadCount === "number" ? { unreadCount: this.runtime.unreadCount, unreadAsOf: this.runtime.unreadAsOf } : {},
         adapter: { name: this.publishRuntime.adapterName, version: this.publishRuntime.adapterVersion }
       });
     } catch {
@@ -34682,13 +34660,18 @@ var ParleAgentClient = class _ParleAgentClient {
       return;
     this.unreadInFlight = true;
     try {
-      const sinceSeq = this.runtime.cursor || 0;
-      const response = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, signal, timeoutMs: 1e4, retry: false });
-      if ((this.runtime.cursor || 0) !== sinceSeq)
-        return;
-      const rows = Array.isArray(response.messages) ? response.messages : [];
-      this.setUnread(rows.filter((row) => typeof row?.seq === "number" && row.seq > sinceSeq).length);
-    } catch {
+      for (const room of this.runtime.rooms.filter((entry) => entry.state === "ready")) {
+        const roomId = room.roomId;
+        const sinceSeq = this.roomRuntime(roomId).cursor || 0;
+        try {
+          const response = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, roomId, signal, timeoutMs: 1e4, retry: false });
+          if ((this.roomRuntime(roomId).cursor || 0) !== sinceSeq)
+            continue;
+          const rows = Array.isArray(response.messages) ? response.messages : [];
+          this.setUnread(rows.filter((row) => typeof row?.seq === "number" && row.seq > sinceSeq).length, roomId);
+        } catch {
+        }
+      }
     } finally {
       this.unreadInFlight = false;
     }
@@ -34696,19 +34679,12 @@ var ParleAgentClient = class _ParleAgentClient {
   // Publish policy: republish on change, and on every nonzero observation so
   // the display freshness gate keeps a standing count visible. A steady zero
   // writes nothing (zero displays nothing, so it needs no freshness heartbeat).
-  setUnread(count, roomId = this.cfg.roomId?.value) {
-    const asOf = this.now().toISOString();
-    const room = roomId ? this.roomRuntime(roomId) : void 0;
-    const changed = room ? room.unreadCount !== count : this.runtime.unreadCount !== count;
-    if (room) {
-      room.unreadCount = count;
-      room.unreadAsOf = asOf;
-      this.publishRoomRuntimes();
-    }
-    if (!this.multiRoom) {
-      this.runtime.unreadCount = count;
-      this.runtime.unreadAsOf = asOf;
-    }
+  setUnread(count, roomId) {
+    const room = this.roomRuntime(roomId);
+    const changed = room.unreadCount !== count;
+    room.unreadCount = count;
+    room.unreadAsOf = this.now().toISOString();
+    this.publishRoomRuntimes();
     if (changed || count > 0)
       this.publishRuntimeState();
   }
@@ -34747,10 +34723,7 @@ var ParleAgentClient = class _ParleAgentClient {
           createdAt: "",
           agentSessionId: "",
           expiresAt: "",
-          participantId: "",
-          roomId: "",
-          roomHandle: void 0,
-          cursor: 0
+          rooms: []
         };
         this.discardRuntimeFile();
       }
@@ -34764,15 +34737,11 @@ var ParleAgentClient = class _ParleAgentClient {
     return {
       connected: this.runtime.bootstrapped,
       reusedExistingSession,
-      roomId: this.runtime.roomId,
-      roomHandle: this.runtime.roomHandle || this.cfg.roomHandle?.value,
       sessionAddress: this.runtime.sessionAddress,
       agentSessionId: this.runtime.agentSessionId,
-      participantId: this.runtime.participantId,
       expiresAt: this.runtime.expiresAt,
-      cursor: this.runtime.cursor,
-      ...typeof this.runtime.heldBacklogCount === "number" ? { heldBacklogCount: this.runtime.heldBacklogCount } : {},
-      note: "cursor is this process's read position; a fresh session initializes it at the projection watermark observed during bootstrap.",
+      rooms: this.runtime.rooms.map((room) => ({ ...room })),
+      note: "each room carries its own cursor: this process's read position in that room, initialized at the projection watermark observed during bootstrap.",
       next: CONNECT_NEXT_GUIDANCE
     };
   }
@@ -34789,7 +34758,6 @@ var ParleAgentClient = class _ParleAgentClient {
       established: "this_call",
       sessionAddress: this.runtime.sessionAddress,
       agentSessionId: this.runtime.agentSessionId,
-      participantId: this.runtime.participantId,
       expiresAt: this.runtime.expiresAt,
       next: SESSION_ESTABLISHED_NEXT_GUIDANCE
     };
@@ -34905,13 +34873,14 @@ var ParleAgentClient = class _ParleAgentClient {
       this.runtime.responsiveCursorScope = scope;
     return scope;
   }
-  async drainResponsiveDeliveryWithFence(signal) {
+  async drainResponsiveDeliveryWithFence(signal, roomIdParam) {
+    const roomId = this.roomTarget(roomIdParam).roomId.value;
     return this.withRebootstrap(async () => {
       this.assertResponsiveFenceAllowed();
       const fence = {
         sessionRevision: this.runtime.sessionRevision || 0,
         cursorScope: this.runtime.responsiveCursorScope,
-        roomId: this.runtime.roomId,
+        roomId,
         sessionAlias: this.runtime.sessionAlias,
         agentSessionId: this.runtime.agentSessionId
       };
@@ -34919,7 +34888,7 @@ var ParleAgentClient = class _ParleAgentClient {
       let retained = false;
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
+        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?wait=0`, { session: true, roomId, signal, retry: false });
         fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
         retained = true;
         return { delivery, fence, release };
@@ -34929,8 +34898,8 @@ var ParleAgentClient = class _ParleAgentClient {
       }
     }, signal);
   }
-  async drainResponsiveDelivery(signal) {
-    const read = await this.drainResponsiveDeliveryWithFence(signal);
+  async drainResponsiveDelivery(signal, roomId) {
+    const read = await this.drainResponsiveDeliveryWithFence(signal, roomId);
     try {
       return read.delivery;
     } finally {
@@ -35394,7 +35363,7 @@ var HookDeliveryBridge = class {
     if (plan.reason === "profile_switch") {
       throw new Error("Parle profile switch is deferred while hook delivery is pending, leased, or being read");
     }
-    const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && item.roomId === plan.previous.roomId));
+    const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
     if (!aliasTransfers) {
       throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending, leased, or being read");
     }
@@ -35404,7 +35373,7 @@ var HookDeliveryBridge = class {
     return {
       sessionRevision: Number(runtime.sessionRevision || 0),
       cursorScope: runtime.responsiveCursorScope,
-      roomId: String(runtime.roomId || ""),
+      roomId: this.bridgeRoomId(),
       sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0,
       agentSessionId: String(runtime.agentSessionId || "")
     };
@@ -35425,9 +35394,19 @@ var HookDeliveryBridge = class {
       throw error51;
     }
   }
+  // The hook bridge is single-room until the shared delivery controller lands,
+  // so it resolves the one configured room explicitly instead of reading a
+  // primary binding off the session.
+  bridgeRoomId() {
+    try {
+      return String(this.client.roomTarget?.()?.roomId?.value || "");
+    } catch {
+      return "";
+    }
+  }
   assertReadFenceCurrent(message) {
     const runtime = this.client.runtime || {};
-    if (message.roomId !== String(runtime.roomId || "")) throw new Error("Parle hook delivery belongs to a prior room binding");
+    if (message.roomId !== this.bridgeRoomId()) throw new Error("Parle hook delivery belongs to a prior room binding");
     if (message.cursorScope === "alias") {
       if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
       return;

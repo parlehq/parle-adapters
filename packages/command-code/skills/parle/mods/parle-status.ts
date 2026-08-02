@@ -2,8 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
-// v2 publishes rooms[]; v1 stays readable through a bounded compatibility path.
-const READABLE_SCHEMA_VERSIONS = new Set([1, 2]);
+// Snapshot schema v2: one session, rooms[] only. No v1 read path.
+const SCHEMA_VERSION = 2;
 const EXPIRY_SKEW_MS = 30_000;
 const START_TIME_TOLERANCE_MS = 15_000;
 const UNREAD_FRESH_MS = 180_000;
@@ -101,8 +101,14 @@ function readLiveSnapshots(cwd: string, now: number): any[] {
 }
 
 function roomLabel(snapshot: any): string {
-  if (typeof snapshot?.roomHandle === "string" && snapshot.roomHandle) return `#${snapshot.roomHandle}`;
-  if (typeof snapshot?.roomId === "string" && snapshot.roomId) return `#room-${snapshot.roomId.slice(0, 8)}`;
+  const rooms = Array.isArray(snapshot?.rooms) ? snapshot.rooms : [];
+  const labels = rooms.map((room: any) => {
+    if (typeof room?.roomHandle === "string" && room.roomHandle) return `#${room.roomHandle}`;
+    if (typeof room?.roomId === "string" && room.roomId) return `#room-${room.roomId.slice(0, 8)}`;
+    return null;
+  }).filter(Boolean);
+  if (labels.length === 1) return labels[0] as string;
+  if (labels.length > 1) return labels.join(" ");
   return "parle";
 }
 
@@ -117,14 +123,17 @@ function parleConfiguredHint(cwd: string): boolean {
 }
 
 function unreadInfo(snapshot: any, now: number): { count: number; fresh: boolean } | null {
-  if (typeof snapshot?.unreadCount !== "number" || snapshot.unreadCount <= 0) return null;
-  const asOf = Date.parse(snapshot.unreadAsOf || "");
-  if (!Number.isFinite(asOf)) return null;
-  return { count: snapshot.unreadCount, fresh: now - asOf <= UNREAD_FRESH_MS };
+  // One count across the session's rooms; per-room detail belongs in tools.
+  const rooms = Array.isArray(snapshot?.rooms) ? snapshot.rooms : [];
+  const counted = rooms.filter((room: any) => typeof room?.unreadCount === "number" && room.unreadCount > 0 && Number.isFinite(Date.parse(room.unreadAsOf || "")));
+  if (counted.length === 0) return null;
+  const count = counted.reduce((total: number, room: any) => total + room.unreadCount, 0);
+  const asOf = Math.max(...counted.map((room: any) => Date.parse(room.unreadAsOf)));
+  return { count, fresh: now - asOf <= UNREAD_FRESH_MS };
 }
 
 function isLive(snapshot: any, now: number): boolean {
-  if (!READABLE_SCHEMA_VERSIONS.has(snapshot?.schemaVersion) || snapshot.state !== "ready") return false;
+  if (snapshot?.schemaVersion !== SCHEMA_VERSION || snapshot.state !== "ready") return false;
   if (typeof snapshot.pid !== "number" || !Number.isInteger(snapshot.pid) || snapshot.pid <= 0) return false;
   const expiresAt = Date.parse(snapshot.expiresAt || "");
   if (!Number.isFinite(expiresAt) || expiresAt <= now + EXPIRY_SKEW_MS) return false;

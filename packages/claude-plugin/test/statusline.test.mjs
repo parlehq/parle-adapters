@@ -34,7 +34,7 @@ function ownStartIso() {
 
 function liveSnapshot(pid, overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     pid,
     // Own-process start time via uptime math; omit processStartedAt in
     // overrides for pids whose start time the test cannot know portably.
@@ -42,8 +42,7 @@ function liveSnapshot(pid, overrides = {}) {
     state: "ready",
     sessionAddress: "@gilman.galexc.abc123",
     agentSessionId: "as-1",
-    roomId: "room-1",
-    roomHandle: "test-room",
+    rooms: [{ roomId: "room-1", roomHandle: "test-room", state: "ready" }],
     updatedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     adapter: { name: "@parlehq/mcp-server" },
@@ -141,9 +140,9 @@ test("full mode lists all addresses for multiple live sessions, labeled as cwd s
 });
 
 test("fresh unread counts display; stale counts are suppressed in compact and labeled in full", () => {
-  const fresh = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { unreadCount: 2, unreadAsOf: new Date().toISOString() }) });
-  const stale = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { unreadCount: 2, unreadAsOf: new Date(Date.now() - 420_000).toISOString() }) });
-  const zero = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { unreadCount: 0, unreadAsOf: new Date().toISOString() }) });
+  const fresh = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { rooms: [{ roomId: "room-1", roomHandle: "test-room", state: "ready", unreadCount: 2, unreadAsOf: new Date().toISOString() }] }) });
+  const stale = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { rooms: [{ roomId: "room-1", roomHandle: "test-room", state: "ready", unreadCount: 2, unreadAsOf: new Date(Date.now() - 420_000).toISOString() }] }) });
+  const zero = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { rooms: [{ roomId: "room-1", roomHandle: "test-room", state: "ready", unreadCount: 0, unreadAsOf: new Date().toISOString() }] }) });
   try {
     assert.equal(run(fresh), "#test-room ✓ @gilman.galexc.abc123 · 2 unread");
     assert.match(run(fresh, ["--full"]), / · 2 unread$/);
@@ -157,8 +156,8 @@ test("fresh unread counts display; stale counts are suppressed in compact and la
 
 test("multi-session unread is an indicator, never a summed number", () => {
   const cwd = scaffold({
-    [`${process.pid}.json`]: liveSnapshot(process.pid, { unreadCount: 2, unreadAsOf: new Date().toISOString() }),
-    [`${process.ppid}.json`]: liveSnapshot(process.ppid, { sessionAddress: "@gilman.galexc.other", unreadCount: 1, unreadAsOf: new Date().toISOString() }),
+    [`${process.pid}.json`]: liveSnapshot(process.pid, { rooms: [{ roomId: "room-1", roomHandle: "test-room", state: "ready", unreadCount: 2, unreadAsOf: new Date().toISOString() }] }),
+    [`${process.ppid}.json`]: liveSnapshot(process.ppid, { sessionAddress: "@gilman.galexc.other", rooms: [{ roomId: "room-1", roomHandle: "test-room", state: "ready", unreadCount: 1, unreadAsOf: new Date().toISOString() }] }),
   });
   try {
     assert.equal(run(cwd), "#test-room ✓ 2 sessions · unread");
@@ -172,7 +171,7 @@ test("multi-session unread is an indicator, never a summed number", () => {
 });
 
 test("connected handleless room uses an honest short-id label", () => {
-  const cwd = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { roomHandle: undefined, roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261" }) });
+  const cwd = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { rooms: [{ roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261", state: "ready" }] }) });
   try {
     assert.equal(run(cwd), "#room-019f7b46 ✓ @gilman.galexc.abc123");
   } finally {
@@ -183,7 +182,7 @@ test("connected handleless room uses an honest short-id label", () => {
 test("multiple rooms retain a neutral aggregate label while full mode names each room", () => {
   const cwd = scaffold({
     [`${process.pid}.json`]: liveSnapshot(process.pid),
-    [`${process.ppid}.json`]: liveSnapshot(process.ppid, { roomHandle: "other-room", roomId: "room-2", sessionAddress: "@gilman.galexc.other" }),
+    [`${process.ppid}.json`]: liveSnapshot(process.ppid, { sessionAddress: "@gilman.galexc.other", rooms: [{ roomId: "room-2", roomHandle: "other-room", state: "ready" }] }),
   });
   try {
     assert.equal(run(cwd), "parle ✓ 2 sessions");
@@ -205,7 +204,7 @@ test("unconfigured cwd prints nothing", () => {
   }
 });
 
-test("a schema v2 multi-room snapshot stays readable and a future schema does not", () => {
+test("a multi-room snapshot labels every room and a retired schema reads as not live", () => {
   const v2 = scaffold({
     [`${process.pid}.json`]: liveSnapshot(process.pid, {
       schemaVersion: 2,
@@ -216,14 +215,16 @@ test("a schema v2 multi-room snapshot stays readable and a future schema does no
     }),
   });
   try {
-    assert.equal(run(v2), "#test-room ✓ @gilman.galexc.abc123");
+    assert.equal(run(v2), "#test-room #other-room ✓ @gilman.galexc.abc123");
   } finally {
     rmSync(v2, { recursive: true, force: true });
   }
-  const future = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { schemaVersion: 3 }) });
-  try {
-    assert.equal(run(future), "");
-  } finally {
-    rmSync(future, { recursive: true, force: true });
+  for (const retired of [1, 3]) {
+    const other = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { schemaVersion: retired }) });
+    try {
+      assert.equal(run(other), "", `schema ${retired} must not read as live`);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
   }
 });

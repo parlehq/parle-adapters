@@ -6,9 +6,11 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.2.2";
+const PI_EXTENSION_VERSION = "0.3.0";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
-const RUNTIME_SCHEMA_VERSION = 1;
+// Snapshot schema v2: one session, rooms[] only. Kept in step with
+// @parlehq/agent-client; readers accept nothing else.
+const RUNTIME_SCHEMA_VERSION = 2;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
 const API_LLMS_URL = "https://api.parle.sh/llms.txt";
 const OPENAPI_URL = "https://api.parle.sh/openapi.json";
@@ -673,8 +675,12 @@ function publishRuntimeState(ctx: any, cfg = resolveConfig(ctx?.cwd || process.c
       state,
       sessionAddress: runtime.sessionAddress || null,
       agentSessionId: runtime.agentSessionId || "",
-      roomId: runtime.roomId || cfg.roomId?.value || "",
-      roomHandle: runtime.roomHandle || cfg.roomHandle?.value,
+      rooms: [{
+        roomId: runtime.roomId || cfg.roomId?.value || "",
+        ...(runtime.roomHandle || cfg.roomHandle?.value ? { roomHandle: runtime.roomHandle || cfg.roomHandle?.value } : {}),
+        ...(cfg.profile?.value ? { profile: cfg.profile.value } : {}),
+        state: state === "ready" ? "ready" as const : "degraded" as const,
+      }],
       updatedAt: new Date().toISOString(),
       expiresAt: runtime.expiresAt || "",
       ...(runtime.lastError ? { lastError: redactString(runtime.lastError) } : {}),

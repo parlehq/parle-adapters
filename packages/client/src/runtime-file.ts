@@ -7,11 +7,9 @@ import { join } from "node:path";
 // each other; expiresAt plus pid liveness makes files self-invalidating so
 // crash cleanup is best-effort, not load-bearing.
 
-// v2 adds rooms[] so one session can publish several room bindings. Writers
-// emit v2 only; readers accept v1 through a bounded compatibility path that
-// projects the single binding into the same rooms[] shape.
+// v2 is a hard cut: one session, rooms[] only. There is no v1 field on a v2
+// snapshot and no v1 read path. Writers and every reader ship together.
 export const RUNTIME_SCHEMA_VERSION = 2;
-export const RUNTIME_SCHEMA_READABLE_VERSIONS = [1, 2] as const;
 export const RUNTIME_DIR_SEGMENTS = [".parle", "runtime"] as const;
 export const RUNTIME_EXPIRY_SKEW_MS = 30_000;
 
@@ -36,30 +34,12 @@ export type RuntimeFileSnapshot = {
   state: RuntimeFileState;
   sessionAddress: string | null;
   agentSessionId: string;
-  // v1 single-binding fields. Still written for the primary room so v1 readers
-  // in flight during a rollout keep working; rooms[] is authoritative.
-  roomId: string;
-  roomHandle?: string;
-  rooms?: RuntimeFileRoom[];
+  rooms: RuntimeFileRoom[];
   updatedAt: string;
   expiresAt: string;
   lastError?: string;
-  unreadCount?: number;
-  unreadAsOf?: string;
   adapter: { name: string; version?: string };
 };
-
-// One reader shape for both schema versions: v1 has exactly one room.
-export function snapshotRooms(snapshot: RuntimeFileSnapshot): RuntimeFileRoom[] {
-  if (Array.isArray(snapshot.rooms) && snapshot.rooms.length) return snapshot.rooms;
-  if (!snapshot.roomId) return [];
-  return [{
-    roomId: snapshot.roomId,
-    ...(snapshot.roomHandle ? { roomHandle: snapshot.roomHandle } : {}),
-    state: snapshot.state === "ready" ? "ready" : "degraded",
-    ...(typeof snapshot.unreadCount === "number" ? { unreadCount: snapshot.unreadCount, unreadAsOf: snapshot.unreadAsOf } : {}),
-  }];
-}
 
 export function runtimeDirPath(cwd: string): string {
   return join(cwd, ...RUNTIME_DIR_SEGMENTS);
@@ -124,7 +104,7 @@ export function pidLiveness(pid: number): PidLiveness {
 // checks read as not live. Cross-pid start-time verification is left to
 // display helpers that can afford a ps call; expiry bounds the reuse window.
 export function isLiveRuntimeSnapshot(snapshot: RuntimeFileSnapshot, now: Date = new Date()): boolean {
-  if (!RUNTIME_SCHEMA_READABLE_VERSIONS.includes(snapshot.schemaVersion as 1 | 2) || snapshot.state !== "ready") return false;
+  if (snapshot.schemaVersion !== RUNTIME_SCHEMA_VERSION || snapshot.state !== "ready") return false;
   if (typeof snapshot.pid !== "number" || !Number.isInteger(snapshot.pid) || snapshot.pid <= 0) return false;
   const expiresAt = Date.parse(snapshot.expiresAt || "");
   if (!Number.isFinite(expiresAt) || expiresAt <= now.getTime() + RUNTIME_EXPIRY_SKEW_MS) return false;

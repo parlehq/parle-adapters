@@ -29,8 +29,8 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-// v2 publishes rooms[]; v1 stays readable through a bounded compatibility path.
-const READABLE_SCHEMA_VERSIONS = new Set([1, 2]);
+// Snapshot schema v2: one session, rooms[] only. No v1 read path.
+const SCHEMA_VERSION = 2;
 const EXPIRY_SKEW_MS = 30_000;
 const START_TIME_TOLERANCE_MS = 15_000;
 
@@ -100,8 +100,14 @@ function main() {
 }
 
 function roomLabel(snapshot) {
-  if (typeof snapshot?.roomHandle === "string" && snapshot.roomHandle) return `#${snapshot.roomHandle}`;
-  if (typeof snapshot?.roomId === "string" && snapshot.roomId) return `#room-${snapshot.roomId.slice(0, 8)}`;
+  const rooms = Array.isArray(snapshot?.rooms) ? snapshot.rooms : [];
+  const labels = rooms.map((room) => {
+    if (typeof room?.roomHandle === "string" && room.roomHandle) return `#${room.roomHandle}`;
+    if (typeof room?.roomId === "string" && room.roomId) return `#room-${room.roomId.slice(0, 8)}`;
+    return null;
+  }).filter(Boolean);
+  if (labels.length === 1) return labels[0];
+  if (labels.length > 1) return labels.join(" ");
   return "parle";
 }
 
@@ -124,11 +130,14 @@ function parleConfiguredHint(cwd) {
 const UNREAD_FRESH_MS = 180_000;
 
 function unreadInfo(snapshot, now) {
-  if (typeof snapshot.unreadCount !== "number" || snapshot.unreadCount <= 0) return null;
-  const asOf = Date.parse(snapshot.unreadAsOf || "");
-  if (!Number.isFinite(asOf)) return null;
-  const ageMs = now - asOf;
-  return { count: snapshot.unreadCount, ageMs, fresh: ageMs <= UNREAD_FRESH_MS };
+  // One count across the session's rooms: the statusline answers "does
+  // anything want me", and per-room detail belongs in the tool output.
+  const rooms = Array.isArray(snapshot?.rooms) ? snapshot.rooms : [];
+  const counted = rooms.filter((room) => typeof room?.unreadCount === "number" && room.unreadCount > 0 && Number.isFinite(Date.parse(room.unreadAsOf || "")));
+  if (counted.length === 0) return null;
+  const count = counted.reduce((total, room) => total + room.unreadCount, 0);
+  const ageMs = now - Math.max(...counted.map((room) => Date.parse(room.unreadAsOf)));
+  return { count, ageMs, fresh: ageMs <= UNREAD_FRESH_MS };
 }
 
 function relativeExpiry(expiresAtMs, now) {
@@ -144,7 +153,7 @@ function relativeExpiry(expiresAtMs, now) {
 // sandboxes and hardened hosts deny process inspection) skips the check
 // rather than bricking the display; expiry bounds the reuse window either way.
 function isLive(snapshot, now) {
-  if (!READABLE_SCHEMA_VERSIONS.has(snapshot?.schemaVersion) || snapshot.state !== "ready") return false;
+  if (snapshot?.schemaVersion !== SCHEMA_VERSION || snapshot.state !== "ready") return false;
   if (typeof snapshot.pid !== "number" || !Number.isInteger(snapshot.pid) || snapshot.pid <= 0) return false;
   const expiresAt = Date.parse(snapshot.expiresAt || "");
   if (!Number.isFinite(expiresAt) || expiresAt <= now + EXPIRY_SKEW_MS) return false;

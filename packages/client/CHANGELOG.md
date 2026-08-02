@@ -2,6 +2,8 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Hard cut: the session runtime owns no room state. Cursors, participants, handles, unread counts, and health live only in rooms[], with no primary-room projection.
+- Report rooms[] from connect summaries, profile-switch results, and the session-established block.
 - Add PARLE_PROFILES multi-room configuration with fail-closed preflight validation (issue #63 S1).
 - Own one roomless session plus a room runtime per configured room, with per-room bearers, cursors, unread counts, and health.
 - Isolate ordinary room-entry failures to one room; abort the set only on a session-scope rejection.

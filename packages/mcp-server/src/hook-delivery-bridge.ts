@@ -428,7 +428,7 @@ export class HookDeliveryBridge {
     const aliasTransfers = Boolean(plan.previous.sessionAlias
       && plan.candidate.sessionAlias === plan.previous.sessionAlias
       && plan.candidate.responsiveContinuity === "alias"
-      && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && item.roomId === plan.previous.roomId));
+      && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
     if (!aliasTransfers) {
       throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending, leased, or being read");
     }
@@ -439,7 +439,7 @@ export class HookDeliveryBridge {
     return {
       sessionRevision: Number(runtime.sessionRevision || 0),
       cursorScope: runtime.responsiveCursorScope,
-      roomId: String(runtime.roomId || ""),
+      roomId: this.bridgeRoomId(),
       sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
       agentSessionId: String(runtime.agentSessionId || ""),
     };
@@ -462,9 +462,20 @@ export class HookDeliveryBridge {
     }
   }
 
+  // The hook bridge is single-room until the shared delivery controller lands,
+  // so it resolves the one configured room explicitly instead of reading a
+  // primary binding off the session.
+  private bridgeRoomId(): string {
+    try {
+      return String((this.client as any).roomTarget?.()?.roomId?.value || "");
+    } catch {
+      return "";
+    }
+  }
+
   private assertReadFenceCurrent(message: DeliveryReadFence): void {
     const runtime = (this.client as any).runtime || {};
-    if (message.roomId !== String(runtime.roomId || "")) throw new Error("Parle hook delivery belongs to a prior room binding");
+    if (message.roomId !== this.bridgeRoomId()) throw new Error("Parle hook delivery belongs to a prior room binding");
     if (message.cursorScope === "alias") {
       if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
       return;

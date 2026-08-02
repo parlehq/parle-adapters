@@ -2,6 +2,7 @@
 
 ## 0.4.0 (2026-08-02)
 
+- Hard cut to snapshot schema v2 in the footer reader; v1 snapshots read as not live.
 - Read runtime snapshot schema v2 in the footer reader.
 - Refresh the bundled MCP server for alias-aware live profile switching.
 

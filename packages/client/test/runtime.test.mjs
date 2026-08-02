@@ -41,13 +41,13 @@ function tempCwd() {
 
 function snapshotFor(pid, overrides = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     pid,
     processStartedAt: new Date().toISOString(),
     state: "ready",
     sessionAddress: "@p.a.other",
     agentSessionId: "as-x",
-    roomId: "room-1",
+    rooms: [{ roomId: "room-1", state: "ready" }],
     updatedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     adapter: { name: "test" },
@@ -66,7 +66,7 @@ test("concurrent bootstrap callers converge on a single session mint", async () 
   await Promise.all([client.connect(), client.connect(), client.ensureBootstrapped()]);
   assert.equal(counters.sessions, 1);
   assert.equal(client.runtime.bootstrapState, "ready");
-  assert.equal(client.runtime.cursor, 7);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
 });
 
 test("bootstrap failure records failed state with backoff and ensureReadySafe respects the window", async () => {
@@ -133,7 +133,7 @@ test("publishRuntime writes a credential-free 0600 snapshot and endSession remov
     assert.equal(snapshot.clientInstanceId, client.clientInstanceId);
     assert.equal(snapshot.sessionAddress, "@p.a.s1");
     assert.equal(snapshot.agentSessionId, "as-1");
-    assert.equal(snapshot.roomHandle, "test-room");
+    assert.equal(snapshot.rooms[0].roomHandle, "test-room");
     assert.equal(snapshot.adapter.name, "@parlehq/mcp-server");
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.equal(statSync(runtimeDirPath(cwd)).mode & 0o777, 0o700);
@@ -185,8 +185,8 @@ test("isLiveRuntimeSnapshot gates on schema, state, expiry, and pid liveness", (
   const now = new Date();
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid), now), true);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { state: "failed" }), now), false);
-  // v1 stays readable through the bounded compatibility path; anything else does not.
-  assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { schemaVersion: 1 }), now), true);
+  // Hard cut: v2 only. Neither the retired v1 nor a future schema reads live.
+  assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { schemaVersion: 1 }), now), false);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { schemaVersion: 3 }), now), false);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { expiresAt: new Date(now.getTime() + 1000).toISOString() }), now), false);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { expiresAt: "" }), now), false);
@@ -218,8 +218,9 @@ async function runCursorRead({ cursor = 7, messages = [], watermark = 20, params
   });
   await client.connect();
   // Cursors live on the room runtime; runtime.cursor is its single-room projection.
-  client.roomRuntime(client.cfg.roomId.value).cursor = cursor;
-  client.runtime.unreadCount = 5;
+  const seed = client.roomRuntime(client.cfg.roomId.value);
+  seed.cursor = cursor;
+  seed.unreadCount = 5;
   const result = await client.readInbox(params);
   return { client, result };
 }
@@ -230,19 +231,19 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
     assert.equal(returned.result.cursorBefore, 7);
     assert.equal(returned.result.cursorAfter, 9);
     assert.equal(returned.result.advancedCursor, true);
-    assert.equal(returned.client.runtime.unreadCount, 0);
+    assert.equal(returned.client.roomRuntime(returned.client.cfg.roomId.value).unreadCount, 0);
 
     const empty = await runCursorRead({ messages: [], watermark: 20 });
     assert.equal(empty.result.cursorAfter, 20);
     assert.equal(empty.result.advancedCursor, true);
-    assert.equal(empty.client.runtime.unreadCount, 0);
+    assert.equal(empty.client.roomRuntime(empty.client.cfg.roomId.value).unreadCount, 0);
   });
 
   await t.test("explicit true without sinceSeq has the default commit behavior", async () => {
     const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { advanceCursor: true } });
     assert.equal(result.cursorAfter, 9);
     assert.equal(result.advancedCursor, true);
-    assert.equal(client.runtime.unreadCount, 0);
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 0);
   });
 
   await t.test("explicit false never advances with or without sinceSeq", async () => {
@@ -251,7 +252,7 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
       assert.equal(result.cursorBefore, 7);
       assert.equal(result.cursorAfter, 7);
       assert.equal(result.advancedCursor, false);
-      assert.equal(client.runtime.unreadCount, 5);
+      assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 5);
     }
   });
 
@@ -259,7 +260,7 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
     const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2 } });
     assert.equal(result.cursorAfter, 7);
     assert.equal(result.advancedCursor, false);
-    assert.equal(client.runtime.unreadCount, 5);
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 5);
   });
 
   await t.test("explicit sinceSeq plus true commits only returned capped rows and recomputes unread", async () => {
@@ -269,7 +270,7 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
     assert.equal(result.advancedCursor, true);
     assert.deepEqual(result.messages.map((row) => row.seq), [8, 9]);
     assert.equal(result.truncated, true);
-    assert.equal(client.runtime.unreadCount, 1, "the capped row beyond the committed cursor remains unread");
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 1, "the capped row beyond the committed cursor remains unread");
   });
 
   await t.test("an empty explicit commit never jumps to the watermark or erases unread state", async () => {
@@ -277,7 +278,7 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
     assert.equal(result.cursorBefore, 7);
     assert.equal(result.cursorAfter, 7);
     assert.equal(result.advancedCursor, false);
-    assert.equal(client.runtime.unreadCount, 5);
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 5);
   });
 
   await t.test("cursor movement is monotonic and a no-op explicit commit preserves unread state", async () => {
@@ -285,7 +286,7 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
     assert.equal(result.cursorBefore, 12);
     assert.equal(result.cursorAfter, 12);
     assert.equal(result.advancedCursor, false);
-    assert.equal(client.runtime.unreadCount, 5);
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 5);
   });
 });
 
@@ -293,14 +294,14 @@ test("observeUnread counts without advancing the cursor and repeated polls are i
   const counters = {};
   const client = new ParleAgentClient({ env: ENV, fetch: unreadFetch(counters, () => [{ seq: 8 }, { seq: 9 }]) });
   await client.connect();
-  assert.equal(client.runtime.cursor, 7);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
   await client.observeUnread();
-  assert.equal(client.runtime.unreadCount, 2);
-  assert.equal(client.runtime.cursor, 7);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 2);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
   assert.match(counters.lastInboundUrl, /since_seq=7&wait=0/);
   await client.observeUnread();
-  assert.equal(client.runtime.unreadCount, 2);
-  assert.equal(client.runtime.cursor, 7);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 2);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
   assert.equal(counters.inbound, 2);
   assert.match(counters.lastInboundUrl, /since_seq=7&wait=0/);
 });
@@ -328,11 +329,11 @@ test("a drain during an in-flight observation discards the stale count", async (
   await client.connect();
   const observation = client.observeUnread();
   await client.readInbox();
-  assert.equal(client.runtime.cursor, 9);
-  assert.equal(client.runtime.unreadCount, 0);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 9);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 0);
   releaseInbound();
   await observation;
-  assert.equal(client.runtime.unreadCount, 0, "stale positive count must not resurrect after a drain");
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 0, "stale positive count must not resurrect after a drain");
 });
 
 test("draining reads republish the remaining count and steady zero writes nothing", async () => {
@@ -342,22 +343,22 @@ test("draining reads republish the remaining count and steady zero writes nothin
     const client = new ParleAgentClient({ cwd, env: ENV, fetch: unreadFetch(counters, () => [{ seq: 8 }]), publishRuntime: { adapterName: "test" } });
     await client.connect();
     await client.observeUnread();
-    assert.equal(client.runtime.unreadCount, 1);
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 1);
     let snapshot = JSON.parse(readFileSync(runtimeFilePath(cwd, process.pid), "utf8"));
-    assert.equal(snapshot.unreadCount, 1);
-    assert.ok(snapshot.unreadAsOf);
+    assert.equal(snapshot.rooms[0].unreadCount, 1);
+    assert.ok(snapshot.rooms[0].unreadAsOf);
     // Drain: readInbox advances the cursor past seq 8 and republishes zero.
     await client.readInbox();
-    assert.equal(client.runtime.cursor, 8);
+    assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 8);
     snapshot = JSON.parse(readFileSync(runtimeFilePath(cwd, process.pid), "utf8"));
-    assert.equal(snapshot.unreadCount, 0);
-    const asOfAfterDrain = snapshot.unreadAsOf;
+    assert.equal(snapshot.rooms[0].unreadCount, 0);
+    const asOfAfterDrain = snapshot.rooms[0].unreadAsOf;
     // Steady zero: the stub still returns seq 8, now behind the cursor, so the
     // next observation counts zero and must not rewrite the runtime file.
     await client.observeUnread();
     snapshot = JSON.parse(readFileSync(runtimeFilePath(cwd, process.pid), "utf8"));
-    assert.equal(snapshot.unreadCount, 0);
-    assert.equal(snapshot.unreadAsOf, asOfAfterDrain, "steady zero must not rewrite the runtime file");
+    assert.equal(snapshot.rooms[0].unreadCount, 0);
+    assert.equal(snapshot.rooms[0].unreadAsOf, asOfAfterDrain, "steady zero must not rewrite the runtime file");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -376,11 +377,11 @@ test("observation failures never touch session state", async () => {
   });
   await client.connect();
   await client.observeUnread();
-  assert.equal(client.runtime.unreadCount, 1);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 1);
   failInbound = true;
   await client.observeUnread();
   assert.equal(client.runtime.bootstrapState, "ready");
-  assert.equal(client.runtime.unreadCount, 1, "failed observation leaves the prior count to age out");
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 1, "failed observation leaves the prior count to age out");
 });
 
 test("unread poll interval parses with a floor, cap, and zero-disable", () => {

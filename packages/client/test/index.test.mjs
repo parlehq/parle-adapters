@@ -542,7 +542,7 @@ test("agent-session rebootstrap retries once and preserves cursor", async () => 
   await assert.rejects(() => client.readProjection(), { status: 401 });
   assert.equal(sessions, 2);
   assert.equal(readAttempts, 2);
-  assert.equal(client.runtime.cursor, 12);
+  assert.equal(client.runtime.rooms[0].cursor, 12);
 });
 
 test("repeated agent-session terminal failure does not rebootstrap twice in one episode", async () => {
@@ -565,7 +565,7 @@ test("repeated agent-session terminal failure does not rebootstrap twice in one 
   await assert.rejects(() => client.readInbox(), { status: 401 });
   assert.equal(sessions, 2);
   assert.equal(inboxAttempts, 2);
-  assert.equal(client.runtime.cursor, 21);
+  assert.equal(client.runtime.rooms[0].cursor, 21);
 });
 
 test("concurrent terminal failures share one rebootstrap flight", async () => {
@@ -619,7 +619,7 @@ test("affordances rebootstrap after agent-session terminal error and preserve cu
   assert.deepEqual(result.affordances, [{ action: "send" }]);
   assert.equal(sessions, 2);
   assert.equal(affordanceAttempts, 2);
-  assert.equal(client.runtime.cursor, 33);
+  assert.equal(client.runtime.rooms[0].cursor, 33);
 });
 
 test("send reuses generated idempotency key across agent-session rebootstrap", async () => {
@@ -647,7 +647,7 @@ test("send reuses generated idempotency key across agent-session rebootstrap", a
   assert.equal(result.idempotencyKey, "idem-stable");
   assert.deepEqual(messageKeys, ["idem-stable", "idem-stable"]);
   assert.equal(sessions, 2);
-  assert.equal(client.runtime.cursor, 44);
+  assert.equal(client.runtime.rooms[0].cursor, 44);
 });
 
 test("send maps bootstrap setup errors into structured send failure", async () => {
@@ -784,10 +784,10 @@ test("connect bootstraps once, returns factual summary, and reuses live sessions
   assert.equal(first.connected, true);
   assert.equal(first.reusedExistingSession, false);
   assert.equal(first.agentSessionId, "as-1");
-  assert.equal(first.participantId, "part-1");
-  assert.equal(first.cursor, 7);
-  assert.equal(first.heldBacklogCount, 2);
-  assert.equal(first.roomHandle, "room-handle");
+  assert.equal(first.rooms[0].participantId, "part-1");
+  assert.equal(first.rooms[0].cursor, 7);
+  assert.equal(first.rooms[0].heldBacklogCount, 2);
+  assert.equal(first.rooms[0].roomHandle, "room-handle");
   assert.match(first.next, /arm responsive delivery/);
   assert.match(first.next, /^Render compactText verbatim/);
   const second = await client.connect();
@@ -1046,13 +1046,13 @@ test("client profile switch prepares a scratch session, adopts room identity, an
     const result = await client.switchProfile("target");
     assert.equal(result.switched, true);
     assert.equal(result.previousProfile, "default");
-    assert.equal(result.roomId, "019f7b46-178f-7a5a-9f7b-b4af2e045261");
-    assert.equal(result.roomHandle, "target-room");
-    assert.equal(result.cursor, 42);
+    assert.equal(result.rooms[0].roomId, "019f7b46-178f-7a5a-9f7b-b4af2e045261");
+    assert.equal(result.rooms[0].roomHandle, "target-room");
+    assert.equal(result.rooms[0].cursor, 42);
     assert.equal(result.watcherRestartRequired, true);
     assert.equal(result.watcherRestarted, false);
     assert.equal(client.status().config.profile.value, "target");
-    assert.equal(client.status().runtime.roomHandle, "target-room");
+    assert.equal(client.status().rooms[0].roomHandle, "target-room");
     assert.deepEqual(calls.at(-1), ["end-old", "Bearer parle_agt_old", "parle_ses_old"]);
     assert.deepEqual([...new Set(instances)], [client.clientInstanceId], "scratch bootstrap and retirement retain the owner process identity");
   } finally {
@@ -1124,7 +1124,7 @@ test("client profile switch claims a configured alias on the target agent and re
     await harness.client.connect();
     const result = await harness.client.switchProfile("target");
     assert.equal(result.switched, true);
-    assert.equal(result.cursor, 42, "a cursor is never preserved across rooms");
+    assert.equal(result.rooms[0].cursor, 42, "a cursor is never preserved across rooms");
     assert.equal(harness.client.runtime.sessionAlias, "main");
     assert.equal(harness.client.runtime.sessionAddress, "@p.target.main");
     // The target claim cannot supersede another durable agent's alias owner,
@@ -1159,7 +1159,7 @@ test("client profile switch reports a possible external alias winner on claim co
     await assert.rejects(harness.client.switchProfile("target"), /external winner may already hold alias authority/);
     assert.equal(harness.client.status().config.profile.value, "default");
     assert.equal(harness.client.runtime.agentSessionId, sourceSession);
-    assert.equal(harness.client.runtime.roomHandle, "old-room");
+    assert.equal(harness.client.runtime.rooms[0].roomHandle, "old-room");
     assert.deepEqual(harness.ended().at(-1), ["POST", "/v/agent/sessions/as-target/end", "target"], "the losing candidate is retired");
   } finally {
     harness.cleanup();
@@ -1243,8 +1243,8 @@ test("client profile switch failure leaves the old profile session intact", asyn
     await assert.rejects(client.switchProfile("bad"), /not admitted/);
     assert.equal(oldEnded, false);
     assert.equal(client.status().config.profile.value, "default");
-    assert.equal(client.runtime.roomId, "019f2946-aef5-77ad-a41d-747ce0fd6a1e");
-    assert.equal(client.runtime.roomHandle, "old-room");
+    assert.equal(client.runtime.rooms[0].roomId, "019f2946-aef5-77ad-a41d-747ce0fd6a1e");
+    assert.equal(client.runtime.rooms[0].roomHandle, "old-room");
     assert.equal(client.runtime.sessionAddress, "@p.a.old");
   } finally {
     rmSync(home, { recursive: true, force: true });
