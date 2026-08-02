@@ -2,6 +2,8 @@
 
 ## 0.4.0 (2026-08-02)
 
+- Add optional roomId to parle_read, parle_inbox, parle_send, and parle_affordances, and regenerate the tool contract lock.
+- Route responsive wake hints by room_id and ignore hints naming unconfigured rooms, with a diagnostic counter.
 - Adopt the shared client alias-aware profile switch and pre-claim guard ordering.
 
 ## 0.3.2 (2026-08-02)

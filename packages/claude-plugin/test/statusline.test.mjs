@@ -204,3 +204,26 @@ test("unconfigured cwd prints nothing", () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("a schema v2 multi-room snapshot stays readable and a future schema does not", () => {
+  const v2 = scaffold({
+    [`${process.pid}.json`]: liveSnapshot(process.pid, {
+      schemaVersion: 2,
+      rooms: [
+        { roomId: "room-1", roomHandle: "test-room", profile: "alpha", state: "ready" },
+        { roomId: "room-2", roomHandle: "other-room", profile: "beta", state: "ready" },
+      ],
+    }),
+  });
+  try {
+    assert.equal(run(v2), "#test-room ✓ @gilman.galexc.abc123");
+  } finally {
+    rmSync(v2, { recursive: true, force: true });
+  }
+  const future = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid, { schemaVersion: 3 }) });
+  try {
+    assert.equal(run(future), "");
+  } finally {
+    rmSync(future, { recursive: true, force: true });
+  }
+});

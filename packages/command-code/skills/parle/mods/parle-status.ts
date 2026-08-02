@@ -2,7 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
-const SCHEMA_VERSION = 1;
+// v2 publishes rooms[]; v1 stays readable through a bounded compatibility path.
+const READABLE_SCHEMA_VERSIONS = new Set([1, 2]);
 const EXPIRY_SKEW_MS = 30_000;
 const START_TIME_TOLERANCE_MS = 15_000;
 const UNREAD_FRESH_MS = 180_000;
@@ -123,7 +124,7 @@ function unreadInfo(snapshot: any, now: number): { count: number; fresh: boolean
 }
 
 function isLive(snapshot: any, now: number): boolean {
-  if (snapshot?.schemaVersion !== SCHEMA_VERSION || snapshot.state !== "ready") return false;
+  if (!READABLE_SCHEMA_VERSIONS.has(snapshot?.schemaVersion) || snapshot.state !== "ready") return false;
   if (typeof snapshot.pid !== "number" || !Number.isInteger(snapshot.pid) || snapshot.pid <= 0) return false;
   const expiresAt = Date.parse(snapshot.expiresAt || "");
   if (!Number.isFinite(expiresAt) || expiresAt <= now + EXPIRY_SKEW_MS) return false;

@@ -80,3 +80,20 @@ Legacy private capability claims remain supported. They accept only an absolute 
 ## Human account hardening
 
 `ParleHardeningClient` backs the typed `parle_harden_account` adapters and the `parle-hardening-secret` binary. The orchestration surface accepts no secret or path and never launches the helper. The human runs the helper independently on a controlling TTY; password, TOTP, provisioning URI, and recovery-code custody remains in fixed `0700`/`0600` files beside the resolved profile catalog. See the [operator ceremony](../../docs/account-hardening-ceremony.md).
+
+## Multi-room sessions
+
+`PARLE_PROFILES=alpha,beta` operates several rooms from one roomless agent
+session. Each profile stays an atomic room-bound credential, every room request
+uses that room's own bearer, and cursors, unread counts, participant identity,
+and health are room-scoped.
+
+Room-scoped calls take an optional `roomId`. With one configured room, omission
+behaves exactly as before; with several, omission fails closed and lists the
+configured rooms. Room UUID is the only routing selector.
+
+An ordinary room denial degrades only that room. A session-scope rejection during
+entry aborts the whole set. Live profile switching stays a single-room primitive
+and fails closed while `PARLE_PROFILES` is active.
+
+See `docs/design/multi-room-agent-sessions.md` for the full contract.

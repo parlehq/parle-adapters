@@ -42,6 +42,10 @@ export type HookDeliveryBridgeStatus = {
   socketPath: string;
   hostSessionBound: boolean;
   lastError?: string;
+  // Wake hints naming a room this process does not configure. Recorded so an
+  // ignored hint is diagnosable instead of looking like lost delivery.
+  ignoredWakeHints?: number;
+  lastIgnoredWakeRoomId?: string;
 };
 
 type PendingMessage = ResponsiveDeliveryMessage & {
@@ -113,6 +117,8 @@ export class HookDeliveryBridge {
   private unsubscribeSessionRevision?: () => void;
   private unsubscribeCommitGuard?: () => void;
   private drainInFlight?: Promise<void>;
+  private ignoredWakeHints = 0;
+  private lastIgnoredWakeRoomId?: string;
   private readonly activeDeliveryReads = new Set<DeliveryReadFence>();
 
   constructor(
@@ -128,6 +134,7 @@ export class HookDeliveryBridge {
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope),
       hostSessionBound: Boolean(this.hostSessionId),
+      ...(this.ignoredWakeHints ? { ignoredWakeHints: this.ignoredWakeHints, lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {}),
       ...(this.lastError ? { lastError: this.lastError } : {}),
     };
   }
@@ -383,7 +390,7 @@ export class HookDeliveryBridge {
             buffer += decoder.decode(value, { stream: true });
             const parsed = parseSSEBlocks(buffer);
             buffer = parsed.rest;
-            for (const event of parsed.events) if (event.event === "wake") await this.drain();
+            for (const event of parsed.events) if (event.event === "wake") await this.handleWake(event.data);
           }
         }, wakeSignal);
         this.lastError = undefined;
@@ -490,6 +497,27 @@ export class HookDeliveryBridge {
       queued += 1;
     }
     return queued;
+  }
+
+  // A wake hint names the room that has traffic. An unknown room ID is
+  // recorded and ignored: never fetch an unconfigured room from a hint. A
+  // hintless wake keeps the unconditional drain so older servers still work.
+  private async handleWake(data: string): Promise<void> {
+    let hinted: string | undefined;
+    try {
+      const parsed = data ? JSON.parse(data) : undefined;
+      if (parsed && typeof parsed === "object" && typeof (parsed as any).room_id === "string") hinted = (parsed as any).room_id;
+    } catch {
+      // A malformed hint is diagnostic noise, never a delivery failure.
+    }
+    if (!hinted) return this.drain();
+    const configured = (this.client as any).roomConfigs?.some?.((room: any) => room?.roomId?.value === hinted);
+    if (configured === false) {
+      this.ignoredWakeHints += 1;
+      this.lastIgnoredWakeRoomId = hinted;
+      return;
+    }
+    return this.drain();
   }
 
   private async drain(): Promise<void> {

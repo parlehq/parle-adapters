@@ -111,3 +111,16 @@ test("registers future footer state, emits one delayed startup notice, and clear
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("reads schema v2 snapshots and ignores unknown future schemas", () => {
+  const cwd = workspace("schema-v2");
+  try {
+    writeSnapshot(cwd, "v2", snapshot({ schemaVersion: 2, rooms: [{ roomId: "room-1", roomHandle: "workshop", state: "ready" }] }));
+    assert.equal(renderParleStatus(cwd), "#workshop ✓ @gilman.galexc.abcdefgh");
+    rmSync(join(cwd, ".parle", "runtime", "v2.json"), { force: true });
+    writeSnapshot(cwd, "v3", snapshot({ schemaVersion: 3 }));
+    assert.equal(renderParleStatus(cwd), null);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

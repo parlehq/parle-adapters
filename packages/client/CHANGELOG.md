@@ -2,6 +2,12 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Add PARLE_PROFILES multi-room configuration with fail-closed preflight validation (issue #63 S1).
+- Own one roomless session plus a room runtime per configured room, with per-room bearers, cursors, unread counts, and health.
+- Isolate ordinary room-entry failures to one room; abort the set only on a session-scope rejection.
+- Accept an optional roomId on read, inbox, send, and affordances; fail closed when several rooms are configured.
+- Publish runtime snapshot schema v2 with rooms[]; readers accept v1 and v2.
+- Fail profile switching closed while PARLE_PROFILES is active.
 - Allow a configured session alias across a live profile switch by preparing the target candidate without claiming and activating the claim at the pre-claim edge.
 - Run bridge commit guards before the alias claim so a rejected guard can no longer strand alias authority on an unpublished candidate (also fixes proactive rollover).
 - Refuse responsive-read fences opened between a pre-claim guard and its local publication.

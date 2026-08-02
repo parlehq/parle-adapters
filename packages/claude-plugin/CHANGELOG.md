@@ -2,6 +2,7 @@
 
 ## 0.7.0 (2026-08-02)
 
+- Read runtime snapshot schema v2 in the statusline and watcher liveness readers.
 - Refresh the bundled MCP server for alias-aware live profile switching.
 
 ## Unreleased

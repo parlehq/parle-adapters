@@ -29,7 +29,8 @@ import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-const SCHEMA_VERSION = 1;
+// v2 publishes rooms[]; v1 stays readable through a bounded compatibility path.
+const READABLE_SCHEMA_VERSIONS = new Set([1, 2]);
 const EXPIRY_SKEW_MS = 30_000;
 const START_TIME_TOLERANCE_MS = 15_000;
 
@@ -143,7 +144,7 @@ function relativeExpiry(expiresAtMs, now) {
 // sandboxes and hardened hosts deny process inspection) skips the check
 // rather than bricking the display; expiry bounds the reuse window either way.
 function isLive(snapshot, now) {
-  if (snapshot?.schemaVersion !== SCHEMA_VERSION || snapshot.state !== "ready") return false;
+  if (!READABLE_SCHEMA_VERSIONS.has(snapshot?.schemaVersion) || snapshot.state !== "ready") return false;
   if (typeof snapshot.pid !== "number" || !Number.isInteger(snapshot.pid) || snapshot.pid <= 0) return false;
   const expiresAt = Date.parse(snapshot.expiresAt || "");
   if (!Number.isFinite(expiresAt) || expiresAt <= now + EXPIRY_SKEW_MS) return false;

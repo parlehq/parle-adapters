@@ -649,3 +649,35 @@ test("stdio server lists the fourteen tools and setup works without secrets", as
     await client.close();
   }
 });
+
+test("room-scoped tools pass roomId through to the client", async () => {
+  const calls = [];
+  const fakeClient = {
+    status: () => ({ ok: true }),
+    setup: () => ({ ok: true }),
+    connect: async () => ({ connected: true }),
+    guidance: async () => ({ ok: true }),
+    readProjection: async (params) => { calls.push(["read", params.roomId]); return { messages: [], roomId: params.roomId }; },
+    readInbox: async (params) => { calls.push(["inbox", params.roomId]); return { messages: [], roomId: params.roomId }; },
+    affordances: async (params) => { calls.push(["affordances", params?.roomId]); return { affordances: [] }; },
+    send: async (params) => { calls.push(["send", params.roomId]); return { event_id: "evt-1", roomId: params.roomId }; },
+  };
+  const server = createParleMcpServer(fakeClient);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-rooms", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    await client.callTool({ name: "parle_read", arguments: { roomId: "room-a" } });
+    await client.callTool({ name: "parle_inbox", arguments: { roomId: "room-b" } });
+    await client.callTool({ name: "parle_affordances", arguments: { roomId: "room-c" } });
+    await client.callTool({ name: "parle_send", arguments: { body: "hi", roomId: "room-d" } });
+    assert.deepEqual(calls, [["read", "room-a"], ["inbox", "room-b"], ["affordances", "room-c"], ["send", "room-d"]]);
+    // Omission stays valid at the tool layer; the client decides whether one
+    // configured room makes it unambiguous or fails closed.
+    await client.callTool({ name: "parle_read", arguments: {} });
+    assert.deepEqual(calls.at(-1), ["read", undefined]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});

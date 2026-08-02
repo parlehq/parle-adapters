@@ -2,6 +2,7 @@
 
 ## 0.4.0 (2026-08-02)
 
+- Refresh the bundled MCP server for multi-room room routing.
 - Refresh the bundled MCP server for alias-aware live profile switching.
 
 ## Unreleased

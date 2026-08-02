@@ -22,7 +22,9 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "input": [],
+    "input": [
+      "roomId"
+    ],
     "required": []
   },
   "parle_claim_principal_invite": {
@@ -110,6 +112,7 @@
     "input": [
       "advanceCursor",
       "limitMessages",
+      "roomId",
       "sinceSeq",
       "waitSeconds"
     ],
@@ -142,6 +145,7 @@
     "input": [
       "advanceCursor",
       "limitMessages",
+      "roomId",
       "sinceSeq",
       "waitSeconds"
     ],
@@ -157,6 +161,7 @@
     "input": [
       "body",
       "idempotencyKey",
+      "roomId",
       "to"
     ],
     "required": [

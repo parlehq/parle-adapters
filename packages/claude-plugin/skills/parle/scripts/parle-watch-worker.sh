@@ -79,7 +79,7 @@ me="${2:-}"
 # ready (bootstrap retry or failure in progress) -- inconclusive, hold.
 # DEAD = live sibling snapshots exist and none carries $me. UNKNOWN = no
 # parseable snapshots (indeterminate, keep watching). Mirrors
-# isLiveRuntimeSnapshot in @parlehq/agent-client (schemaVersion 1, state
+# isLiveRuntimeSnapshot in @parlehq/agent-client (schemaVersion 1 or 2, state
 # ready, unexpired with 30s skew, writer pid alive; uncertain pid checks
 # count as alive, matching the client's prune posture).
 session_liveness() {
@@ -187,7 +187,7 @@ for path in sorted(glob.glob("./.parle/runtime/*.json")):
             snap = json.load(f)
     except Exception:
         continue
-    if not isinstance(snap, dict) or snap.get("schemaVersion") != 1:
+    if not isinstance(snap, dict) or snap.get("schemaVersion") not in (1, 2):
         continue
     expires = iso_epoch(snap.get("expiresAt", ""))
     alive = pid_alive(snap)
