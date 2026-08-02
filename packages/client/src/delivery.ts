@@ -53,6 +53,7 @@ export type DeliveryControllerStatus = {
 const DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 const DEFAULT_MAX_DRAIN_BATCHES = 100;
 const DEFAULT_RECONNECT_MS = 5000;
+const MAX_REMEMBERED_KEYS = 5000;
 
 function deliveryKey(roomId: string, message: ResponsiveDeliveryMessage): string {
   return `${roomId}:${message.event_id}`;
@@ -78,7 +79,11 @@ export class ResponsiveDeliveryController {
   // the same row can legitimately arrive again under a new generation.
   private readonly seen = new Set<string>();
   private readonly attempts = new Map<string, number>();
-  private readonly poisoned = new Set<string>();
+  // Rows whose handler ran but whose acknowledgement has not yet succeeded.
+  // Retrying one of these re-acknowledges only; the handler never re-runs.
+  private readonly handled = new Map<string, DeliveryHandlerResult>();
+  private readonly poisonedKeys = new Set<string>();
+  private readonly rerunRequested = new Set<string>();
   private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastError?: string }>();
   private readonly drainInFlight = new Map<string, Promise<void>>();
   private loop?: Promise<void>;
@@ -140,6 +145,14 @@ export class ResponsiveDeliveryController {
     this.unsubscribeRevision = undefined;
     await this.loop?.catch(() => undefined);
     this.loop = undefined;
+  }
+
+  // Test seam for drain coalescing and acknowledgement retry, which are not
+  // observable through the wake stream alone.
+  drainForTest(roomId: string): Promise<void> {
+    const room = this.configuredRooms().find((entry) => entry.roomId === roomId);
+    if (!room) return Promise.resolve();
+    return this.drainRoom(room);
   }
 
   private configuredRooms(): RoomRuntime[] {
@@ -240,10 +253,27 @@ export class ResponsiveDeliveryController {
     await this.drainRoom(current);
   }
 
+  // Coalescing must not swallow a requested drain. Joining an in-flight drain
+  // would lose the immediate post-replacement pass a session revision promises,
+  // because the in-flight drain may already have read past the new rows. One
+  // rerun is queued per room instead.
   private drainRoom(room: RoomRuntime): Promise<void> {
     const existing = this.drainInFlight.get(room.roomId);
-    if (existing) return existing;
-    const run = this.doDrainRoom(room).finally(() => this.drainInFlight.delete(room.roomId));
+    if (existing) {
+      this.rerunRequested.add(room.roomId);
+      return existing;
+    }
+    const run = (async () => {
+      try {
+        await this.doDrainRoom(room);
+      } finally {
+        this.drainInFlight.delete(room.roomId);
+      }
+      if (this.rerunRequested.delete(room.roomId) && !this.abort.signal.aborted) {
+        const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
+        await this.drainRoom(current);
+      }
+    })();
     this.drainInFlight.set(room.roomId, run);
     return run;
   }
@@ -273,47 +303,73 @@ export class ResponsiveDeliveryController {
       for (const message of messages) {
         if (this.abort.signal.aborted) return;
         const key = deliveryKey(room.roomId, message);
-        // A poisoned row stays unacknowledged and eligible, but this process
-        // stops re-running the handler that already failed on it.
-        if (this.poisoned.has(key) || this.seen.has(key)) continue;
-        progressed += 1;
-        const outcome = await this.deliver(room, message, key);
-        if (outcome === "retry") continue;
+        if (this.seen.has(key)) continue;
+        if (await this.processRow(room, message, key)) progressed += 1;
       }
-      // The server cursor only advances on ack, so a batch with nothing new is
-      // the drain boundary rather than a stall.
+      // A batch where nothing could be handled or acknowledged is this drain's
+      // boundary. The room is not stopped: the next wake or revision drains it
+      // again, and rows whose handler already ran are only re-acknowledged.
       if (progressed === 0) return;
     }
     this.stat(room.roomId).lastError = `responsive drain exceeded ${this.maxDrainBatches} batches`;
   }
 
-  private async deliver(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string): Promise<"acked" | "retry"> {
+  // Handling and acknowledgement are separate facts. A handler that succeeded
+  // and an ack that failed must never re-run the handler: the host has already
+  // acted on the row (Pi injects it), so replaying it would duplicate a visible
+  // side effect. Deduplication therefore guards the handler, not the ack.
+  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string): Promise<boolean> {
     const stat = this.stat(room.roomId);
-    try {
-      const result = await this.handler({
-        roomId: room.roomId,
-        ...(room.roomHandle ? { roomHandle: room.roomHandle } : {}),
-        ...(room.profile ? { profile: room.profile } : {}),
-        message,
-      });
-      // Acknowledgement follows effective handling or an intentional skip, and
-      // never a handler that threw or timed out.
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
-      this.seen.add(key);
-      this.attempts.delete(key);
-      if (result === "intentionally_skipped") stat.skipped += 1;
-      else stat.delivered += 1;
-      return "acked";
-    } catch (error) {
-      const attempts = (this.attempts.get(key) || 0) + 1;
-      this.attempts.set(key, attempts);
-      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
-      if (attempts >= this.maxHandlerAttempts) {
-        this.poisoned.add(key);
+    let outcome = this.handled.get(key);
+    if (outcome === undefined) {
+      try {
+        outcome = await this.handler({
+          roomId: room.roomId,
+          ...(room.roomHandle ? { roomHandle: room.roomHandle } : {}),
+          ...(room.profile ? { profile: room.profile } : {}),
+          message,
+        });
+        this.handled.set(key, outcome);
         this.attempts.delete(key);
+      } catch (error) {
+        const attempts = (this.attempts.get(key) || 0) + 1;
+        this.attempts.set(key, attempts);
+        stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+        if (attempts < this.maxHandlerAttempts) return true;
+        // Bounded budget exhausted. The controller classifies the row as an
+        // intentional skip and acknowledges it once, because leaving a
+        // permanently failing row unacknowledged wedges the whole room.
+        this.attempts.delete(key);
+        outcome = "intentionally_skipped";
+        this.handled.set(key, outcome);
+        this.poisonedKeys.add(key);
         stat.poisoned += 1;
       }
-      return "retry";
+    }
+    try {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
+    } catch (error) {
+      // Only the acknowledgement is retried, and only on a later drain.
+      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    this.handled.delete(key);
+    this.remember(key);
+    if (outcome === "intentionally_skipped") stat.skipped += 1;
+    else stat.delivered += 1;
+    return true;
+  }
+
+  // Bounded memory for a long-lived controller: dedupe only has to outlive
+  // server-side redelivery, not the whole process lifetime.
+  private remember(key: string): void {
+    this.seen.add(key);
+    if (this.seen.size <= MAX_REMEMBERED_KEYS) return;
+    const overflow = this.seen.size - MAX_REMEMBERED_KEYS;
+    let removed = 0;
+    for (const entry of this.seen) {
+      this.seen.delete(entry);
+      if (++removed >= overflow) break;
     }
   }
 }

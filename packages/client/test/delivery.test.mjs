@@ -125,12 +125,16 @@ test("an intentional skip acknowledges and a handler failure does not", async ()
   try {
     await h.client.connect();
     await controller.start();
-    assert.deepEqual(h.acks.map(([, id]) => id), ["skip-me"], "only the skip is acknowledged");
-    assert.deepEqual(h.queues.get(BETA), [{ seq: 1, event_id: "boom" }], "a failed row stays eligible for redelivery");
+    // A failed row is retried within its budget, then classified as an
+    // intentional skip and acknowledged once so the room cannot wedge.
+    assert.deepEqual(h.acks.map(([, id]) => id).sort(), ["boom", "skip-me"]);
+    assert.deepEqual(h.queues.get(BETA), [], "the poisoned row leaves the queue");
     const status = controller.status();
     assert.equal(status.rooms.find((room) => room.roomId === ALPHA).skipped, 1);
-    assert.equal(status.rooms.find((room) => room.roomId === BETA).poisoned, 1, "bounded retries then poison, never a wedged queue");
-    assert.match(status.rooms.find((room) => room.roomId === BETA).lastError, /handler exploded/);
+    const beta = status.rooms.find((room) => room.roomId === BETA);
+    assert.equal(beta.poisoned, 1, "bounded retries then an explicit skip, never a wedged queue");
+    assert.equal(beta.skipped, 1);
+    assert.match(beta.lastError, /handler exploded/);
   } finally {
     await controller.stop();
     h.cleanup();
@@ -285,5 +289,90 @@ test("a replacement session supersedes a prior alias owner without replay or wed
     await controller.stop();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("an acknowledgement failure retries the ack without re-running the handler", async () => {
+  // The host has already acted on a handled row, so replaying the handler
+  // would duplicate a visible side effect (Pi would inject twice).
+  let ackFailures = 1;
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "once" }] } });
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/responsive-delivery/ack") && ackFailures > 0) {
+        ackFailures -= 1;
+        return json({ error: { code: "unavailable", message: "ack unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 503);
+      }
+      return baseFetch(url, init);
+    },
+  });
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+    reconnectDelayMs: 5,
+  });
+  try {
+    await client.connect();
+    await controller.start();
+    assert.deepEqual(handled, ["once"], "handler ran once despite the failed ack");
+    assert.equal(h.acks.length, 0, "nothing was acknowledged yet");
+    // A later drain retries only the acknowledgement.
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(handled, ["once"], "the handler is never re-run");
+    assert.deepEqual(h.acks.map(([, id]) => id), ["once"]);
+    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).delivered, 1);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("a session revision queues a drain instead of joining an in-flight one", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] } });
+  let gate;
+  let gateOpen;
+  let drains = 0;
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path.includes(ALPHA) && path.includes("/responsive-delivery") && !path.endsWith("/ack")) {
+        drains += 1;
+        if (gate) await gate;
+      }
+      return baseFetch(url, init);
+    },
+  });
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+    reconnectDelayMs: 5,
+  });
+  try {
+    await client.connect();
+    await controller.start();
+    const drainsBefore = drains;
+    // Hold one drain open. It has already read an empty queue when the
+    // replacement lands, so joining it would lose the post-replacement pass
+    // a session revision promises.
+    gate = new Promise((resolve) => { gateOpen = resolve; });
+    const inFlight = controller.drainForTest(ALPHA);
+    await eventually(() => drains > drainsBefore);
+    h.queues.set(ALPHA, [{ seq: 9, event_id: "after-replacement" }]);
+    const requestedDuringDrain = controller.drainForTest(ALPHA);
+    gate = undefined;
+    gateOpen();
+    await Promise.all([inFlight, requestedDuringDrain]);
+    await eventually(() => handled.includes("after-replacement"));
+    assert.ok(drains >= drainsBefore + 2, "the queued rerun issued its own drain");
+  } finally {
+    await controller.stop();
+    h.cleanup();
   }
 });

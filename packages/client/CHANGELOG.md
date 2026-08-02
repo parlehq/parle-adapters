@@ -2,6 +2,9 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Split delivery handling from acknowledgement: a failed ack retries only the ack, never the host handler, so a handled row cannot be injected twice.
+- Acknowledge a row once its bounded handler budget is exhausted, classified as an intentional skip, so one permanently failing message cannot wedge a room.
+- Queue one drain rerun per room instead of joining an in-flight drain, so a session replacement never loses its immediate post-replacement pass.
 - Recover a room whose entry succeeded but whose projection initialization failed, instead of stranding a real participant binding.
 - Reject a separator-only PARLE_PROFILES before any network activity; an empty value stays equivalent to unset.
 - Add the shared responsive delivery controller: one session wake stream, per-room drain, dedupe by room and event, ack only after handling, bounded poison guard, and diagnostics (issue #63 S4).
