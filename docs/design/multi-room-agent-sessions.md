@@ -62,6 +62,28 @@ Wake hints carry a `room_id`. A hint naming an unconfigured room is counted and
 ignored: an untrusted hint must never cause a fetch of a room this process does
 not configure. A hintless wake keeps the unconditional drain.
 
+## Production facts that shape delivery
+
+Two behaviours were confirmed against production during the two-room dogfood
+and are easy to misread when writing tests or host handlers.
+
+Only direct-addressed rows wake a peer. Responsive delivery is the direct
+attention surface, so an unaddressed room message deliberately does not wake
+anyone. A responsive probe must be addressed to the target session address; an
+unaddressed one proves nothing about wake routing.
+
+A moderated room releases a row asynchronously. A submission there is accepted
+as held, and the row surfaces on the delivery surface after the scan completes
+rather than within the submit response. A delivery signal must therefore come
+from the delivery surface itself, never from the send response body or a short
+fixed deadline.
+
+A third fact is now enforced by the client rather than documented as a hazard:
+a caller-side routing error, such as an omitted `roomId`, is request-scoped and
+never latches the session's automatic work. Latching it stopped the wake stream
+for the life of the session while every read, send, and status surface still
+looked healthy.
+
 ## Snapshots
 
 Runtime snapshot schema v2 is a hard cut. A snapshot carries one session block
