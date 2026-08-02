@@ -1144,17 +1144,78 @@ test("parle_switch_profile prepares the target before atomically replacing room 
   assert.equal(readFileSync(join(cwd, ".env"), "utf8"), "PARLE_WATCH_ENABLED=0\n");
 });
 
-test("parle_switch_profile refuses an active named route before scratch bootstrap", async () => {
-  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+// Alias switching fixture. The target token addresses a different durable
+// agent unless targetAliasOwner says the source session owns the alias.
+function aliasSwitchProject(options = {}) {
+  const oldRoom = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const newRoom = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\nPARLE_SESSION_ALIAS=main\n");
   const catalogDir = join(process.env.HOME, ".parle");
   mkdirSync(catalogDir, { recursive: true });
-  writeFileSync(join(catalogDir, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_old\n\n[target]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_target\n", { mode: 0o600 });
-  let called = false;
-  globalThis.fetch = async () => { called = true; return new Response(JSON.stringify({})); };
-  const harness = installHarness(cwd);
-  __testing.patchRuntime({ sessionAlias: "main" });
-  await assert.rejects(harness.call("parle_switch_profile", { profile: "target" }), /PARLE_SESSION_ALIAS/);
-  assert.equal(called, false);
+  writeFileSync(join(catalogDir, "profiles"), `[default]\nroom_id = ${oldRoom}\nagent_token = parle_agt_old\n\n[target]\nroom_id = ${newRoom}\nagent_token = parle_agt_target\n`, { mode: 0o600 });
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const path = new URL(u).pathname;
+    const target = init.headers?.Authorization === "Bearer parle_agt_target";
+    calls.push([path, target ? "target" : "source"]);
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      return new Response(JSON.stringify({ agent_session_id: target ? "as-target" : "as-old", session_credential: target ? "parle_ses_target" : "parle_ses_old", session_handle: target ? "target" : "old", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: target ? "@p.a.target" : "@p.a.old" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: target ? "part-target" : "part-old", room_handle: path.includes(newRoom) ? "target-room" : "old-room" }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: path.includes(newRoom) ? 42 : 5, messages: [] }), { status: 200 });
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+    if (path === "/v/agent/session-aliases/main") {
+      return new Response(JSON.stringify(target
+        ? { alias: "main", generation: 4, current_agent_session_id: options.targetAliasOwner ?? "someone-else" }
+        : { alias: "main", generation: 1, current_agent_session_id: "as-old" }), { status: 200 });
+    }
+    if (path.endsWith("/claim-alias")) {
+      if (options.claimStatus && target) return new Response(JSON.stringify({ error: { code: "agent_session_alias_conflict", message: "stale", retryable: false } }), { status: options.claimStatus });
+      return new Response(JSON.stringify({ agent_session_id: target ? "as-target" : "as-old", alias: "main", generation: 5, address: target ? "@p.a.main-target" : "@p.a.main-old", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
+    }
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
+    if (path.endsWith("/end")) return new Response(JSON.stringify({ ended: true }), { status: 200 });
+    throw new Error(`unexpected ${u}`);
+  };
+  return {
+    cwd,
+    calls,
+    claimed: () => calls.filter(([path, who]) => path.endsWith("/claim-alias") && who === "target"),
+    ended: () => calls.filter(([path]) => path.endsWith("/end")),
+  };
+}
+
+test("parle_switch_profile claims a configured alias on the target agent and retires the source explicitly", async () => {
+  const project = aliasSwitchProject();
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+  const switched = await harness.call("parle_switch_profile", { profile: "target" });
+  assert.equal(switched.details.switched, true);
+  assert.equal(switched.details.cursor, 42, "a cursor is never preserved across rooms");
+  assert.equal(switched.details.sessionAddress, "@p.a.main-target");
+  assert.equal(project.claimed().length, 1);
+  // The target claim cannot supersede another durable agent's alias owner.
+  assert.deepEqual(project.ended().at(-1), ["/v/agent/sessions/as-old/end", "source"]);
+});
+
+test("parle_switch_profile treats an authoritative same-session alias owner as supersession", async () => {
+  const project = aliasSwitchProject({ targetAliasOwner: "as-old" });
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+  const switched = await harness.call("parle_switch_profile", { profile: "target" });
+  assert.equal(switched.details.switched, true);
+  assert.equal(project.ended().length, 0, "claim supersession already moved authority off the source session");
+});
+
+test("parle_switch_profile reports a possible external alias winner on claim conflict", async () => {
+  const project = aliasSwitchProject({ claimStatus: 409 });
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+  await assert.rejects(harness.call("parle_switch_profile", { profile: "target" }), /external winner may already hold alias authority/);
+  const status = await harness.call("parle_status");
+  assert.equal(status.details.profile.value, "default");
+  assert.equal(status.details.runtime.agentSessionId, "as-old");
 });
 
 test("live Pi binding refuses naive PARLE_PROFILE edits until parle_switch_profile runs", async () => {

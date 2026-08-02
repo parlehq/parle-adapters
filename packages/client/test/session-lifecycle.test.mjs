@@ -161,6 +161,45 @@ test("proactive alias replacement is single-flight and advances from the durable
   await client.endSession();
 });
 
+test("a rejected rollover guard runs before the claim and leaves alias authority untouched", async () => {
+  const claims = [];
+  const ended = [];
+  let generation = 1;
+  const client = new ParleAgentClient({
+    env: ENV,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session(`c-${claims.length + ended.length + 1}`), 201);
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation, current_agent_session_id: "prior" });
+      if (path.endsWith("/participants")) return json({ participant_id: "p-1" }, 201);
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/claim-alias")) {
+        claims.push(path.split("/").at(-2));
+        generation += 1;
+        return json({ ...session("claimed", generation), alias: "main", address: "@p.a.main" });
+      }
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "alias" }, messages: [] });
+      if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  await client.connect();
+  const live = client.runtime.agentSessionId;
+  const claimsAfterBootstrap = claims.length;
+  // A guard that rejects after a successful claim would strand alias
+  // authority on a candidate this client never publishes.
+  const release = client.onBeforeSessionCommit((plan) => {
+    if (plan.reason === "rollover") throw new Error("bridge is busy");
+  });
+  await assert.rejects(client.performProactiveRollover(), /bridge is busy/);
+  release();
+  assert.equal(claims.length, claimsAfterBootstrap, "no claim is issued once the pre-claim guard rejects");
+  assert.equal(client.runtime.agentSessionId, live, "the live session keeps serving the alias");
+  assert.equal(ended.length, 1, "the unclaimed candidate is retired");
+  await client.endSession();
+});
+
 test("a stale claim conflict is terminal for that candidate and recovery uses a fresh cycle", async () => {
   let creates = 0;
   let claims = 0;

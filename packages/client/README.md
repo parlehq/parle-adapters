@@ -65,7 +65,9 @@ Profiles accept only `room_id`, `agent_token`, `agent_token_id`, `api_base`, and
 validated before connecting and errors never expose credential values. Rotate a
 token by replacing it in the profile, then restart processes that loaded it.
 
-`ParleAgentClient.switchProfile(name)` validates and bootstraps the target on scratch state before synchronously adopting its room session, cursor, and canonical room handle. Preparation failure leaves the old session intact; successful adoption retires the old session best-effort and returns `watcherRestartRequired: true` for the host adapter to satisfy. Selection is process-local and never edits environment or profile files. Live switching refuses `PARLE_SESSION_ALIAS` because scratch preparation must not supersede an active named route; restart the host with the target profile in that case.
+`ParleAgentClient.switchProfile(name)` validates and bootstraps the target on scratch state before synchronously adopting its room session, cursor, and canonical room handle. Preparation failure leaves the old session intact; successful adoption retires the old session best-effort and returns `watcherRestartRequired: true` for the host adapter to satisfy. Selection is process-local and never edits environment or profile files.
+
+A configured `PARLE_SESSION_ALIAS` is carried across the switch. The target candidate is prepared without claiming, a pre-claim guard runs as the last fail-closed check, and only then is the claim submitted, so a failed preparation can never supersede the active named route. Alias authority is scoped by durable agent id: same-agent supersession is inferred only from the authoritative pre-claim lookup naming the source session, and otherwise the source session is retired explicitly with source configuration after commit. A claim conflict leaves the live profile unchanged and reports that an external winner may already hold alias authority.
 
 ## Human account-plane invitations
 

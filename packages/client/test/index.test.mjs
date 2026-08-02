@@ -1060,20 +1060,159 @@ test("client profile switch prepares a scratch session, adopts room identity, an
   }
 });
 
-test("client profile switch refuses configured named-route aliases before scratch bootstrap", async () => {
+const ALIAS_CATALOG = "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_old\n\n[target]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_target\n";
+
+// Alias switching fixture. The target token addresses a different durable
+// agent unless the test says otherwise, so its alias domain is independent of
+// the source agent's alias domain.
+function aliasSwitchHarness(options = {}) {
   const home = mkdtempSync(join(tmpdir(), "parle-profile-alias-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-profile-alias-project-"));
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(join(home, ".parle", "profiles"), ALIAS_CATALOG, { mode: 0o600 });
+  const calls = [];
+  const state = { targetAliasOwner: options.targetAliasOwner ?? "someone-else", endStatus: options.endStatus ?? 204 };
+  const fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const method = init.method || "GET";
+    const target = init.headers?.Authorization === "Bearer parle_agt_target";
+    calls.push([method, path, target ? "target" : "source"]);
+    if (options.onCall) await options.onCall(path, method, target);
+    if (path === "/v/agent/sessions" && method === "POST") {
+      return json({ agent_session_id: target ? "as-target" : "as-old", session_credential: target ? "parle_ses_target" : "parle_ses_old", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: target ? "@p.target.handle" : "@p.source.handle" }, 201);
+    }
+    if (path.endsWith("/participants")) {
+      const targetRoom = path.includes("019f7b46-178f-7a5a-9f7b-b4af2e045261");
+      return json({ participant_id: targetRoom ? "part-target" : "part-old", room_handle: targetRoom ? "target-room" : "old-room" }, 201);
+    }
+    if (path.endsWith("/projection")) return json({ watermark: path.includes("019f7b46-178f-7a5a-9f7b-b4af2e045261") ? 42 : 7, messages: [] });
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+    if (path === "/v/agent/session-aliases/main") {
+      // Alias authority is scoped per durable agent id.
+      return json(target
+        ? { alias: "main", generation: 4, current_agent_session_id: state.targetAliasOwner }
+        : { alias: "main", generation: 1, current_agent_session_id: "as-old" });
+    }
+    if (path.endsWith("/claim-alias")) {
+      if (options.claimStatus && target) return json({ error: { code: "agent_session_alias_conflict", message: "stale", retryable: false } }, options.claimStatus);
+      return json({ agent_session_id: "as-target", alias: "main", generation: 5, address: "@p.target.main", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
+    }
+    if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "alias" }, messages: [] });
+    if (path.endsWith("/end")) {
+      if (state.endStatus >= 400) return json({ error: { code: "unavailable", message: "nope" } }, state.endStatus);
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+  const client = new ParleAgentClient({ cwd, env: { HOME: home, PARLE_PROFILE: "default", PARLE_SESSION_ALIAS: "main" }, fetch });
+  return {
+    client,
+    calls,
+    state,
+    // Only target-agent claims belong to the switch; the source bootstrap
+    // claims the same alias string in its own agent's domain.
+    claimed: () => calls.filter(([, path, who]) => path.endsWith("/claim-alias") && who === "target"),
+    ended: () => calls.filter(([, path]) => path.endsWith("/end")),
+    cleanup: () => { rmSync(home, { recursive: true, force: true }); rmSync(cwd, { recursive: true, force: true }); },
+  };
+}
+
+test("client profile switch claims a configured alias on the target agent and retires the source explicitly", async () => {
+  const harness = aliasSwitchHarness();
   try {
-    mkdirSync(join(home, ".parle"), { mode: 0o700 });
-    writeFileSync(join(home, ".parle", "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_old\n\n[target]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_target\n", { mode: 0o600 });
-    let called = false;
-    const client = new ParleAgentClient({ cwd, env: { HOME: home, PARLE_PROFILE: "default", PARLE_SESSION_ALIAS: "main" }, fetch: async () => { called = true; return json({}); } });
-    await assert.rejects(client.switchProfile("target"), /PARLE_SESSION_ALIAS/);
-    assert.equal(called, false);
-    assert.equal(client.status().config.profile.value, "default");
+    await harness.client.connect();
+    const result = await harness.client.switchProfile("target");
+    assert.equal(result.switched, true);
+    assert.equal(result.cursor, 42, "a cursor is never preserved across rooms");
+    assert.equal(harness.client.runtime.sessionAlias, "main");
+    assert.equal(harness.client.runtime.sessionAddress, "@p.target.main");
+    // The target claim cannot supersede another durable agent's alias owner,
+    // so the source route stays live until it is ended with source config.
+    assert.deepEqual(harness.ended().at(-1), ["POST", "/v/agent/sessions/as-old/end", "source"]);
+    assert.equal(harness.client.runtime.responsiveContinuity, "exact_session_not_transferred");
+    assert.deepEqual(result.warnings, []);
   } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
+    harness.cleanup();
+  }
+});
+
+test("client profile switch treats an authoritative same-session alias owner as supersession", async () => {
+  const harness = aliasSwitchHarness({ targetAliasOwner: "as-old" });
+  try {
+    await harness.client.connect();
+    const result = await harness.client.switchProfile("target");
+    assert.equal(result.switched, true);
+    assert.equal(harness.claimed().length, 1);
+    assert.equal(harness.ended().length, 0, "claim supersession already moved authority off the source session");
+    assert.equal(harness.client.runtime.responsiveContinuity, "exact_session_not_transferred", "the room changed, so nothing is transferred");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("client profile switch reports a possible external alias winner on claim conflict and stays on the live profile", async () => {
+  const harness = aliasSwitchHarness({ claimStatus: 409 });
+  try {
+    await harness.client.connect();
+    const sourceSession = harness.client.runtime.agentSessionId;
+    await assert.rejects(harness.client.switchProfile("target"), /external winner may already hold alias authority/);
+    assert.equal(harness.client.status().config.profile.value, "default");
+    assert.equal(harness.client.runtime.agentSessionId, sourceSession);
+    assert.equal(harness.client.runtime.roomHandle, "old-room");
+    assert.deepEqual(harness.ended().at(-1), ["POST", "/v/agent/sessions/as-target/end", "target"], "the losing candidate is retired");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("client profile switch pre-claim guard rejects an open responsive read before any claim is issued", async () => {
+  const harness = aliasSwitchHarness();
+  try {
+    await harness.client.connect();
+    const read = await harness.client.drainResponsiveDeliveryWithFence();
+    try {
+      await assert.rejects(harness.client.switchProfile("target"), /deferred while responsive delivery is being read/);
+    } finally {
+      read.release();
+    }
+    assert.deepEqual(harness.claimed(), [], "the guard runs before the only authority-transferring call");
+    assert.deepEqual(harness.ended().at(-1), ["POST", "/v/agent/sessions/as-target/end", "target"]);
+    assert.equal(harness.client.status().config.profile.value, "default");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("client publication barrier refuses a responsive read opened during a profile switch", async () => {
+  let refused;
+  const harness = aliasSwitchHarness({
+    onCall: async (path, method, target) => {
+      if (path === "/v/agent/session-aliases/main" && target && refused === undefined) {
+        refused = await harness.client.drainResponsiveDelivery().then(() => null, (error) => error);
+      }
+    },
+  });
+  try {
+    await harness.client.connect();
+    await harness.client.switchProfile("target");
+    assert.match(String(refused), /deferred while a profile switch completes/);
+    assert.equal(refused.code, "lifecycle_publication_in_progress");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("client profile switch surfaces a source retirement failure as a warning without reverting", async () => {
+  const harness = aliasSwitchHarness({ endStatus: 503 });
+  try {
+    await harness.client.connect();
+    const result = await harness.client.switchProfile("target");
+    assert.equal(result.switched, true);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /prior agent session could not be ended/);
+    assert.equal(harness.client.status().config.profile.value, "target");
+  } finally {
+    harness.cleanup();
   }
 });
 

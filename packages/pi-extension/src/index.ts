@@ -243,6 +243,14 @@ type CandidateWakeSlot = { sessionCredential: string; response: Response; contro
 const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
 const activeResponsiveReads = new Set<DeliveryFence>();
 const preparedWakeSlots = new WeakMap<RuntimeState, CandidateWakeSlot>();
+// Authoritative pre-claim alias owner for a prepared candidate. Same-agent
+// supersession is inferred from this session id, never from token strings,
+// because a rotated token still belongs to the same durable agent.
+const preparedAliasOwners = new WeakMap<RuntimeState, { priorAliasOwnerSessionId?: string }>();
+// Held between a pre-claim guard and its local publication. Responsive reads
+// open outside the lifecycle exclusion, so without this the guard could pass
+// and a read could still start before the switch publishes.
+let piPublicationBarrier: string | undefined;
 let responsiveFlushRunning = false;
 let prefetchedWake: CandidateWakeSlot | undefined;
 let rolloverTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1245,6 +1253,7 @@ async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: Abor
   let responseFence: DeliveryFence | undefined;
   try {
     const read = await withRebootstrap(ctx, cfg, async () => {
+      assertPiResponsiveFenceAllowed();
       const fence = deliveryFence();
       responseFence = fence;
       activeResponsiveReads.add(fence);
@@ -1447,7 +1456,7 @@ async function cancelCandidateWake(slot?: CandidateWakeSlot) {
   await slot.response.body?.cancel().catch(() => undefined);
 }
 
-async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, preserveCursor = false, aliasOverride?: string, state = runtime, publish = true, preClaimGuardReason?: "rollover" | "alias_switch", requireWakeReadiness = false): Promise<CandidateWakeSlot | undefined> {
+async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, preserveCursor = false, aliasOverride?: string, state = runtime, publish = true, preClaimGuardReason?: "rollover" | "alias_switch" | "profile_switch", requireWakeReadiness = false): Promise<CandidateWakeSlot | undefined> {
   assertRuntimeConfig(cfg);
   const previous = { ...runtime };
   const previousCursor = state.cursor;
@@ -1481,7 +1490,9 @@ async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, prese
     }
     if (alias || requireWakeReadiness) candidateWake = await establishCandidateWakeReadiness(cfg, prepared.sessionHandle!, signal);
     if (alias) {
-      const expectedGeneration = await currentAliasGeneration(cfg, alias, signal);
+      const aliasFacts = await ownAliasFacts(cfg, alias, signal);
+      const expectedGeneration = aliasFacts.generation;
+      preparedAliasOwners.set(state, { priorAliasOwnerSessionId: aliasFacts.currentAgentSessionId });
       if (preClaimGuardReason) assertPiCommitAllowed(previous, { ...prepared, sessionAlias: alias, responsiveContinuity: "alias" }, preClaimGuardReason);
       const claimed = await claimAliasWithRecovery(cfg, prepared, alias, expectedGeneration, signal);
       prepared.sessionAlias = alias;
@@ -1538,6 +1549,40 @@ function deliveryFence(): DeliveryFence {
 
 function pendingDeliveryWork(): PendingResponsiveMessage[] {
   return [...pendingResponsiveMessages];
+}
+
+// Same-agent supersession may be assumed only from authoritative alias facts.
+// Token strings are never compared: rotation replaces the credential while the
+// durable agent, and therefore its alias domain, stays the same.
+function aliasSupersededSource(previous: RuntimeState, candidate: RuntimeState): boolean {
+  const owner = preparedAliasOwners.get(candidate)?.priorAliasOwnerSessionId;
+  return Boolean(candidate.sessionAlias && owner && previous.agentSessionId && owner === previous.agentSessionId);
+}
+
+// A claim conflict means another session won the alias first. The live profile
+// is untouched, but alias authority may already have moved elsewhere.
+function aliasClaimConflictHint(error: any, alias?: string): any {
+  if (!alias || error?.status !== 409) return error;
+  const conflict: any = new Error(`Parle profile switch left the live profile unchanged: the alias ${alias} was claimed by another session first, so an external winner may already hold alias authority.`);
+  conflict.status = 409;
+  conflict.code = error?.code || "alias_claim_conflict";
+  conflict.retryable = true;
+  return conflict;
+}
+
+function assertPiResponsiveFenceAllowed() {
+  if (!piPublicationBarrier) return;
+  throw new Error(`Parle responsive delivery read is deferred while a ${piPublicationBarrier} completes`);
+}
+
+async function withPiPublicationBarrier<T>(reason: string, work: () => Promise<T>): Promise<T> {
+  const previous = piPublicationBarrier;
+  piPublicationBarrier = reason;
+  try {
+    return await work();
+  } finally {
+    piPublicationBarrier = previous;
+  }
 }
 
 function assertPiCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: "bootstrap" | "rollover" | "profile_switch" | "alias_switch", allowRequestedShutdown = false) {
@@ -1717,14 +1762,15 @@ async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: 
   const previousCfg = configForLiveRuntime(resolveConfig(cwd));
   const previousRuntime = { ...runtime };
   const previousProfile = previousCfg.profile?.value;
+  let preparedState: RuntimeState | undefined;
 
-  const result = await performProfileSwitch({
+  const result = await withPiPublicationBarrier("profile switch", () => performProfileSwitch({
     resolve() {
       const cfg = resolveConfig(cwd, profile);
       assertRuntimeConfig(cfg);
-      if (runtime.sessionAlias || previousCfg.sessionAlias?.value || cfg.sessionAlias?.value) {
-        throw new Error("Live profile switching is unavailable while PARLE_SESSION_ALIAS is configured because scratch preparation must not supersede the active named route. Restart Pi with the target profile instead.");
-      }
+      // A configured alias is prepared without claiming; the claim happens at
+      // the pre-claim edge inside preparation, so a failed target preparation
+      // can no longer supersede the live named route.
       const sameProfile = previousProfile === profile;
       const sameBinding = sameRoomBinding(previousCfg, cfg);
       const changed = !sameProfile || !sameBinding || !runtime.bootstrapped;
@@ -1736,18 +1782,20 @@ async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: 
     async prepare() {
       const cfg = resolveConfig(cwd, profile);
       const state: RuntimeState = { bootstrapped: false, watcherState: "off" };
+      preparedState = state;
       try {
-        await bootstrap(ctx, cfg, signal, false, undefined, state, false);
-      } catch (error) {
-        await endAgentSession(cfg, undefined, state).catch(() => undefined);
-        throw error;
+        await bootstrap(ctx, cfg, signal, false, undefined, state, false, "profile_switch");
+      } catch (error: any) {
+        if (!error?.aliasClaimOutcomeUnknown) await endAgentSession(cfg, undefined, state).catch(() => undefined);
+        throw aliasClaimConflictHint(error, cfg.sessionAlias?.value);
       }
       return { cfg, state };
     },
     commit(value) {
-      // The host owns this synchronous final guard. It is intentionally
-      // repeated after target preparation, immediately before publication.
-      assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
+      // The host owns this synchronous final guard when nothing was claimed.
+      // Once the claim commits, the address already routes here and local
+      // publication must not throw, so the guard runs pre-claim instead.
+      if (!value.state.sessionAlias) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
       const candidateWake = preparedWakeSlots.get(value.state);
       preparedWakeSlots.delete(value.state);
       const unusedPreviousWake = prefetchedWake;
@@ -1756,7 +1804,18 @@ async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: 
       activeProfileOverride = profile;
       liveConfig = value.cfg;
       lifecycleEpoch += 1;
-      resetRoomScopedRuntime({ ...value.state, watcherState: "off", watcherStarted: false, watcherEnabled: parseBoolEnabled(value.cfg.watchEnabled.value) });
+      resetRoomScopedRuntime({
+        ...value.state,
+        // Responsive continuity survives only when this switch superseded our
+        // own source session on the same alias in the same room. Across
+        // durable agents the address itself changes, so nothing transfers.
+        ...(value.state.sessionAlias && !(aliasSupersededSource(previousRuntime, value.state) && previousRuntime.roomId === value.state.roomId)
+          ? { responsiveContinuity: "exact_session_not_transferred" as const }
+          : {}),
+        watcherState: "off",
+        watcherStarted: false,
+        watcherEnabled: parseBoolEnabled(value.cfg.watchEnabled.value),
+      });
       clearAutomaticFailureLatch();
       clearRolloverStormProtection();
       void cancelCandidateWake(unusedPreviousWake);
@@ -1772,12 +1831,17 @@ async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: 
       await endAgentSession(value.cfg, undefined, value.state).catch(() => undefined);
     },
     retireOldSession() {
+      // Alias authority is scoped by durable agent id. Only an authoritative
+      // pre-claim lookup naming the source session proves supersession; in
+      // every other case the source route stays live until it is ended
+      // explicitly with the source profile credential.
+      if (preparedState && aliasSupersededSource(previousRuntime, preparedState)) return Promise.resolve();
       return endAgentSession(previousCfg, signal, previousRuntime);
     },
     restartWatcher(value) {
       startWatcher(pi, ctx, value.cfg);
     },
-  });
+  }));
 
   return {
     ...result,
@@ -2114,6 +2178,7 @@ async function ackResponsiveMessage(cfg: ParleConfig, message: any, signal?: Abo
 async function baselineResponsiveDelivery(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
   let skipped = 0;
   while (!signal?.aborted) {
+    assertPiResponsiveFenceAllowed();
     const responseFence = deliveryFence();
     activeResponsiveReads.add(responseFence);
     try {

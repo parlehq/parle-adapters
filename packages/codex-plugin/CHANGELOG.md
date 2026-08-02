@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (2026-08-02)
+
+- Refresh the bundled MCP server for alias-aware live profile switching.
+
 ## Unreleased
 
 ## 0.3.2 (2026-08-02)

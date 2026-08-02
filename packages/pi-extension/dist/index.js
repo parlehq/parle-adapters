@@ -2065,6 +2065,8 @@ var seenKeyOrder = [];
 var pendingResponsiveMessages = [];
 var activeResponsiveReads = /* @__PURE__ */ new Set();
 var preparedWakeSlots = /* @__PURE__ */ new WeakMap();
+var preparedAliasOwners = /* @__PURE__ */ new WeakMap();
+var piPublicationBarrier;
 var responsiveFlushRunning = false;
 var prefetchedWake;
 var rolloverTimer;
@@ -2978,6 +2980,7 @@ async function handleWakeHint(pi, ctx, cfg, signal) {
   let responseFence;
   try {
     const read = await withRebootstrap(ctx, cfg, async () => {
+      assertPiResponsiveFenceAllowed();
       const fence = deliveryFence();
       responseFence = fence;
       activeResponsiveReads.add(fence);
@@ -3202,7 +3205,9 @@ async function bootstrap(ctx, cfg, signal, preserveCursor = false, aliasOverride
     }
     if (alias || requireWakeReadiness) candidateWake = await establishCandidateWakeReadiness(cfg, prepared.sessionHandle, signal);
     if (alias) {
-      const expectedGeneration = await currentAliasGeneration(cfg, alias, signal);
+      const aliasFacts = await ownAliasFacts(cfg, alias, signal);
+      const expectedGeneration = aliasFacts.generation;
+      preparedAliasOwners.set(state, { priorAliasOwnerSessionId: aliasFacts.currentAgentSessionId });
       if (preClaimGuardReason) assertPiCommitAllowed(previous, { ...prepared, sessionAlias: alias, responsiveContinuity: "alias" }, preClaimGuardReason);
       const claimed = await claimAliasWithRecovery(cfg, prepared, alias, expectedGeneration, signal);
       prepared.sessionAlias = alias;
@@ -3257,6 +3262,31 @@ function deliveryFence() {
 }
 function pendingDeliveryWork() {
   return [...pendingResponsiveMessages];
+}
+function aliasSupersededSource(previous, candidate) {
+  const owner = preparedAliasOwners.get(candidate)?.priorAliasOwnerSessionId;
+  return Boolean(candidate.sessionAlias && owner && previous.agentSessionId && owner === previous.agentSessionId);
+}
+function aliasClaimConflictHint(error, alias) {
+  if (!alias || error?.status !== 409) return error;
+  const conflict = new Error(`Parle profile switch left the live profile unchanged: the alias ${alias} was claimed by another session first, so an external winner may already hold alias authority.`);
+  conflict.status = 409;
+  conflict.code = error?.code || "alias_claim_conflict";
+  conflict.retryable = true;
+  return conflict;
+}
+function assertPiResponsiveFenceAllowed() {
+  if (!piPublicationBarrier) return;
+  throw new Error(`Parle responsive delivery read is deferred while a ${piPublicationBarrier} completes`);
+}
+async function withPiPublicationBarrier(reason, work) {
+  const previous = piPublicationBarrier;
+  piPublicationBarrier = reason;
+  try {
+    return await work();
+  } finally {
+    piPublicationBarrier = previous;
+  }
 }
 function assertPiCommitAllowed(previous, candidate, reason, allowRequestedShutdown = false) {
   if (lifecycleEnded || shutdownRequested && !allowRequestedShutdown) throw new Error("Parle Pi lifecycle has ended");
@@ -3422,13 +3452,11 @@ async function switchProfileLocked(pi, ctx, profile, signal) {
   const previousCfg = configForLiveRuntime(resolveConfig(cwd));
   const previousRuntime = { ...runtime };
   const previousProfile = previousCfg.profile?.value;
-  const result = await performProfileSwitch({
+  let preparedState;
+  const result = await withPiPublicationBarrier("profile switch", () => performProfileSwitch({
     resolve() {
       const cfg = resolveConfig(cwd, profile);
       assertRuntimeConfig(cfg);
-      if (runtime.sessionAlias || previousCfg.sessionAlias?.value || cfg.sessionAlias?.value) {
-        throw new Error("Live profile switching is unavailable while PARLE_SESSION_ALIAS is configured because scratch preparation must not supersede the active named route. Restart Pi with the target profile instead.");
-      }
       const sameProfile = previousProfile === profile;
       const sameBinding = sameRoomBinding(previousCfg, cfg);
       const changed = !sameProfile || !sameBinding || !runtime.bootstrapped;
@@ -3440,16 +3468,17 @@ async function switchProfileLocked(pi, ctx, profile, signal) {
     async prepare() {
       const cfg = resolveConfig(cwd, profile);
       const state = { bootstrapped: false, watcherState: "off" };
+      preparedState = state;
       try {
-        await bootstrap(ctx, cfg, signal, false, void 0, state, false);
+        await bootstrap(ctx, cfg, signal, false, void 0, state, false, "profile_switch");
       } catch (error) {
-        await endAgentSession(cfg, void 0, state).catch(() => void 0);
-        throw error;
+        if (!error?.aliasClaimOutcomeUnknown) await endAgentSession(cfg, void 0, state).catch(() => void 0);
+        throw aliasClaimConflictHint(error, cfg.sessionAlias?.value);
       }
       return { cfg, state };
     },
     commit(value) {
-      assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
+      if (!value.state.sessionAlias) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
       const candidateWake = preparedWakeSlots.get(value.state);
       preparedWakeSlots.delete(value.state);
       const unusedPreviousWake = prefetchedWake;
@@ -3458,7 +3487,16 @@ async function switchProfileLocked(pi, ctx, profile, signal) {
       activeProfileOverride = profile;
       liveConfig = value.cfg;
       lifecycleEpoch += 1;
-      resetRoomScopedRuntime({ ...value.state, watcherState: "off", watcherStarted: false, watcherEnabled: parseBoolEnabled(value.cfg.watchEnabled.value) });
+      resetRoomScopedRuntime({
+        ...value.state,
+        // Responsive continuity survives only when this switch superseded our
+        // own source session on the same alias in the same room. Across
+        // durable agents the address itself changes, so nothing transfers.
+        ...value.state.sessionAlias && !(aliasSupersededSource(previousRuntime, value.state) && previousRuntime.roomId === value.state.roomId) ? { responsiveContinuity: "exact_session_not_transferred" } : {},
+        watcherState: "off",
+        watcherStarted: false,
+        watcherEnabled: parseBoolEnabled(value.cfg.watchEnabled.value)
+      });
       clearAutomaticFailureLatch();
       clearRolloverStormProtection();
       void cancelCandidateWake(unusedPreviousWake);
@@ -3477,12 +3515,13 @@ async function switchProfileLocked(pi, ctx, profile, signal) {
       await endAgentSession(value.cfg, void 0, value.state).catch(() => void 0);
     },
     retireOldSession() {
+      if (preparedState && aliasSupersededSource(previousRuntime, preparedState)) return Promise.resolve();
       return endAgentSession(previousCfg, signal, previousRuntime);
     },
     restartWatcher(value) {
       startWatcher(pi, ctx, value.cfg);
     }
-  });
+  }));
   return {
     ...result,
     previousProfile,
@@ -3790,6 +3829,7 @@ async function ackResponsiveMessage(cfg, message, signal, fence = deliveryFence(
 async function baselineResponsiveDelivery(ctx, cfg, signal) {
   let skipped = 0;
   while (!signal?.aborted) {
+    assertPiResponsiveFenceAllowed();
     const responseFence = deliveryFence();
     activeResponsiveReads.add(responseFence);
     try {

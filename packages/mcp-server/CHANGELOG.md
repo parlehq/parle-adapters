@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (2026-08-02)
+
+- Adopt the shared client alias-aware profile switch and pre-claim guard ordering.
+
 ## 0.3.2 (2026-08-02)
 
 - Carry authoritative response cursor scope through retained delivery fences.

@@ -226,6 +226,20 @@ export type ClientProfileSwitchResult = ProfileSwitchResult & {
   watcherRestartRequired: boolean;
 };
 
+// A claim conflict means another session won the alias first. The live profile
+// is untouched, but alias authority may already have moved elsewhere, so the
+// caller is told rather than left to infer it from a bare 409.
+function aliasClaimConflictHint(error: unknown, alias?: string): unknown {
+  if (!alias || !(error instanceof ParleApiError) || error.status !== 409) return error;
+  return new ParleApiError(`Parle profile switch left the live profile unchanged: the alias ${alias} was claimed by another session first, so an external winner may already hold alias authority.`, {
+    status: 409,
+    code: error.code || "alias_claim_conflict",
+    action: "retry_with_backoff",
+    scope: "agent_session",
+    retryable: true,
+  });
+}
+
 // Profile switching is local adapter lifecycle, not Parle wire meaning. L1 owns
 // only the prepare-then-commit ordering and failure boundary; bridges keep their
 // credential-bearing bootstrap, runtime state, and watcher mechanics.
@@ -312,6 +326,12 @@ type CandidateWakeSlot = {
 type PreparedCandidate = {
   state: RuntimeState;
   wake?: CandidateWakeSlot;
+  // Authoritative alias facts read immediately before the claim. The prior
+  // owner session id is the only sound same-agent supersession signal; token
+  // strings must never be compared because rotation preserves the durable
+  // agent identity.
+  priorAliasOwnerSessionId?: string;
+  aliasClaimed?: boolean;
 };
 
 const ROLLOVER_LEAD_MS = 5 * 60_000;
@@ -754,6 +774,16 @@ export class ParleAgentClient {
   private readonly sessionRevisionListeners = new Set<(event: SessionRevisionEvent) => void>();
   private readonly sessionCommitGuards = new Set<(plan: SessionCommitPlan) => void>();
   private readonly activeResponsiveReads = new Set<ResponsiveDeliveryReadFence>();
+  // Set while a lifecycle transition is between its pre-claim guard and its
+  // local publication. Responsive fences are registered outside the lifecycle
+  // exclusion, so without this barrier the pre-claim guard would be advisory:
+  // a read could open after the guard passed and before publication.
+  private publicationBarrier?: string;
+  // Supplied by the caller that owns the transition. Invoked inside candidate
+  // preparation after every non-mutating call has succeeded and immediately
+  // before the alias claim, which is the only authority-transferring step.
+  private preClaimGuard?: (candidate: RuntimeState) => void;
+  private lastCandidateAliasFacts?: { priorAliasOwnerSessionId?: string; aliasClaimed: boolean };
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   private automaticTerminalBinding?: string;
@@ -1065,6 +1095,8 @@ export class ParleAgentClient {
       cursor: preserveCursor ? previousCursor : 0,
     };
     let candidateWake: CandidateWakeSlot | undefined;
+    let priorAliasOwnerSessionId: string | undefined;
+    let aliasClaimed = false;
     try {
       const entry = await this.requestJson(`/v/rooms/${encodeURIComponent(candidate.roomId)}/participants`, {
         method: "POST", sessionCredential: candidate.sessionHandle, signal, retry: false,
@@ -1083,8 +1115,14 @@ export class ParleAgentClient {
       }
       if (alias || requireWakeReadiness) candidateWake = await this.establishCandidateWakeReadiness(candidate.sessionHandle, signal);
       if (alias) {
-        const expectedGeneration = await this.currentAliasGeneration(alias, signal);
+        const aliasFacts = await this.ownAliasFacts(alias, signal);
+        const expectedGeneration = aliasFacts.generation;
+        priorAliasOwnerSessionId = aliasFacts.currentAgentSessionId;
+        // Last fail-closed edge. Everything after this line either transfers
+        // alias authority or is local and non-throwing.
+        this.preClaimGuard?.({ ...candidate, sessionAlias: alias, responsiveContinuity: "alias" });
         const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal);
+        aliasClaimed = true;
         candidate.sessionAlias = alias;
         candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
         candidate.sessionAddress = typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress;
@@ -1096,7 +1134,8 @@ export class ParleAgentClient {
       }
       candidate.bootstrapped = true;
       candidate.bootstrapState = "ready";
-      return { state: candidate, wake: candidateWake };
+      this.lastCandidateAliasFacts = { priorAliasOwnerSessionId, aliasClaimed };
+      return { state: candidate, wake: candidateWake, priorAliasOwnerSessionId, aliasClaimed };
     } catch (error) {
       await this.cancelCandidateWake(candidateWake);
       if (!(error instanceof AliasClaimOutcomeUnknownError)) await this.retireSession(candidate).catch(() => undefined);
@@ -1195,6 +1234,34 @@ export class ParleAgentClient {
     if (!slot) return;
     slot.controller.abort();
     await slot.response.body?.cancel().catch(() => undefined);
+  }
+
+  // Same-agent supersession may be assumed only from authoritative alias
+  // facts. Token strings are never compared: rotation replaces the credential
+  // while the durable agent, and therefore its alias domain, stays the same.
+  private aliasSupersededSource(previous: RuntimeState, candidate: ParleAgentClient): boolean {
+    const facts = candidate.lastCandidateAliasFacts;
+    return Boolean(facts?.aliasClaimed
+      && facts.priorAliasOwnerSessionId
+      && previous.agentSessionId
+      && facts.priorAliasOwnerSessionId === previous.agentSessionId);
+  }
+
+  private assertResponsiveFenceAllowed(): void {
+    if (!this.publicationBarrier) return;
+    throw new ParleApiError(`Parle responsive delivery read is deferred while a ${this.publicationBarrier} completes`, {
+      code: "lifecycle_publication_in_progress", action: "retry_with_backoff", scope: "agent_session", retryable: true,
+    });
+  }
+
+  private async withPublicationBarrier<T>(reason: string, work: () => Promise<T>): Promise<T> {
+    const previousBarrier = this.publicationBarrier;
+    this.publicationBarrier = reason;
+    try {
+      return await work();
+    } finally {
+      this.publicationBarrier = previousBarrier;
+    }
   }
 
   private assertSessionCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: SessionRevisionEvent["reason"]): void {
@@ -1313,19 +1380,21 @@ export class ParleAgentClient {
         const previousRuntime = { ...this.runtime };
         const previousProfile = this.activeProfile;
         let targetCfg: ParleConfig | undefined;
+        let targetAlias: string | undefined;
         let scratch: ParleAgentClient | undefined;
         let committed = false;
 
         try {
-          const result = await performProfileSwitch({
+          const result = await this.withPublicationBarrier("profile switch", () => performProfileSwitch({
             resolve: () => {
               targetCfg = resolveConfig(this.cwd, this.selectedEnvironment(profile));
               if (!targetCfg.roomId?.value || !targetCfg.agentToken?.value) {
                 throw new Error(`Parle profile ${profile} does not provide a complete room binding.`);
               }
-              if (previousCfg.sessionAlias?.value || targetCfg.sessionAlias?.value) {
-                throw new Error("Live profile switching is unavailable while PARLE_SESSION_ALIAS is configured because scratch preparation must not supersede the active named route. Restart the host with the target profile instead.");
-              }
+              // A configured alias is prepared without claiming and activated
+              // only at the pre-claim edge, so a failed preparation can no
+              // longer supersede the live named route.
+              targetAlias = targetCfg.sessionAlias?.value;
               const sameBinding = previousCfg.roomId?.value === targetCfg.roomId.value
                 && previousCfg.agentToken?.value === targetCfg.agentToken.value
                 && previousCfg.apiBase.value === targetCfg.apiBase.value
@@ -1350,12 +1419,29 @@ export class ParleAgentClient {
                 integrationName: this.integrationName,
                 integrationVersion: this.integrationVersion,
               });
-              await scratch.bootstrap(signal, false);
+              // The live client owns the guard; the scratch instance only
+              // supplies the target credential and candidate I/O.
+              scratch.preClaimGuard = (candidate) => {
+                this.assertLifecycleActive(epoch);
+                this.assertSessionCommitAllowed(previousRuntime, candidate, "profile_switch");
+              };
+              try {
+                await scratch.bootstrap(signal, false);
+              } catch (error) {
+                throw aliasClaimConflictHint(error, targetAlias);
+              } finally {
+                scratch.preClaimGuard = undefined;
+              }
               return scratch;
             },
             commit: (prepared) => {
-              this.assertLifecycleActive(epoch);
-              this.assertSessionCommitAllowed(previousRuntime, prepared.runtime, "profile_switch");
+              // Once the alias claim has committed, publication must not
+              // throw: local state is the only thing left to move, and the
+              // address already routes to this candidate.
+              if (!prepared.lastCandidateAliasFacts?.aliasClaimed) {
+                this.assertLifecycleActive(epoch);
+                this.assertSessionCommitAllowed(previousRuntime, prepared.runtime, "profile_switch");
+              }
               this.stopUnreadPolling();
               this.stopRolloverTimer();
               prepared.stopUnreadPolling();
@@ -1366,7 +1452,17 @@ export class ParleAgentClient {
               this.cfg = prepared.cfg;
               this.activeProfile = profile;
               this.lifecycleEpoch += 1;
-              this.runtime = { ...prepared.runtime, sessionRevision: previousRuntime.sessionRevision + 1 };
+              this.runtime = {
+                ...prepared.runtime,
+                sessionRevision: previousRuntime.sessionRevision + 1,
+                // Responsive continuity survives only when this switch
+                // superseded our own source session on the same alias in the
+                // same room. Across durable agents the address itself changes,
+                // so nothing is transferred.
+                ...(prepared.lastCandidateAliasFacts?.aliasClaimed
+                  ? { responsiveContinuity: (this.aliasSupersededSource(previousRuntime, prepared) && previousRuntime.roomId === prepared.runtime.roomId) ? "alias" as const : "exact_session_not_transferred" as const }
+                  : {}),
+              };
               this.bootstrapGeneration += 1;
               this.rebootstrapEpisode = null;
               this.consecutiveBootstrapFailures = 0;
@@ -1380,6 +1476,13 @@ export class ParleAgentClient {
             },
             retireOldSession: async () => {
               if (!previousRuntime.agentSessionId || !previousRuntime.sessionHandle) return;
+              // Alias authority is scoped by durable agent id, so a target
+              // claim only supersedes the source when the authoritative
+              // pre-claim lookup named the source session itself. In every
+              // other case (different alias, another owner, no owner, another
+              // durable agent) the source route stays live until it is ended
+              // explicitly with the source profile credential.
+              if (scratch && this.aliasSupersededSource(previousRuntime, scratch)) return;
               const prior = new ParleAgentClient({
                 cwd: this.cwd,
                 env: this.env,
@@ -1397,7 +1500,7 @@ export class ParleAgentClient {
               prior.runtime = previousRuntime;
               await prior.endSession(signal);
             },
-          });
+          }));
 
           return {
             ...result,
@@ -1490,22 +1593,44 @@ export class ParleAgentClient {
     const epoch = this.lifecycleEpoch;
     const old = { ...this.runtime };
     let prepared: PreparedCandidate;
+    // Bridge-owned guards run synchronously after all candidate I/O. When an
+    // alias is in play they must run BEFORE the claim: a guard that throws
+    // after a successful claim would leave the alias superseded onto a
+    // candidate this client then refuses to publish, and the aliased candidate
+    // is deliberately not retired, so the address would route to an orphan.
+    let guardRejected = false;
+    this.preClaimGuard = (candidate) => {
+      try {
+        this.assertLifecycleActive(epoch);
+        this.assertSessionCommitAllowed(old, candidate, "rollover");
+      } catch (error) {
+        guardRejected = true;
+        throw error;
+      }
+    };
     try {
-      prepared = await this.prepareCandidate(old.sessionAlias || this.cfg.sessionAlias?.value, signal, true, true);
+      prepared = await this.withPublicationBarrier("rollover", () =>
+        this.prepareCandidate(old.sessionAlias || this.cfg.sessionAlias?.value, signal, true, true));
     } catch (error) {
-      this.recordRolloverFailure(error);
+      // A guard rejection is a local deferral, not a transport failure, so it
+      // keeps the original cooldown behavior instead of a fast retry.
+      this.recordRolloverFailure(error, guardRejected);
       throw error;
+    } finally {
+      this.preClaimGuard = undefined;
     }
-    try {
-      this.assertLifecycleActive(epoch);
-      // Bridge-owned guards run synchronously after all candidate I/O and at
-      // the final local commit edge. Exact-session pending work defers here.
-      this.assertSessionCommitAllowed(old, prepared.state, "rollover");
-    } catch (error) {
-      await this.cancelCandidateWake(prepared.wake);
-      if (!prepared.state.sessionAlias) await this.retireSession(prepared.state).catch(() => undefined);
-      this.recordRolloverFailure(error, true);
-      throw error;
+    if (!prepared.aliasClaimed) {
+      // Nothing was claimed, so the anonymous candidate is still discardable
+      // and the guard keeps its original commit-edge position.
+      try {
+        this.assertLifecycleActive(epoch);
+        this.assertSessionCommitAllowed(old, prepared.state, "rollover");
+      } catch (error) {
+        await this.cancelCandidateWake(prepared.wake);
+        await this.retireSession(prepared.state).catch(() => undefined);
+        this.recordRolloverFailure(error, true);
+        throw error;
+      }
     }
 
     // Claim success is the authority boundary. Publication is followed by an
@@ -1851,6 +1976,7 @@ export class ParleAgentClient {
 
   async drainResponsiveDeliveryWithFence(signal?: AbortSignal): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
     return this.withRebootstrap(async () => {
+      this.assertResponsiveFenceAllowed();
       const fence: ResponsiveDeliveryReadFence = {
         sessionRevision: this.runtime.sessionRevision || 0,
         cursorScope: this.runtime.responsiveCursorScope,

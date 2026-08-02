@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-08-02)
+
+- Allow a configured session alias across a live profile switch by preparing the target candidate without claiming and activating the claim at the pre-claim edge.
+- Run bridge commit guards before the alias claim so a rejected guard can no longer strand alias authority on an unpublished candidate (also fixes proactive rollover).
+- Refuse responsive-read fences opened between a pre-claim guard and its local publication.
+- Infer same-agent alias supersession only from authoritative alias facts, never from token strings, and retire the source session with source configuration otherwise.
+- Report a possible external alias winner when a claim conflicts, leaving the live profile unchanged.
+
 ## 0.2.2 (2026-08-02)
 
 - Update retained responsive-read fences from the authoritative response cursor scope.
