@@ -4,17 +4,19 @@ import { createHash, randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
-import { DEFAULT_VERSION } from "./protocol.js";
+import { DEFAULT_VERSION, ParleApiError, isParleCredential, redactString } from "./protocol.js";
+import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
+export * from "./protocol.js";
 export * from "./account.js";
 export * from "./hardening.js";
 export * from "./format.js";
 export * from "./runtime-file.js";
 export * from "./process-instance.js";
 export * from "./delivery.js";
+export * from "./alias.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
-export { DEFAULT_VERSION } from "./protocol.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
@@ -391,9 +393,7 @@ const ROLLOVER_JITTER_RANGE_MS = 60_000;
 const ROLLOVER_MAX_FAILURES = 3;
 const ROLLOVER_RETRY_MS = 5_000;
 const ROLLOVER_COOLDOWN_MS = 60_000;
-const CLAIM_RECOVERY_ATTEMPTS = 3;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
-const SESSION_INVENTORY_MAX_PAGES = 100;
 
 export function deterministicSessionJitterMs(agentSessionId: string): number {
   const digest = createHash("sha256").update(agentSessionId).digest();
@@ -419,30 +419,6 @@ export function responsiveDeliveryKey(message: unknown): string | undefined {
   if (!Number.isInteger(seq) || seq < 0 || typeof eventId !== "string" || eventId.length === 0) return undefined;
   return `${seq}:${eventId}`;
 }
-
-export class ParleApiError extends Error {
-  status?: number;
-  code?: string;
-  action?: ErrorAction;
-  scope?: ErrorScope;
-  retryAfterMs?: number;
-  retryable: boolean;
-  details?: unknown;
-
-  constructor(message: string, options: { status?: number; code?: string; action?: ErrorAction; scope?: ErrorScope; retryAfterMs?: number; retryable?: boolean; details?: unknown } = {}) {
-    super(message);
-    this.name = "ParleApiError";
-    this.status = options.status;
-    this.code = options.code;
-    this.action = options.action;
-    this.scope = options.scope;
-    this.retryAfterMs = options.retryAfterMs;
-    this.retryable = options.retryable ?? false;
-    this.details = options.details;
-  }
-}
-
-class AliasClaimOutcomeUnknownError extends ParleApiError {}
 
 export function parseKeyValueFile(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -699,23 +675,6 @@ function formatDuration(ms: number): string {
 
 // Structural header rules run first. The one conservative Parle credential
 // shape then catches known and future lowercase families without a registry.
-const PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
-
-function isParleCredential(value: string): boolean {
-  PARLE_CREDENTIAL_RE.lastIndex = 0;
-  return PARLE_CREDENTIAL_RE.test(value);
-}
-
-export function redactString(input: string): string {
-  let out = input
-    .replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>")
-    .replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>")
-    .replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>")
-    .replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
-  PARLE_CREDENTIAL_RE.lastIndex = 0;
-  return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
-}
-
 export function redactedValue(value?: ConfigValue): { source: string; configured: boolean; value?: string } {
   if (!value?.value) return { source: value?.source || "missing", configured: false };
   const sensitiveShape = isParleCredential(value.value) || value.value.includes("__Host-parle_session");
@@ -1450,78 +1409,16 @@ export class ParleAgentClient {
     }
   }
 
-  private async findInventorySession(predicate: (item: any) => boolean, signal?: AbortSignal): Promise<any | undefined> {
-    let after: string | undefined;
-    for (let pageNumber = 0; pageNumber < SESSION_INVENTORY_MAX_PAGES; pageNumber += 1) {
-      const path = after ? `/v/agent/sessions?after=${encodeURIComponent(after)}` : "/v/agent/sessions";
-      const page = await this.requestJson(path, { signal, retry: true });
-      const sessions = Array.isArray(page.sessions) ? page.sessions : [];
-      const match = sessions.find(predicate);
-      if (match) return match;
-      if (page.next === null || page.next === undefined) return undefined;
-      if (typeof page.next !== "string" || page.next.length === 0) throw new ParleApiError("Parle session inventory returned an invalid continuation cursor", { code: "invalid_response", action: "fix_client", scope: "server" });
-      after = page.next;
-    }
-    throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
+  private aliasTransport(): AliasTransport {
+    return { request: (path, options) => this.requestJson(path, options as RequestOptions) };
   }
 
-  private async ownAliasFacts(alias: string, signal?: AbortSignal): Promise<{ alias: string; generation: number; currentAgentSessionId?: string }> {
-    const facts = await this.requestJson(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
-    const current = facts?.current_agent_session_id;
-    if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || (current !== null && current !== undefined && typeof current !== "string")) {
-      throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
-    }
-    return { alias, generation: facts.generation, ...(typeof current === "string" ? { currentAgentSessionId: current } : {}) };
-  }
-
-  private async currentAliasGeneration(alias: string, signal?: AbortSignal): Promise<number> {
-    return (await this.ownAliasFacts(alias, signal)).generation;
+  private async ownAliasFacts(alias: string, signal?: AbortSignal): Promise<AliasFacts> {
+    return ownAliasFactsShared(this.aliasTransport(), alias, signal);
   }
 
   private async claimAliasWithRecovery(candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal): Promise<any> {
-    const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
-    const body = { alias, expected_generation: expectedGeneration };
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
-      try {
-        return await this.requestJson(path, {
-          method: "POST", body, sessionCredential: candidate.sessionHandle, signal, rawResponse: true, retry: false,
-        });
-      } catch (error: any) {
-        if (error instanceof ParleApiError && error.status === 409) throw error;
-        const responseLost = !(error instanceof ParleApiError) || error.status === undefined || error.status >= 500;
-        if (!responseLost) throw error;
-        lastError = error;
-        let aliasFacts: { alias: string; generation: number; currentAgentSessionId?: string } | undefined;
-        try {
-          aliasFacts = await this.ownAliasFacts(alias, signal);
-        } catch {
-          // Alias lookup failure does not broaden the exact replay budget.
-        }
-        if (aliasFacts?.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
-          const confirmedGeneration = aliasFacts.generation;
-          let committed: any;
-          try {
-            committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId
-              && item?.alias === alias
-              && item?.generation === confirmedGeneration, signal);
-          } catch (error) {
-            throw new ParleApiError(`Parle alias claim committed but live candidate confirmation failed: ${redactString(error instanceof Error ? error.message : String(error))}`, {
-              code: "alias_claim_committed_confirmation_unavailable", action: "retry_with_backoff", scope: "agent_session", retryable: true,
-            });
-          }
-          if (committed) return committed;
-          throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
-            code: "alias_claim_committed_session_unavailable", action: "rebootstrap", scope: "agent_session", retryable: false,
-          });
-        }
-        if (signal?.aborted) break;
-      }
-    }
-    const detail = lastError instanceof Error ? redactString(lastError.message) : "claim response unavailable";
-    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${detail}`, {
-      code: "alias_claim_outcome_unknown", action: "retry_with_backoff", scope: "agent_session", retryable: true,
-    });
+    return claimAliasShared(this.aliasTransport(), candidate, alias, expectedGeneration, signal);
   }
 
   private async establishCandidateWakeReadiness(sessionCredential: string, signal?: AbortSignal): Promise<CandidateWakeSlot> {

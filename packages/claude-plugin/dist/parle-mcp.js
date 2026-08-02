@@ -31084,6 +31084,124 @@ function parseErrorEnvelope(value) {
 
 // ../client/dist/protocol.js
 var DEFAULT_VERSION = "2026-08-01";
+var ParleApiError = class extends Error {
+  status;
+  code;
+  action;
+  scope;
+  retryAfterMs;
+  retryable;
+  details;
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "ParleApiError";
+    this.status = options.status;
+    this.code = options.code;
+    this.action = options.action;
+    this.scope = options.scope;
+    this.retryAfterMs = options.retryAfterMs;
+    this.retryable = options.retryable ?? false;
+    this.details = options.details;
+  }
+};
+var PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
+function isParleCredential(value) {
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return PARLE_CREDENTIAL_RE.test(value);
+}
+function redactString(input) {
+  let out = input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
+  PARLE_CREDENTIAL_RE.lastIndex = 0;
+  return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
+}
+
+// ../client/dist/alias.js
+var SESSION_INVENTORY_MAX_PAGES = 100;
+var CLAIM_RECOVERY_ATTEMPTS = 3;
+var AliasClaimOutcomeUnknownError = class extends ParleApiError {
+  // Hosts that predate the typed error still branch on this flag.
+  aliasClaimOutcomeUnknown = true;
+};
+async function ownAliasFacts(transport, alias, signal) {
+  const facts = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
+  const current = facts?.current_agent_session_id;
+  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || current !== null && current !== void 0 && typeof current !== "string") {
+    throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
+  }
+  return { alias, generation: facts.generation, ...typeof current === "string" ? { currentAgentSessionId: current } : {} };
+}
+async function findInventorySession(transport, predicate, signal) {
+  let after;
+  for (let page = 0; page < SESSION_INVENTORY_MAX_PAGES; page += 1) {
+    const path = after ? `/v/agent/sessions?after=${encodeURIComponent(after)}` : "/v/agent/sessions";
+    const inventory = await transport.request(path, { signal, retry: true });
+    const sessions = Array.isArray(inventory.sessions) ? inventory.sessions : [];
+    const match = sessions.find(predicate);
+    if (match)
+      return match;
+    if (inventory.next === null || inventory.next === void 0)
+      return void 0;
+    if (typeof inventory.next !== "string" || inventory.next.length === 0) {
+      throw new ParleApiError("Parle session inventory returned an invalid continuation cursor", { code: "invalid_response", action: "fix_client", scope: "server" });
+    }
+    after = inventory.next;
+  }
+  throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
+}
+async function claimAliasWithRecovery(transport, candidate, alias, expectedGeneration, signal) {
+  const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
+  const body = { alias, expected_generation: expectedGeneration };
+  let lastError;
+  for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
+    try {
+      return await transport.request(path, { method: "POST", body, sessionCredential: candidate.sessionHandle, signal, rawResponse: true, retry: false });
+    } catch (error51) {
+      const status = typeof error51?.status === "number" ? error51.status : void 0;
+      if (status === 409)
+        throw error51;
+      const responseLost = status === void 0 || status >= 500;
+      if (!responseLost)
+        throw error51;
+      lastError = error51;
+      let facts;
+      try {
+        facts = await ownAliasFacts(transport, alias, signal);
+      } catch {
+      }
+      if (facts?.currentAgentSessionId === candidate.agentSessionId && facts.generation === expectedGeneration + 1) {
+        const confirmedGeneration = facts.generation;
+        let committed;
+        try {
+          committed = await findInventorySession(transport, (item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === confirmedGeneration, signal);
+        } catch (error52) {
+          throw new ParleApiError(`Parle alias claim committed but live candidate confirmation failed: ${redactString(error52 instanceof Error ? error52.message : String(error52))}`, {
+            code: "alias_claim_committed_confirmation_unavailable",
+            action: "retry_with_backoff",
+            scope: "agent_session",
+            retryable: true
+          });
+        }
+        if (committed)
+          return committed;
+        throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
+          code: "alias_claim_committed_session_unavailable",
+          action: "rebootstrap",
+          scope: "agent_session",
+          retryable: false
+        });
+      }
+      if (signal?.aborted)
+        break;
+    }
+  }
+  const detail = lastError instanceof Error ? redactString(lastError.message) : "claim response unavailable";
+  throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${detail}`, {
+    code: "alias_claim_outcome_unknown",
+    action: "retry_with_backoff",
+    scope: "agent_session",
+    retryable: true
+  });
+}
 
 // ../client/dist/profiles.js
 import { execFileSync } from "node:child_process";
@@ -33129,9 +33247,7 @@ var ROLLOVER_JITTER_RANGE_MS = 6e4;
 var ROLLOVER_MAX_FAILURES = 3;
 var ROLLOVER_RETRY_MS = 5e3;
 var ROLLOVER_COOLDOWN_MS = 6e4;
-var CLAIM_RECOVERY_ATTEMPTS = 3;
 var MAX_TIMER_DELAY_MS = 2147e6;
-var SESSION_INVENTORY_MAX_PAGES = 100;
 function deterministicSessionJitterMs(agentSessionId) {
   const digest = createHash2("sha256").update(agentSessionId).digest();
   return digest.readUInt32BE(0) % ROLLOVER_JITTER_RANGE_MS;
@@ -33155,28 +33271,6 @@ function responsiveDeliveryKey(message) {
     return void 0;
   return `${seq}:${eventId}`;
 }
-var ParleApiError = class extends Error {
-  status;
-  code;
-  action;
-  scope;
-  retryAfterMs;
-  retryable;
-  details;
-  constructor(message, options = {}) {
-    super(message);
-    this.name = "ParleApiError";
-    this.status = options.status;
-    this.code = options.code;
-    this.action = options.action;
-    this.scope = options.scope;
-    this.retryAfterMs = options.retryAfterMs;
-    this.retryable = options.retryable ?? false;
-    this.details = options.details;
-  }
-};
-var AliasClaimOutcomeUnknownError = class extends ParleApiError {
-};
 function parseKeyValueFile(text) {
   const out = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -33389,16 +33483,6 @@ function formatDuration(ms) {
     return `${ms}ms`;
   const seconds = Math.ceil(ms / 1e3);
   return seconds === 1 ? "1 second" : `${seconds} seconds`;
-}
-var PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
-function isParleCredential(value) {
-  PARLE_CREDENTIAL_RE.lastIndex = 0;
-  return PARLE_CREDENTIAL_RE.test(value);
-}
-function redactString(input) {
-  let out = input.replace(/Bearer\s+[A-Za-z0-9_./+=:-]+/g, "Bearer <redacted>").replace(/(__Host-parle_session=)[^;\s]+/g, "$1<redacted>").replace(/(Idempotency-Key\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>").replace(/(Parle-Agent-Session\s*[:=]\s*)[A-Za-z0-9._:-]+/gi, "$1<redacted>");
-  PARLE_CREDENTIAL_RE.lastIndex = 0;
-  return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
 function redactedValue(value) {
   if (!value?.value)
@@ -34118,93 +34202,14 @@ var ParleAgentClient = class _ParleAgentClient {
       throw error51;
     }
   }
-  async findInventorySession(predicate, signal) {
-    let after;
-    for (let pageNumber = 0; pageNumber < SESSION_INVENTORY_MAX_PAGES; pageNumber += 1) {
-      const path = after ? `/v/agent/sessions?after=${encodeURIComponent(after)}` : "/v/agent/sessions";
-      const page = await this.requestJson(path, { signal, retry: true });
-      const sessions = Array.isArray(page.sessions) ? page.sessions : [];
-      const match = sessions.find(predicate);
-      if (match)
-        return match;
-      if (page.next === null || page.next === void 0)
-        return void 0;
-      if (typeof page.next !== "string" || page.next.length === 0)
-        throw new ParleApiError("Parle session inventory returned an invalid continuation cursor", { code: "invalid_response", action: "fix_client", scope: "server" });
-      after = page.next;
-    }
-    throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
+  aliasTransport() {
+    return { request: (path, options) => this.requestJson(path, options) };
   }
   async ownAliasFacts(alias, signal) {
-    const facts = await this.requestJson(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
-    const current = facts?.current_agent_session_id;
-    if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || current !== null && current !== void 0 && typeof current !== "string") {
-      throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
-    }
-    return { alias, generation: facts.generation, ...typeof current === "string" ? { currentAgentSessionId: current } : {} };
-  }
-  async currentAliasGeneration(alias, signal) {
-    return (await this.ownAliasFacts(alias, signal)).generation;
+    return ownAliasFacts(this.aliasTransport(), alias, signal);
   }
   async claimAliasWithRecovery(candidate, alias, expectedGeneration, signal) {
-    const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
-    const body = { alias, expected_generation: expectedGeneration };
-    let lastError;
-    for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
-      try {
-        return await this.requestJson(path, {
-          method: "POST",
-          body,
-          sessionCredential: candidate.sessionHandle,
-          signal,
-          rawResponse: true,
-          retry: false
-        });
-      } catch (error51) {
-        if (error51 instanceof ParleApiError && error51.status === 409)
-          throw error51;
-        const responseLost = !(error51 instanceof ParleApiError) || error51.status === void 0 || error51.status >= 500;
-        if (!responseLost)
-          throw error51;
-        lastError = error51;
-        let aliasFacts;
-        try {
-          aliasFacts = await this.ownAliasFacts(alias, signal);
-        } catch {
-        }
-        if (aliasFacts?.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
-          const confirmedGeneration = aliasFacts.generation;
-          let committed;
-          try {
-            committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === confirmedGeneration, signal);
-          } catch (error52) {
-            throw new ParleApiError(`Parle alias claim committed but live candidate confirmation failed: ${redactString(error52 instanceof Error ? error52.message : String(error52))}`, {
-              code: "alias_claim_committed_confirmation_unavailable",
-              action: "retry_with_backoff",
-              scope: "agent_session",
-              retryable: true
-            });
-          }
-          if (committed)
-            return committed;
-          throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
-            code: "alias_claim_committed_session_unavailable",
-            action: "rebootstrap",
-            scope: "agent_session",
-            retryable: false
-          });
-        }
-        if (signal?.aborted)
-          break;
-      }
-    }
-    const detail = lastError instanceof Error ? redactString(lastError.message) : "claim response unavailable";
-    throw new AliasClaimOutcomeUnknownError(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${detail}`, {
-      code: "alias_claim_outcome_unknown",
-      action: "retry_with_backoff",
-      scope: "agent_session",
-      retryable: true
-    });
+    return claimAliasWithRecovery(this.aliasTransport(), candidate, alias, expectedGeneration, signal);
   }
   async establishCandidateWakeReadiness(sessionCredential, signal) {
     const controller = new AbortController();

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, performProfileSwitch, processClientInstanceId, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, sessionRolloverAtMs, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type ResponsiveCursorScope } from "@parlehq/agent-client";
+import { claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport, DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, performProfileSwitch, processClientInstanceId, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, sessionRolloverAtMs, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type ResponsiveCursorScope } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
@@ -272,7 +272,6 @@ const ROLLOVER_RETRY_MS = 5000;
 const ROLLOVER_COOLDOWN_MS = 60_000;
 const CLAIM_RECOVERY_ATTEMPTS = 3;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
-const SESSION_INVENTORY_MAX_PAGES = 100;
 
 async function withLifecycleExclusion<T>(fn: () => Promise<T>): Promise<T> {
   const previous = lifecycleTail;
@@ -1344,87 +1343,19 @@ function sessionRouteAddress(cfg: ParleConfig, session: any): string | null {
   return null;
 }
 
-async function findInventorySession(cfg: ParleConfig, predicate: (item: any) => boolean, signal?: AbortSignal): Promise<any | undefined> {
-  let after: string | undefined;
-  for (let page = 0; page < SESSION_INVENTORY_MAX_PAGES; page += 1) {
-    const path = after ? `/v/agent/sessions?after=${encodeURIComponent(after)}` : "/v/agent/sessions";
-    const inventory = await requestJson(cfg, path, { signal });
-    const sessions = Array.isArray(inventory.sessions) ? inventory.sessions : [];
-    const match = sessions.find(predicate);
-    if (match) return match;
-    if (inventory.next === null || inventory.next === undefined) return undefined;
-    if (typeof inventory.next !== "string" || !inventory.next) throw new Error("Parle session inventory returned an invalid continuation cursor");
-    after = inventory.next;
-  }
-  throw new Error(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`);
+// Alias authority lives in @parlehq/agent-client so its claim, conflict, and
+// lost-response rules cannot drift between adapters. Pi supplies only its own
+// request layer through the injected transport.
+function aliasTransport(cfg: ParleConfig, state?: RuntimeState): AliasTransport {
+  return { request: (path, options) => requestJson(cfg, path, options as any, state) };
 }
 
-async function ownAliasFacts(cfg: ParleConfig, alias: string, signal?: AbortSignal): Promise<{ alias: string; generation: number; currentAgentSessionId?: string }> {
-  const facts = await requestJson(cfg, `/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal });
-  const current = facts?.current_agent_session_id;
-  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || (current !== null && current !== undefined && typeof current !== "string")) {
-    throw new Error("Parle session alias lookup returned invalid facts");
-  }
-  return { alias, generation: facts.generation, ...(typeof current === "string" ? { currentAgentSessionId: current } : {}) };
-}
-
-async function currentAliasGeneration(cfg: ParleConfig, alias: string, signal?: AbortSignal): Promise<number> {
-  return (await ownAliasFacts(cfg, alias, signal)).generation;
+async function ownAliasFacts(cfg: ParleConfig, alias: string, signal?: AbortSignal): Promise<AliasFacts> {
+  return ownAliasFactsShared(aliasTransport(cfg), alias, signal);
 }
 
 async function claimAliasWithRecovery(cfg: ParleConfig, candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal): Promise<any> {
-  const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId!)}/claim-alias`;
-  const body = { alias, expected_generation: expectedGeneration };
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
-    try {
-      return await requestJson(cfg, path, {
-        method: "POST", body, sessionCredential: candidate.sessionHandle, signal, retry: false,
-      }, candidate);
-    } catch (error: any) {
-      if (error?.status === 409) throw error;
-      const responseLost = typeof error?.status !== "number" || error.status >= 500;
-      if (!responseLost) throw error;
-      lastError = error;
-      let aliasFacts: { alias: string; generation: number; currentAgentSessionId?: string } | undefined;
-      try {
-        aliasFacts = await ownAliasFacts(cfg, alias, signal);
-      } catch {
-        // Alias lookup failure does not broaden the exact replay budget.
-      }
-      if (aliasFacts && aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
-        const confirmedGeneration = aliasFacts.generation;
-        let committed: any;
-        try {
-          committed = await findInventorySession(cfg, (item) => item?.agent_session_id === candidate.agentSessionId
-            && item?.alias === alias
-            && item?.generation === confirmedGeneration, signal);
-        } catch (confirmationError) {
-          const failure: any = new Error(`Parle alias claim committed but live candidate confirmation failed: ${redactString(confirmationError instanceof Error ? confirmationError.message : String(confirmationError))}`);
-          failure.code = "alias_claim_committed_confirmation_unavailable";
-          failure.action = "retry_with_backoff";
-          failure.scope = "agent_session";
-          failure.retryable = true;
-          throw failure;
-        }
-        if (committed) return committed;
-        const unavailable: any = new Error("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle");
-        unavailable.code = "alias_claim_committed_session_unavailable";
-        unavailable.action = "rebootstrap";
-        unavailable.scope = "agent_session";
-        unavailable.retryable = false;
-        throw unavailable;
-      }
-      if (signal?.aborted) break;
-    }
-  }
-  const error: any = new Error(`Parle alias claim outcome remains unknown after bounded exact replay and alias confirmation: ${redactString(lastError instanceof Error ? lastError.message : "claim response unavailable")}`);
-  error.code = "alias_claim_outcome_unknown";
-  error.action = "retry_with_backoff";
-  error.scope = "agent_session";
-  error.retryable = true;
-  error.aliasClaimOutcomeUnknown = true;
-  throw error;
+  return claimAliasShared(aliasTransport(cfg, candidate), { agentSessionId: candidate.agentSessionId!, sessionHandle: candidate.sessionHandle! }, alias, expectedGeneration, signal);
 }
 
 async function establishCandidateWakeReadiness(cfg: ParleConfig, sessionCredential: string, signal?: AbortSignal): Promise<CandidateWakeSlot> {
@@ -2757,7 +2688,6 @@ export const __testing = {
   clientInstanceId: PI_CLIENT_INSTANCE_ID,
   useSessionAlias,
   performSessionRollover,
-  currentAliasGeneration,
   scheduleSessionRollover,
   runtimeState() { return runtime; },
   patchRuntime(patch: Partial<RuntimeState>) { runtime = { ...runtime, ...patch }; },

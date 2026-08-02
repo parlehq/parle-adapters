@@ -624,3 +624,30 @@ test("anonymous planned replacement preserves only the adapter projection cursor
   assert.equal(participantEntries, 2, "each prepared session enters exactly once");
   await client.endSession();
 });
+
+test("claim recovery is transport agnostic: a plain 409 error stays terminal", async () => {
+  // Adapters construct their own error shapes. A conflict must stay terminal
+  // for the candidate regardless, or a host would treat it as a lost response
+  // and refuse to retire the losing candidate.
+  const { claimAliasWithRecovery } = await import("../dist/index.js");
+  const plain409 = Object.assign(new Error("Parle API 409: taken"), { status: 409 });
+  const transport = { request: async () => { throw plain409; } };
+  await assert.rejects(
+    claimAliasWithRecovery(transport, { agentSessionId: "as-1", sessionHandle: "parle_ses_1" }, "main", 3),
+    (error) => error === plain409,
+  );
+
+  // A lost response still resolves against the durable fence rather than
+  // replaying the claim blindly.
+  let claims = 0;
+  const recovering = {
+    request: async (path) => {
+      if (path.endsWith("/claim-alias")) { claims += 1; throw Object.assign(new Error("Parle API 503: gateway"), { status: 503 }); }
+      if (path.startsWith("/v/agent/session-aliases/")) return { alias: "main", generation: 4, current_agent_session_id: "as-1" };
+      return { sessions: [{ agent_session_id: "as-1", alias: "main", generation: 4 }], next: null };
+    },
+  };
+  const committed = await claimAliasWithRecovery(recovering, { agentSessionId: "as-1", sessionHandle: "parle_ses_1" }, "main", 3);
+  assert.equal(committed.alias, "main");
+  assert.equal(claims, 1, "a committed claim is confirmed, never replayed");
+});

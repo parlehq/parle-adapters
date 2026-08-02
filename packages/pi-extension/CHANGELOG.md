@@ -2,6 +2,7 @@
 
 ## 0.3.0 (2026-08-02)
 
+- Adopt the shared alias authority module and delete Pi's duplicated claim, lookup, and session-inventory code.
 - Report the alias a session left behind, why peers holding it are stranded, and how to reclaim it (#27).
 - Key profile-switch publication off explicit claim authority instead of inferring it from the alias field.
 - Publish runtime snapshot schema v2 with rooms[].
