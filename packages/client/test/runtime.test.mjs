@@ -125,8 +125,9 @@ test("publishRuntime writes a credential-free 0600 snapshot and endSession remov
     assert.doesNotMatch(raw, /parle_ses_/);
     assert.doesNotMatch(raw, /opaque-token/);
     const snapshot = JSON.parse(raw);
-    assert.equal(snapshot.schemaVersion, 1);
+    assert.equal(snapshot.schemaVersion, 2);
     assert.equal(snapshot.state, "ready");
+    assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "test-room", state: "ready" }]);
     assert.equal(snapshot.pid, process.pid);
     assert.equal(snapshot.clientInstanceId, processClientInstanceId());
     assert.equal(snapshot.clientInstanceId, client.clientInstanceId);
@@ -184,7 +185,9 @@ test("isLiveRuntimeSnapshot gates on schema, state, expiry, and pid liveness", (
   const now = new Date();
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid), now), true);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { state: "failed" }), now), false);
-  assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { schemaVersion: 2 }), now), false);
+  // v1 stays readable through the bounded compatibility path; anything else does not.
+  assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { schemaVersion: 1 }), now), true);
+  assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { schemaVersion: 3 }), now), false);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { expiresAt: new Date(now.getTime() + 1000).toISOString() }), now), false);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(process.pid, { expiresAt: "" }), now), false);
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(deadPid()), now), false);
@@ -214,7 +217,8 @@ async function runCursorRead({ cursor = 7, messages = [], watermark = 20, params
     },
   });
   await client.connect();
-  client.runtime.cursor = cursor;
+  // Cursors live on the room runtime; runtime.cursor is its single-room projection.
+  client.roomRuntime(client.cfg.roomId.value).cursor = cursor;
   client.runtime.unreadCount = 5;
   const result = await client.readInbox(params);
   return { client, result };

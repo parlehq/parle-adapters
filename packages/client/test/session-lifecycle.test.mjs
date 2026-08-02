@@ -615,7 +615,7 @@ test("anonymous planned replacement preserves only the adapter projection cursor
     },
   });
   await client.connect();
-  client.runtime.cursor = 23;
+  client.roomRuntime(client.cfg.roomId.value).cursor = 23;
   await client.performProactiveRollover();
   assert.equal(client.runtime.cursor, 23);
   assert.equal(client.runtime.responsiveCursorScope, "session");

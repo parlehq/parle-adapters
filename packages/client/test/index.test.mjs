@@ -26,6 +26,7 @@ import {
   redactedSecretValue,
   redactString,
   resolveConfig,
+  resolveRoomSet,
   responsiveDeliveryKey,
   summarizeSendDelivery,
   terminalStatusFor,
@@ -1475,5 +1476,173 @@ test("disk credential rotation clears the automatic client latch and a retry gat
     assert.equal(client.runtime.terminalCause, undefined);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// --- Multi-room configuration (issue #63 S1) ---
+
+function roomSetProject(catalog, env = {}) {
+  const home = mkdtempSync(join(tmpdir(), "parle-roomset-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-roomset-project-"));
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(join(home, ".parle", "profiles"), catalog, { mode: 0o600 });
+  return { home, cwd, env: { HOME: home, ...env }, cleanup: () => { rmSync(home, { recursive: true, force: true }); rmSync(cwd, { recursive: true, force: true }); } };
+}
+
+const TWO_ROOM_CATALOG = "[alpha]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_alpha\n\n[beta]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_beta\n";
+
+test("PARLE_PROFILES resolves an explicit ordered room set", () => {
+  const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILES: "alpha, beta" });
+  try {
+    const set = resolveRoomSet(project.cwd, project.env);
+    assert.equal(set.mode, "multi");
+    assert.deepEqual(set.rooms.map((room) => room.profile.value), ["alpha", "beta"]);
+    assert.deepEqual(set.rooms.map((room) => room.roomId.value), ["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "019f7b46-178f-7a5a-9f7b-b4af2e045261"]);
+    assert.deepEqual(set.rooms.map((room) => room.agentToken.value), ["parle_agt_alpha", "parle_agt_beta"]);
+  } finally {
+    project.cleanup();
+  }
+});
+
+test("an unset PARLE_PROFILES keeps single-room resolution unchanged", () => {
+  const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILE: "alpha" });
+  try {
+    const set = resolveRoomSet(project.cwd, project.env);
+    assert.equal(set.mode, "single");
+    assert.equal(set.rooms.length, 1);
+    assert.equal(set.rooms[0].roomId.value, "019f2946-aef5-77ad-a41d-747ce0fd6a1e");
+  } finally {
+    project.cleanup();
+  }
+});
+
+test("PARLE_PROFILES rejects unsafe configuration before any network activity", () => {
+  const cases = [
+    [{ PARLE_PROFILES: "alpha,beta", PARLE_PROFILE: "alpha" }, /conflicts with PARLE_PROFILE/],
+    [{ PARLE_PROFILES: "alpha,beta", PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e" }, /conflicts with direct room configuration/],
+    [{ PARLE_PROFILES: " , " }, /is empty/],
+    [{ PARLE_PROFILES: "alpha,alpha" }, /more than once/],
+    [{ PARLE_PROFILES: "alpha,missing" }, /missing/],
+  ];
+  for (const [env, expected] of cases) {
+    const project = roomSetProject(TWO_ROOM_CATALOG, env);
+    try {
+      assert.throws(() => resolveRoomSet(project.cwd, project.env), expected, JSON.stringify(env));
+    } finally {
+      project.cleanup();
+    }
+  }
+});
+
+test("PARLE_PROFILES rejects duplicate rooms and mixed origins", () => {
+  const duplicateRoom = roomSetProject("[alpha]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_alpha\n\n[clone]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_clone\n", { PARLE_PROFILES: "alpha,clone" });
+  try {
+    assert.throws(() => resolveRoomSet(duplicateRoom.cwd, duplicateRoom.env), /same room/);
+  } finally {
+    duplicateRoom.cleanup();
+  }
+  const mixed = roomSetProject("[alpha]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_alpha\n\n[beta]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_beta\napi_base = https://api.staging.parle.sh\n", { PARLE_PROFILES: "alpha,beta" });
+  try {
+    assert.throws(() => resolveRoomSet(mixed.cwd, mixed.env), /mixes Parle origins/);
+  } finally {
+    mixed.cleanup();
+  }
+});
+
+function twoRoomClient(options = {}) {
+  const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILES: "alpha,beta" });
+  const alpha = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const beta = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const auth = init.headers?.Authorization;
+    calls.push([init.method || "GET", path, auth]);
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      return json({ agent_session_id: "as-shared", session_credential: "parle_ses_shared", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.shared" }, 201);
+    }
+    if (path.endsWith("/participants")) {
+      const room = path.includes(alpha) ? "alpha" : "beta";
+      if (options.denyEntry === room) return json({ error: { code: "forbidden", message: "no seat", action: "fix_client", scope: "request" } }, 403);
+      if (options.sessionDeny === room) return json({ error: { code: "agent_mismatch", message: "session not valid here", action: "rebootstrap", scope: "agent_session" } }, 403);
+      return json({ participant_id: `part-${room}`, room_handle: `${room}-room` }, 201);
+    }
+    if (path.includes("/projection")) return json({ watermark: path.includes(alpha) ? 10 : 20, messages: [] });
+    if (path.includes("/inbound")) return json({ watermark: path.includes(alpha) ? 11 : 21, messages: [{ seq: path.includes(alpha) ? 11 : 21, event_id: `e-${path.includes(alpha) ? "alpha" : "beta"}` }] });
+    if (path.endsWith("/messages")) return json({ seq: 99, event_id: "sent" }, 201);
+    if (path.endsWith("/affordances")) return json({ affordances: [] });
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const client = new ParleAgentClient({ cwd: project.cwd, env: project.env, fetch });
+  return { client, calls, alpha, beta, cleanup: project.cleanup };
+}
+
+test("one session enters every configured room with that room's own bearer", async () => {
+  const harness = twoRoomClient();
+  try {
+    await harness.client.connect();
+    const entries = harness.calls.filter(([, path]) => path.endsWith("/participants"));
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries.map(([, , auth]) => auth), ["Bearer parle_agt_alpha", "Bearer parle_agt_beta"]);
+    assert.equal(harness.calls.filter(([, path]) => path === "/v/agent/sessions").length, 1, "one shared roomless session");
+    const status = harness.client.status();
+    assert.deepEqual(status.rooms.map((room) => [room.profile, room.state, room.cursor]), [["alpha", "ready", 10], ["beta", "ready", 20]]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("multi-room room-scoped calls fail closed without roomId and never cross bearers", async () => {
+  const harness = twoRoomClient();
+  try {
+    await harness.client.connect();
+    await assert.rejects(harness.client.readInbox(), /roomId is required/);
+    await assert.rejects(harness.client.readInbox({ roomId: "019f0000-0000-7000-8000-000000000000" }), /is not configured/);
+    const inbox = await harness.client.readInbox({ roomId: harness.beta });
+    assert.equal(inbox.roomId, harness.beta);
+    assert.equal(inbox.cursorAfter, 21);
+    assert.equal(harness.client.roomRuntime(harness.alpha).cursor, 10, "another room's cursor never moves");
+    const beta = harness.calls.filter(([, path, auth]) => path.includes(harness.beta) && auth);
+    assert.ok(beta.every(([, , auth]) => auth === "Bearer parle_agt_beta"));
+    const sent = await harness.client.send({ body: "hello", roomId: harness.alpha });
+    assert.equal(sent.roomId, harness.alpha);
+    assert.deepEqual(harness.calls.at(-1), ["POST", `/v/rooms/${harness.alpha}/messages`, "Bearer parle_agt_alpha"]);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("an ordinary room denial degrades only that room", async () => {
+  const harness = twoRoomClient({ denyEntry: "beta" });
+  try {
+    await harness.client.connect();
+    const status = harness.client.status();
+    assert.deepEqual(status.rooms.map((room) => room.state), ["ready", "degraded"]);
+    assert.match(status.rooms[1].lastError, /no seat/);
+    const inbox = await harness.client.readInbox({ roomId: harness.alpha });
+    assert.equal(inbox.cursorAfter, 11, "the healthy room keeps serving");
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("a session-scope entry rejection aborts the whole configured set", async () => {
+  const harness = twoRoomClient({ sessionDeny: "beta" });
+  try {
+    await assert.rejects(harness.client.connect(), /aborted the whole configured room set/);
+    assert.equal(harness.client.runtime.bootstrapped, false);
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("live profile switching fails closed in multi-room mode", async () => {
+  const harness = twoRoomClient();
+  try {
+    await harness.client.connect();
+    await assert.rejects(harness.client.switchProfile("alpha"), /unavailable while PARLE_PROFILES configures 2 rooms/);
+  } finally {
+    harness.cleanup();
   }
 });
