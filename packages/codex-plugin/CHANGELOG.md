@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 (2026-08-02)
+
+- Refresh the bundled MCP server for shared-controller hook delivery with preserved lease, fence, and baseline semantics.
+
 ## 0.4.0 (2026-08-02)
 
 - Refresh the bundled MCP server for multi-room room routing.

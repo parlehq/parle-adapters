@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 (2026-08-02)
+
+- Refresh the bundled MCP server for shared-controller hook delivery with preserved lease, fence, and baseline semantics.
+
 ## 0.7.0 (2026-08-02)
 
 - Hard cut to snapshot schema v2 in the statusline and watcher readers; v1 snapshots read as not live.

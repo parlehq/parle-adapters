@@ -16,24 +16,20 @@ import { createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
-  ParleAgentClient,
-  ParleApiError,
-  parseSSEBlocks,
-  type ResponsiveDeliveryMessage,
+  ResponsiveDeliveryController,
+  type DeliveryHandlerInput,
+  type DeliveryHandlerResult,
+  type ParleAgentClient,
   type ResponsiveCursorScope,
-  type ResponsiveDeliveryReadFence,
+  type ResponsiveDeliveryMessage,
   type SessionCommitPlan,
 } from "@parlehq/agent-client";
 
 const MAX_PENDING = 100;
-const MAX_DRAIN_BATCHES = 100;
-const MAX_BASELINE_MESSAGES = 5000;
 const MAX_HOOK_BATCH = 20;
 const MAX_HOOK_BYTES = 512 * 1024;
 const MAX_SOCKET_INPUT = 16 * 1024;
 const LEASE_MS = 30_000;
-const STREAM_RECONNECT_MS = 5000;
-const STREAM_RECONNECT_JITTER_MS = 1000;
 
 export type HookDeliveryBridgeStatus = {
   running: boolean;
@@ -57,22 +53,9 @@ type PendingMessage = ResponsiveDeliveryMessage & {
   agentSessionId: string;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
-type DeliveryReadFence = ResponsiveDeliveryReadFence;
 
 function deliveryKey(message: Pick<ResponsiveDeliveryMessage, "seq" | "event_id">): string {
   return `${message.seq}:${message.event_id}`;
-}
-
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new Error("aborted"));
-    const timer = setTimeout(resolve, ms);
-    const abort = () => {
-      clearTimeout(timer);
-      reject(new Error("aborted"));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-  });
 }
 
 export function hookBridgeStateDir(scope: string): string {
@@ -102,40 +85,51 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+// The bridge is a queue between the shared delivery controller and the host's
+// hook flow. The controller owns wake, routing, per-room drain, deduplication,
+// and acknowledgement; the bridge owns only host policy: the socket protocol,
+// the lease, and the fences that keep stale work from being acknowledged
+// through a successor session.
 export class HookDeliveryBridge {
-  private readonly abortController = new AbortController();
+  private readonly controller: ResponsiveDeliveryController;
   private readonly pending: PendingMessage[] = [];
   private readonly queuedKeys = new Set<string>();
   private server?: Server;
   private lease?: Lease;
-  private loop?: Promise<void>;
   private startPromise?: Promise<void>;
+  private stopped = false;
+  private baselineActive = false;
   private baselineSkipped = 0;
   private lastError?: string;
   private hostSessionId?: string;
-  private currentWakeAbort?: AbortController;
-  private unsubscribeSessionRevision?: () => void;
   private unsubscribeCommitGuard?: () => void;
-  private drainInFlight?: Promise<void>;
-  private ignoredWakeHints = 0;
-  private lastIgnoredWakeRoomId?: string;
-  private readonly activeDeliveryReads = new Set<DeliveryReadFence>();
 
   constructor(
     private readonly client: ParleAgentClient,
     private readonly scope = process.cwd(),
     private readonly runtimeExecPath = process.execPath,
-  ) {}
+  ) {
+    // The handler only ever throws on queue overflow, which is host capacity,
+    // never a poison row. An unbounded attempt budget keeps the controller
+    // from ever classifying an undelivered row as poison and acknowledging it.
+    this.controller = new ResponsiveDeliveryController(client, {
+      handler: (input) => this.handleDelivery(input),
+      maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
+    });
+  }
 
   status(): HookDeliveryBridgeStatus {
+    const controller = this.controller.status();
+    const roomError = controller.rooms.find((room) => room.lastError)?.lastError;
+    const lastError = this.lastError ?? controller.lastError ?? roomError;
     return {
-      running: Boolean(this.server?.listening && !this.abortController.signal.aborted),
+      running: Boolean(this.server?.listening) && !this.stopped,
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope),
       hostSessionBound: Boolean(this.hostSessionId),
-      ...(this.ignoredWakeHints ? { ignoredWakeHints: this.ignoredWakeHints, lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {}),
-      ...(this.lastError ? { lastError: this.lastError } : {}),
+      ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
+      ...(lastError ? { lastError } : {}),
     };
   }
 
@@ -147,7 +141,6 @@ export class HookDeliveryBridge {
   }
 
   async start(): Promise<void> {
-    if (this.loop) return;
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.startBridge();
     try {
@@ -158,66 +151,73 @@ export class HookDeliveryBridge {
   }
 
   async stop(): Promise<void> {
-    this.abortController.abort();
-    this.currentWakeAbort?.abort();
-    this.unsubscribeSessionRevision?.();
-    this.unsubscribeSessionRevision = undefined;
+    this.stopped = true;
+    await this.controller.stop();
     this.unsubscribeCommitGuard?.();
     this.unsubscribeCommitGuard = undefined;
     const server = this.server;
     this.server = undefined;
     if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
     this.removeOwnRuntimeArtifacts();
-    await this.loop?.catch(() => undefined);
-    this.loop = undefined;
   }
 
   private async startBridge(): Promise<void> {
-    try {
-      this.lastError = undefined;
+    this.lastError = undefined;
+    if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = (this.client as any).onBeforeSessionCommit?.((plan: SessionCommitPlan) => this.guardSessionCommit(plan));
-      await this.client.ensureBootstrapped(this.abortController.signal);
-      this.unsubscribeSessionRevision = (this.client as any).onSessionRevision?.(() => {
-        this.currentWakeAbort?.abort();
-        void this.drain().catch((error) => {
-          if (!this.abortController.signal.aborted) this.lastError = error instanceof Error ? error.message : String(error);
-        });
-      });
-      await this.baseline();
-      await this.listen();
-      this.loop = this.watchLoop();
-      void this.loop.catch((error) => {
-        if (!this.abortController.signal.aborted) this.lastError = error instanceof Error ? error.message : String(error);
-      });
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
-      this.server = undefined;
-      this.removeOwnRuntimeArtifacts();
+    }
+    if (!this.server?.listening) {
+      try {
+        await this.listen();
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+        this.server = undefined;
+        this.removeOwnRuntimeArtifacts();
+        return;
+      }
+    }
+    // The socket and runtime artifacts outlive a bootstrap or wake failure:
+    // hooks keep a status endpoint to diagnose through, and a later start()
+    // retries the controller without republishing anything.
+    if (!this.controller.status().running) {
+      this.baselineActive = true;
+      try {
+        await this.controller.start();
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      } finally {
+        this.baselineActive = false;
+      }
     }
   }
 
-  private async baseline(): Promise<void> {
-    let skipped = 0;
-    for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
-      try {
-        const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-        if (messages.length === 0) break;
-        if (delivery?.delivery?.cursor_scope === "alias") {
-          if (this.enqueue(messages, delivery?.delivery?.cursor_scope, readFence) === 0) break;
-          continue;
-        }
-        for (const message of messages) {
-          skipped += 1;
-          if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
-          this.assertReadFenceCurrent(readFence);
-          await this.client.ackResponsiveDelivery(message, this.abortController.signal);
-        }
-      } finally {
-        release();
-      }
+  // Session-scoped backlog present before the bridge's first drain belongs to
+  // a replaced session and is skipped rather than replayed into the host.
+  // Alias-scoped rows are durable across sessions and always queue.
+  private handleDelivery(input: DeliveryHandlerInput): DeliveryHandlerResult {
+    if (this.baselineActive && input.cursorScope !== "alias") {
+      this.baselineSkipped += 1;
+      return "intentionally_skipped";
     }
-    this.baselineSkipped = skipped;
+    this.enqueue(input);
+    return "deferred";
+  }
+
+  private enqueue(input: DeliveryHandlerInput): void {
+    const key = deliveryKey(input.message);
+    if (this.queuedKeys.has(key)) return;
+    if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
+    const runtime = (this.client as any).runtime || {};
+    this.pending.push({
+      ...input.message,
+      key,
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: input.cursorScope,
+      roomId: input.roomId,
+      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
+      agentSessionId: String(runtime.agentSessionId || ""),
+    });
+    this.queuedKeys.add(key);
   }
 
   private async listen(): Promise<void> {
@@ -359,7 +359,11 @@ export class HookDeliveryBridge {
       // It makes stale exact-session work impossible to acknowledge with a
       // successor credential even if a future lifecycle path bypasses guards.
       this.assertMessageCurrent(message);
-      await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+      const acked = await this.controller.completeDeferred(message.roomId, message);
+      if (!acked) {
+        const roomError = this.controller.status().rooms.find((room) => room.roomId === message.roomId)?.lastError;
+        throw new Error(`Parle hook bridge acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
+      }
       const head = this.pending[0];
       if (!head || head.key !== message.key) throw new Error("Parle hook bridge pending queue changed during commit");
       this.pending.shift();
@@ -368,44 +372,6 @@ export class HookDeliveryBridge {
     }
     this.lease = undefined;
     return { ok: true, committed };
-  }
-
-  private async watchLoop(): Promise<void> {
-    const signal = this.abortController.signal;
-    while (!signal.aborted) {
-      try {
-        const wakeAbort = new AbortController();
-        this.currentWakeAbort = wakeAbort;
-        const wakeSignal = AbortSignal.any([signal, wakeAbort.signal]);
-        await this.client.withRebootstrap(async () => {
-          const response = await this.client.openWakeStream(wakeSignal);
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error("Parle wake stream response body is not readable");
-          this.lastError = undefined;
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (!wakeSignal.aborted) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const parsed = parseSSEBlocks(buffer);
-            buffer = parsed.rest;
-            for (const event of parsed.events) if (event.event === "wake") await this.handleWake(event.data);
-          }
-        }, wakeSignal);
-        this.lastError = undefined;
-        this.currentWakeAbort = undefined;
-      } catch (error: any) {
-        const revisionRestart = Boolean(this.currentWakeAbort?.signal.aborted && !signal.aborted);
-        this.currentWakeAbort = undefined;
-        if (signal.aborted) break;
-        if (revisionRestart) continue;
-        this.lastError = error instanceof Error ? error.message : String(error);
-        if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || "")) throw error;
-        const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
-        await delay(Math.max(retryAfter, STREAM_RECONNECT_MS + Math.floor(Math.random() * STREAM_RECONNECT_JITTER_MS)), signal);
-      }
-    }
   }
 
   private liveLease(): Lease | undefined {
@@ -418,64 +384,28 @@ export class HookDeliveryBridge {
     return lease ? [...this.pending, ...lease.messages] : [...this.pending];
   }
 
+  // In-flight responsive reads are fenced by the client itself, which tracks
+  // every read it performs for the controller. The bridge guards only what the
+  // client cannot see: rows queued or leased for the host's hook flow.
   private guardSessionCommit(plan: SessionCommitPlan): void {
-    const activeReads = plan.reason === "bootstrap" ? [] : [...this.activeDeliveryReads];
-    const work = [...this.pendingWork(), ...activeReads];
+    const work = this.pendingWork();
     if (work.length === 0) return;
     if (plan.reason === "profile_switch") {
-      throw new Error("Parle profile switch is deferred while hook delivery is pending, leased, or being read");
+      throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
     }
     const aliasTransfers = Boolean(plan.previous.sessionAlias
       && plan.candidate.sessionAlias === plan.previous.sessionAlias
       && plan.candidate.responsiveContinuity === "alias"
       && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
     if (!aliasTransfers) {
-      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending, leased, or being read");
+      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
     }
   }
 
-  private deliveryReadFence(): DeliveryReadFence {
+  private assertMessageCurrent(message: PendingMessage): void {
     const runtime = (this.client as any).runtime || {};
-    return {
-      sessionRevision: Number(runtime.sessionRevision || 0),
-      cursorScope: runtime.responsiveCursorScope,
-      roomId: this.bridgeRoomId(),
-      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
-      agentSessionId: String(runtime.agentSessionId || ""),
-    };
-  }
-
-  private async readResponsiveDelivery(): Promise<{ delivery: any; fence: DeliveryReadFence; release: () => void }> {
-    const fenced = (this.client as any).drainResponsiveDeliveryWithFence;
-    if (typeof fenced === "function") return fenced.call(this.client, this.abortController.signal);
-    const fence = this.deliveryReadFence();
-    this.activeDeliveryReads.add(fence);
-    const release = () => this.activeDeliveryReads.delete(fence);
-    try {
-      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      const responseScope = delivery?.delivery?.cursor_scope;
-      if (responseScope === "session" || responseScope === "alias") fence.cursorScope = responseScope;
-      return { delivery, fence, release };
-    } catch (error) {
-      release();
-      throw error;
-    }
-  }
-
-  // The hook bridge is single-room until the shared delivery controller lands,
-  // so it resolves the one configured room explicitly instead of reading a
-  // primary binding off the session.
-  private bridgeRoomId(): string {
-    try {
-      return String((this.client as any).roomTarget?.()?.roomId?.value || "");
-    } catch {
-      return "";
-    }
-  }
-
-  private assertReadFenceCurrent(message: DeliveryReadFence): void {
-    const runtime = (this.client as any).runtime || {};
-    if (message.roomId !== this.bridgeRoomId()) throw new Error("Parle hook delivery belongs to a prior room binding");
+    const configured = Array.isArray(runtime.rooms) && runtime.rooms.some((room: any) => room?.roomId === message.roomId);
+    if (!configured) throw new Error("Parle hook delivery belongs to a prior room binding");
     if (message.cursorScope === "alias") {
       if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
       return;
@@ -483,73 +413,5 @@ export class HookDeliveryBridge {
     if (message.sessionRevision !== Number(runtime.sessionRevision || 0) || message.agentSessionId !== String(runtime.agentSessionId || "")) {
       throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
     }
-  }
-
-  private assertMessageCurrent(message: PendingMessage): void {
-    this.assertReadFenceCurrent(message);
-  }
-
-  private enqueue(messages: ResponsiveDeliveryMessage[], cursorScope: ResponsiveCursorScope | undefined, readFence: DeliveryReadFence): number {
-    let queued = 0;
-    for (const message of messages) {
-      const key = deliveryKey(message);
-      if (this.queuedKeys.has(key)) continue;
-      if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
-      this.pending.push({
-        ...message,
-        key,
-        sessionRevision: readFence.sessionRevision,
-        cursorScope,
-        roomId: readFence.roomId,
-        sessionAlias: readFence.sessionAlias,
-        agentSessionId: readFence.agentSessionId,
-      });
-      this.queuedKeys.add(key);
-      queued += 1;
-    }
-    return queued;
-  }
-
-  // A wake hint names the room that has traffic. An unknown room ID is
-  // recorded and ignored: never fetch an unconfigured room from a hint. A
-  // hintless wake keeps the unconditional drain so older servers still work.
-  private async handleWake(data: string): Promise<void> {
-    let hinted: string | undefined;
-    try {
-      const parsed = data ? JSON.parse(data) : undefined;
-      if (parsed && typeof parsed === "object" && typeof (parsed as any).room_id === "string") hinted = (parsed as any).room_id;
-    } catch {
-      // A malformed hint is diagnostic noise, never a delivery failure.
-    }
-    if (!hinted) return this.drain();
-    const configured = (this.client as any).roomConfigs?.some?.((room: any) => room?.roomId?.value === hinted);
-    if (configured === false) {
-      this.ignoredWakeHints += 1;
-      this.lastIgnoredWakeRoomId = hinted;
-      return;
-    }
-    return this.drain();
-  }
-
-  private async drain(): Promise<void> {
-    if (this.drainInFlight) return this.drainInFlight;
-    const run = this.doDrain();
-    this.drainInFlight = run;
-    try { await run; } finally { this.drainInFlight = undefined; }
-  }
-
-  private async doDrain(): Promise<void> {
-    for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
-      try {
-        if (delivery.messages.length === 0) return;
-        // The server cursor advances only after hook commit acks the queued rows.
-        // A repeated all-known batch is therefore the drain boundary, not a stall.
-        if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope, readFence) === 0) return;
-      } finally {
-        release();
-      }
-    }
-    throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
   }
 }

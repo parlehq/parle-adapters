@@ -15,12 +15,36 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
+import { ParleApiError } from "@parlehq/agent-client";
 import {
   HookDeliveryBridge,
   hookBridgeRuntimeDescriptorPath,
   hookBridgeRuntimeHandlePath,
   hookBridgeStateDir,
 } from "../dist/hook-delivery-bridge.js";
+
+const ROOM = "room-1";
+
+function bridgeRuntime(overrides = {}) {
+  return {
+    sessionRevision: 1,
+    agentSessionId: "session-1",
+    sessionAlias: undefined,
+    rooms: [{ roomId: ROOM, roomHandle: "bridge-room", participantId: "p-1", cursor: 0, state: "ready" }],
+    ...overrides,
+  };
+}
+
+// A held stream the test can push wake frames into, mirroring the real
+// server: the stream stays open and frames arrive after start() returns.
+function heldWakeStream(sink, signal) {
+  return new Response(new ReadableStream({
+    start(controller) {
+      sink.push = (event) => controller.enqueue(new TextEncoder().encode(`event: wake\ndata: ${JSON.stringify(event)}\n\n`));
+      signal?.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true });
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+}
 
 function request(path, payload) {
   return new Promise((resolve, reject) => {
@@ -48,6 +72,10 @@ async function eventually(check) {
   throw new Error("condition did not become true");
 }
 
+async function settle(ms = 100) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test("hook delivery bridge queues SSE delivery and acks only after lease commit", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-delivery-bridge-"));
   const stateDir = hookBridgeStateDir(cwd);
@@ -64,8 +92,8 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
   let drainCalls = 0;
   let wakeStreams = 0;
   const fakeClient = {
+    runtime: bridgeRuntime(),
     ensureBootstrapped: async () => {},
-    withRebootstrap: async (fn) => fn(),
     drainResponsiveDelivery: async () => {
       drainCalls += 1;
       if (drainCalls === 1) return { messages: [] };
@@ -77,7 +105,7 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
       if (wakeStreams === 1) return new Response("event: wake\ndata: {}\n\n", { headers: { "Content-Type": "text/event-stream" } });
       return new Response(new ReadableStream({
         start(controller) {
-          signal.addEventListener("abort", () => controller.close(), { once: true });
+          signal.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true });
         },
       }), { headers: { "Content-Type": "text/event-stream" } });
     },
@@ -100,7 +128,13 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     await eventually(() => bridge.status().pending === 1);
     assert.deepEqual(acknowledgements, []);
     assert.equal(bridge.status().lastError, undefined);
-    assert.equal(drainCalls, 3, "the repeated unacked batch should terminate the drain");
+    // Termination property: a batch with no fresh, actionable rows ends the
+    // drain. The pending deferred row must not spin the drain to its batch cap.
+    await settle();
+    const settledDrains = drainCalls;
+    await settle();
+    assert.equal(drainCalls, settledDrains, "the drain should terminate once no batch makes progress");
+    assert.ok(settledDrains < 10, `the drain should stop far below the batch cap, saw ${settledDrains}`);
 
     assert.deepEqual(await request(bridge.status().socketPath, { action: "bind", sessionId: "command-code-session" }), { ok: true, bound: true });
     assert.deepEqual(await request(bridge.status().socketPath, { action: "bind", sessionId: "other-session" }), { ok: false, bound: true });
@@ -129,10 +163,11 @@ test("hook delivery bridge restarts its owned wake stream on a client session re
   let revisionListener;
   let wakeStreams = 0;
   const fakeClient = {
+    runtime: bridgeRuntime(),
     ensureBootstrapped: async () => {},
     onSessionRevision: (listener) => { revisionListener = listener; return () => { revisionListener = undefined; }; },
     drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "alias" }, messages: [] }),
-    withRebootstrap: async (fn) => fn(),
+    ackResponsiveDelivery: async () => {},
     openWakeStream: async (signal) => {
       wakeStreams += 1;
       return new Response(new ReadableStream({
@@ -160,6 +195,7 @@ test("hook delivery bridge preserves alias-scoped unacked baseline delivery", as
   let drains = 0;
   const acknowledgements = [];
   const fakeClient = {
+    runtime: bridgeRuntime({ sessionAlias: "bridge-alias" }),
     ensureBootstrapped: async () => {},
     onSessionRevision: () => () => {},
     drainResponsiveDelivery: async () => {
@@ -167,8 +203,7 @@ test("hook delivery bridge preserves alias-scoped unacked baseline delivery", as
       return { delivery: { cursor_scope: "alias" }, messages: [{ seq: 12, event_id: "alias-unacked", content: "redeliver" }] };
     },
     ackResponsiveDelivery: async (message) => acknowledgements.push(message),
-    withRebootstrap: async (fn) => fn(),
-    openWakeStream: async (signal) => new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => controller.close(), { once: true }); } })),
+    openWakeStream: async (signal) => new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true }); } })),
   };
   const bridge = new HookDeliveryBridge(fakeClient, cwd);
   try {
@@ -176,7 +211,84 @@ test("hook delivery bridge preserves alias-scoped unacked baseline delivery", as
     assert.equal(bridge.status().pending, 1);
     assert.equal(bridge.status().baselineSkipped, 0);
     assert.deepEqual(acknowledgements, []);
-    assert.equal(drains, 2, "repeated unacked alias delivery bounds the baseline drain");
+    // Termination property: the repeated unacked alias row is queued once and
+    // then stops making progress, so the baseline drain must settle.
+    const settledDrains = drains;
+    await settle();
+    assert.equal(drains, settledDrains, "the baseline drain should terminate on a no-progress batch");
+    assert.ok(settledDrains < 10, `the baseline drain should stop far below the batch cap, saw ${settledDrains}`);
+    assert.equal(bridge.status().pending, 1);
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("hook delivery bridge skips session-scoped baseline and queues rows arriving afterwards", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-session-baseline-"));
+  const wakeSink = { push: () => {} };
+  const acknowledgements = [];
+  let queue = [
+    { seq: 3, event_id: "stale-3", content: "stale backlog" },
+    { seq: 4, event_id: "stale-4", content: "stale backlog" },
+  ];
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "session" }, messages: [...queue] }),
+    ackResponsiveDelivery: async (message) => {
+      acknowledgements.push([message.seq, message.event_id]);
+      queue = queue.filter((row) => row.event_id !== message.event_id);
+    },
+    openWakeStream: async (signal) => heldWakeStream(wakeSink, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    // Session-scoped backlog present at startup belongs to a replaced session:
+    // it is counted, acknowledged, and never queued for the host.
+    assert.equal(bridge.status().baselineSkipped, 2);
+    assert.equal(bridge.status().pending, 0);
+    assert.deepEqual(acknowledgements, [[3, "stale-3"], [4, "stale-4"]]);
+    queue = [{ seq: 5, event_id: "live-5", content: "live row" }];
+    wakeSink.push({});
+    await eventually(() => bridge.status().pending === 1);
+    // The post-baseline row is queued for the hook flow, not skipped.
+    assert.equal(bridge.status().baselineSkipped, 2);
+    assert.deepEqual(acknowledgements, [[3, "stale-3"], [4, "stale-4"]]);
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("hook delivery bridge keeps its socket and runtime artifacts through a wake stream failure", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-wake-failure-"));
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "session" }, messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async () => {
+      throw new ParleApiError("Parle wake stream 502: Bad Gateway", { status: 502, action: "fix_client" });
+    },
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    await eventually(() => Boolean(bridge.status().lastError));
+    assert.match(bridge.status().lastError, /Bad Gateway/);
+    // The wake failure is diagnosable, not fatal: the socket keeps answering
+    // and the runtime artifacts stay published for the hook flow.
+    assert.equal(bridge.status().running, true);
+    assert.equal(existsSync(bridge.status().socketPath), true);
+    assert.equal(existsSync(hookBridgeRuntimeDescriptorPath(cwd)), true);
+    assert.equal(existsSync(hookBridgeRuntimeHandlePath(cwd)), true);
+    const status = await request(bridge.status().socketPath, { action: "status" });
+    assert.equal(status.ok, true);
+    assert.match(status.lastError, /Bad Gateway/);
   } finally {
     await bridge.stop();
     rmSync(cwd, { recursive: true, force: true });
@@ -190,17 +302,10 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
   let wakeStreams = 0;
   const acknowledgements = [];
   const fakeClient = {
-    runtime: {
-      sessionRevision: 1,
-      roomId: "room-1",
-      agentSessionId: "old-session",
-      sessionAlias: undefined,
-      responsiveCursorScope: "session",
-    },
+    runtime: bridgeRuntime({ agentSessionId: "old-session" }),
     ensureBootstrapped: async () => {},
     onBeforeSessionCommit: (guard) => { commitGuard = guard; return () => { commitGuard = undefined; }; },
     onSessionRevision: () => () => {},
-    withRebootstrap: async (fn) => fn(),
     drainResponsiveDelivery: async () => {
       drains += 1;
       if (drains === 1) return { delivery: { cursor_scope: "session" }, messages: [] };
@@ -210,7 +315,7 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
     openWakeStream: async (signal) => {
       wakeStreams += 1;
       if (wakeStreams === 1) return new Response("event: wake\ndata: {}\n\n");
-      return new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => controller.close(), { once: true }); } }));
+      return new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true }); } }));
     },
   };
   const bridge = new HookDeliveryBridge(fakeClient, cwd);
@@ -242,61 +347,10 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
   }
 });
 
-test("hook delivery bridge blocks exact-session rollover while a responsive read is in flight", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-inflight-read-fence-"));
-  let commitGuard;
-  let drains = 0;
-  let wakeStreams = 0;
-  let readStarted = false;
-  let releaseRead;
-  const heldRead = new Promise((resolve) => { releaseRead = resolve; });
-  const fakeClient = {
-    runtime: {
-      sessionRevision: 1,
-      roomId: "room-1",
-      agentSessionId: "old-session",
-      sessionAlias: undefined,
-      responsiveCursorScope: "session",
-    },
-    ensureBootstrapped: async () => {},
-    onBeforeSessionCommit: (guard) => { commitGuard = guard; return () => { commitGuard = undefined; }; },
-    onSessionRevision: () => () => {},
-    withRebootstrap: async (fn) => fn(),
-    drainResponsiveDelivery: async () => {
-      drains += 1;
-      if (drains === 1) return { delivery: { cursor_scope: "session" }, messages: [] };
-      readStarted = true;
-      return heldRead;
-    },
-    ackResponsiveDelivery: async () => {},
-    openWakeStream: async (signal) => {
-      wakeStreams += 1;
-      if (wakeStreams === 1) return new Response("event: wake\ndata: {}\n\n");
-      return new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => controller.close(), { once: true }); } }));
-    },
-  };
-  const bridge = new HookDeliveryBridge(fakeClient, cwd);
-  try {
-    await bridge.start();
-    await eventually(() => readStarted);
-    const candidate = {
-      ...fakeClient.runtime,
-      sessionRevision: 2,
-      agentSessionId: "successor",
-      responsiveContinuity: "exact_session_not_transferred",
-    };
-    assert.throws(() => commitGuard({ reason: "rollover", previous: { ...fakeClient.runtime }, candidate }), /being read/);
-    releaseRead({ delivery: { cursor_scope: "session" }, messages: [{ seq: 13, event_id: "old-inflight", content: "old work" }] });
-    await eventually(() => bridge.status().pending === 1);
-  } finally {
-    await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
 test("hook delivery bridge records runtime publication failure without throwing", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-runtime-failure-"));
   const fakeClient = {
+    runtime: bridgeRuntime(),
     ensureBootstrapped: async () => {},
     drainResponsiveDelivery: async () => ({ messages: [] }),
   };

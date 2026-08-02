@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (2026-08-02)
+
+- Move the hook delivery bridge onto the shared responsive delivery controller: the controller owns wake, room routing, per-room drain, deduplication, and acknowledgement, while the bridge keeps the socket protocol, lease, commit fences, and session-commit guard.
+- Report session-scoped baseline skips from the delivery handler and acknowledge queued rows only through hook commit via deferred completion.
+- Publish the bridge socket before delivery starts and keep the socket and runtime artifacts through bootstrap or wake-stream failures so hooks diagnose through status instead of losing the bridge.
+
 ## 0.4.0 (2026-08-02)
 
 - Resolve the hook bridge room explicitly instead of reading a primary binding off the session.

@@ -31070,14 +31070,14 @@ function nonEmptyString(value) {
 function parseErrorEnvelope(value) {
   const outer = value && typeof value === "object" ? value : {};
   const candidate = outer.error && typeof outer.error === "object" ? outer.error : outer;
-  const delay2 = candidate.retry_after_ms;
+  const delay = candidate.retry_after_ms;
   return {
     code: nonEmptyString(candidate.code),
     message: nonEmptyString(candidate.message),
     action: nonEmptyString(candidate.action),
     scope: nonEmptyString(candidate.scope),
     retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : false,
-    retryAfterMs: typeof delay2 === "number" && Number.isFinite(delay2) && delay2 >= 0 ? Math.trunc(delay2) : void 0,
+    retryAfterMs: typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? Math.trunc(delay) : void 0,
     raw: candidate
   };
 }
@@ -33145,6 +33145,358 @@ function compactStatusCardFromStatus(status) {
   });
 }
 
+// ../client/dist/delivery.js
+var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
+var DEFAULT_MAX_DRAIN_BATCHES = 100;
+var DEFAULT_RECONNECT_MS = 5e3;
+var MAX_REMEMBERED_KEYS = 5e3;
+function deliveryKey(roomId, message) {
+  return `${roomId}:${message.event_id}`;
+}
+function defaultSleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted)
+      return reject(new Error("aborted"));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    }, { once: true });
+  });
+}
+var ResponsiveDeliveryController = class {
+  client;
+  abort = new AbortController();
+  handler;
+  maxHandlerAttempts;
+  maxDrainBatches;
+  reconnectDelayMs;
+  sleep;
+  // Deduplication is keyed by (roomId, eventId) and deliberately survives
+  // session replacement: a new participant restarts server-side ack state, so
+  // the same row can legitimately arrive again under a new generation.
+  seen = /* @__PURE__ */ new Set();
+  attempts = /* @__PURE__ */ new Map();
+  // Rows whose handler ran but whose acknowledgement has not yet succeeded.
+  // Retrying one of these re-acknowledges only; the handler never re-runs.
+  handled = /* @__PURE__ */ new Map();
+  poisonedKeys = /* @__PURE__ */ new Set();
+  rerunRequested = /* @__PURE__ */ new Set();
+  stats = /* @__PURE__ */ new Map();
+  // Rows a host accepted for later effective handling. They are never
+  // re-offered to the handler and never acknowledged until the host reports
+  // completion, so a crash before injection leaves the row redeliverable.
+  deferred = /* @__PURE__ */ new Map();
+  drainInFlight = /* @__PURE__ */ new Map();
+  loop;
+  unsubscribeRevision;
+  wakeAbort;
+  ignoredWakeHints = 0;
+  lastIgnoredWakeRoomId;
+  lastError;
+  constructor(client, options) {
+    this.client = client;
+    this.handler = options.handler;
+    this.maxHandlerAttempts = options.maxHandlerAttempts ?? DEFAULT_MAX_HANDLER_ATTEMPTS;
+    this.maxDrainBatches = options.maxDrainBatches ?? DEFAULT_MAX_DRAIN_BATCHES;
+    this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
+    this.sleep = options.sleep ?? defaultSleep;
+  }
+  status() {
+    return {
+      running: Boolean(this.loop) && !this.abort.signal.aborted,
+      rooms: this.configuredRooms().map((room) => {
+        const stat = this.stats.get(room.roomId) || { delivered: 0, skipped: 0, poisoned: 0 };
+        return {
+          roomId: room.roomId,
+          ...room.roomHandle ? { roomHandle: room.roomHandle } : {},
+          ...room.profile ? { profile: room.profile } : {},
+          delivered: stat.delivered,
+          skipped: stat.skipped,
+          poisoned: stat.poisoned,
+          deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
+          ...stat.lastError ? { lastError: stat.lastError } : {}
+        };
+      }),
+      ignoredWakeHints: this.ignoredWakeHints,
+      ...this.lastIgnoredWakeRoomId ? { lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {},
+      ...this.lastError ? { lastError: this.lastError } : {}
+    };
+  }
+  async start() {
+    if (this.loop)
+      return;
+    await this.client.ensureBootstrapped(this.abort.signal);
+    this.unsubscribeRevision = this.client.onSessionRevision?.(() => {
+      this.wakeAbort?.abort();
+      void this.drainAll().catch(() => void 0);
+    });
+    await this.drainAll();
+    this.loop = this.watchLoop();
+    void this.loop.catch((error51) => {
+      if (!this.abort.signal.aborted)
+        this.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+    });
+  }
+  async stop() {
+    this.abort.abort();
+    this.wakeAbort?.abort();
+    this.unsubscribeRevision?.();
+    this.unsubscribeRevision = void 0;
+    await this.loop?.catch(() => void 0);
+    this.loop = void 0;
+  }
+  // A host reports effective handling of a deferred row. Only then is the row
+  // acknowledged, and a failed acknowledgement is retried without re-running
+  // the host handler.
+  async completeDeferred(roomId, message, outcome = "handled") {
+    const key = deliveryKey(roomId, message);
+    if (this.seen.has(key))
+      return true;
+    const stat = this.stat(roomId);
+    try {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
+    } catch (error51) {
+      stat.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+      return false;
+    }
+    this.deferred.delete(key);
+    this.handled.delete(key);
+    this.remember(key);
+    if (outcome === "intentionally_skipped")
+      stat.skipped += 1;
+    else
+      stat.delivered += 1;
+    return true;
+  }
+  // Test seam for drain coalescing and acknowledgement retry, which are not
+  // observable through the wake stream alone.
+  drainForTest(roomId) {
+    const room = this.configuredRooms().find((entry) => entry.roomId === roomId);
+    if (!room)
+      return Promise.resolve();
+    return this.drainRoom(room);
+  }
+  configuredRooms() {
+    return this.client.runtime.rooms || [];
+  }
+  readyRooms() {
+    return this.configuredRooms().filter((room) => room.state === "ready");
+  }
+  async watchLoop() {
+    while (!this.abort.signal.aborted) {
+      const wakeAbort = new AbortController();
+      this.wakeAbort = wakeAbort;
+      const onAbort = () => wakeAbort.abort();
+      this.abort.signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        const response = await this.client.openWakeStream(wakeAbort.signal);
+        const reader = response.body?.getReader();
+        if (!reader)
+          throw new Error("Parle wake stream has no body");
+        const cancelRead = () => void reader.cancel().catch(() => void 0);
+        wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!wakeAbort.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done)
+            break;
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSSEBlocks(buffer);
+          buffer = parsed.rest;
+          for (const event of parsed.events) {
+            if (event.event === "wake")
+              await this.handleWake(event.data);
+          }
+        }
+        this.lastError = void 0;
+      } catch (error51) {
+        if (this.abort.signal.aborted)
+          break;
+        if (wakeAbort.signal.aborted)
+          continue;
+        this.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+        if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || ""))
+          throw error51;
+        const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
+        try {
+          await this.sleep(Math.max(retryAfter, this.reconnectDelayMs), this.abort.signal);
+        } catch {
+          break;
+        }
+      } finally {
+        this.abort.signal.removeEventListener("abort", onAbort);
+      }
+    }
+  }
+  // A hint names the room with traffic. An unknown room is counted and ignored;
+  // a hintless wake falls back to draining every ready room.
+  async handleWake(data) {
+    let hinted;
+    try {
+      const parsed = data ? JSON.parse(data) : void 0;
+      if (parsed && typeof parsed === "object" && typeof parsed.room_id === "string")
+        hinted = parsed.room_id;
+    } catch {
+    }
+    if (!hinted)
+      return this.drainAll();
+    const room = this.configuredRooms().find((entry) => entry.roomId === hinted);
+    if (!room) {
+      this.ignoredWakeHints += 1;
+      this.lastIgnoredWakeRoomId = hinted;
+      return;
+    }
+    await this.drainDeliverable(room);
+  }
+  async drainAll() {
+    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room).catch(() => void 0)));
+  }
+  // A degraded room is recovered before it is drained. Recovery reconciles
+  // room entry and re-reads the watermark; a room that cannot be recovered is
+  // left degraded with its error recorded rather than silently skipped.
+  async drainDeliverable(room) {
+    if (room.state !== "ready") {
+      const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
+      if (!recovered) {
+        const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
+        this.stat(room.roomId).lastError = live?.lastError || "room is degraded and could not be reinitialized";
+        return;
+      }
+    }
+    const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
+    await this.drainRoom(current);
+  }
+  // Coalescing must not swallow a requested drain. Joining an in-flight drain
+  // would lose the immediate post-replacement pass a session revision promises,
+  // because the in-flight drain may already have read past the new rows. One
+  // rerun is queued per room instead.
+  drainRoom(room) {
+    const existing = this.drainInFlight.get(room.roomId);
+    if (existing) {
+      this.rerunRequested.add(room.roomId);
+      return existing;
+    }
+    const run = (async () => {
+      try {
+        await this.doDrainRoom(room);
+      } finally {
+        this.drainInFlight.delete(room.roomId);
+      }
+      if (this.rerunRequested.delete(room.roomId) && !this.abort.signal.aborted) {
+        const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
+        await this.drainRoom(current);
+      }
+    })();
+    this.drainInFlight.set(room.roomId, run);
+    return run;
+  }
+  stat(roomId) {
+    let entry = this.stats.get(roomId);
+    if (!entry) {
+      entry = { delivered: 0, skipped: 0, poisoned: 0 };
+      this.stats.set(roomId, entry);
+    }
+    return entry;
+  }
+  async doDrainRoom(room) {
+    for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
+      if (this.abort.signal.aborted)
+        return;
+      let delivery;
+      try {
+        delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+      } catch (error51) {
+        this.stat(room.roomId).lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+        return;
+      }
+      const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
+      if (messages.length === 0)
+        return;
+      const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
+      let progressed = 0;
+      for (const message of messages) {
+        if (this.abort.signal.aborted)
+          return;
+        const key = deliveryKey(room.roomId, message);
+        if (this.seen.has(key))
+          continue;
+        if (await this.processRow(room, message, key, cursorScope))
+          progressed += 1;
+      }
+      if (progressed === 0)
+        return;
+    }
+    this.stat(room.roomId).lastError = `responsive drain exceeded ${this.maxDrainBatches} batches`;
+  }
+  // Handling and acknowledgement are separate facts. A handler that succeeded
+  // and an ack that failed must never re-run the handler: the host has already
+  // acted on the row (Pi injects it), so replaying it would duplicate a visible
+  // side effect. Deduplication therefore guards the handler, not the ack.
+  async processRow(room, message, key, cursorScope) {
+    const stat = this.stat(room.roomId);
+    let outcome = this.handled.get(key);
+    if (outcome === "deferred")
+      return false;
+    if (outcome === void 0) {
+      try {
+        outcome = await this.handler({
+          roomId: room.roomId,
+          ...room.roomHandle ? { roomHandle: room.roomHandle } : {},
+          ...room.profile ? { profile: room.profile } : {},
+          ...cursorScope ? { cursorScope } : {},
+          message
+        });
+        this.handled.set(key, outcome);
+        this.attempts.delete(key);
+        if (outcome === "deferred") {
+          this.deferred.set(key, { roomId: room.roomId, message });
+          return true;
+        }
+      } catch (error51) {
+        const attempts = (this.attempts.get(key) || 0) + 1;
+        this.attempts.set(key, attempts);
+        stat.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+        if (attempts < this.maxHandlerAttempts)
+          return true;
+        this.attempts.delete(key);
+        outcome = "intentionally_skipped";
+        this.handled.set(key, outcome);
+        this.poisonedKeys.add(key);
+        stat.poisoned += 1;
+      }
+    }
+    try {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
+    } catch (error51) {
+      stat.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+      return false;
+    }
+    this.handled.delete(key);
+    this.remember(key);
+    if (outcome === "intentionally_skipped")
+      stat.skipped += 1;
+    else
+      stat.delivered += 1;
+    return true;
+  }
+  // Bounded memory for a long-lived controller: dedupe only has to outlive
+  // server-side redelivery, not the whole process lifetime.
+  remember(key) {
+    this.seen.add(key);
+    if (this.seen.size <= MAX_REMEMBERED_KEYS)
+      return;
+    const overflow = this.seen.size - MAX_REMEMBERED_KEYS;
+    let removed = 0;
+    for (const entry of this.seen) {
+      this.seen.delete(entry);
+      if (++removed >= overflow)
+        break;
+    }
+  }
+};
+
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
@@ -33440,7 +33792,7 @@ function formatVersionErrorHint(cfg, errorObj) {
 }
 var REQUEST_RETRY_ATTEMPTS = 5;
 var REQUEST_RETRY_WINDOW_MS = 6e4;
-function defaultSleep(ms, signal) {
+function defaultSleep2(ms, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted || ms <= 0)
       return resolve();
@@ -33694,7 +34046,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.activeProfile = this.cfg.profile?.value;
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => /* @__PURE__ */ new Date());
-    this.sleepImpl = options.sleep || defaultSleep;
+    this.sleepImpl = options.sleep || defaultSleep2;
     this.randomUUID = options.randomUUID || randomUUID2;
     this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
@@ -33964,10 +34316,10 @@ var ParleAgentClient = class _ParleAgentClient {
         if (!(error51 instanceof ParleApiError) || error51.code === "unsupported_parle_version" || !retryableRequest || !error51.retryable || attempt >= REQUEST_RETRY_ATTEMPTS)
           throw error51;
         const elapsed = Math.max(0, this.now().getTime() - startedMs);
-        const delay2 = retryDelayMs(error51, attempt);
-        if (elapsed + delay2 > REQUEST_RETRY_WINDOW_MS)
+        const delay = retryDelayMs(error51, attempt);
+        if (elapsed + delay > REQUEST_RETRY_WINDOW_MS)
           throw error51;
-        await this.sleepImpl(delay2, options.signal);
+        await this.sleepImpl(delay, options.signal);
       }
     }
   }
@@ -34568,7 +34920,7 @@ var ParleAgentClient = class _ParleAgentClient {
     const rolloverAt = sessionRolloverAtMs(this.runtime);
     if (rolloverAt === void 0 && delayOverrideMs === void 0)
       return;
-    const delay2 = delayOverrideMs ?? Math.max(0, rolloverAt - this.now().getTime());
+    const delay = delayOverrideMs ?? Math.max(0, rolloverAt - this.now().getTime());
     this.rolloverTimer = this.setTimer(() => {
       this.rolloverTimer = null;
       if (this.ended)
@@ -34583,7 +34935,7 @@ var ParleAgentClient = class _ParleAgentClient {
         return;
       }
       void this.performProactiveRollover().catch(() => void 0);
-    }, Math.min(delay2, MAX_TIMER_DELAY_MS));
+    }, Math.min(delay, MAX_TIMER_DELAY_MS));
     this.rolloverTimer.unref?.();
   }
   recordRolloverFailure(error51, forceCooldown = false) {
@@ -34751,14 +35103,14 @@ var ParleAgentClient = class _ParleAgentClient {
     const base = this.unreadPollIntervalMs();
     if (base <= 0)
       return;
-    const delay2 = base * (0.8 + Math.random() * 0.4);
+    const delay = base * (0.8 + Math.random() * 0.4);
     this.unreadPollTimer = setTimeout(() => {
       this.unreadPollTimer = null;
       void this.observeUnread().finally(() => {
         if (this.runtime.bootstrapState === "ready")
           this.scheduleUnreadPoll();
       });
-    }, delay2);
+    }, delay);
     this.unreadPollTimer.unref?.();
   }
   stopUnreadPolling() {
@@ -35133,27 +35485,12 @@ import { createServer } from "node:net";
 import { homedir as homedir2 } from "node:os";
 import { dirname as dirname4, isAbsolute as isAbsolute3, join as join6 } from "node:path";
 var MAX_PENDING = 100;
-var MAX_DRAIN_BATCHES = 100;
-var MAX_BASELINE_MESSAGES = 5e3;
 var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
 var MAX_SOCKET_INPUT = 16 * 1024;
 var LEASE_MS = 3e4;
-var STREAM_RECONNECT_MS = 5e3;
-var STREAM_RECONNECT_JITTER_MS = 1e3;
-function deliveryKey(message) {
+function deliveryKey2(message) {
   return `${message.seq}:${message.event_id}`;
-}
-function delay(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(new Error("aborted"));
-    const timer = setTimeout(resolve, ms);
-    const abort = () => {
-      clearTimeout(timer);
-      reject(new Error("aborted"));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-  });
 }
 function hookBridgeStateDir(scope) {
   const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
@@ -35182,36 +35519,38 @@ var HookDeliveryBridge = class {
     this.client = client;
     this.scope = scope;
     this.runtimeExecPath = runtimeExecPath;
+    this.controller = new ResponsiveDeliveryController(client, {
+      handler: (input) => this.handleDelivery(input),
+      maxHandlerAttempts: Number.MAX_SAFE_INTEGER
+    });
   }
   client;
   scope;
   runtimeExecPath;
-  abortController = new AbortController();
+  controller;
   pending = [];
   queuedKeys = /* @__PURE__ */ new Set();
   server;
   lease;
-  loop;
   startPromise;
+  stopped = false;
+  baselineActive = false;
   baselineSkipped = 0;
   lastError;
   hostSessionId;
-  currentWakeAbort;
-  unsubscribeSessionRevision;
   unsubscribeCommitGuard;
-  drainInFlight;
-  ignoredWakeHints = 0;
-  lastIgnoredWakeRoomId;
-  activeDeliveryReads = /* @__PURE__ */ new Set();
   status() {
+    const controller = this.controller.status();
+    const roomError = controller.rooms.find((room) => room.lastError)?.lastError;
+    const lastError = this.lastError ?? controller.lastError ?? roomError;
     return {
-      running: Boolean(this.server?.listening && !this.abortController.signal.aborted),
+      running: Boolean(this.server?.listening) && !this.stopped,
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope),
       hostSessionBound: Boolean(this.hostSessionId),
-      ...this.ignoredWakeHints ? { ignoredWakeHints: this.ignoredWakeHints, lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {},
-      ...this.lastError ? { lastError: this.lastError } : {}
+      ...controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {},
+      ...lastError ? { lastError } : {}
     };
   }
   bindHostSession(sessionId) {
@@ -35221,7 +35560,6 @@ var HookDeliveryBridge = class {
     return true;
   }
   async start() {
-    if (this.loop) return;
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.startBridge();
     try {
@@ -35231,64 +35569,67 @@ var HookDeliveryBridge = class {
     }
   }
   async stop() {
-    this.abortController.abort();
-    this.currentWakeAbort?.abort();
-    this.unsubscribeSessionRevision?.();
-    this.unsubscribeSessionRevision = void 0;
+    this.stopped = true;
+    await this.controller.stop();
     this.unsubscribeCommitGuard?.();
     this.unsubscribeCommitGuard = void 0;
     const server = this.server;
     this.server = void 0;
     if (server) await new Promise((resolve) => server.close(() => resolve()));
     this.removeOwnRuntimeArtifacts();
-    await this.loop?.catch(() => void 0);
-    this.loop = void 0;
   }
   async startBridge() {
-    try {
-      this.lastError = void 0;
+    this.lastError = void 0;
+    if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = this.client.onBeforeSessionCommit?.((plan) => this.guardSessionCommit(plan));
-      await this.client.ensureBootstrapped(this.abortController.signal);
-      this.unsubscribeSessionRevision = this.client.onSessionRevision?.(() => {
-        this.currentWakeAbort?.abort();
-        void this.drain().catch((error51) => {
-          if (!this.abortController.signal.aborted) this.lastError = error51 instanceof Error ? error51.message : String(error51);
-        });
-      });
-      await this.baseline();
-      await this.listen();
-      this.loop = this.watchLoop();
-      void this.loop.catch((error51) => {
-        if (!this.abortController.signal.aborted) this.lastError = error51 instanceof Error ? error51.message : String(error51);
-      });
-    } catch (error51) {
-      this.lastError = error51 instanceof Error ? error51.message : String(error51);
-      this.server = void 0;
-      this.removeOwnRuntimeArtifacts();
     }
-  }
-  async baseline() {
-    let skipped = 0;
-    for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
+    if (!this.server?.listening) {
       try {
-        const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-        if (messages.length === 0) break;
-        if (delivery?.delivery?.cursor_scope === "alias") {
-          if (this.enqueue(messages, delivery?.delivery?.cursor_scope, readFence) === 0) break;
-          continue;
-        }
-        for (const message of messages) {
-          skipped += 1;
-          if (skipped > MAX_BASELINE_MESSAGES) throw new Error(`Parle hook bridge baseline exceeds ${MAX_BASELINE_MESSAGES} messages`);
-          this.assertReadFenceCurrent(readFence);
-          await this.client.ackResponsiveDelivery(message, this.abortController.signal);
-        }
-      } finally {
-        release();
+        await this.listen();
+      } catch (error51) {
+        this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        this.server = void 0;
+        this.removeOwnRuntimeArtifacts();
+        return;
       }
     }
-    this.baselineSkipped = skipped;
+    if (!this.controller.status().running) {
+      this.baselineActive = true;
+      try {
+        await this.controller.start();
+      } catch (error51) {
+        this.lastError = error51 instanceof Error ? error51.message : String(error51);
+      } finally {
+        this.baselineActive = false;
+      }
+    }
+  }
+  // Session-scoped backlog present before the bridge's first drain belongs to
+  // a replaced session and is skipped rather than replayed into the host.
+  // Alias-scoped rows are durable across sessions and always queue.
+  handleDelivery(input) {
+    if (this.baselineActive && input.cursorScope !== "alias") {
+      this.baselineSkipped += 1;
+      return "intentionally_skipped";
+    }
+    this.enqueue(input);
+    return "deferred";
+  }
+  enqueue(input) {
+    const key = deliveryKey2(input.message);
+    if (this.queuedKeys.has(key)) return;
+    if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
+    const runtime = this.client.runtime || {};
+    this.pending.push({
+      ...input.message,
+      key,
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: input.cursorScope,
+      roomId: input.roomId,
+      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0,
+      agentSessionId: String(runtime.agentSessionId || "")
+    });
+    this.queuedKeys.add(key);
   }
   async listen() {
     const path = hookBridgeSocketPath(this.scope);
@@ -35421,7 +35762,11 @@ var HookDeliveryBridge = class {
     let committed = 0;
     for (const message of lease.messages) {
       this.assertMessageCurrent(message);
-      await this.client.ackResponsiveDelivery(message, this.abortController.signal);
+      const acked = await this.controller.completeDeferred(message.roomId, message);
+      if (!acked) {
+        const roomError = this.controller.status().rooms.find((room) => room.roomId === message.roomId)?.lastError;
+        throw new Error(`Parle hook bridge acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
+      }
       const head = this.pending[0];
       if (!head || head.key !== message.key) throw new Error("Parle hook bridge pending queue changed during commit");
       this.pending.shift();
@@ -35431,43 +35776,6 @@ var HookDeliveryBridge = class {
     this.lease = void 0;
     return { ok: true, committed };
   }
-  async watchLoop() {
-    const signal = this.abortController.signal;
-    while (!signal.aborted) {
-      try {
-        const wakeAbort = new AbortController();
-        this.currentWakeAbort = wakeAbort;
-        const wakeSignal = AbortSignal.any([signal, wakeAbort.signal]);
-        await this.client.withRebootstrap(async () => {
-          const response = await this.client.openWakeStream(wakeSignal);
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error("Parle wake stream response body is not readable");
-          this.lastError = void 0;
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (!wakeSignal.aborted) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const parsed = parseSSEBlocks(buffer);
-            buffer = parsed.rest;
-            for (const event of parsed.events) if (event.event === "wake") await this.handleWake(event.data);
-          }
-        }, wakeSignal);
-        this.lastError = void 0;
-        this.currentWakeAbort = void 0;
-      } catch (error51) {
-        const revisionRestart = Boolean(this.currentWakeAbort?.signal.aborted && !signal.aborted);
-        this.currentWakeAbort = void 0;
-        if (signal.aborted) break;
-        if (revisionRestart) continue;
-        this.lastError = error51 instanceof Error ? error51.message : String(error51);
-        if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || "")) throw error51;
-        const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
-        await delay(Math.max(retryAfter, STREAM_RECONNECT_MS + Math.floor(Math.random() * STREAM_RECONNECT_JITTER_MS)), signal);
-      }
-    }
-  }
   liveLease() {
     if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = void 0;
     return this.lease;
@@ -35476,57 +35784,24 @@ var HookDeliveryBridge = class {
     const lease = this.liveLease();
     return lease ? [...this.pending, ...lease.messages] : [...this.pending];
   }
+  // In-flight responsive reads are fenced by the client itself, which tracks
+  // every read it performs for the controller. The bridge guards only what the
+  // client cannot see: rows queued or leased for the host's hook flow.
   guardSessionCommit(plan) {
-    const activeReads = plan.reason === "bootstrap" ? [] : [...this.activeDeliveryReads];
-    const work = [...this.pendingWork(), ...activeReads];
+    const work = this.pendingWork();
     if (work.length === 0) return;
     if (plan.reason === "profile_switch") {
-      throw new Error("Parle profile switch is deferred while hook delivery is pending, leased, or being read");
+      throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
     }
     const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
     if (!aliasTransfers) {
-      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending, leased, or being read");
+      throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
     }
   }
-  deliveryReadFence() {
+  assertMessageCurrent(message) {
     const runtime = this.client.runtime || {};
-    return {
-      sessionRevision: Number(runtime.sessionRevision || 0),
-      cursorScope: runtime.responsiveCursorScope,
-      roomId: this.bridgeRoomId(),
-      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0,
-      agentSessionId: String(runtime.agentSessionId || "")
-    };
-  }
-  async readResponsiveDelivery() {
-    const fenced = this.client.drainResponsiveDeliveryWithFence;
-    if (typeof fenced === "function") return fenced.call(this.client, this.abortController.signal);
-    const fence = this.deliveryReadFence();
-    this.activeDeliveryReads.add(fence);
-    const release = () => this.activeDeliveryReads.delete(fence);
-    try {
-      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
-      const responseScope = delivery?.delivery?.cursor_scope;
-      if (responseScope === "session" || responseScope === "alias") fence.cursorScope = responseScope;
-      return { delivery, fence, release };
-    } catch (error51) {
-      release();
-      throw error51;
-    }
-  }
-  // The hook bridge is single-room until the shared delivery controller lands,
-  // so it resolves the one configured room explicitly instead of reading a
-  // primary binding off the session.
-  bridgeRoomId() {
-    try {
-      return String(this.client.roomTarget?.()?.roomId?.value || "");
-    } catch {
-      return "";
-    }
-  }
-  assertReadFenceCurrent(message) {
-    const runtime = this.client.runtime || {};
-    if (message.roomId !== this.bridgeRoomId()) throw new Error("Parle hook delivery belongs to a prior room binding");
+    const configured = Array.isArray(runtime.rooms) && runtime.rooms.some((room) => room?.roomId === message.roomId);
+    if (!configured) throw new Error("Parle hook delivery belongs to a prior room binding");
     if (message.cursorScope === "alias") {
       if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
       return;
@@ -35535,75 +35810,11 @@ var HookDeliveryBridge = class {
       throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
     }
   }
-  assertMessageCurrent(message) {
-    this.assertReadFenceCurrent(message);
-  }
-  enqueue(messages, cursorScope, readFence) {
-    let queued = 0;
-    for (const message of messages) {
-      const key = deliveryKey(message);
-      if (this.queuedKeys.has(key)) continue;
-      if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
-      this.pending.push({
-        ...message,
-        key,
-        sessionRevision: readFence.sessionRevision,
-        cursorScope,
-        roomId: readFence.roomId,
-        sessionAlias: readFence.sessionAlias,
-        agentSessionId: readFence.agentSessionId
-      });
-      this.queuedKeys.add(key);
-      queued += 1;
-    }
-    return queued;
-  }
-  // A wake hint names the room that has traffic. An unknown room ID is
-  // recorded and ignored: never fetch an unconfigured room from a hint. A
-  // hintless wake keeps the unconditional drain so older servers still work.
-  async handleWake(data) {
-    let hinted;
-    try {
-      const parsed = data ? JSON.parse(data) : void 0;
-      if (parsed && typeof parsed === "object" && typeof parsed.room_id === "string") hinted = parsed.room_id;
-    } catch {
-    }
-    if (!hinted) return this.drain();
-    const configured = this.client.roomConfigs?.some?.((room) => room?.roomId?.value === hinted);
-    if (configured === false) {
-      this.ignoredWakeHints += 1;
-      this.lastIgnoredWakeRoomId = hinted;
-      return;
-    }
-    return this.drain();
-  }
-  async drain() {
-    if (this.drainInFlight) return this.drainInFlight;
-    const run = this.doDrain();
-    this.drainInFlight = run;
-    try {
-      await run;
-    } finally {
-      this.drainInFlight = void 0;
-    }
-  }
-  async doDrain() {
-    for (let batch = 0; batch < MAX_DRAIN_BATCHES; batch += 1) {
-      const { delivery, fence: readFence, release } = await this.readResponsiveDelivery();
-      try {
-        if (delivery.messages.length === 0) return;
-        if (this.enqueue(delivery.messages, delivery?.delivery?.cursor_scope, readFence) === 0) return;
-      } finally {
-        release();
-      }
-    }
-    throw new Error(`Parle hook bridge responsive drain exceeded ${MAX_DRAIN_BATCHES} batches`);
-  }
 };
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.4.0";
+var MCP_CLIENT_VERSION = "0.5.0";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -35907,11 +36118,11 @@ function scheduleEagerBootstrap(client, deliveryBridge, options = {}) {
   const maxAttempts = 5;
   const schedule = (delayMs) => {
     if (stopped || attempts >= maxAttempts) return;
-    const delay2 = Math.min(Math.max(1, delayMs), 2147483647);
+    const delay = Math.min(Math.max(1, delayMs), 2147483647);
     timer = setTimer(() => {
       timer = void 0;
       void arm().catch(options.onError || (() => void 0));
-    }, delay2);
+    }, delay);
     timer.unref?.();
   };
   const arm = async () => {
