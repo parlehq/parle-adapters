@@ -142,15 +142,25 @@ export class ResponsiveDeliveryController {
     await this.client.ensureBootstrapped(this.abort.signal);
     // A committed session replacement invalidates the open stream. Restart it
     // and drain immediately: the replacement participant may already have rows.
+    this.unsubscribeRevision?.();
     this.unsubscribeRevision = (this.client as any).onSessionRevision?.(() => {
       this.wakeAbort?.abort();
       void this.drainAll().catch(() => undefined);
     });
     await this.drainAll();
-    this.loop = this.watchLoop();
-    void this.loop.catch((error) => {
-      if (!this.abort.signal.aborted) this.lastError = redactString(error instanceof Error ? error.message : String(error));
-    });
+    // A settled loop must not read as running forever: a terminal wake error
+    // ends watchLoop, and a host's later start() is the recovery path. The
+    // identity check keeps a replacement loop from being cleared by its
+    // predecessor's settlement.
+    const loop = this.watchLoop();
+    this.loop = loop;
+    void loop
+      .catch((error) => {
+        if (!this.abort.signal.aborted) this.lastError = redactString(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (this.loop === loop) this.loop = undefined;
+      });
   }
 
   async stop(): Promise<void> {

@@ -54,8 +54,10 @@ type PendingMessage = ResponsiveDeliveryMessage & {
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
 
-function deliveryKey(message: Pick<ResponsiveDeliveryMessage, "seq" | "event_id">): string {
-  return `${message.seq}:${message.event_id}`;
+// Keyed by room first: the shared delivery contract scopes a row to its room,
+// and seq/event identifiers must never collapse work across two rooms.
+function deliveryKey(roomId: string, message: Pick<ResponsiveDeliveryMessage, "seq" | "event_id">): string {
+  return `${roomId}:${message.seq}:${message.event_id}`;
 }
 
 export function hookBridgeStateDir(scope: string): string {
@@ -99,6 +101,7 @@ export class HookDeliveryBridge {
   private startPromise?: Promise<void>;
   private stopped = false;
   private baselineActive = false;
+  private baselineDone = false;
   private baselineSkipped = 0;
   private lastError?: string;
   private hostSessionId?: string;
@@ -178,11 +181,14 @@ export class HookDeliveryBridge {
     }
     // The socket and runtime artifacts outlive a bootstrap or wake failure:
     // hooks keep a status endpoint to diagnose through, and a later start()
-    // retries the controller without republishing anything.
+    // retries the controller without republishing anything. Only the first
+    // successful start is the baseline window: rows found by a retry after a
+    // wake failure arrived for this live session and must queue, not skip.
     if (!this.controller.status().running) {
-      this.baselineActive = true;
+      this.baselineActive = !this.baselineDone;
       try {
         await this.controller.start();
+        this.baselineDone = true;
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
       } finally {
@@ -204,7 +210,7 @@ export class HookDeliveryBridge {
   }
 
   private enqueue(input: DeliveryHandlerInput): void {
-    const key = deliveryKey(input.message);
+    const key = deliveryKey(input.roomId, input.message);
     if (this.queuedKeys.has(key)) return;
     if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
     const runtime = (this.client as any).runtime || {};

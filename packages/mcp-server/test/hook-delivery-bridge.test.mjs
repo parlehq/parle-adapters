@@ -263,16 +263,24 @@ test("hook delivery bridge skips session-scoped baseline and queues rows arrivin
   }
 });
 
-test("hook delivery bridge keeps its socket and runtime artifacts through a wake stream failure", async () => {
+test("hook delivery bridge keeps its artifacts through a terminal wake failure and recovers on retry", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-wake-failure-"));
+  let wakeStreams = 0;
+  let queue = [];
+  const acknowledgements = [];
   const fakeClient = {
     runtime: bridgeRuntime(),
     ensureBootstrapped: async () => {},
     onSessionRevision: () => () => {},
-    drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "session" }, messages: [] }),
-    ackResponsiveDelivery: async () => {},
-    openWakeStream: async () => {
-      throw new ParleApiError("Parle wake stream 502: Bad Gateway", { status: 502, action: "fix_client" });
+    drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "session" }, messages: [...queue] }),
+    ackResponsiveDelivery: async (message) => {
+      acknowledgements.push([message.seq, message.event_id]);
+      queue = queue.filter((row) => row.event_id !== message.event_id);
+    },
+    openWakeStream: async (signal) => {
+      wakeStreams += 1;
+      if (wakeStreams === 1) throw new ParleApiError("Parle wake stream 502: Bad Gateway", { status: 502, action: "fix_client" });
+      return new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true }); } }));
     },
   };
   const bridge = new HookDeliveryBridge(fakeClient, cwd);
@@ -289,6 +297,63 @@ test("hook delivery bridge keeps its socket and runtime artifacts through a wake
     const status = await request(bridge.status().socketPath, { action: "status" });
     assert.equal(status.ok, true);
     assert.match(status.lastError, /Bad Gateway/);
+
+    // The settled controller loop must not read as running forever: a later
+    // bridge start() restarts delivery on the same socket. Rows found by that
+    // retry belong to this live session, so they queue instead of replaying
+    // the baseline skip.
+    queue = [{ seq: 8, event_id: "post-recovery", content: "live row" }];
+    await bridge.start();
+    await eventually(() => wakeStreams >= 2);
+    await eventually(() => bridge.status().pending === 1);
+    assert.equal(bridge.status().baselineSkipped, 0, "a recovery drain is not a baseline window");
+    assert.deepEqual(acknowledgements, [], "recovered rows still ack only through hook commit");
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("hook delivery bridge keys pending work by room so identical seq/event ids never collapse", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-cross-room-"));
+  const wakeSink = { push: () => {} };
+  const acknowledgements = [];
+  let live = false;
+  const fakeClient = {
+    runtime: bridgeRuntime({
+      rooms: [
+        { roomId: "room-1", roomHandle: "one", participantId: "p-1", cursor: 0, state: "ready" },
+        { roomId: "room-2", roomHandle: "two", participantId: "p-2", cursor: 0, state: "ready" },
+      ],
+    }),
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async (_signal, roomId) => ({
+      delivery: { cursor_scope: "session" },
+      messages: live && !acknowledgements.some(([room]) => room === roomId)
+        ? [{ seq: 7, event_id: "evt-7", content: `row for ${roomId}` }]
+        : [],
+    }),
+    ackResponsiveDelivery: async (message, _signal, roomId) => {
+      acknowledgements.push([roomId, message.seq, message.event_id]);
+    },
+    openWakeStream: async (signal) => heldWakeStream(wakeSink, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    live = true;
+    wakeSink.push({});
+    // Both rows share seq and event id; only the room distinguishes them. A
+    // seq/event-only key would silently drop one room's work.
+    await eventually(() => bridge.status().pending === 2);
+    await request(bridge.status().socketPath, { action: "bind", sessionId: "host-1" });
+    const leased = await request(bridge.status().socketPath, { action: "take", sessionId: "host-1" });
+    assert.equal(leased.messages.length, 2);
+    const committed = await request(bridge.status().socketPath, { action: "commit", sessionId: "host-1", leaseId: leased.leaseId });
+    assert.deepEqual(committed, { ok: true, committed: 2 });
+    assert.deepEqual(acknowledgements.map(([room]) => room).sort(), ["room-1", "room-2"]);
+    assert.equal(bridge.status().pending, 0);
   } finally {
     await bridge.stop();
     rmSync(cwd, { recursive: true, force: true });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 (2026-08-02)
+
+- Refresh the bundled shared client with restartable controller delivery after a terminal wake failure.
+
 ## 0.3.1 (2026-08-02)
 
 - Refresh the bundled shared client so eager multi-room bootstrap no longer fails a self-inflicted profile selector conflict.

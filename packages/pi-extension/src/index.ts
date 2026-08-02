@@ -6,7 +6,7 @@ import { claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFa
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.3.1";
+const PI_EXTENSION_VERSION = "0.3.2";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.

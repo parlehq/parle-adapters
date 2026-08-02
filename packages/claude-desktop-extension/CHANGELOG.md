@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 (2026-08-02)
+
+- Refresh the bundled MCP server with room-scoped hook queue keys and restartable delivery after a terminal wake failure.
+
 ## 0.7.2 (2026-08-02)
 
 - Refresh the bundled MCP server so eager multi-room bootstrap arms the hook bridge on startup.

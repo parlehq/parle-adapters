@@ -33227,15 +33227,20 @@ var ResponsiveDeliveryController = class {
     if (this.loop)
       return;
     await this.client.ensureBootstrapped(this.abort.signal);
+    this.unsubscribeRevision?.();
     this.unsubscribeRevision = this.client.onSessionRevision?.(() => {
       this.wakeAbort?.abort();
       void this.drainAll().catch(() => void 0);
     });
     await this.drainAll();
-    this.loop = this.watchLoop();
-    void this.loop.catch((error51) => {
+    const loop = this.watchLoop();
+    this.loop = loop;
+    void loop.catch((error51) => {
       if (!this.abort.signal.aborted)
         this.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+    }).finally(() => {
+      if (this.loop === loop)
+        this.loop = void 0;
     });
   }
   async stop() {
@@ -35489,8 +35494,8 @@ var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
 var MAX_SOCKET_INPUT = 16 * 1024;
 var LEASE_MS = 3e4;
-function deliveryKey2(message) {
-  return `${message.seq}:${message.event_id}`;
+function deliveryKey2(roomId, message) {
+  return `${roomId}:${message.seq}:${message.event_id}`;
 }
 function hookBridgeStateDir(scope) {
   const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
@@ -35535,6 +35540,7 @@ var HookDeliveryBridge = class {
   startPromise;
   stopped = false;
   baselineActive = false;
+  baselineDone = false;
   baselineSkipped = 0;
   lastError;
   hostSessionId;
@@ -35594,9 +35600,10 @@ var HookDeliveryBridge = class {
       }
     }
     if (!this.controller.status().running) {
-      this.baselineActive = true;
+      this.baselineActive = !this.baselineDone;
       try {
         await this.controller.start();
+        this.baselineDone = true;
       } catch (error51) {
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
       } finally {
@@ -35616,7 +35623,7 @@ var HookDeliveryBridge = class {
     return "deferred";
   }
   enqueue(input) {
-    const key = deliveryKey2(input.message);
+    const key = deliveryKey2(input.roomId, input.message);
     if (this.queuedKeys.has(key)) return;
     if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
     const runtime = this.client.runtime || {};
@@ -35814,7 +35821,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.5.1";
+var MCP_CLIENT_VERSION = "0.5.2";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

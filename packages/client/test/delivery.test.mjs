@@ -34,7 +34,7 @@ async function eventually(condition, timeoutMs = 2000) {
 // Two configured rooms, each with its own queue of responsive rows. Rows are
 // only removed from a queue by an acknowledgement, which is what makes the
 // no-ack-on-failure and redelivery assertions meaningful.
-function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta" } = {}) {
+function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0 } = {}) {
   const wakeSink = { push: () => {} };
   const home = mkdtempSync(join(tmpdir(), "parle-delivery-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-delivery-project-"));
@@ -55,6 +55,9 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta" 
     if (path.includes("/projection")) return json({ watermark: 0, messages: [] });
     if (path === "/v/agent/wake") {
       wakeOpens += 1;
+      if (wakeOpens <= failFirstWakes) {
+        return json({ error: { message: "wake refused terminally", action: "fix_client", scope: "request" } }, 401);
+      }
       return heldWakeStream(wakeSink);
     }
     if (path.endsWith("/responsive-delivery/ack")) {
@@ -439,6 +442,30 @@ test("a pending deferred row does not spin the drain", async () => {
     await controller.drainForTest(ALPHA);
     assert.equal(handled, 1, "the pending row is never re-handled");
     assert.ok(drains - before <= 2, "a later drain also terminates");
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("a terminal wake failure settles the loop and a later start resumes delivery", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", failFirstWakes: 1 });
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: () => "handled",
+    reconnectDelayMs: 5,
+  });
+  try {
+    await controller.start();
+    // The terminal wake error must settle the loop and report it: a controller
+    // that still claims running would make every later start() a no-op and
+    // leave the host with no recovery path short of a process restart.
+    await eventually(() => controller.status().running === false);
+    assert.match(controller.status().lastError, /wake refused terminally/);
+
+    h.queues.set(ALPHA, [{ seq: 1, event_id: "after-restart" }]);
+    await controller.start();
+    assert.equal(controller.status().running, true);
+    await eventually(() => h.acks.some(([, eventId]) => eventId === "after-restart"));
   } finally {
     await controller.stop();
     h.cleanup();

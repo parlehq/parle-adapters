@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 (2026-08-02)
+
+- Key hook bridge pending work by room so identical seq/event ids in two rooms can never collapse, and treat only the first successful delivery start as the baseline window so recovery drains queue live rows.
+- Refresh the bundled shared client with restartable controller delivery after a terminal wake failure.
+
 ## 0.5.1 (2026-08-02)
 
 - Refresh the bundled shared client so eager multi-room bootstrap arms the hook bridge on startup instead of failing a self-inflicted profile selector conflict.
