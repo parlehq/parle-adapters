@@ -250,6 +250,47 @@ test("lost alias claim response recovers by durable alias confirmation without r
   await client.endSession();
 });
 
+test("durable proof reports a committed claim whose candidate disappeared from live inventory", async () => {
+  let creates = 0;
+  let claims = 0;
+  let committedId;
+  const ended = [];
+  const client = new ParleAgentClient({
+    env: ENV,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session(`vanished-${++creates}`), 201);
+      if (path === "/v/agent/session-aliases/main") return json(committedId
+        ? { alias: "main", generation: 5, current_agent_session_id: committedId }
+        : { alias: "main", generation: 4, current_agent_session_id: "prior" });
+      if (path === "/v/agent/sessions") return json({ sessions: [], next: null });
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/claim-alias")) {
+        claims += 1;
+        const candidateId = path.split("/").at(-2);
+        const body = JSON.parse(init.body);
+        if (claims === 1) {
+          committedId = candidateId;
+          throw new TypeError("response dropped after commit and candidate expiry");
+        }
+        return json({ ...session(candidateId, body.expected_generation + 1), alias: body.alias, address: "@p.a.main" });
+      }
+      if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "alias" }, messages: [] });
+      if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  await assert.rejects(client.connect(), (error) => error?.code === "alias_claim_committed_session_unavailable" && error?.action === "rebootstrap");
+  assert.equal(claims, 1, "durable proof stops exact replay once the committed candidate is known unavailable");
+  assert.deepEqual(ended, ["vanished-1"]);
+  await client.connect();
+  assert.equal(client.runtime.agentSessionId, "vanished-2");
+  assert.equal(client.runtime.sessionGeneration, 6);
+  await client.endSession();
+});
+
 test("candidate wake is prefetched across claim, consumed once, and room entry reconciles after claim", async () => {
   const order = [];
   let wakeOpens = 0;
@@ -337,6 +378,38 @@ test("a completed responsive read stays fenced until its caller binds the result
   read.release();
   await client.endSession();
   assert.deepEqual(ended, ["read-fence-2", "read-fence-1"], "the blocked candidate and original session are both retired");
+});
+
+test("a responsive fence adopts the authoritative response cursor scope", async () => {
+  let creates = 0;
+  let generation = 0;
+  const client = new ParleAgentClient({
+    env: ENV,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json(session(`scope-${++creates}`), 201);
+      if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation, current_agent_session_id: generation ? `scope-${creates}` : null });
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/claim-alias")) {
+        generation += 1;
+        return json({ ...session(`scope-${creates}`, generation), alias: "main", address: "@p.a.main" });
+      }
+      if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "alias" }, messages: [] });
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  await client.connect();
+  client.runtime.responsiveCursorScope = undefined;
+  const read = await client.drainResponsiveDeliveryWithFence();
+  try {
+    assert.equal(read.fence.cursorScope, "alias");
+  } finally {
+    read.release();
+  }
+  await client.endSession();
 });
 
 test("a retained responsive fence permits ack-triggered rebootstrap without self-blocking", async () => {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 (2026-08-02)
+
+- Update retained responsive-read fences from the authoritative response cursor scope.
+- Distinguish a durably committed alias claim whose candidate is no longer live and require a fresh preparation cycle.
+
 ## 0.2.1 (2026-08-02)
 
 - Require the core durable alias lookup to be deployed before this adapter release.

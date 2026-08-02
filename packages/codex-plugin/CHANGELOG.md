@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.2 (2026-08-02)
+
+- Refresh the bundled MCP bridge with authoritative response-scope fencing and committed-claim recovery semantics.
+
 ## 0.3.1 (2026-08-02)
 
 - Refresh the bundled MCP bridge with request-start responsive read fencing.

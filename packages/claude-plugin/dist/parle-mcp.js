@@ -33873,14 +33873,32 @@ var ParleAgentClient = class _ParleAgentClient {
         if (!responseLost)
           throw error51;
         lastError = error51;
+        let aliasFacts;
         try {
-          const aliasFacts = await this.ownAliasFacts(alias, signal);
-          if (aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
-            const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === aliasFacts.generation, signal);
-            if (committed)
-              return committed;
-          }
+          aliasFacts = await this.ownAliasFacts(alias, signal);
         } catch {
+        }
+        if (aliasFacts?.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
+          const confirmedGeneration = aliasFacts.generation;
+          let committed;
+          try {
+            committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId && item?.alias === alias && item?.generation === confirmedGeneration, signal);
+          } catch (error52) {
+            throw new ParleApiError(`Parle alias claim committed but live candidate confirmation failed: ${redactString(error52 instanceof Error ? error52.message : String(error52))}`, {
+              code: "alias_claim_committed_confirmation_unavailable",
+              action: "retry_with_backoff",
+              scope: "agent_session",
+              retryable: true
+            });
+          }
+          if (committed)
+            return committed;
+          throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
+            code: "alias_claim_committed_session_unavailable",
+            action: "rebootstrap",
+            scope: "agent_session",
+            retryable: false
+          });
         }
         if (signal?.aborted)
           break;
@@ -34547,6 +34565,7 @@ var ParleAgentClient = class _ParleAgentClient {
     const scope = responsiveCursorScope(delivery);
     if (scope)
       this.runtime.responsiveCursorScope = scope;
+    return scope;
   }
   async drainResponsiveDeliveryWithFence(signal) {
     return this.withRebootstrap(async () => {
@@ -34562,7 +34581,7 @@ var ParleAgentClient = class _ParleAgentClient {
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
         const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId.value)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
-        this.recordResponsiveCursorScope(delivery);
+        fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
         retained = true;
         return { delivery, fence, release };
       } finally {
@@ -35045,11 +35064,10 @@ var HookDeliveryBridge = class {
     this.activeDeliveryReads.add(fence);
     const release = () => this.activeDeliveryReads.delete(fence);
     try {
-      return {
-        delivery: await this.client.drainResponsiveDelivery(this.abortController.signal),
-        fence,
-        release
-      };
+      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
+      const responseScope = delivery?.delivery?.cursor_scope;
+      if (responseScope === "session" || responseScope === "alias") fence.cursorScope = responseScope;
+      return { delivery, fence, release };
     } catch (error51) {
       release();
       throw error51;
@@ -35115,7 +35133,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.3.1";
+var MCP_CLIENT_VERSION = "0.3.2";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

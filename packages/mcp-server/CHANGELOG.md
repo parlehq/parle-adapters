@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 (2026-08-02)
+
+- Carry authoritative response cursor scope through retained delivery fences.
+- Surface committed-but-unavailable alias claims without misclassifying their outcome as unknown.
+
 ## 0.3.1 (2026-08-02)
 
 - Fence responsive reads at request start so exact-session work cannot cross rollover before entering the pending queue.

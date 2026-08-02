@@ -1146,17 +1146,28 @@ export class ParleAgentClient {
         const responseLost = !(error instanceof ParleApiError) || error.status === undefined || error.status >= 500;
         if (!responseLost) throw error;
         lastError = error;
+        let aliasFacts: { alias: string; generation: number; currentAgentSessionId?: string } | undefined;
         try {
-          const aliasFacts = await this.ownAliasFacts(alias, signal);
-          if (aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
-            const committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId
-              && item?.alias === alias
-              && item?.generation === aliasFacts.generation, signal);
-            if (committed) return committed;
-          }
+          aliasFacts = await this.ownAliasFacts(alias, signal);
         } catch {
-          // Alias lookup and live inventory are confirmation, not substitute
-          // mutations. Failure does not broaden the exact replay budget.
+          // Alias lookup failure does not broaden the exact replay budget.
+        }
+        if (aliasFacts?.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
+          const confirmedGeneration = aliasFacts.generation;
+          let committed: any;
+          try {
+            committed = await this.findInventorySession((item) => item?.agent_session_id === candidate.agentSessionId
+              && item?.alias === alias
+              && item?.generation === confirmedGeneration, signal);
+          } catch (error) {
+            throw new ParleApiError(`Parle alias claim committed but live candidate confirmation failed: ${redactString(error instanceof Error ? error.message : String(error))}`, {
+              code: "alias_claim_committed_confirmation_unavailable", action: "retry_with_backoff", scope: "agent_session", retryable: true,
+            });
+          }
+          if (committed) return committed;
+          throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
+            code: "alias_claim_committed_session_unavailable", action: "rebootstrap", scope: "agent_session", retryable: false,
+          });
         }
         if (signal?.aborted) break;
       }
@@ -1832,9 +1843,10 @@ export class ParleAgentClient {
     throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json });
   }
 
-  private recordResponsiveCursorScope(delivery: unknown): void {
+  private recordResponsiveCursorScope(delivery: unknown): ResponsiveCursorScope | undefined {
     const scope = responsiveCursorScope(delivery);
     if (scope) this.runtime.responsiveCursorScope = scope;
+    return scope;
   }
 
   async drainResponsiveDeliveryWithFence(signal?: AbortSignal): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
@@ -1851,7 +1863,7 @@ export class ParleAgentClient {
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
         const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(this.cfg.roomId!.value!)}/responsive-delivery?wait=0`, { session: true, signal, retry: false });
-        this.recordResponsiveCursorScope(delivery);
+        fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
         retained = true;
         return { delivery, fence, release };
       } finally {

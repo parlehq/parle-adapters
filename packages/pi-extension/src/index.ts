@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.2.1";
+const PI_EXTENSION_VERSION = "0.2.2";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 const RUNTIME_SCHEMA_VERSION = 1;
 const AI_GUIDANCE_URL = "https://ai.parle.sh";
@@ -1250,6 +1250,10 @@ async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: Abor
       activeResponsiveReads.add(fence);
       try {
         const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal });
+        const responseScope = delivery?.delivery?.cursor_scope;
+        if (responseScope === "session" || responseScope === "alias") fence.cursorScope = responseScope;
+        // Success retains this exact Set entry through queueing and injection.
+        // Only a failed request releases before withRebootstrap may replace the session.
         return { delivery, fence };
       } catch (error) {
         activeResponsiveReads.delete(fence);
@@ -1363,17 +1367,34 @@ async function claimAliasWithRecovery(cfg: ParleConfig, candidate: RuntimeState,
       const responseLost = typeof error?.status !== "number" || error.status >= 500;
       if (!responseLost) throw error;
       lastError = error;
+      let aliasFacts: { alias: string; generation: number; currentAgentSessionId?: string } | undefined;
       try {
-        const aliasFacts = await ownAliasFacts(cfg, alias, signal);
-        if (aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
-          const committed = await findInventorySession(cfg, (item) => item?.agent_session_id === candidate.agentSessionId
-            && item?.alias === alias
-            && item?.generation === aliasFacts.generation, signal);
-          if (committed) return committed;
-        }
+        aliasFacts = await ownAliasFacts(cfg, alias, signal);
       } catch {
-        // Confirmation failure consumes no authority and does not broaden the
-        // exact replay budget.
+        // Alias lookup failure does not broaden the exact replay budget.
+      }
+      if (aliasFacts && aliasFacts.currentAgentSessionId === candidate.agentSessionId && aliasFacts.generation === expectedGeneration + 1) {
+        const confirmedGeneration = aliasFacts.generation;
+        let committed: any;
+        try {
+          committed = await findInventorySession(cfg, (item) => item?.agent_session_id === candidate.agentSessionId
+            && item?.alias === alias
+            && item?.generation === confirmedGeneration, signal);
+        } catch (confirmationError) {
+          const failure: any = new Error(`Parle alias claim committed but live candidate confirmation failed: ${redactString(confirmationError instanceof Error ? confirmationError.message : String(confirmationError))}`);
+          failure.code = "alias_claim_committed_confirmation_unavailable";
+          failure.action = "retry_with_backoff";
+          failure.scope = "agent_session";
+          failure.retryable = true;
+          throw failure;
+        }
+        if (committed) return committed;
+        const unavailable: any = new Error("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle");
+        unavailable.code = "alias_claim_committed_session_unavailable";
+        unavailable.action = "rebootstrap";
+        unavailable.scope = "agent_session";
+        unavailable.retryable = false;
+        throw unavailable;
       }
       if (signal?.aborted) break;
     }
@@ -1521,7 +1542,8 @@ function pendingDeliveryWork(): PendingResponsiveMessage[] {
 
 function assertPiCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: "bootstrap" | "rollover" | "profile_switch" | "alias_switch", allowRequestedShutdown = false) {
   if (lifecycleEnded || (shutdownRequested && !allowRequestedShutdown)) throw new Error("Parle Pi lifecycle has ended");
-  const work = [...pendingDeliveryWork().map((item) => item.fence), ...activeResponsiveReads];
+  const activeReads = reason === "bootstrap" ? [] : [...activeResponsiveReads];
+  const work = [...pendingDeliveryWork().map((item) => item.fence), ...activeReads];
   if (reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
     throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
   }

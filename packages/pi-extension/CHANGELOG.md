@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 (2026-08-02)
+
+- Retain one continuous responsive-read fence through queueing and injection, updated from the authoritative response cursor scope, without letting that active read self-block bootstrap recovery.
+- Surface committed-but-unavailable alias claims and recover through a fresh preparation cycle.
+
 ## 0.2.1 (2026-08-02)
 
 - Retry transient startup bootstrap failures automatically after the server deadline without requiring a tool call.

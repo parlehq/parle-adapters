@@ -445,11 +445,10 @@ export class HookDeliveryBridge {
     this.activeDeliveryReads.add(fence);
     const release = () => this.activeDeliveryReads.delete(fence);
     try {
-      return {
-        delivery: await this.client.drainResponsiveDelivery(this.abortController.signal),
-        fence,
-        release,
-      };
+      const delivery = await this.client.drainResponsiveDelivery(this.abortController.signal);
+      const responseScope = delivery?.delivery?.cursor_scope;
+      if (responseScope === "session" || responseScope === "alias") fence.cursorScope = responseScope;
+      return { delivery, fence, release };
     } catch (error) {
       release();
       throw error;
