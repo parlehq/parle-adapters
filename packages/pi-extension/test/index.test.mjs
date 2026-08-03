@@ -678,7 +678,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.2" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.3" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1352,7 +1352,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.2");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.3");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2310,7 +2310,7 @@ test("parle_send treats direct addressing failures as non-retryable with hint", 
 
   assert.equal(result.details.ok, false);
   assert.equal(result.details.retryable, false);
-  assert.equal(result.details.idempotencyKey, "<redacted>");
+  assert.equal(result.details.idempotencyKey, "idem-3");
   assert.match(result.details.hint, /target is a live room participant/);
   assert.match(result.details.error, /address not deliverable/);
 });

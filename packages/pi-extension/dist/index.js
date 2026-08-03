@@ -120,7 +120,7 @@ function parseErrorEnvelope(value) {
     message: nonEmptyString(candidate.message),
     action: nonEmptyString(candidate.action),
     scope: nonEmptyString(candidate.scope),
-    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : false,
+    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : void 0,
     retryAfterMs: typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? Math.trunc(delay) : void 0,
     raw: candidate
   };
@@ -2910,6 +2910,9 @@ function formatVersionErrorHint(cfg, errorObj) {
 }
 var REQUEST_RETRY_ATTEMPTS = 5;
 var REQUEST_RETRY_WINDOW_MS = 6e4;
+function retryableFromEnvelopeOrStatus(retryable, status) {
+  return retryable ?? (status === 429 || status >= 500);
+}
 function defaultSleep2(ms, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted || ms <= 0)
@@ -3490,7 +3493,8 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json;
       const envelope = parseErrorEnvelope(redactedJson);
-      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const { code, action, scope, retryAfterMs } = envelope;
+      const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
       const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
@@ -4497,7 +4501,8 @@ var ParleAgentClient = class _ParleAgentClient {
     const text = redactString(rawText);
     const json = parseJsonMaybe(text);
     const envelope = parseErrorEnvelope(json);
-    const { code, action, scope, retryAfterMs, retryable } = envelope;
+    const { code, action, scope, retryAfterMs } = envelope;
+    const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
     const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
     throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json });
   }
@@ -4618,7 +4623,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }, signal));
     } catch (error) {
       if (error instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey: error.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
+        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
       }
       throw error;
     }
@@ -4642,7 +4647,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.2";
+var PI_EXTENSION_VERSION = "0.7.3";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -6829,7 +6834,7 @@ function parleExtension(pi) {
   pi.registerTool({
     name: "parle_send",
     label: "Parle Send",
-    description: 'Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text and will not wake a peer. Responsive delivery currently injects only direct-addressed rows. Prefer to: "@principal.agent" for any live session of an agent, or to: "@principal.agent.session" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. V1 does not auto-retry; retryable errors include the idempotency key to reuse with byte-identical body and addressing.',
+    description: 'Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text and will not wake a peer. Responsive delivery currently injects only direct-addressed rows. Prefer to: "@principal.agent" for any live session of an agent, or to: "@principal.agent.session" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. V1 does not auto-retry; failures include the idempotency key; reuse it with byte-identical body and addressing when the failure is retryable.',
     parameters: Type.Object({
       body: Type.String(),
       to: Type.Optional(Type.String()),

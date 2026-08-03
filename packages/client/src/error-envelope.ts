@@ -6,7 +6,7 @@ export type ParsedErrorEnvelope = {
   message?: string;
   action?: ErrorAction;
   scope?: ErrorScope;
-  retryable: boolean;
+  retryable?: boolean;
   retryAfterMs?: number;
   raw: Record<string, unknown>;
 };
@@ -26,7 +26,7 @@ export function parseErrorEnvelope(value: unknown): ParsedErrorEnvelope {
     message: nonEmptyString(candidate.message),
     action: nonEmptyString(candidate.action),
     scope: nonEmptyString(candidate.scope),
-    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : false,
+    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : undefined,
     retryAfterMs: typeof delay === "number" && Number.isFinite(delay) && delay >= 0
       ? Math.trunc(delay)
       : undefined,

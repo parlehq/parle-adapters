@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3 (2026-08-03)
+
+- Refresh the bundled shared client with unenveloped gateway retryability and reusable failure idempotency keys.
+
 ## 0.6.2 (2026-08-03)
 
 - Return routine missing-configuration diagnostics from `parle_setup` as successful tool results while preserving unexpected failures as MCP errors.

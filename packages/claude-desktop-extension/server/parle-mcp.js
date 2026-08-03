@@ -31076,7 +31076,7 @@ function parseErrorEnvelope(value) {
     message: nonEmptyString(candidate.message),
     action: nonEmptyString(candidate.action),
     scope: nonEmptyString(candidate.scope),
-    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : false,
+    retryable: typeof candidate.retryable === "boolean" ? candidate.retryable : void 0,
     retryAfterMs: typeof delay === "number" && Number.isFinite(delay) && delay >= 0 ? Math.trunc(delay) : void 0,
     raw: candidate
   };
@@ -33866,6 +33866,9 @@ function formatVersionErrorHint(cfg, errorObj) {
 }
 var REQUEST_RETRY_ATTEMPTS = 5;
 var REQUEST_RETRY_WINDOW_MS = 6e4;
+function retryableFromEnvelopeOrStatus(retryable, status) {
+  return retryable ?? (status === 429 || status >= 500);
+}
 function defaultSleep2(ms, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted || ms <= 0)
@@ -34446,7 +34449,8 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json2;
       const envelope = parseErrorEnvelope(redactedJson);
-      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const { code, action, scope, retryAfterMs } = envelope;
+      const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
       const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
@@ -35453,7 +35457,8 @@ var ParleAgentClient = class _ParleAgentClient {
     const text = redactString(rawText);
     const json2 = parseJsonMaybe(text);
     const envelope = parseErrorEnvelope(json2);
-    const { code, action, scope, retryAfterMs, retryable } = envelope;
+    const { code, action, scope, retryAfterMs } = envelope;
+    const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
     const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
     throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json2 });
   }
@@ -35574,7 +35579,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }, signal));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey: error51.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error51.message) };
+        return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey, addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error51.message) };
       }
       throw error51;
     }
@@ -35944,7 +35949,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.6.2";
+var MCP_CLIENT_VERSION = "0.6.3";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -36213,7 +36218,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   });
   server.registerTool("parle_send", {
     title: "Parle Send",
-    description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text and do not wake peers. Pass to: "@principal.agent" or "@principal.agent.session" for responsive delivery. Retryable failures return the idempotency key to reuse with a byte-identical retry. ${ROOM_TEXT}`,
+    description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text and do not wake peers. Pass to: "@principal.agent" or "@principal.agent.session" for responsive delivery. Failures return the idempotency key; reuse it with a byte-identical retry when the failure is retryable. ${ROOM_TEXT}`,
     inputSchema: sendSchema,
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {

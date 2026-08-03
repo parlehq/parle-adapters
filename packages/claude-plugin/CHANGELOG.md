@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3 (2026-08-03)
+
+- Refresh the bundled MCP server with unenveloped gateway retryability and reusable failure idempotency keys.
+
 ## 0.8.2 (2026-08-03)
 
 - Refresh the bundled MCP server so routine `parle_setup` diagnostics no longer render as tool failures.

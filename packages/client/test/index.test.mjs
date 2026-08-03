@@ -658,7 +658,7 @@ test("send maps bootstrap setup errors into structured send failure", async () =
   const result = await client.send({ body: "hello" });
   assert.equal(result.ok, false);
   assert.equal(result.retryable, false);
-  assert.equal(result.idempotencyKey, "<redacted>");
+  assert.equal(result.idempotencyKey, "idem-setup-needed");
   assert.match(result.error, /PARLE_ROOM_AGENT_TOKEN is missing/);
 });
 
@@ -672,11 +672,48 @@ test("shared error reader preserves unknown server semantics and fails conservat
     raw: { code: "future_error", message: "future", action: "future_action", scope: "future_scope", retryable: true, retry_after_ms: 1234 },
   });
   const missing = parseErrorEnvelope("not json");
-  assert.equal(missing.retryable, false);
+  assert.equal(missing.retryable, undefined);
   assert.deepEqual(missing.raw, {});
   assert.equal(missing.action, undefined);
   assert.equal(missing.scope, undefined);
-  assert.equal(parseErrorEnvelope({ error: { action: "", scope: "", retryable: "yes" } }).retryable, false);
+  assert.equal(parseErrorEnvelope({ error: { action: "", scope: "", retryable: "yes" } }).retryable, undefined);
+});
+
+test("requestJson falls back to retryable HTTP status classes only when the server is silent", async () => {
+  for (const [status, expected] of [[502, true], [503, true], [504, true], [429, true], [400, false]]) {
+    const client = new ParleAgentClient({
+      env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+      fetch: async () => new Response("", { status }),
+    });
+    await assert.rejects(() => client.requestJson("/v/test", { retry: false }), (error) => {
+      assert.equal(error.status, status);
+      assert.equal(error.retryable, expected);
+      return true;
+    });
+  }
+
+  const explicitFalse = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async () => json({ error: { code: "server_error", message: "do not retry", retryable: false } }, 500),
+  });
+  await assert.rejects(() => explicitFalse.requestJson("/v/test", { retry: false }), (error) => {
+    assert.equal(error.status, 500);
+    assert.equal(error.retryable, false);
+    return true;
+  });
+});
+
+test("requestJson retries an unenveloped gateway failure", async () => {
+  let attempts = 0;
+  const sleeps = [];
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async () => ++attempts === 1 ? new Response("", { status: 502, statusText: "Bad Gateway" }) : json({ ok: true }),
+    sleep: async (ms) => { sleeps.push(ms); },
+  });
+  assert.deepEqual(await client.requestJson("/v/test"), { ok: true });
+  assert.equal(attempts, 2);
+  assert.equal(sleeps.length, 1);
 });
 
 test("requestJson parses canonical error envelope action scope and retry delay", async () => {
@@ -766,6 +803,25 @@ test("retryable send errors return idempotency key for byte-identical retry", as
   assert.equal(result.idempotencyKey, "idem-retry");
   assert.equal(Object.hasOwn(result, "deliveryStatus"), false);
   assert.match(result.error, /Bearer <redacted>/);
+});
+
+test("non-retryable send failures still return the reusable idempotency key", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    randomUUID: () => "idem-nonretryable",
+    fetch: async (url) => {
+      const value = String(url);
+      if (value.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
+      if (value.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (value.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (value.includes("/messages")) return json({ error: { code: "validation_failed", message: "bad request", retryable: false } }, 400);
+      return json({});
+    },
+  });
+  const result = await client.send({ body: "hello" });
+  assert.equal(result.ok, false);
+  assert.equal(result.retryable, false);
+  assert.equal(result.idempotencyKey, "idem-nonretryable");
 });
 
 test("connect bootstraps once, returns factual summary, and reuses live sessions", async () => {
@@ -1394,6 +1450,22 @@ test("terminal wake failures use the same shared-client automatic latch", async 
   assert.equal(await client.ensureReadySafe(), false, "mid-session terminal cause keeps automatic readiness quiet");
   await assert.rejects(() => client.openWakeStream(), { status: 401 });
   assert.equal(wakeCalls, 1, "the automatic wake latch rejects without another request");
+});
+
+test("wake stream errors use the same unenveloped status fallback", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url) => {
+      if (String(url).endsWith("/v/agent/wake")) return new Response("", { status: 502, statusText: "Bad Gateway" });
+      throw new Error("unexpected request");
+    },
+  });
+  Object.assign(client.runtime, { bootstrapped: true, bootstrapState: "ready", sessionHandle: "parle_ses_live", agentSessionId: "as-live", expiresAt: "2999-01-01T00:00:00Z" });
+  await assert.rejects(() => client.openWakeStream(), (error) => {
+    assert.equal(error.status, 502);
+    assert.equal(error.retryable, true);
+    return true;
+  });
 });
 
 test("healthy shared-client sessions ignore ambient disk binding changes", async () => {

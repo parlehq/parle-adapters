@@ -630,6 +630,12 @@ export function formatVersionErrorHint(cfg: { version: { value?: string; source:
 const REQUEST_RETRY_ATTEMPTS = 5;
 const REQUEST_RETRY_WINDOW_MS = 60_000;
 
+// @parle-interpretation parlehq/parle#431
+// Edge and gateway failures can lack the server-authored error envelope.
+function retryableFromEnvelopeOrStatus(retryable: boolean | undefined, status: number): boolean {
+  return retryable ?? (status === 429 || status >= 500);
+}
+
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted || ms <= 0) return resolve();
@@ -1246,7 +1252,8 @@ export class ParleAgentClient {
     if (!response.ok) {
       const redactedJson = options.rawResponse ? parseJsonMaybe(text) : json;
       const envelope = parseErrorEnvelope(redactedJson);
-      const { code, action, scope, retryAfterMs, retryable } = envelope;
+      const { code, action, scope, retryAfterMs } = envelope;
+      const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
       const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
       const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
@@ -2304,7 +2311,8 @@ export class ParleAgentClient {
     const text = redactString(rawText);
     const json = parseJsonMaybe(text);
     const envelope = parseErrorEnvelope(json);
-    const { code, action, scope, retryAfterMs, retryable } = envelope;
+    const { code, action, scope, retryAfterMs } = envelope;
+    const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
     const message = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
     throw new ParleApiError(`Parle wake stream ${response.status}: ${message}`, { status: response.status, code, action, scope, retryAfterMs, retryable, details: json });
   }
@@ -2441,7 +2449,7 @@ export class ParleAgentClient {
       }, signal));
     } catch (error: any) {
       if (error instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey: error.retryable ? idempotencyKey : "<redacted>", addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
+        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
       }
       throw error;
     }

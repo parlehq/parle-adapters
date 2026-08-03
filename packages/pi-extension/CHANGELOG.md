@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 (2026-08-03)
+
+- Refresh the bundled shared client with unenveloped gateway retryability and reusable failure idempotency keys.
+
 ## 0.7.2 (2026-08-03)
 
 - Refresh the bundled shared client with explicit setup configuration state for adapter parity.

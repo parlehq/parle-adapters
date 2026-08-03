@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.6.2";
+export const MCP_CLIENT_VERSION = "0.6.3";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -346,7 +346,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_send", {
     title: "Parle Send",
-    description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text and do not wake peers. Pass to: \"@principal.agent\" or \"@principal.agent.session\" for responsive delivery. Retryable failures return the idempotency key to reuse with a byte-identical retry. ${ROOM_TEXT}`,
+    description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text and do not wake peers. Pass to: \"@principal.agent\" or \"@principal.agent.session\" for responsive delivery. Failures return the idempotency key; reuse it with a byte-identical retry when the failure is retryable. ${ROOM_TEXT}`,
     inputSchema: sendSchema,
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {

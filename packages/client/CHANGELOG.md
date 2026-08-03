@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3 (2026-08-03)
+
+- Preserve absent server retryability as unknown, fall back to retryable HTTP 429 and 5xx only at status-aware transport boundaries, and always return send idempotency keys on failure.
+- Make the exported `ParsedErrorEnvelope.retryable` field optional so callers can distinguish server-authored `false` from an absent value.
+
 ## 0.6.2 (2026-08-03)
 
 - Report configuration completeness explicitly from setup diagnostics while preserving warnings that still need attention.

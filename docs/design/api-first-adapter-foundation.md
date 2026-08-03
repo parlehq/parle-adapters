@@ -44,11 +44,27 @@ The shared parser:
 - preserves unknown non-empty action and scope strings
 - trusts retryability only when the server supplies a boolean
 - preserves a valid non-negative retry delay
-- defaults missing or malformed fields to non-retry behavior
+- preserves missing or malformed retryability as unknown
 - never derives protocol meaning from HTTP status
+
+Status-aware transport call sites apply one narrow infrastructure fallback when
+retryability is unknown: HTTP 429 and 5xx are retryable, while every other
+status is not. An explicit server boolean always wins, including `false` on a
+5xx response. This fallback covers edge and gateway failures that originate
+outside the Parle application and therefore cannot carry its error envelope.
 
 Host adapters may render known actions usefully, but unknown values remain
 available and are never replaced by a local registry.
+
+## Interpretation ledger
+
+- Helper: `retryableFromEnvelopeOrStatus` in `@parlehq/agent-client`
+  - Marker: `@parle-interpretation parlehq/parle#431`
+  - Layer: L1
+  - Meaning interpreted: an unenveloped HTTP 429 or 5xx is retryable transport failure
+  - Upstream issue: `parlehq/parle#431`
+  - Removal condition: Parle guarantees a canonical error envelope for every 429 and 5xx response, including edge and gateway failures generated outside the application
+  - Reason it exists: infrastructure-generated responses can be empty and cannot carry server-authored retryability, while treating them as terminal suppresses bounded retries and safe idempotency-key reuse
 
 ## Redaction contract
 

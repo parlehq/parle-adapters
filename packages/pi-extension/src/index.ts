@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.2";
+const PI_EXTENSION_VERSION = "0.7.3";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2702,7 +2702,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_send",
     label: "Parle Send",
-    description: "Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text and will not wake a peer. Responsive delivery currently injects only direct-addressed rows. Prefer to: \"@principal.agent\" for any live session of an agent, or to: \"@principal.agent.session\" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. V1 does not auto-retry; retryable errors include the idempotency key to reuse with byte-identical body and addressing.",
+    description: "Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text and will not wake a peer. Responsive delivery currently injects only direct-addressed rows. Prefer to: \"@principal.agent\" for any live session of an agent, or to: \"@principal.agent.session\" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. V1 does not auto-retry; failures include the idempotency key; reuse it with byte-identical body and addressing when the failure is retryable.",
     parameters: Type.Object({
       body: Type.String(),
       to: Type.Optional(Type.String()),
