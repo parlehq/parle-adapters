@@ -21,7 +21,7 @@ for parle_hook_runtime in "$parle_hook_state_dir"/*.node; do
     ""|*[!0-9]*) continue ;;
   esac
   kill -0 "$parle_hook_pid" 2>/dev/null || continue
-  "$parle_hook_runtime" "${PLUGIN_ROOT}/hooks/parle-hook.mjs" "$@" && exit 0
+  "$parle_hook_runtime" "${PLUGIN_ROOT}/hooks/parle-hook.mjs" --peers-on-prompt "$@" && exit 0
   printf '%s\n' "Parle hook runtime failed; continuing without responsive delivery." >&2
   parle_hook_noop
 done

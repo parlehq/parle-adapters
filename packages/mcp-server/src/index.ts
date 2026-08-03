@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams } from "@parlehq/agent-client";
+import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.5.4";
+export const MCP_CLIENT_VERSION = "0.6.0";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -151,7 +151,12 @@ export function createParleMcpServer(
         : undefined;
       const enriched = watcher ? { ...status, watcher } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
-      return { ...status, bootstrapAttempted, ...(watcher ? { watcher } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
+      const peerCatalog = resolveProfileCatalogPath(process.env.PARLE_PROFILES_PATH, process.cwd(), process.env);
+      const peerContext = {
+        peers: readPeerContext(peerCatalog).peers,
+        note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the parle-peers helper in an interactive terminal.",
+      };
+      return { ...status, bootstrapAttempted, peerContext, ...(watcher ? { watcher } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
     }
     return { value: status, bootstrapAttempted };
   }));

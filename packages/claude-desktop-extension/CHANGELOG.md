@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6 (2026-08-02)
+
+- Refresh the bundled MCP server with the read-only stable peer-context status surface (#53).
+
 ## 0.7.5 (2026-08-02)
 
 - Refresh the bundled MCP server with paced wake reopens and shared-controller delivery policy hooks.

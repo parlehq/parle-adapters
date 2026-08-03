@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 (2026-08-02)
+
+- Retain operator-tagged stable peer routes across compaction (#53): a /parle-peers operator command owns mutation, the context event re-injects exactly one authoritative block before every LLM call, session_compact notifies re-anchoring, and parle_status exposes a read-only peerContext section.
+
 ## 0.6.1 (2026-08-02)
 
 - Schedule the idle injection flush from the delivery edge with fire-time host context, so a row arriving while Pi is fully settled injects and acknowledges autonomously instead of waiting for the next user-driven turn to settle (#67).

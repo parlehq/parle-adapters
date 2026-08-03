@@ -137,7 +137,15 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
           hook_event_name: hookEventName,
         });
         assert.equal(result.code, 0, result.stderr);
-        assert.deepEqual(JSON.parse(result.stdout), {});
+        const parsed = JSON.parse(result.stdout);
+        if (hookEventName === "UserPromptSubmit") {
+          // Per-turn peers boundary: the block renders even for an empty
+          // store so missing context stays actionable.
+          assert.match(parsed.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
+          assert.match(parsed.hookSpecificOutput.additionalContext, /No stable peer routes are tagged/);
+        } else {
+          assert.deepEqual(parsed, {});
+        }
       }
     } finally {
       rmSync(home, { recursive: true, force: true });

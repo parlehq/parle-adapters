@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 (2026-08-02)
+
+- Render the operator-tagged stable peer block from the bundled hook at SessionStart (and per-prompt behind --peers-on-prompt for hosts without a session boundary), ship the TTY-only parle-peers mutation helper, and expose a read-only peerContext section on parle_status (#53).
+
 ## 0.5.4 (2026-08-02)
 
 - Refresh the bundled shared client with paced wake reopens, the delivery handler preamble, and host wake-error policy hooks.

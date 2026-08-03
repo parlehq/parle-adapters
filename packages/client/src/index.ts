@@ -15,6 +15,7 @@ export * from "./format.js";
 export * from "./runtime-file.js";
 export * from "./process-instance.js";
 export * from "./delivery.js";
+export * from "./peer-context.js";
 export * from "./alias.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";

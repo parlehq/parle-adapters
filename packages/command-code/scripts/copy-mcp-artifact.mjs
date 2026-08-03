@@ -6,6 +6,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = resolve(here, "../../mcp-server/dist/parle-mcp.js");
 const target = resolve(here, "../skills/parle/server/parle-mcp.js");
 const hookSource = resolve(here, "../../mcp-server/hooks/parle-hook.mjs");
+const peersSource = resolve(here, "../../mcp-server/hooks/parle-peers.mjs");
+const peersTarget = resolve(here, "../skills/parle/scripts/parle-peers.mjs");
 const hookTarget = resolve(here, "../skills/parle/scripts/parle-hook.mjs");
 
 const sourceStat = statSync(source);
@@ -17,3 +19,4 @@ mkdirSync(dirname(target), { recursive: true });
 copyFileSync(source, target);
 mkdirSync(dirname(hookTarget), { recursive: true });
 copyFileSync(hookSource, hookTarget);
+copyFileSync(peersSource, peersTarget);

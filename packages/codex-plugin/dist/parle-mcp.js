@@ -30954,13 +30954,13 @@ var StdioServerTransport = class {
 
 // src/index.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync5 } from "node:fs";
-import { dirname as dirname5, join as join7 } from "node:path";
+import { existsSync as existsSync6 } from "node:fs";
+import { dirname as dirname6, join as join8 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
-import { readFileSync as readFileSync5, existsSync as existsSync4 } from "node:fs";
-import { join as join5 } from "node:path";
+import { readFileSync as readFileSync6, existsSync as existsSync5 } from "node:fs";
+import { join as join6 } from "node:path";
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
@@ -33513,6 +33513,55 @@ var ResponsiveDeliveryController = class {
   }
 };
 
+// ../client/dist/peer-context.js
+import { chmodSync as chmodSync3, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync5, renameSync as renameSync4, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname4, join as join5 } from "node:path";
+var MAX_PEERS = 64;
+var MAX_FIELD = 200;
+var PEER_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var PEER_ADDRESS_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+function peerContextFilePath(catalogPath) {
+  return join5(dirname4(catalogPath), "peers");
+}
+function ownerOnlyFile(path) {
+  const link = lstatSync4(path);
+  const stat = link.isSymbolicLink() ? statSync3(path) : link;
+  if (!stat.isFile())
+    return false;
+  if (process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 63) !== 0))
+    return false;
+  return true;
+}
+function sanitizePeer(raw) {
+  const peer = raw;
+  const label = typeof peer?.label === "string" ? peer.label.slice(0, MAX_FIELD) : "";
+  const address = typeof peer?.address === "string" ? peer.address.slice(0, MAX_FIELD) : "";
+  if (!PEER_LABEL_RE.test(label) || !PEER_ADDRESS_RE.test(address))
+    return void 0;
+  return {
+    label,
+    address,
+    ...typeof peer.role === "string" && peer.role ? { role: peer.role.slice(0, MAX_FIELD) } : {},
+    ...typeof peer.note === "string" && peer.note ? { note: peer.note.slice(0, MAX_FIELD) } : {},
+    taggedAt: typeof peer.taggedAt === "string" ? peer.taggedAt.slice(0, 40) : ""
+  };
+}
+function readPeerContext(catalogPath) {
+  const path = peerContextFilePath(catalogPath);
+  try {
+    if (!existsSync4(path) || !ownerOnlyFile(path))
+      return { version: 1, peers: [] };
+    const parsed = JSON.parse(readFileSync5(path, "utf8"));
+    const peers = Array.isArray(parsed?.peers) ? parsed.peers : [];
+    return {
+      version: 1,
+      peers: peers.slice(0, MAX_PEERS).map(sanitizePeer).filter((peer) => Boolean(peer))
+    };
+  } catch {
+    return { version: 1, peers: [] };
+  }
+}
+
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
@@ -33657,9 +33706,9 @@ function parseKeyValueFile(text) {
   return out;
 }
 function readKeyValueFile(path) {
-  if (!existsSync4(path))
+  if (!existsSync5(path))
     return {};
-  return parseKeyValueFile(readFileSync5(path, "utf8"));
+  return parseKeyValueFile(readFileSync6(path, "utf8"));
 }
 function firstConfigValue(name, sources, fallback) {
   for (const source of sources) {
@@ -33688,7 +33737,7 @@ function versionConfig(env, dotEnv, warnings) {
   return { value: DEFAULT_VERSION, source: "default" };
 }
 function resolveConfig(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join5(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join6(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -33748,7 +33797,7 @@ function requestOrigin(value) {
   }
 }
 function resolveRoomSet(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join5(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join6(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -34134,7 +34183,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!current)
       return void 0;
     try {
-      const onDisk = readKeyValueFile(join5(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
+      const onDisk = readKeyValueFile(join6(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
       if (onDisk === void 0 || onDisk === "")
         return void 0;
       if (onDisk === current)
@@ -35539,20 +35588,20 @@ var ParleAgentClient = class _ParleAgentClient {
 import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
 import {
   accessSync,
-  chmodSync as chmodSync3,
+  chmodSync as chmodSync4,
   constants,
-  lstatSync as lstatSync4,
-  mkdirSync as mkdirSync4,
+  lstatSync as lstatSync5,
+  mkdirSync as mkdirSync5,
   readdirSync as readdirSync2,
-  renameSync as renameSync4,
+  renameSync as renameSync5,
   rmSync as rmSync2,
-  statSync as statSync3,
+  statSync as statSync4,
   symlinkSync,
-  writeFileSync as writeFileSync3
+  writeFileSync as writeFileSync4
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname4, isAbsolute as isAbsolute3, join as join6 } from "node:path";
+import { dirname as dirname5, isAbsolute as isAbsolute3, join as join7 } from "node:path";
 var MAX_PENDING = 100;
 var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
@@ -35563,16 +35612,16 @@ function deliveryKey2(roomId, message) {
 }
 function hookBridgeStateDir(scope) {
   const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
-  return join6(homedir2(), ".local", "state", "parle", "hook-bridge", key);
+  return join7(homedir2(), ".local", "state", "parle", "hook-bridge", key);
 }
 function hookBridgeSocketPath(scope, pid = process.pid) {
-  return join6(hookBridgeStateDir(scope), `${pid}.sock`);
+  return join7(hookBridgeStateDir(scope), `${pid}.sock`);
 }
 function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid) {
-  return join6(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+  return join7(hookBridgeStateDir(scope), `${pid}.runtime.json`);
 }
 function hookBridgeRuntimeHandlePath(scope, pid = process.pid) {
-  return join6(hookBridgeStateDir(scope), `${pid}.node`);
+  return join7(hookBridgeStateDir(scope), `${pid}.node`);
 }
 function processIsAlive(pid) {
   try {
@@ -35704,14 +35753,14 @@ var HookDeliveryBridge = class {
   }
   async listen() {
     const path = hookBridgeSocketPath(this.scope);
-    const dir = dirname4(path);
-    mkdirSync4(dir, { recursive: true, mode: 448 });
-    const before = lstatSync4(dir);
+    const dir = dirname5(path);
+    mkdirSync5(dir, { recursive: true, mode: 448 });
+    const before = lstatSync5(dir);
     if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
       throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
     }
-    chmodSync3(dir, 448);
-    const after = lstatSync4(dir);
+    chmodSync4(dir, 448);
+    const after = lstatSync5(dir);
     if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
     this.removeDeadRuntimeArtifacts(dir);
     this.removeOwnRuntimeArtifacts();
@@ -35722,7 +35771,7 @@ var HookDeliveryBridge = class {
         this.server.once("error", reject);
         this.server.listen(path, () => {
           this.server.removeListener("error", reject);
-          chmodSync3(path, 384);
+          chmodSync4(path, 384);
           resolve();
         });
       });
@@ -35736,7 +35785,7 @@ var HookDeliveryBridge = class {
     const execPath = this.runtimeExecPath;
     if (!isAbsolute3(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
     accessSync(execPath, constants.X_OK);
-    if (!statSync3(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
+    if (!statSync4(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
     const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
     const descriptorTemporary = `${descriptorPath}.tmp`;
@@ -35744,16 +35793,16 @@ var HookDeliveryBridge = class {
     rmSync2(descriptorTemporary, { force: true });
     rmSync2(handleTemporary, { force: true });
     try {
-      writeFileSync3(descriptorTemporary, `${JSON.stringify({
+      writeFileSync4(descriptorTemporary, `${JSON.stringify({
         execPath,
         pid: process.pid,
         startedAt: (/* @__PURE__ */ new Date()).toISOString()
       })}
 `, { encoding: "utf8", mode: 384, flag: "wx" });
-      chmodSync3(descriptorTemporary, 384);
-      renameSync4(descriptorTemporary, descriptorPath);
+      chmodSync4(descriptorTemporary, 384);
+      renameSync5(descriptorTemporary, descriptorPath);
       symlinkSync(execPath, handleTemporary, "file");
-      renameSync4(handleTemporary, handlePath);
+      renameSync5(handleTemporary, handlePath);
     } catch (error51) {
       rmSync2(descriptorTemporary, { force: true });
       rmSync2(handleTemporary, { force: true });
@@ -35776,7 +35825,7 @@ var HookDeliveryBridge = class {
     for (const name of readdirSync2(dir)) {
       const match = name.match(stalePattern);
       if (!match || processIsAlive(Number(match[1]))) continue;
-      rmSync2(join6(dir, name), { force: true });
+      rmSync2(join7(dir, name), { force: true });
     }
   }
   handleSocket(socket) {
@@ -35885,7 +35934,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.5.4";
+var MCP_CLIENT_VERSION = "0.6.0";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -35971,7 +36020,12 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
       const watcher = connected ? bridgeStatus ? bridgeStatus.lastError ? { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus.running ? { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
       const enriched = watcher ? { ...status, watcher } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
-      return { ...status, bootstrapAttempted, ...watcher ? { watcher } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
+      const peerCatalog = resolveProfileCatalogPath(process.env.PARLE_PROFILES_PATH, process.cwd(), process.env);
+      const peerContext = {
+        peers: readPeerContext(peerCatalog).peers,
+        note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the parle-peers helper in an interactive terminal."
+      };
+      return { ...status, bootstrapAttempted, peerContext, ...watcher ? { watcher } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -36315,12 +36369,12 @@ function parseWatcherArgs(args) {
 }
 async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env) {
   const { profile, workerArgs } = parseWatcherArgs(args);
-  const worker = join7(dirname5(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
-  if (!existsSync5(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
+  const worker = join8(dirname6(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
+  if (!existsSync6(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
   const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
-  const watcherClient = createMcpAgentClient({ cwd: dirname5(fileURLToPath(metaUrl)), env: childEnv });
+  const watcherClient = createMcpAgentClient({ cwd: dirname6(fileURLToPath(metaUrl)), env: childEnv });
   let child;
   let childRevision = 0;
   let desiredRevision = 0;

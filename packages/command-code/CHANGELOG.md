@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 (2026-08-02)
+
+- Re-anchor operator-tagged stable peer context through the managed SessionStart hook and ship the TTY-only parle-peers helper (#53).
+
 ## 0.4.5 (2026-08-02)
 
 - Refresh the bundled MCP server with paced wake reopens and shared-controller delivery policy hooks.

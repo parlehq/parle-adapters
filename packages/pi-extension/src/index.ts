@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, parseSSEBlocks, processClientInstanceId, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.6.1";
+const PI_EXTENSION_VERSION = "0.7.0";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2059,6 +2059,10 @@ function statusDetails(ctx: any) {
       lastEndSessionAt: runtime.lastEndSessionAt,
       sessionHandle: view.sessionHandle ? "<redacted>" : undefined,
     },
+    peerContext: {
+      peers: readPeerContext(cfg.profilesPath.value).peers,
+      note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the /parle-peers command.",
+    },
     guidance: { ai: AI_GUIDANCE_URL, api: DEFAULT_API_BASE },
   };
 }
@@ -2297,6 +2301,67 @@ export default function parleExtension(pi: any) {
       }
       ctx.ui.notify(`Parle watcher: ${runtime.watcherState || "off"}`, "info");
     },
+  });
+
+  // Operator-only stable peer-context mutations (issue #53). Extension
+  // commands carry host-verified operator provenance; nothing model-callable
+  // or peer-authored reaches this store.
+  pi.registerCommand("parle-peers", {
+    description: "Operator-tag stable Parle peer routes retained across compaction: list, add <label> <@address> [role...], remove <label>, clear.",
+    handler: async (args: string, ctx: any) => {
+      lastCtx = ctx;
+      const catalog = resolveConfig(ctx.cwd || process.cwd()).profilesPath.value;
+      const [action, ...rest] = (args || "list").trim().split(/\s+/);
+      try {
+        if (action === "add") {
+          const [label, address, ...roleParts] = rest;
+          const next = addStablePeer(catalog, { label: label || "", address: address || "", role: roleParts.join(" ") || undefined });
+          ctx.ui.notify(`Tagged stable peer ${label} -> ${address} (${next.peers.length} total)`, "info");
+          return;
+        }
+        if (action === "remove") {
+          const next = removeStablePeer(catalog, rest[0] || "");
+          ctx.ui.notify(`Removed stable peer ${rest[0]} (${next.peers.length} remaining)`, "info");
+          return;
+        }
+        if (action === "clear") {
+          clearStablePeers(catalog);
+          ctx.ui.notify("Cleared all stable peer routes", "info");
+          return;
+        }
+        const peers = readPeerContext(catalog).peers;
+        ctx.ui.notify(peers.length === 0
+          ? "No stable peer routes are tagged. Use /parle-peers add <label> <@address> [role...]"
+          : peers.map((peer) => `${peer.label}: ${peer.address}${peer.role ? ` (${peer.role})` : ""}`).join(" | "), "info");
+      } catch (error) {
+        ctx.ui.notify(redactString(error instanceof Error ? error.message : String(error)), "error");
+      }
+    },
+  });
+
+  // Deterministic rehydration: before every LLM call exactly one copy of the
+  // operator-tagged peer block is present, including the first call after a
+  // compaction. The handler is non-destructive and idempotent.
+  pi.on("context", (event: any, ctx: any) => {
+    try {
+      const catalog = resolveConfig(ctx?.cwd || process.cwd()).profilesPath.value;
+      const block = renderPeerContextBlock(readPeerContext(catalog));
+      const messages = (Array.isArray(event?.messages) ? event.messages : []).filter(
+        (message: any) => !(message?.role === "custom" && message?.customType === "parle-peer-context"),
+      );
+      messages.push({ role: "custom", customType: "parle-peer-context", content: block, display: false });
+      return { messages };
+    } catch {
+      return undefined;
+    }
+  });
+
+  pi.on("session_compact", (_event: any, ctx: any) => {
+    try {
+      const catalog = resolveConfig(ctx?.cwd || process.cwd()).profilesPath.value;
+      const count = readPeerContext(catalog).peers.length;
+      ctx?.ui?.notify?.(`Parle stable peer context re-anchored (${count} route${count === 1 ? "" : "s"})`, "info");
+    } catch {}
   });
 
   pi.registerTool({

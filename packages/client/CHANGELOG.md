@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 (2026-08-02)
+
+- Add the operator-owned stable peer-context store (#53): explicit-tag-only retention beside the profile catalog with cookie-file safety discipline, a bounded deterministic retention block, and no address-shape inference or peer-content parsing.
+
 ## 0.5.0 (2026-08-02)
 
 - Give the responsive delivery controller a per-batch preamble passthrough and an onWakeError host-policy hook so hosts keep rate-limit parking and failure latching while the controller owns the loop.

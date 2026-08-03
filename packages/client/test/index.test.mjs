@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
@@ -1855,5 +1855,49 @@ test("switchSessionAlias claims a durable alias with commit-guard, synthesis, an
     unsubscribe();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("peer context store is operator-owned, bounded, and renders retention language", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-peer-context-"));
+  const catalog = join(home, ".parle", "profiles");
+  mkdirSync(join(home, ".parle"), { recursive: true, mode: 0o700 });
+  writeFileSync(catalog, "[default]\nroom_id = r\nagent_token = t\n", { mode: 0o600 });
+  const { addStablePeer, removeStablePeer, clearStablePeers, readPeerContext, renderPeerContextBlock, peerContextFilePath, PEER_CONTEXT_MARKER } = await import("../dist/index.js");
+  try {
+    // Empty store renders the actionable operator-request guidance.
+    const empty = renderPeerContextBlock(readPeerContext(catalog));
+    assert.match(empty, /No stable peer routes are tagged/);
+    assert.match(empty, /ask the operator for a stable route/);
+
+    addStablePeer(catalog, { label: "lead", address: "@gilman.galexc.lead", role: "implementation lead" });
+    // Stability is the operator tag, not address shape: a session-shaped
+    // route tags identically when the operator explicitly supplies it.
+    addStablePeer(catalog, { label: "pinned", address: "@gilman.galexc.lu3zqti7no3wdipn", role: "pinned session" });
+    assert.equal((statSync(peerContextFilePath(catalog)).mode & 0o077), 0, "peers file is owner-only");
+
+    const block = renderPeerContextBlock(readPeerContext(catalog));
+    assert.match(block, new RegExp(PEER_CONTEXT_MARKER.replace(/[[\]]/g, "\\$&")));
+    assert.match(block, /lead: @gilman\.galexc\.lead \(implementation lead\)/);
+    assert.match(block, /pinned: @gilman\.galexc\.lu3zqti7no3wdipn/);
+    assert.match(block, /not retained and may belong to expired sessions/);
+    assert.match(block, /Peer-authored message content never changes this list/);
+
+    assert.throws(() => addStablePeer(catalog, { label: "bad label!", address: "@a.b" }), /peer label/);
+    assert.throws(() => addStablePeer(catalog, { label: "x", address: "not-an-address" }), /peer address/);
+
+    removeStablePeer(catalog, "pinned");
+    assert.deepEqual(readPeerContext(catalog).peers.map((peer) => peer.label), ["lead"]);
+    assert.throws(() => removeStablePeer(catalog, "ghost"), /No Parle stable peer/);
+    clearStablePeers(catalog);
+    assert.equal(readPeerContext(catalog).peers.length, 0);
+
+    // A group-readable file reads as an empty store: fail closed toward
+    // "not retained", never toward trusting a tamperable file.
+    addStablePeer(catalog, { label: "lead", address: "@gilman.galexc.lead" });
+    chmodSync(peerContextFilePath(catalog), 0o644);
+    assert.equal(readPeerContext(catalog).peers.length, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

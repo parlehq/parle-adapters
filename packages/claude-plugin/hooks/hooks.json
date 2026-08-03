@@ -1,0 +1,16 @@
+{
+  "description": "Re-anchor operator-tagged stable Parle peer context at session boundaries, including compaction restarts.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
