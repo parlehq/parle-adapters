@@ -43,7 +43,6 @@ export function assertNoReservedProtocolHeaders(headers?: Record<string, string>
   if (overridden) throw new ParleApiError(`Caller header ${overridden} is reserved by the Parle client`, { code: "validation_failed", action: "fix_client", scope: "request" });
 }
 
-// @parle-interpretation parlehq/parle#433
 // Canonical connect guidance pending server-authored text in discovery surfaces.
 // The connect result carries compactText (added by hosts that render cards, e.g.
 // the MCP server); lazily established session blocks do not, so they keep the
@@ -630,7 +629,6 @@ export function formatVersionErrorHint(cfg: { version: { value?: string; source:
 const REQUEST_RETRY_ATTEMPTS = 5;
 const REQUEST_RETRY_WINDOW_MS = 60_000;
 
-// @parle-interpretation parlehq/parle#431
 // Edge and gateway failures can lack the server-authored error envelope.
 function retryableFromEnvelopeOrStatus(retryable: boolean | undefined, status: number): boolean {
   return retryable ?? (status === 429 || status >= 500);
@@ -782,19 +780,16 @@ export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT
   return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated };
 }
 
-// @parle-interpretation parlehq/parle#428
 // Temporary local advisory until the API returns canonical inert-mention warnings.
 export function bodyLooksLikeAddressedText(body: string): boolean {
   return /^\s*@[-a-z0-9_.]+\b/i.test(body);
 }
 
-// @parle-interpretation parlehq/parle#428
 export function addressingWarning(body: string, to?: string): string | undefined {
   if (to || !bodyLooksLikeAddressedText(body)) return undefined;
   return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
 }
 
-// @parle-interpretation parlehq/parle-adapters#13
 // Remove or narrow this when the API exposes canonical delivery state semantics.
 export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefined {
   const moderation = details?.moderation;
@@ -819,7 +814,6 @@ export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefi
   return undefined;
 }
 
-// @parle-interpretation parlehq/parle#430
 // Exact validation of server framing until the byte format is a versioned core contract.
 export function compactServerWrappedContent(content: string, preamble?: string, fence?: string | null): string {
   if (!preamble || !fence) return content;
@@ -982,7 +976,6 @@ export class ParleAgentClient {
     const missing = [];
     if (!this.cfg.roomId?.value) missing.push("PARLE_ROOM_ID");
     if (!this.cfg.agentToken?.value) missing.push("PARLE_ROOM_AGENT_TOKEN");
-    // @parle-interpretation parlehq/parle#434
     // Connection-posture wording pending the core session lifecycle contract.
     const note = missing.length
       ? "Set PARLE_PROFILE (a section of the profile catalog, ~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate) or direct configuration in env or .env (checked in that order; disk token rotations can be reloaded once during bootstrap recovery)."
@@ -2177,7 +2170,6 @@ export class ParleAgentClient {
     });
   }
 
-  // @parle-interpretation parlehq/parle#434
   // Deliberately factual until the core session lifecycle and delivery baseline
   // contract exists: reports client cursor position and server-reported held
   // backlog only; makes no responsive-delivery baseline or ack-init claims.

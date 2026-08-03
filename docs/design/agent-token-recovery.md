@@ -1,18 +1,19 @@
+<!-- public-wire-lint: allow-file contract-bundle -- historical design superseded by ADR-0087 -->
 # Agent Token Recovery
 
 ## Status
 
-Superseded in part by Parle ADR-0087 and adapter issue #64. Every reference in
-this document to vendored conformance, fixture pins, local error registries, or
-fixture refresh is obsolete. Current implementation must use the live-contract
-rules in `docs/design/api-first-adapter-foundation.md`.
+Historical design record. Parle ADR-0087 and adapter issue #64 superseded its
+vendored conformance, fixture pin, local error registry, and fixture refresh
+mechanisms. Current implementation must use the live-contract rules in
+`docs/design/api-first-adapter-foundation.md` and the server-owned fields served
+by the current API.
 
-Implementation-ready design refresh against:
+Historical design baseline:
 
 - `parlehq/parle` `786ae829d765517ffe1f55a66032f90c19687c71`
 - `parlehq/parle-adapters` `214b3daca0e1bc279d82eddc7bb2ca77e24e3b14`
-- Parle wire version `2026-07-07`
-- adapter `conformance.pin.json` declares that exact core ref, and its vendored artifacts are byte-identical to that core export
+- a release-specific wire version and synchronized core export that are no longer maintained
 
 The immediate recovery slice is blocked by one narrow L0 consistency fix described below. It is no longer blocked on speculative mint-recovery contracts. Mint crash recovery remains canonical Forgejo issue `parlehq/parle#451` and is explicitly outside this slice.
 
@@ -24,7 +25,7 @@ The briefing predates this refresh. Its architecture remains useful, but referen
 
 ## Problem
 
-Parle permits an unhardened principal to hold up to five live bound participate tokens. When the fifth slot is occupied, another mint returns canonical HTTP 403 `token_quota_exceeded`.
+Parle applies a server-owned live-token quota. When another mint would exceed the current policy, the server returns canonical HTTP 403 `token_quota_exceeded`. Adapters preserve and present the returned action, retryability, scope, and retry delay. The current numeric limit belongs to `/account.openapi.json`.
 
 Parle core already exposes the human-session recovery endpoints:
 
@@ -48,7 +49,7 @@ The current pinned core contract already provides:
 - canonical revoke at `POST /v/agent-tokens/{agentTokenID}/revoke`
 - 204 on successful revoke
 - uniform 404 for missing, foreign, or already-revoked tokens
-- a five-token unhardened bound-participate quota
+- a server-owned unhardened bound-participate quota exposed through account OpenAPI
 - account actions and errors in versioned conformance artifacts
 
 One current core inconsistency must be resolved before adapter release:
@@ -439,8 +440,8 @@ Work:
 Using a disposable principal:
 
 1. complete login and verify only the session record changes
-2. mint or prepare five bound participate tokens
-3. verify the sixth mint returns 403 `token_quota_exceeded`
+2. mint or prepare tokens until the server-owned quota is reached
+3. verify the next mint returns 403 `token_quota_exceeded`
 4. list inventory through Pi and MCP and compare token IDs
 5. revoke one explicitly selected active token
 6. list again and verify the same row has non-null `revoked_at`
@@ -467,7 +468,7 @@ Reopen pagination before the inventory response can approach the adapter respons
 ## Acceptance criteria
 
 - Pi and local stdio MCP can log in, list the canonical principal token inventory, and revoke an explicitly selected token without browser or raw-cookie handling.
-- The five-token quota and canonical 403 status match corrected Parle core and conformance.
+- The server-owned quota denial and canonical 403 status match current Parle core behavior and account OpenAPI.
 - Inventory preserves room-bound and invite-bound token metadata and scopes.
 - One `ParleAccountClient` owns every human-session request.
 - Pi contains no separate account transport.

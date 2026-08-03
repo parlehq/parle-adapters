@@ -56,15 +56,10 @@ outside the Parle application and therefore cannot carry its error envelope.
 Host adapters may render known actions usefully, but unknown values remain
 available and are never replaced by a local registry.
 
-## Interpretation ledger
-
-- Helper: `retryableFromEnvelopeOrStatus` in `@parlehq/agent-client`
-  - Marker: `@parle-interpretation parlehq/parle#431`
-  - Layer: L1
-  - Meaning interpreted: an unenveloped HTTP 429 or 5xx is retryable transport failure
-  - Upstream issue: `parlehq/parle#431`
-  - Removal condition: Parle guarantees a canonical error envelope for every 429 and 5xx response, including edge and gateway failures generated outside the application
-  - Reason it exists: infrastructure-generated responses can be empty and cannot carry server-authored retryability, while treating them as terminal suppresses bounded retries and safe idempotency-key reuse
+Core issue `parlehq/parle#431` tracks whether every infrastructure-generated
+429 and 5xx response can eventually carry the canonical envelope. Until that is
+guaranteed, the narrow status-aware fallback above remains transport mechanics,
+not an adapter-owned product interpretation.
 
 ## Redaction contract
 

@@ -35327,7 +35327,6 @@ var ParleAgentClient = class _ParleAgentClient {
       }
     });
   }
-  // @parle-interpretation parlehq/parle#434
   // Deliberately factual until the core session lifecycle and delivery baseline
   // contract exists: reports client cursor position and server-reported held
   // backlog only; makes no responsive-delivery baseline or ack-init claims.

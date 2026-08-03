@@ -1,6 +1,6 @@
 # Claude Adapter Update Plan
 
-Status: implementation-ready update plan
+Status: historical implementation plan; current behavior follows ADR-0087 and `api-first-adapter-foundation.md`
 Date: 2026-07-05
 Baseline: Pi extension at commit `9c7395f` (SSE wake stream cutover)
 Supersedes where they conflict: `claude-operational-adapter.md` (2026-07-05), `package-architecture.md` (2026-07-04)
@@ -121,10 +121,10 @@ The `@parle` npm scope was unavailable, so `@parlehq` is the canonical package s
 ## Risks
 
 - High: client extraction regresses the working Pi adapter. Mitigation: parity gate on the unchanged 16 tests, phased extraction (pure helpers before lifecycle before wake), `__testing` surface preserved.
-- High: wake contract drift between client primitives and the Parle server. Mitigation: the wake drain contract test pins wake-then-drain-wait-0 behavior; fixture is versioned against `Parle-Version: 2026-07-07`; server-side changes require a fixture update PR, making drift visible.
+- High: wake contract drift between client primitives and the Parle server. Mitigation: focused local HTTP fakes test wake-then-drain-wait-0 mechanics without copying a server contract or wire-version snapshot.
 - Medium: accidental shared state between adapters after extraction. Mitigation: instance-based runtime, no module singletons in the client; a test constructs two runtimes and asserts isolation.
 - Medium: committed `dist/parle-mcp.js` goes stale relative to source. Mitigation: CI rebuilds and diffs the artifact; a mismatch fails the build.
-- Medium: MCP users treat `waitSeconds` as a subscription and burn tokens polling. Mitigation: description lint, skill wording, and the 30-second clamp in the client.
+- Medium: MCP users may misuse `waitSeconds` as a subscription. Mitigation: descriptions and skills state that it is one bounded manual wait and must never be looped as a watcher; responsive delivery uses the server-owned wake path.
 - Medium: direct-addressed responsive rows pile up against a pull-only MCP session. Mitigation: `parle_status` exposes held backlog and acked state; drain-on-inbox is a scoped follow-up if real usage shows a problem.
 - Low: bundling licensing. MCP SDK and dependencies are MIT-compatible; keep a license notice in the bundle banner.
 

@@ -2,7 +2,6 @@ export type CompactConnectionWatcher = "on" | "off" | "degraded" | "unknown";
 
 export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "recover-watcher";
 
-// @parle-interpretation parlehq/parle#433
 // Temporary L1 wording until core discovery authors watcher next-step guidance.
 export const WATCHER_UNKNOWN_GUIDANCE = {
   state: "unknown" as const,
