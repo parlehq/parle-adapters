@@ -113,7 +113,7 @@ pnpm refresh:mcp-artifacts
 pnpm check:mcp-artifacts
 ```
 
-The refresh builds `@parlehq/agent-client` before `@parlehq/mcp-server`, then copies the canonical MCP output into the tracked Claude Code, Claude Desktop, Command Code, and Codex wrappers. The check runs before the ordinary repo build in CI. It creates an isolated tracked-source tree with no ignored build output, seeds a stale client dist fixture, rebuilds through the canonical dependency-aware path, and byte-compares all four tracked wrappers. It also proves that a modified wrapper is rejected.
+The refresh builds `@parlehq/agent-client` before `@parlehq/mcp-server`, rebuilds the native Pi bundle, then copies the canonical MCP output into the tracked Claude Code, Claude Desktop, Command Code, and Codex wrappers. The check runs before the ordinary repo build in CI. It creates an isolated tracked-source tree with no ignored build output, seeds a stale client dist fixture, rebuilds through the canonical dependency-aware path, verifies the native Pi bundle against current client source, and byte-compares all four tracked MCP wrappers. Divergence probes prove that both a modified Pi bundle and a modified MCP wrapper are rejected.
 
 A bundled runtime change requires a version and changelog decision for every affected wrapper. Follow `AGENTS.md`: bump each wrapper version when installable behavior or packaged runtime semantics changed, and document any intentional no-bump case in the commit or release change.
 
@@ -181,8 +181,8 @@ pnpm test
 Additional artifact checks:
 
 - run `pnpm check:mcp-artifacts` before the ordinary build can overwrite tracked wrappers
-- verify the Claude Code, Claude Desktop, Command Code, and Codex MCP artifacts are byte-identical to a clean canonical build
-- prove stale ignored client output cannot influence the MCP bundle
+- verify the native Pi bundle matches current client source and the Claude Code, Claude Desktop, Command Code, and Codex MCP artifacts are byte-identical to a clean canonical build
+- prove stale ignored client output cannot influence either bundled runtime path
 - pack Desktop MCPB from staging
 - unpack and inspect allowlisted contents
 - secret scan staged and unpacked artifacts

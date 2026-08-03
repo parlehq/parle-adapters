@@ -45,6 +45,8 @@ const hookMirrorSets = [
     ],
   },
 ];
+const piArtifact = "packages/pi-extension/dist/index.js";
+const piArtifactChecker = "packages/pi-extension/scripts/check-pi-artifact.mjs";
 const staleSentinel = "stale-ignored-client-dist-fixture";
 
 function run(command, args, cwd) {
@@ -114,15 +116,33 @@ function assertDivergenceDetection(root) {
   throw new Error("The reproducibility gate did not reject a modified tracked wrapper artifact.");
 }
 
+function assertPiArtifactFresh(root) {
+  run("node", [piArtifactChecker], root);
+}
+
+function assertPiDivergenceDetection(root) {
+  appendFileSync(resolve(root, piArtifact), "\n// reproducibility-gate-divergence-probe\n");
+  try {
+    execFileSync("node", [piArtifactChecker], { cwd: root, stdio: "pipe", env: process.env });
+  } catch (error) {
+    const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8") : String(error?.stderr || "");
+    if (stderr.includes("Pi extension bundle is stale")) return;
+    throw error;
+  }
+  throw new Error("The reproducibility gate did not reject a modified tracked Pi artifact.");
+}
+
 const isolatedRoot = mkdtempSync(join(tmpdir(), "parle-adapters-artifact-check-"));
 try {
   copyWorkingTree(isolatedRoot);
-  run("pnpm", ["install", "--filter", "@parlehq/mcp-server...", "--frozen-lockfile", "--offline"], isolatedRoot);
+  run("pnpm", ["install", "--filter", "@parlehq/mcp-server...", "--filter", "@parlehq/pi-extension...", "--frozen-lockfile", "--offline"], isolatedRoot);
   seedStaleClientDist(isolatedRoot);
   run("pnpm", ["build:mcp"], isolatedRoot);
   assertStaleFixtureWasRebuilt(isolatedRoot);
+  assertPiArtifactFresh(isolatedRoot);
   assertArtifactsMatch(isolatedRoot);
   assertDivergenceDetection(isolatedRoot);
+  assertPiDivergenceDetection(isolatedRoot);
   for (const set of hookMirrorSets) {
   const canonicalBytes = readFileSync(resolve(repoRoot, set.canonical));
   for (const mirror of set.mirrors) {
@@ -133,7 +153,7 @@ try {
   }
 }
 
-console.log("Clean MCP artifact reproducibility, hook/helper mirror parity, stale-dist isolation, and wrapper divergence checks passed.");
+console.log("Clean MCP and Pi artifact reproducibility, hook/helper mirror parity, stale-dist isolation, and divergence checks passed.");
 } finally {
   rmSync(isolatedRoot, { recursive: true, force: true });
 }

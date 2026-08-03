@@ -22,7 +22,7 @@ This repository is the public home for Parle agent harness adapters.
 - `packages/codex-plugin` - Codex plugin wrapping the bundled MCP server artifact and focused Agent Skill guidance.
 - `packages/claude-desktop-extension` - Claude Desktop MCPB package wrapping the same bundled MCP server artifact.
 
-After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` to rebuild canonical source in dependency order and refresh all four tracked MCP wrappers. Run `pnpm check:mcp-artifacts` before committing to verify clean-checkout reproducibility and stale-dist isolation. Apply the package version and changelog policy below to every wrapper whose bundled runtime changed.
+After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` to rebuild canonical source in dependency order and refresh the native Pi bundle plus all four tracked MCP wrappers. Run `pnpm check:mcp-artifacts` before committing to verify clean-checkout reproducibility, stale-dist isolation, and divergence detection for all five tracked artifacts. Apply the package version and changelog policy below to every installable package whose bundled runtime changed.
 
 ## Tooling
 
