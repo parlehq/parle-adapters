@@ -88,20 +88,20 @@ cmd skills remove parle --global --yes
 Restart Command Code after reinstalling or removing Parle.
 
 
-## Stable peer routes (issue #53)
+## Stable peer routes (issue #53): not supported on this host
 
-Operator-tagged peer routes survive context compaction. Tag, list, or clear
-them with the bundled helper from an interactive terminal (mutations refuse
-hooks, pipes, and automation and confirm on the controlling terminal):
+Shipped Command Code 1.5.0 exposes exactly four hook events (`SessionStart`,
+`PreToolUse`, `PostToolUse`, `Stop`), fires `SessionStart` only for startup,
+resume, and clear, and has no `UserPromptSubmit` or compact-source boundary
+that runs before every model turn. Without an always-before-model boundary,
+deterministic re-anchoring of peer context after compaction cannot be
+provided on this host, so #53 support is explicitly not claimed here. It
+stays blocked on an upstream Command Code API (a compact-source
+`SessionStart` or `UserPromptSubmit` equivalent).
 
-```sh
-node skills/parle/scripts/parle-peers.mjs list
-node skills/parle/scripts/parle-peers.mjs add lead @principal.agent.route implementation lead
-node skills/parle/scripts/parle-peers.mjs remove lead
-node skills/parle/scripts/parle-peers.mjs clear
-```
-
-The store lives beside the resolved profile catalog
-(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), and the hook
-re-injects the tagged block at the host's session boundary. Models read it
-via `parle_status.peerContext`; nothing model-callable mutates it.
+What still works: the shared TTY-only `parle-peers.mjs` helper edits the same
+operator-owned store other hosts render
+(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), the managed
+`SessionStart` hook renders the tagged block on startup, resume, and clear,
+and models can read the store via `parle_status.peerContext`. Nothing
+model-callable mutates it. None of that constitutes compaction retention.

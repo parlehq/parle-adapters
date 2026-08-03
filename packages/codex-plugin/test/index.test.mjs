@@ -34,8 +34,25 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
     // Trust is recorded against the command definition. Keep this launcher
     // literal stable so handler-only releases do not require renewed approval.
     assert.equal(definitions[0].hooks[0].command, "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin");
-    assert.equal(definitions[0].hooks[0].commandWindows, "cmd /d /s /c \"echo {}\"");
+    assert.equal(definitions[0].hooks[0].commandWindows, "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"");
   }
+});
+
+test("Codex Windows launcher discovers only trusted absolute runtimes and fails open", () => {
+  const launcherPath = resolve(root, "hooks/run-parle-hook.cmd");
+  assert.equal(existsSync(launcherPath), true);
+  const launcher = readFileSync(launcherPath, "utf8");
+  // Same trust posture as run-parle-hook.sh: an explicit absolute override,
+  // then fixed absolute install locations - never PATH resolution.
+  assert.match(launcher, /if defined PARLE_HOOK_RUNTIME/);
+  assert.match(launcher, /"%PARLE_HOOK_RUNTIME%" "%PLUGIN_ROOT%\\hooks\\parle-hook\.mjs" %\*/);
+  assert.match(launcher, /%ProgramFiles%\\nodejs\\node\.exe/);
+  assert.match(launcher, /%ProgramFiles\(x86\)%\\nodejs\\node\.exe/);
+  assert.match(launcher, /%LocalAppData%\\Programs\\nodejs\\node\.exe/);
+  assert.doesNotMatch(launcher, /^\s*node(\.exe)?\s/m);
+  // Every path funnels to the fail-open no-op so a broken runtime cannot
+  // block the host.
+  assert.match(launcher, /:noop\r?\necho \{\}\r?\nexit \/b 0/);
 });
 
 test("Codex marketplace exposes the plugin package", () => {

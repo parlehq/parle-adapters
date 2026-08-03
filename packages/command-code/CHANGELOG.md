@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 (2026-08-02)
+
+- Explicitly remove #53 stable-peer retention support: shipped Command Code 1.5.0 has no always-before-model or compact boundary, so the per-tool peers flag is dropped from the managed hook command and the capability stays blocked on an upstream host API. SessionStart rendering and the TTY helper remain.
+
 ## 0.5.1 (2026-08-02)
 
 - Render peer context on the per-tool boundary as well: shipped Command Code 1.5.0 has no compact-source SessionStart, so PreToolUse re-anchors the first post-compaction tool call, with the residual no-tool-turn gap documented.

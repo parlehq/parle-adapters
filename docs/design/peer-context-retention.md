@@ -86,19 +86,24 @@ which hook owns refresh and rendering; how stale context is cleared.
   so every fresh or compacted context window re-receives it exactly once.
 - Stale clearing: the same TTY helper.
 
-### Command Code (command-code adapter)
+### Command Code (command-code adapter): support explicitly removed
 
-- Store: the shared peers file.
-- Tagging: the TTY-only helper.
-- Refresh/rendering owner: shipped Command Code 1.5.0 fires `SessionStart`
-  only for startup, resume, and clear - not for compaction - so SessionStart
-  alone is not a compact boundary. The managed hook therefore renders the
-  block on `SessionStart` and on every `PreToolUse` (via `--peers-on-prompt`
-  on the managed command), which re-anchors the first time a post-compaction
-  turn touches any tool. Residual, documented gap: a post-compaction turn
-  that uses no tools is not re-anchored until the next tool call or session
-  start; closing it fully needs a compact-source SessionStart upstream.
-- Stale clearing: the TTY helper.
+- Shipped Command Code 1.5.0 was verified against its distributed bundle: it
+  registers exactly four hook events (`SessionStart`, `PreToolUse`,
+  `PostToolUse`, `Stop`), fires `SessionStart` only for startup, resume, and
+  clear, and exposes no `UserPromptSubmit` or other always-before-model
+  boundary and no compact source. `PreToolUse` does not deterministically
+  re-anchor a compacted turn that answers without tools, so no verifiable
+  compaction boundary exists on this host.
+- Per the design principle that an unverifiable host boundary is reported,
+  not papered over with prose, #53 support for Command Code is explicitly
+  removed rather than claimed best-effort. The issue stays blocked for this
+  host on an upstream Command Code API (compact-source `SessionStart` or a
+  `UserPromptSubmit` equivalent).
+- What remains (not retention): the TTY-only helper edits the shared store,
+  the managed `SessionStart` hook renders the block on startup/resume/clear,
+  and `parle_status.peerContext` stays readable. The managed hook command is
+  plain `--bind` with no per-turn peers flag.
 
 ### Codex (codex-plugin)
 
@@ -111,9 +116,13 @@ which hook owns refresh and rendering; how stale context is cleared.
   `PARLE_HOOK_RUNTIME` override, the live hook-bridge runtime handles, and
   fixed absolute system Node paths, so peer context renders even when no
   responsive-delivery bridge is armed while a hostile `PATH` still cannot
-  substitute the runtime. Windows hooks remain the existing `echo {}`
-  no-op: peer re-anchoring is currently not available on Windows Codex and
-  is documented rather than simulated.
+  substitute the runtime. Windows uses a real launcher
+  (`run-parle-hook.cmd`) with the same posture: an absolute
+  `PARLE_HOOK_RUNTIME` override, then fixed absolute Node install paths
+  (`%ProgramFiles%\nodejs`, `%ProgramFiles(x86)%\nodejs`,
+  `%LocalAppData%\Programs\nodejs`), never `PATH`, failing open with `{}` on
+  every miss, so SessionStart (including the compact source) renders peer
+  context on Windows without a live bridge.
 - Stale clearing: the TTY helper.
 
 ### The TTY-only helper
@@ -139,9 +148,12 @@ to models through the status surface only.
 
 ## Acceptance mapping
 
-- Retention: host tests drive the verified boundary (Pi `context` event,
-  hook script `SessionStart`, `--peers-on-prompt`) and assert the tagged
-  alias and role render together after a simulated compaction restart.
+- Retention: host tests drive each verified boundary (Pi `context` event;
+  hook script `SessionStart` for Claude Code and Codex, including Codex's
+  compact source and the Windows launcher argument chain) and assert the
+  tagged alias and role render together after a simulated compaction
+  restart. Command Code is excluded above: no verifiable boundary, no
+  retention claim.
 - Expired-address non-reuse: the block's retention language plus the absence
   of untagged routes; a random session address delivered by a peer never
   appears in the block.

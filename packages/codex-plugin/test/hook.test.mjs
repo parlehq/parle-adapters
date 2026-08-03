@@ -168,6 +168,40 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
   });
 }
 
+test("Codex Windows launcher argument chain renders SessionStart peer context without a live bridge", async () => {
+  // run-parle-hook.cmd cannot execute on this platform; its contribution is
+  // trusted runtime discovery. This drives the exact argv it builds -
+  // <node> "<PLUGIN_ROOT>\hooks\parle-hook.mjs" --scope codex-plugin - with
+  // no hook-bridge state anywhere, proving the SessionStart (Codex 0.146
+  // compact source) peers block renders from the script alone.
+  const home = mkdtempSync(join(tmpdir(), "codex-parle-windows-chain-"));
+  const parleDir = join(home, ".parle");
+  mkdirSync(parleDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(parleDir, "peers"), `${JSON.stringify({
+    version: 1,
+    peers: [{ label: "lead", address: "@gilman.galexc.lead", role: "implementation lead", taggedAt: "2026-08-01T00:00:00.000Z" }],
+  }, null, 2)}\n`, { mode: 0o600 });
+  const env = { ...process.env, HOME: home };
+  delete env.PARLE_PROFILES_PATH;
+  try {
+    const launcher = readFileSync(resolve("hooks/run-parle-hook.cmd"), "utf8");
+    assert.match(launcher, /"%PLUGIN_ROOT%\\hooks\\parle-hook\.mjs" %\*/);
+    const result = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", "codex-plugin"], env, {
+      cwd: "/tmp/codex-project",
+      session_id: "codex-thread",
+      hook_event_name: "SessionStart",
+      source: "compact",
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /implementation lead/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) {
   test(`Codex ${hookEventName} hook returns valid JSON when no delivery is queued`, async () => {
     const home = join("/tmp", `codex-parle-empty-hook-${hookEventName}-${process.pid}`);

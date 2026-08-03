@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 (2026-08-02)
+
+- Replace the Windows hook no-op with a real launcher (run-parle-hook.cmd): absolute PARLE_HOOK_RUNTIME override, fixed absolute Node install paths, fail-open {}. SessionStart peer context (including the compact source) now renders on Windows without a live bridge.
+
 ## 0.5.1 (2026-08-02)
 
 - Move peer-context rendering to the SessionStart boundary (Codex 0.146 exposes a compact source) and drop per-prompt repetition; the launcher gains an absolute PARLE_HOOK_RUNTIME override and fixed absolute Node fallbacks so peer context renders without a live delivery bridge. Windows hooks remain a documented no-op.

@@ -1,0 +1,2 @@
+# cmd.exe misparses goto labels in LF-only batch files; pin CRLF on every checkout.
+*.cmd text eol=crlf
