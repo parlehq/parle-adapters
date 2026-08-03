@@ -97,9 +97,9 @@ which hook owns refresh and rendering; how stale context is cleared.
   compaction boundary exists on this host.
 - Per the design principle that an unverifiable host boundary is reported,
   not papered over with prose, #53 support for Command Code is explicitly
-  removed rather than claimed best-effort. The issue stays blocked for this
-  host on an upstream Command Code API (compact-source `SessionStart` or a
-  `UserPromptSubmit` equivalent).
+  removed rather than claimed best-effort. The host stays blocked on an
+  upstream Command Code API (compact-source `SessionStart` or a
+  `UserPromptSubmit` equivalent), tracked as issue #68.
 - What remains (not retention): the TTY-only helper edits the shared store,
   the managed `SessionStart` hook renders the block on startup/resume/clear,
   and `parle_status.peerContext` stays readable. The managed hook command is
