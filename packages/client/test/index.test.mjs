@@ -1790,3 +1790,70 @@ test("a caller-side request error never latches the session's automatic work", a
     harness.cleanup();
   }
 });
+
+test("switchSessionAlias claims a durable alias with commit-guard, synthesis, and preserved cursor", async () => {
+  const ROOM = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const home = mkdtempSync(join(tmpdir(), "parle-alias-switch-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-alias-switch-project-"));
+  let creates = 0;
+  const ended = [];
+  const guards = [];
+  const fetchImpl = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      creates += 1;
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, session_credential: `parle_ses_${creates}`, session_handle: `raw-${creates}`, expires_at: "2099-01-01T00:00:00Z" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}`, room_handle: "alias-room" }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+    if (path.startsWith("/v/agent/session-aliases/")) {
+      return new Response(JSON.stringify({ alias: path.split("/").at(-1), generation: 1, current_agent_session_id: "prior" }), { status: 200 });
+    }
+    if (path.endsWith("/claim-alias")) {
+      const alias = JSON.parse(String(init.body)).alias;
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, alias, generation: 2, expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
+    }
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
+    if (path.endsWith("/end")) {
+      ended.push(path.split("/").at(-2));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+  const client = new ParleAgentClient({
+    cwd,
+    env: { HOME: home, PARLE_ROOM_ID: ROOM, PARLE_ROOM_AGENT_TOKEN: "parle_agt_alias" },
+    fetch: fetchImpl,
+    // The host knows its principal/agent handles; the server responses above
+    // deliberately omit an address so synthesis is the only source.
+    synthesizeSessionAddress: (route, serverAddress) => {
+      const path = route.alias || route.sessionHandle;
+      return path ? `@p.a.${path}` : serverAddress;
+    },
+  });
+  const unsubscribe = client.onBeforeSessionCommit((plan) => guards.push(plan.reason));
+  try {
+    await client.connect();
+    assert.equal(client.runtime.sessionAddress, "@p.a.raw-1", "an omitted server address is synthesized from the session route");
+    client.roomRuntime(ROOM).cursor = 14;
+
+    const first = await client.switchSessionAlias("workshop");
+    assert.equal(first.alias, "workshop");
+    assert.equal(first.generation, 2);
+    assert.equal(first.sessionAddress, "@p.a.workshop");
+    assert.equal(first.warning, undefined, "the first claim replaces nothing");
+    assert.equal(client.roomRuntime(ROOM).cursor, 14, "an alias switch preserves the room cursor");
+    assert.ok(guards.includes("alias_switch"), "the pre-claim commit guard sees the alias switch");
+    assert.deepEqual(ended, ["as-1"], "the anonymous predecessor is retired after handoff");
+
+    const second = await client.switchSessionAlias("standup");
+    assert.equal(second.priorAlias, "workshop");
+    assert.match(second.warning, /left the alias workshop/);
+    await assert.rejects(client.switchSessionAlias("BAD ALIAS"), /2-40 lowercase/);
+  } finally {
+    unsubscribe();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

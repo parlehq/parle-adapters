@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4 (2026-08-02)
+
+- Refresh the bundled MCP server with the shared client's runtime alias switching and host address synthesis.
+
 ## 0.7.3 (2026-08-02)
 
 - Refresh the bundled MCP server with room-scoped hook queue keys and restartable delivery after a terminal wake failure.

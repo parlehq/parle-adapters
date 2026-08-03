@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport, DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, performProfileSwitch, processClientInstanceId, profileCatalogHasProfile, redactString, resolveProfileCatalogPath, sessionRolloverAtMs, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type ResponsiveCursorScope } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, parseSSEBlocks, processClientInstanceId, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.3.2";
+const PI_EXTENSION_VERSION = "0.4.0";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -18,7 +18,6 @@ const CATALOG_URL = "https://api.parle.sh/catalog";
 const GUIDANCE_LIMIT_BYTES = 128 * 1024;
 const REQUEST_LIMIT_BYTES = 128 * 1024;
 const READ_LIMIT_BYTES = 256 * 1024;
-const DEFAULT_READ_MESSAGE_LIMIT = 50;
 const WATCH_STREAM_MAX_MS = 4 * 60 * 1000;
 const WATCH_ERROR_BACKOFF_MS = 5000;
 const WATCH_ERROR_BACKOFF_JITTER_MS = 1000;
@@ -211,7 +210,18 @@ type ParleSwitchProfileParams = {
   profile: string;
 };
 
+// Pi owns only watcher policy state here: rate-limit parking, failure latches,
+// backoff bookkeeping, and the pending injection queue. The session, rooms,
+// cursor, alias, and lifecycle all live in the shared ParleAgentClient.
 let runtime: RuntimeState = { bootstrapped: false, watcherState: "off" };
+let client: ParleAgentClient | undefined;
+let clientBinding: string | undefined;
+let unsubscribeCommitGuard: (() => void) | undefined;
+let unsubscribeSessionRevision: (() => void) | undefined;
+// A rebootstrapped anonymous session has server-side backlog that must be
+// skipped, not injected. Checked at the delivery edge instead of inline in a
+// rebootstrap wrapper so no wake can replay stale rows before the baseline.
+let baselineNeeded = false;
 let activeProfileOverride: string | undefined;
 let liveConfig: ParleConfig | undefined;
 let lastCtx: any | undefined;
@@ -226,6 +236,8 @@ let rateLimitRecoveryInProgress = false;
 let wallNowMs = () => Date.now();
 let monotonicNowMs = () => performance.now();
 let watcherSleep = sleep;
+let rolloverSetTimer = (callback: () => void, delayMs: number) => setTimeout(callback, delayMs);
+let rolloverClearTimer = (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer);
 // Never expose this value: it includes the credential solely to bind a local
 // automatic latch to exactly one credential/room endpoint combination.
 let automaticFailureBinding: string | undefined;
@@ -241,53 +253,138 @@ type DeliveryFence = {
   agentSessionId?: string;
 };
 type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; ackThrough?: any; fence: DeliveryFence; injected?: boolean };
-type CandidateWakeSlot = { sessionCredential: string; response: Response; controller: AbortController };
 const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
-const activeResponsiveReads = new Set<DeliveryFence>();
-const preparedWakeSlots = new WeakMap<RuntimeState, CandidateWakeSlot>();
-// Authoritative pre-claim alias owner for a prepared candidate. Same-agent
-// supersession is inferred from this session id, never from token strings,
-// because a rotated token still belongs to the same durable agent.
-const preparedAliasOwners = new WeakMap<RuntimeState, { priorAliasOwnerSessionId?: string }>();
-// Explicit claim authority. A prepared state carrying sessionAlias is not the
-// same fact as a claim having committed, and publication ordering must key off
-// the claim itself rather than infer it from a field.
-const preparedClaimAuthority = new WeakSet<RuntimeState>();
-// Held between a pre-claim guard and its local publication. Responsive reads
-// open outside the lifecycle exclusion, so without this the guard could pass
-// and a read could still start before the switch publishes.
-let piPublicationBarrier: string | undefined;
 let responsiveFlushRunning = false;
-let prefetchedWake: CandidateWakeSlot | undefined;
-let rolloverTimer: ReturnType<typeof setTimeout> | undefined;
-let rolloverSetTimer = (callback: () => void, delayMs: number) => setTimeout(callback, delayMs);
-let rolloverClearTimer = (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer);
-let rolloverInFlight: Promise<void> | undefined;
-let lifecycleTail: Promise<void> = Promise.resolve();
-let lifecycleEpoch = 0;
 let lifecycleEnded = false;
 let shutdownRequested = false;
-const ROLLOVER_MAX_FAILURES = 3;
-const ROLLOVER_RETRY_MS = 5000;
-const ROLLOVER_COOLDOWN_MS = 60_000;
-const CLAIM_RECOVERY_ATTEMPTS = 3;
-const MAX_TIMER_DELAY_MS = 2_147_000_000;
 
-async function withLifecycleExclusion<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = lifecycleTail;
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  lifecycleTail = previous.catch(() => undefined).then(() => gate);
-  await previous.catch(() => undefined);
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
+function assertLifecycleActive() {
+  if (shutdownRequested || lifecycleEnded) throw new Error("Parle Pi lifecycle has ended");
 }
 
-function assertLifecycleActive(epoch = lifecycleEpoch) {
-  if (shutdownRequested || lifecycleEnded || epoch !== lifecycleEpoch) throw new Error("Parle Pi lifecycle has ended");
+// The client re-resolves Pi's five-source outcome from a translated
+// environment: a profile selection is passed as the selector plus catalog
+// path so the client loads the same atomic entry, and a direct binding is
+// passed as direct values. Conflicts were already rejected by Pi's own
+// resolution, which applies the same rules.
+function clientEnvironment(cfg: ParleConfig): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0",
+  };
+  if (cfg.profile?.value) {
+    env.PARLE_PROFILE = cfg.profile.value;
+    env.PARLE_PROFILES_PATH = cfg.profilesPath.value;
+  } else {
+    env.PARLE_ROOM_ID = cfg.roomId?.value;
+    env.PARLE_ROOM_AGENT_TOKEN = cfg.agentToken?.value;
+    if (cfg.agentTokenId?.value) env.PARLE_AGENT_TOKEN_ID = cfg.agentTokenId.value;
+    if (cfg.roomHandle?.value) env.PARLE_ROOM_HANDLE = cfg.roomHandle.value;
+    if (cfg.apiBase.source !== "default") env.PARLE_API_BASE = cfg.apiBase.value;
+    if (cfg.wakeBase.source !== "default") env.PARLE_WAKE_BASE = cfg.wakeBase.value;
+  }
+  if (cfg.sessionAlias?.value) env.PARLE_SESSION_ALIAS = cfg.sessionAlias.value;
+  if (process.env.PARLE_VERSION) env.PARLE_VERSION = process.env.PARLE_VERSION;
+  return env;
+}
+
+function clientBindingFor(cwd: string, cfg: ParleConfig): string {
+  return [cwd, bindingKey(cfg)].join("|");
+}
+
+function agentClient(ctx: any, cfg: ParleConfig): ParleAgentClient {
+  assertRuntimeConfig(cfg);
+  const binding = clientBindingFor(ctx?.cwd || process.cwd(), cfg);
+  if (client && clientBinding === binding) return client;
+  if (client && runtime.bootstrapped !== undefined && client.runtime.bootstrapped) {
+    throw new Error("Parle profile configuration changed while a room session is live. Use parle_switch_profile instead of editing PARLE_PROFILE or .env in place.");
+  }
+  detachClient();
+  client = new ParleAgentClient({
+    cwd: ctx?.cwd || process.cwd(),
+    env: clientEnvironment(cfg),
+    fetch: (input: any, init?: any) => (globalThis.fetch as any)(input, init),
+    now: () => new Date(wallNowMs()),
+    sleep: (ms, signal) => watcherSleep(ms, signal),
+    setTimer: (callback, delayMs) => rolloverSetTimer(callback, delayMs),
+    clearTimer: (timer) => rolloverClearTimer(timer),
+    clientInstanceId: PI_CLIENT_INSTANCE_ID,
+    publishRuntime: { adapterName: PI_CLIENT_NAME, adapterVersion: PI_EXTENSION_VERSION },
+    synthesizeSessionAddress: (route, serverAddress) => {
+      const path = route.alias || route.sessionHandle;
+      if (path && cfg.principalHandle?.value && cfg.agentHandle?.value) return `@${cfg.principalHandle.value}.${cfg.agentHandle.value}.${path}`;
+      return serverAddress;
+    },
+  });
+  clientBinding = binding;
+  unsubscribeCommitGuard = client.onBeforeSessionCommit((plan) => guardPiCommit(plan));
+  unsubscribeSessionRevision = client.onSessionRevision((event) => {
+    if (event.reason !== "bootstrap" && event.reason !== "rollover") return;
+    if (!client?.runtime.sessionAlias && runtime.baselineAt) baselineNeeded = true;
+  });
+  return client;
+}
+
+function detachClient() {
+  unsubscribeCommitGuard?.();
+  unsubscribeCommitGuard = undefined;
+  unsubscribeSessionRevision?.();
+  unsubscribeSessionRevision = undefined;
+  client = undefined;
+  clientBinding = undefined;
+  baselineNeeded = false;
+}
+
+// Host policy about pending hook work: an exact-session replacement must not
+// commit while rows are queued for injection or a flush is mid-inject, because
+// their acknowledgements would cross a session boundary. Alias continuity in
+// the same room transfers cleanly. In-flight responsive reads are fenced by
+// the client itself.
+function guardPiCommit(plan: SessionCommitPlan) {
+  if (lifecycleEnded) throw new Error("Parle Pi lifecycle has ended");
+  const work = pendingResponsiveMessages.map((item) => item.fence);
+  if (plan.reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
+    throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
+  }
+  if (work.length === 0 && !responsiveFlushRunning) return;
+  const aliasTransfers = Boolean(plan.previous.sessionAlias
+    && plan.candidate.sessionAlias === plan.previous.sessionAlias
+    && plan.candidate.responsiveContinuity === "alias"
+    && work.every((fence) => fence.cursorScope === "alias"
+      && fence.sessionAlias === plan.previous.sessionAlias
+      && plan.previous.rooms.some((room) => room.roomId === fence.roomId)));
+  if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is pending, injecting, or being read");
+}
+
+// The merged host view: Pi's watcher policy fields over the client's session
+// and bearer room. This is what status surfaces, footers, and tests read.
+function sessionView(): RuntimeState {
+  const c = client?.runtime;
+  const room = c?.rooms?.[0];
+  return {
+    ...runtime,
+    bootstrapped: Boolean(c?.bootstrapped),
+    sessionHandle: c?.sessionHandle || undefined,
+    sessionAddress: c ? c.sessionAddress : runtime.sessionAddress,
+    sessionAlias: c?.sessionAlias,
+    sessionGeneration: c?.sessionGeneration,
+    sessionRevision: c?.sessionRevision ?? runtime.sessionRevision,
+    createdAt: c?.createdAt || undefined,
+    agentSessionId: c?.agentSessionId || undefined,
+    expiresAt: c?.expiresAt || undefined,
+    participantId: room?.participantId || undefined,
+    roomId: room?.roomId ?? runtime.roomId,
+    roomHandle: room?.roomHandle ?? runtime.roomHandle,
+    cursor: room?.cursor ?? runtime.cursor,
+    responsiveCursorScope: c?.responsiveCursorScope ?? runtime.responsiveCursorScope,
+    responsiveContinuity: c?.responsiveContinuity,
+    rolloverFailures: c?.rolloverFailures ?? runtime.rolloverFailures,
+    rolloverLatched: c?.rolloverLatched ?? runtime.rolloverLatched,
+    lastError: runtime.lastError ?? (c?.lastError || c?.lastBootstrapError || undefined),
+    lastHttpStatus: runtime.lastHttpStatus ?? c?.lastHttpStatus,
+    lastAckedSeq: room?.lastAckedSeq ?? runtime.lastAckedSeq,
+  };
 }
 
 function parseBoolEnabled(raw: string | undefined): boolean {
@@ -303,7 +400,7 @@ function sameRoomBinding(left: ParleConfig | undefined, right: ParleConfig | und
 }
 
 function configForLiveRuntime(resolved: ParleConfig): ParleConfig {
-  return runtime.bootstrapped && liveConfig ? liveConfig : resolved;
+  return client?.runtime.bootstrapped && liveConfig ? liveConfig : resolved;
 }
 
 function bindingKey(cfg: ParleConfig): string {
@@ -610,87 +707,15 @@ function writeSessionCookieFile(catalogPath: string, cookie: string): string {
   return path;
 }
 
-function runtimeDirPath(cwd: string): string {
-  return join(cwd, ".parle", "runtime");
-}
-
-function runtimeFilePath(cwd: string): string {
-  return join(runtimeDirPath(cwd), `${process.pid}.json`);
-}
-
-function processStartedAtIso(now = new Date()): string {
-  return new Date(now.getTime() - process.uptime() * 1000).toISOString();
-}
-
-function pidAlive(pid: number): boolean | undefined {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: any) {
-    return error?.code === "ESRCH" ? false : undefined;
-  }
-}
-
-function pruneRuntimeFiles(cwd: string, now = new Date()) {
-  const dir = runtimeDirPath(cwd);
-  let names: string[];
-  try { names = readdirSync(dir); } catch { return; }
-  for (const name of names) {
-    if (name.startsWith(".") || !name.endsWith(".json")) continue;
-    const path = join(dir, name);
-    try {
-      const snapshot = JSON.parse(readFileSync(path, "utf8"));
-      if (snapshot?.pid === process.pid) continue;
-      const expiresAt = Date.parse(snapshot?.expiresAt || "");
-      const expired = !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
-      const dead = typeof snapshot?.pid === "number" && pidAlive(snapshot.pid) === false;
-      if (expired || dead) rmSync(path, { force: true });
-    } catch {
-      rmSync(path, { force: true });
-    }
-  }
-}
-
-function writeRuntimeFile(cwd: string, snapshot: Record<string, unknown>) {
-  const dir = runtimeDirPath(cwd);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodSync(dir, 0o700);
-  const tmp = join(dir, `.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
-  writeFileSync(tmp, JSON.stringify(snapshot, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, runtimeFilePath(cwd));
-}
-
+// Runtime snapshot publication is client-owned: the shared client writes and
+// prunes .parle/runtime/<pid>.json on every session state change. Pi keeps
+// only enough to drop the file when the process shuts down before a client
+// ever existed.
 function removeRuntimeFile(cwd: string) {
-  rmSync(runtimeFilePath(cwd), { force: true });
-}
-
-function publishRuntimeState(ctx: any, cfg = resolveConfig(ctx?.cwd || process.cwd())) {
-  const cwd = ctx?.cwd || process.cwd();
   try {
-    pruneRuntimeFiles(cwd);
-    const state = runtime.bootstrapped ? "ready" : runtime.lastError ? "failed" : "starting";
-    writeRuntimeFile(cwd, {
-      schemaVersion: RUNTIME_SCHEMA_VERSION,
-      pid: process.pid,
-      processStartedAt: processStartedAtIso(),
-      clientInstanceId: PI_CLIENT_INSTANCE_ID,
-      state,
-      sessionAddress: runtime.sessionAddress || null,
-      agentSessionId: runtime.agentSessionId || "",
-      rooms: [{
-        roomId: runtime.roomId || cfg.roomId?.value || "",
-        ...(runtime.roomHandle || cfg.roomHandle?.value ? { roomHandle: runtime.roomHandle || cfg.roomHandle?.value } : {}),
-        ...(cfg.profile?.value ? { profile: cfg.profile.value } : {}),
-        state: state === "ready" ? "ready" as const : "degraded" as const,
-      }],
-      updatedAt: new Date().toISOString(),
-      expiresAt: runtime.expiresAt || "",
-      ...(runtime.lastError ? { lastError: redactString(runtime.lastError) } : {}),
-      adapter: { name: "@parlehq/pi-extension", version: PI_EXTENSION_VERSION },
-    });
+    removeRuntimeFileShared(cwd, process.pid);
   } catch {
-    // Runtime snapshots are display and liveness hints only; never break tools.
+    // Removal is best-effort display hygiene, never a shutdown failure.
   }
 }
 
@@ -1106,77 +1131,6 @@ function parseJsonMaybe(text: string): any {
   try { return JSON.parse(text); } catch { return undefined; }
 }
 
-async function requestJson(cfg: ParleConfig, path: string, options: { method?: string; body?: unknown; session?: boolean; sessionCredential?: string; idempotencyKey?: string; signal?: AbortSignal; timeoutMs?: number; retry?: boolean } = {}, state = runtime) {
-  assertRuntimeConfig(cfg);
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
-    "Parle-Client-Name": PI_CLIENT_NAME,
-    "Parle-Client-Version": PI_EXTENSION_VERSION,
-    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
-    Authorization: `Bearer ${cfg.agentToken!.value}`,
-  };
-  const sessionCredential = options.sessionCredential || (options.session ? state.sessionHandle : undefined);
-  if (sessionCredential) headers["Parle-Agent-Session"] = sessionCredential;
-  if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
-  let body: string | undefined;
-  if (options.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-    body = JSON.stringify(options.body);
-  }
-  let signal = options.signal;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  let parentAbort: (() => void) | undefined;
-  let controller: AbortController | undefined;
-  if (options.timeoutMs && options.timeoutMs > 0) {
-    controller = new AbortController();
-    signal = controller.signal;
-    timeout = setTimeout(() => {
-      timedOut = true;
-      controller?.abort();
-    }, options.timeoutMs);
-    parentAbort = () => controller?.abort();
-    options.signal?.addEventListener("abort", parentAbort, { once: true });
-  }
-  try {
-    const response = await fetch(new URL(path, cfg.apiBase.value), { method: options.method || "GET", headers, body, signal });
-    state.lastHttpStatus = response.status;
-    const text = await response.text();
-    const json = parseJsonMaybe(text);
-    if (!response.ok) {
-      const envelope = parseErrorEnvelope(json);
-      const { code, action, scope, retryable, retryAfterMs } = envelope;
-      const msg = redactString(envelope.message || truncateText(redactString(text), 4096).text);
-      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(cfg, envelope.raw) : "";
-      const err: any = new Error(`Parle API ${response.status}: ${msg}${versionHint}`);
-      err.status = response.status;
-      err.code = code;
-      err.action = action;
-      err.scope = scope;
-      err.retryable = retryable;
-      err.retryAfterMs = retryAfterMs;
-      throw err;
-    }
-    return json ?? {};
-  } catch (error: any) {
-    if (timedOut) {
-      const err: any = new Error(`Parle API request timed out after ${options.timeoutMs}ms`);
-      err.code = "timeout";
-      throw err;
-    }
-    throw error;
-  } finally {
-    if (timeout) clearTimeout(timeout);
-    if (parentAbort) options.signal?.removeEventListener("abort", parentAbort);
-  }
-}
-
-function wakeUrl(cfg: ParleConfig): URL {
-  const base = cfg.wakeBase.value || cfg.apiBase.value;
-  return new URL("/v/agent/wake", base);
-}
-
 function withTimeoutSignal(parent: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
   const controller = new AbortController();
   let didTimeout = false;
@@ -1196,91 +1150,27 @@ function withTimeoutSignal(parent: AbortSignal | undefined, timeoutMs: number): 
   };
 }
 
-function parseSSEBlocks(buffer: string): { events: Array<{ event: string; data: string }>; rest: string } {
-  const events: Array<{ event: string; data: string }> = [];
-  const normalized = buffer.replace(/\r\n/g, "\n");
-  const parts = normalized.split("\n\n");
-  const rest = parts.pop() || "";
-  for (const block of parts) {
-    let event = "message";
-    const data: string[] = [];
-    for (const line of block.split("\n")) {
-      if (!line || line.startsWith(":")) continue;
-      if (line.startsWith("event:")) event = line.slice("event:".length).trim();
-      else if (line.startsWith("data:")) data.push(line.slice("data:".length).trimStart());
-    }
-    if (data.length > 0 || event !== "message") events.push({ event, data: data.join("\n") });
-  }
-  return { events, rest };
-}
-
-async function fetchWakeStream(cfg: ParleConfig, signal: AbortSignal): Promise<Response> {
-  assertRuntimeConfig(cfg);
-  const slot = prefetchedWake;
-  if (slot && slot.sessionCredential === runtime.sessionHandle) {
-    prefetchedWake = undefined;
-    if (signal.aborted) slot.controller.abort();
-    else signal.addEventListener("abort", () => slot.controller.abort(), { once: true });
-    return slot.response;
-  }
-  if (slot) {
-    prefetchedWake = undefined;
-    void cancelCandidateWake(slot);
-  }
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
-    "Parle-Client-Name": PI_CLIENT_NAME,
-    "Parle-Client-Version": PI_EXTENSION_VERSION,
-    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
-    Authorization: `Bearer ${cfg.agentToken!.value}`,
-  };
-  if (runtime.sessionHandle) headers["Parle-Agent-Session"] = runtime.sessionHandle;
-  const response = await fetch(wakeUrl(cfg), { method: "GET", headers, signal });
-  runtime.lastHttpStatus = response.status;
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    const json = parseJsonMaybe(text);
-    const envelope = parseErrorEnvelope(json);
-    const { code, action, scope, retryable, retryAfterMs } = envelope;
-    const msg = redactString(envelope.message || truncateText(redactString(text), 4096).text || response.statusText);
-    const err: any = new Error(`Parle wake stream ${response.status}: ${msg}`);
-    err.status = response.status;
-    err.code = code;
-    err.action = action;
-    err.scope = scope;
-    err.retryable = retryable;
-    err.retryAfterMs = retryAfterMs;
-    throw err;
-  }
-  return response;
-}
-
 async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
   runtime.lastWakeHintAt = new Date().toISOString();
   runtime.lastDeliveryFetchAt = runtime.lastWakeHintAt;
-  let responseFence: DeliveryFence | undefined;
+  const live = agentClient(ctx, cfg);
+  // A rebootstrapped anonymous session must skip its server-side backlog
+  // before any row can queue for injection, even when the rebootstrap
+  // happened inside another call's retry.
+  if (baselineNeeded) {
+    baselineNeeded = false;
+    await baselineResponsiveDelivery(ctx, cfg, signal);
+  }
+  const read = await live.drainResponsiveDeliveryWithFence(signal);
   try {
-    const read = await withRebootstrap(ctx, cfg, async () => {
-      assertPiResponsiveFenceAllowed();
-      const fence = deliveryFence();
-      responseFence = fence;
-      activeResponsiveReads.add(fence);
-      try {
-        const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal });
-        const responseScope = delivery?.delivery?.cursor_scope;
-        if (responseScope === "session" || responseScope === "alias") fence.cursorScope = responseScope;
-        // Success retains this exact Set entry through queueing and injection.
-        // Only a failed request releases before withRebootstrap may replace the session.
-        return { delivery, fence };
-      } catch (error) {
-        activeResponsiveReads.delete(fence);
-        if (responseFence === fence) responseFence = undefined;
-        throw error;
-      }
-    }, signal);
+    if (baselineNeeded) {
+      // The drain itself rebootstrapped: this batch is stale-session backlog.
+      baselineNeeded = false;
+      await baselineResponsiveDelivery(ctx, cfg, signal);
+      setStatus(ctx, cfg);
+      return;
+    }
     const delivery = read.delivery;
-    responseFence = read.fence;
     recordWatcherSuccess();
     const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
     const heldCount = Number(delivery?.held_backlog?.held_count || 0);
@@ -1289,26 +1179,26 @@ async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: Abor
       runtime.lastHeldBacklogAt = new Date().toISOString();
     }
     if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-    if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
     if (messages.length === 0) {
       runtime.lastEmptyWakeAt = new Date().toISOString();
       setStatus(ctx, cfg);
       return;
     }
     const responsePreamble = typeof delivery?.preamble === "string" ? delivery.preamble : undefined;
-    await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, responseFence!);
+    await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, { ...read.fence });
     await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
     runtime.watcherState = "watching";
     setStatus(ctx, cfg);
   } finally {
-    if (responseFence) activeResponsiveReads.delete(responseFence);
+    read.release();
   }
 }
 
 async function consumeWakeStream(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal) {
   const scoped = withTimeoutSignal(signal, WATCH_STREAM_MAX_MS);
   try {
-    const response = await fetchWakeStream(cfg, scoped.signal);
+    const live = agentClient(ctx, cfg);
+    const response = await live.openWakeStream(scoped.signal);
     runtime.lastWakeStreamOpenedAt = new Date().toISOString();
     runtime.watcherState = "watching";
     setStatus(ctx, cfg);
@@ -1334,356 +1224,37 @@ async function consumeWakeStream(pi: any, ctx: any, cfg: ParleConfig, signal: Ab
   }
 }
 
-function sessionRouteAddress(cfg: ParleConfig, session: any): string | null {
-  const alias = typeof session?.alias === "string" && session.alias ? session.alias : cfg.sessionAlias?.value;
-  const handle = typeof session?.session_handle === "string" && session.session_handle ? session.session_handle : undefined;
-  const route = alias || handle;
-  if (route && cfg.principalHandle?.value && cfg.agentHandle?.value) return `@${cfg.principalHandle.value}.${cfg.agentHandle.value}.${route}`;
-  if (typeof session?.address === "string" && session.address) return session.address;
-  return null;
-}
-
-// Alias authority lives in @parlehq/agent-client so its claim, conflict, and
-// lost-response rules cannot drift between adapters. Pi supplies only its own
-// request layer through the injected transport.
-function aliasTransport(cfg: ParleConfig, state?: RuntimeState): AliasTransport {
-  return { request: (path, options) => requestJson(cfg, path, options as any, state) };
-}
-
-async function ownAliasFacts(cfg: ParleConfig, alias: string, signal?: AbortSignal): Promise<AliasFacts> {
-  return ownAliasFactsShared(aliasTransport(cfg), alias, signal);
-}
-
-async function claimAliasWithRecovery(cfg: ParleConfig, candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal): Promise<any> {
-  return claimAliasShared(aliasTransport(cfg, candidate), { agentSessionId: candidate.agentSessionId!, sessionHandle: candidate.sessionHandle! }, alias, expectedGeneration, signal);
-}
-
-async function establishCandidateWakeReadiness(cfg: ParleConfig, sessionCredential: string, signal?: AbortSignal): Promise<CandidateWakeSlot> {
-  const headers: Record<string, string> = {
-    Accept: "text/event-stream",
-    "Parle-Version": cfg.version.value || DEFAULT_VERSION,
-    "Parle-Client-Name": PI_CLIENT_NAME,
-    "Parle-Client-Version": PI_EXTENSION_VERSION,
-    "Parle-Client-Instance": PI_CLIENT_INSTANCE_ID,
-    Authorization: `Bearer ${cfg.agentToken!.value}`,
-    "Parle-Agent-Session": sessionCredential,
-  };
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  if (signal?.aborted) controller.abort();
-  else signal?.addEventListener("abort", abort, { once: true });
-  try {
-    const response = await fetch(wakeUrl(cfg), { method: "GET", headers, signal: controller.signal });
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      const envelope = parseErrorEnvelope(parseJsonMaybe(text));
-      const error: any = new Error(`Parle candidate wake ${response.status}: ${redactString(envelope.message || text || response.statusText)}`);
-      error.status = response.status;
-      error.code = envelope.code;
-      error.action = envelope.action;
-      error.scope = envelope.scope;
-      error.retryable = envelope.retryable;
-      throw error;
-    }
-    return { sessionCredential, response, controller };
-  } finally {
-    signal?.removeEventListener("abort", abort);
-  }
-}
-
-async function cancelCandidateWake(slot?: CandidateWakeSlot) {
-  if (!slot) return;
-  slot.controller.abort();
-  await slot.response.body?.cancel().catch(() => undefined);
-}
-
-async function bootstrap(ctx: any, cfg: ParleConfig, signal?: AbortSignal, preserveCursor = false, aliasOverride?: string, state = runtime, publish = true, preClaimGuardReason?: "rollover" | "alias_switch" | "profile_switch", requireWakeReadiness = false): Promise<CandidateWakeSlot | undefined> {
-  assertRuntimeConfig(cfg);
-  const previous = { ...runtime };
-  const previousCursor = state.cursor;
-  const replacing = runtime.bootstrapped || state !== runtime;
-  const alias = aliasOverride || cfg.sessionAlias?.value;
-  const session = await requestJson(cfg, "/v/agent/sessions", { method: "POST", body: {}, signal }, state);
-  const prepared: RuntimeState = {
-    bootstrapped: false,
-    watcherState: "off",
-    sessionHandle: String(session.session_credential || ""),
-    sessionAddress: sessionRouteAddress(cfg, session),
-    sessionGeneration: 0,
-    sessionRevision: state.sessionRevision || 0,
-    createdAt: String(session.created_at || ""),
-    agentSessionId: String(session.agent_session_id || ""),
-    expiresAt: String(session.expires_at || ""),
-    roomId: cfg.roomId!.value,
-    cursor: preserveCursor && typeof previousCursor === "number" ? previousCursor : 0,
-  };
-  let candidateWake: CandidateWakeSlot | undefined;
-  let unusedPreviousWake: CandidateWakeSlot | undefined;
-  try {
-    const entry = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/participants`, { method: "POST", sessionCredential: prepared.sessionHandle, signal }, prepared);
-    prepared.participantId = String(entry.participant_id || "");
-    prepared.roomHandle = typeof entry.room_handle === "string" && entry.room_handle ? entry.room_handle : cfg.roomHandle?.value;
-    // Complete projection initialization before claim becomes an authority
-    // boundary. No post-claim preparation failure may retire the candidate.
-    if (!preserveCursor) {
-      const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/projection?wait=0`, { sessionCredential: prepared.sessionHandle, signal }, prepared);
-      prepared.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
-    }
-    if (alias || requireWakeReadiness) candidateWake = await establishCandidateWakeReadiness(cfg, prepared.sessionHandle!, signal);
-    if (alias) {
-      const aliasFacts = await ownAliasFacts(cfg, alias, signal);
-      const expectedGeneration = aliasFacts.generation;
-      preparedAliasOwners.set(state, { priorAliasOwnerSessionId: aliasFacts.currentAgentSessionId });
-      if (preClaimGuardReason) assertPiCommitAllowed(previous, { ...prepared, sessionAlias: alias, responsiveContinuity: "alias" }, preClaimGuardReason);
-      const claimed = await claimAliasWithRecovery(cfg, prepared, alias, expectedGeneration, signal);
-      preparedClaimAuthority.add(state);
-      prepared.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
-      prepared.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
-      prepared.sessionAddress = sessionRouteAddress(cfg, { ...session, ...claimed, alias });
-      prepared.createdAt = String(claimed.created_at || prepared.createdAt || "");
-      prepared.expiresAt = String(claimed.expires_at || prepared.expiresAt || "");
-      prepared.responsiveContinuity = "alias";
-    } else if (replacing) {
-      prepared.responsiveContinuity = "exact_session_not_transferred";
-    }
-    prepared.bootstrapped = true;
-    if (state === runtime) {
-      assertPiCommitAllowed(previous, prepared, "bootstrap", Boolean(prepared.sessionAlias));
-      unusedPreviousWake = prefetchedWake;
-      prefetchedWake = candidateWake;
-      candidateWake = undefined;
-      lifecycleEpoch += 1;
-    } else if (candidateWake) {
-      preparedWakeSlots.set(state, candidateWake);
-      candidateWake = undefined;
-    }
-    Object.assign(state, prepared, { sessionRevision: (state.sessionRevision || 0) + 1 });
-    if (state === runtime && runtime.rateLimitParkedCause) runtime.watcherState = "rate_limited";
-  } catch (error: any) {
-    await cancelCandidateWake(candidateWake);
-    if (!error?.aliasClaimOutcomeUnknown) await endAgentSession(cfg, undefined, prepared).catch(() => undefined);
-    throw error;
-  }
-  if (publish && state === runtime) liveConfig = cfg;
-  if (!(state === runtime && rateLimitRecoveryInProgress)) state.lastError = undefined;
-  if (state === runtime && !rateLimitRecoveryInProgress && !runtime.rateLimitParkedCause) clearAutomaticFailureLatch();
-  if (publish) {
-    setStatus(ctx, cfg);
-    publishRuntimeState(ctx, cfg);
-    if (state === runtime) {
-      await completePiCandidateHandoff(cfg, previous, runtime, signal, unusedPreviousWake, replacing);
-      clearRolloverStormProtection();
-      scheduleSessionRollover();
-    }
-  }
-  return unusedPreviousWake;
-}
-
 function deliveryFence(): DeliveryFence {
+  const view = sessionView();
   return {
-    sessionRevision: runtime.sessionRevision || 0,
-    cursorScope: runtime.responsiveCursorScope,
-    roomId: runtime.roomId,
-    sessionAlias: runtime.sessionAlias,
-    agentSessionId: runtime.agentSessionId,
+    sessionRevision: view.sessionRevision || 0,
+    cursorScope: view.responsiveCursorScope,
+    roomId: view.roomId,
+    sessionAlias: view.sessionAlias,
+    agentSessionId: view.agentSessionId,
   };
-}
-
-function pendingDeliveryWork(): PendingResponsiveMessage[] {
-  return [...pendingResponsiveMessages];
-}
-
-// Same-agent supersession may be assumed only from authoritative alias facts.
-// Token strings are never compared: rotation replaces the credential while the
-// durable agent, and therefore its alias domain, stays the same.
-function aliasSupersededSource(previous: RuntimeState, candidate: RuntimeState): boolean {
-  const owner = preparedAliasOwners.get(candidate)?.priorAliasOwnerSessionId;
-  return Boolean(candidate.sessionAlias && owner && previous.agentSessionId && owner === previous.agentSessionId);
-}
-
-// A claim conflict means another session won the alias first. The live profile
-// is untouched, but alias authority may already have moved elsewhere.
-function aliasClaimConflictHint(error: any, alias?: string): any {
-  if (!alias || error?.status !== 409) return error;
-  const conflict: any = new Error(`Parle profile switch left the live profile unchanged: the alias ${alias} was claimed by another session first, so an external winner may already hold alias authority.`);
-  conflict.status = 409;
-  conflict.code = error?.code || "alias_claim_conflict";
-  conflict.retryable = true;
-  return conflict;
-}
-
-function assertPiResponsiveFenceAllowed() {
-  if (!piPublicationBarrier) return;
-  throw new Error(`Parle responsive delivery read is deferred while a ${piPublicationBarrier} completes`);
-}
-
-async function withPiPublicationBarrier<T>(reason: string, work: () => Promise<T>): Promise<T> {
-  const previous = piPublicationBarrier;
-  piPublicationBarrier = reason;
-  try {
-    return await work();
-  } finally {
-    piPublicationBarrier = previous;
-  }
-}
-
-function assertPiCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: "bootstrap" | "rollover" | "profile_switch" | "alias_switch", allowRequestedShutdown = false) {
-  if (lifecycleEnded || (shutdownRequested && !allowRequestedShutdown)) throw new Error("Parle Pi lifecycle has ended");
-  const activeReads = reason === "bootstrap" ? [] : [...activeResponsiveReads];
-  const work = [...pendingDeliveryWork().map((item) => item.fence), ...activeReads];
-  if (reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
-    throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
-  }
-  if (work.length === 0 && !responsiveFlushRunning) return;
-  const aliasTransfers = Boolean(previous.sessionAlias
-    && candidate.sessionAlias === previous.sessionAlias
-    && candidate.responsiveContinuity === "alias"
-    && work.every((fence) => fence.cursorScope === "alias"
-      && fence.sessionAlias === previous.sessionAlias
-      && fence.roomId === previous.roomId));
-  if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is pending, injecting, or being read");
-}
-
-async function completePiCandidateHandoff(cfg: ParleConfig, previous: RuntimeState, candidate: RuntimeState, signal: AbortSignal | undefined, unusedPreviousWake: CandidateWakeSlot | undefined, drainImmediately: boolean) {
-  if (drainImmediately) {
-    try {
-      if (lastPi && lastCtx && candidate === runtime) await handleWakeHint(lastPi, lastCtx, cfg, signal);
-      else {
-        const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(candidate.roomId!)}/responsive-delivery?wait=0`, { sessionCredential: candidate.sessionHandle, signal }, candidate);
-        if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
-      }
-    } catch (error) {
-      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-      if (lastCtx) publishRuntimeState(lastCtx, cfg);
-    }
-  }
-  if (candidate.sessionAlias) {
-    try {
-      await requestJson(cfg, `/v/rooms/${encodeURIComponent(candidate.roomId!)}/participants`, {
-        method: "POST", sessionCredential: candidate.sessionHandle, signal,
-      }, candidate);
-    } catch (error) {
-      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-      if (lastCtx) publishRuntimeState(lastCtx, cfg);
-    }
-  }
-  await cancelCandidateWake(unusedPreviousWake);
-  if (!previous.sessionAlias && previous.agentSessionId && previous.agentSessionId !== candidate.agentSessionId) {
-    await endAgentSession(cfg, signal, previous).catch(() => undefined);
-  }
-}
-
-function clearRolloverStormProtection(reschedule = false) {
-  const wasCooling = Boolean(runtime.rolloverLatched);
-  runtime.rolloverFailures = 0;
-  runtime.rolloverLatched = false;
-  if (reschedule && wasCooling && runtime.bootstrapped && !shutdownRequested && !lifecycleEnded) scheduleSessionRollover();
 }
 
 async function ensureBootstrapped(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
-  if (runtime.bootstrapped && runtime.roomId && runtime.roomId !== cfg.roomId?.value) {
-    throw new Error("Parle profile configuration changed while a room session is live. Use parle_switch_profile instead of editing PARLE_PROFILE or .env in place.");
-  }
-  if (runtime.bootstrapped && runtime.sessionHandle) return;
-  await withLifecycleExclusion(async () => {
-    assertLifecycleActive();
-    if (!runtime.bootstrapped || !runtime.sessionHandle) await bootstrap(ctx, cfg, signal);
-  });
+  assertLifecycleActive();
+  const live = agentClient(ctx, cfg);
+  await live.ensureBootstrapped(signal);
+  liveConfig = cfg;
 }
 
-function stopSessionRolloverTimer() {
-  if (rolloverTimer) rolloverClearTimer(rolloverTimer);
-  rolloverTimer = undefined;
-}
-
-function sessionStillLive() {
-  const expiry = Date.parse(runtime.expiresAt || "");
-  return Number.isFinite(expiry) && expiry > wallNowMs();
-}
-
-function scheduleSessionRollover(delayOverrideMs?: number, cooldown = false) {
-  stopSessionRolloverTimer();
-  if (shutdownRequested || lifecycleEnded || !runtime.bootstrapped || (runtime.rolloverLatched && !cooldown)) return;
-  if (cooldown && !sessionStillLive()) return;
-  const rolloverAt = sessionRolloverAtMs({ agentSessionId: runtime.agentSessionId, createdAt: runtime.createdAt, expiresAt: runtime.expiresAt });
-  if (rolloverAt === undefined && delayOverrideMs === undefined) return;
-  const delay = delayOverrideMs ?? Math.max(0, rolloverAt! - wallNowMs());
-  rolloverTimer = rolloverSetTimer(() => {
-    rolloverTimer = undefined;
-    if (shutdownRequested || lifecycleEnded) return;
-    if (cooldown) {
-      if (!sessionStillLive()) return;
-      runtime.rolloverLatched = false;
-    }
-    if (delayOverrideMs === undefined && rolloverAt! > wallNowMs()) {
-      scheduleSessionRollover();
-      return;
-    }
-    void performSessionRollover().catch(() => undefined);
-  }, Math.min(delay, MAX_TIMER_DELAY_MS));
-  rolloverTimer.unref?.();
-}
-
-function recordRolloverFailure(error: unknown, forceCooldown = false) {
-  const failures = (runtime.rolloverFailures || 0) + 1;
-  const cooldown = forceCooldown || failures >= ROLLOVER_MAX_FAILURES;
-  runtime.rolloverFailures = failures;
-  runtime.rolloverLatched = cooldown;
-  runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-  if (lastCtx && liveConfig) publishRuntimeState(lastCtx, liveConfig);
-  if (sessionStillLive()) scheduleSessionRollover(cooldown ? ROLLOVER_COOLDOWN_MS : ROLLOVER_RETRY_MS * failures, cooldown);
-}
-
+// Proactive rollover is client-owned: the client schedules it from session
+// expiry, re-claims the runtime alias, and enforces the pre-claim guard and
+// publication barrier. Pi only restarts its watcher on the published revision.
 async function performSessionRollover(signal?: AbortSignal): Promise<void> {
-  if (rolloverInFlight) return rolloverInFlight;
-  const run = withLifecycleExclusion(async () => {
-    assertLifecycleActive();
-    stopSessionRolloverTimer();
-    if (!runtime.bootstrapped || !runtime.sessionHandle || !lastCtx || !lastPi) throw new Error("Parle proactive rollover requires a live Pi runtime");
-    if (runtime.rolloverLatched) throw new Error("Parle proactive rollover is cooling down after a bounded failure storm");
-    const epoch = lifecycleEpoch;
-    const cfg = configForLiveRuntime(resolveConfig(lastCtx.cwd || process.cwd()));
-    const old = { ...runtime };
-    const prepared: RuntimeState = { bootstrapped: false, watcherState: "off", cursor: runtime.cursor, sessionRevision: runtime.sessionRevision };
-    try {
-      await bootstrap(lastCtx, cfg, signal, true, runtime.sessionAlias, prepared, false, "rollover", true);
-    } catch (error) {
-      recordRolloverFailure(error);
-      throw error;
-    }
-    const candidateWake = preparedWakeSlots.get(prepared);
-    preparedWakeSlots.delete(prepared);
-    try {
-      if (!prepared.sessionAlias) assertLifecycleActive(epoch);
-      else if (lifecycleEnded || epoch !== lifecycleEpoch) throw new Error("Parle Pi lifecycle has ended");
-      assertPiCommitAllowed(old, prepared, "rollover", Boolean(prepared.sessionAlias));
-    } catch (error) {
-      await cancelCandidateWake(candidateWake);
-      if (!prepared.sessionAlias) await endAgentSession(cfg, undefined, prepared).catch(() => undefined);
-      recordRolloverFailure(error, true);
-      throw error;
-    }
-
-    // Claim success is authoritative. Publish, drain, reconcile room entry,
-    // then retire the old wake and credential before starting the new watcher.
-    const unusedPreviousWake = prefetchedWake;
-    prefetchedWake = candidateWake;
-    lifecycleEpoch += 1;
-    runtime = { ...runtime, ...prepared, rolloverFailures: 0, rolloverLatched: false, watcherState: "off", watcherStarted: false };
-    liveConfig = cfg;
-    setStatus(lastCtx, cfg);
-    publishRuntimeState(lastCtx, cfg);
-    await completePiCandidateHandoff(cfg, old, runtime, signal, unusedPreviousWake, true);
-    stopWatcher(lastCtx);
-    scheduleSessionRollover();
-    startWatcher(lastPi, lastCtx, cfg);
-  });
-  rolloverInFlight = run;
-  try { await run; } finally { rolloverInFlight = undefined; }
+  assertLifecycleActive();
+  if (!client || !lastCtx || !lastPi) throw new Error("Parle proactive rollover requires a live Pi runtime");
+  const cfg = liveConfig || configForLiveRuntime(resolveConfig(lastCtx.cwd || process.cwd()));
+  await client.performProactiveRollover(signal);
+  stopWatcher(lastCtx);
+  startWatcher(lastPi, lastCtx, cfg);
 }
 
-function resetRoomScopedRuntime(next: RuntimeState) {
-  runtime = next;
+function resetRoomScopedDeliveryState() {
   injectedKeys.clear();
   injectedKeyOrder.length = 0;
   seenKeys.clear();
@@ -1691,109 +1262,56 @@ function resetRoomScopedRuntime(next: RuntimeState) {
   clearPendingResponsiveMessages();
 }
 
+// The shared client owns the whole switch: target resolution, scratch
+// preparation, alias pre-claim authority, commit ordering, cursor reset, and
+// source retirement with source credentials. Pi contributes only host policy:
+// its pending-injection block (through the registered commit guard plus the
+// friendly early check), watcher lifecycle, and the ephemeral profile override
+// for its own five-source resolution.
 async function switchProfile(pi: any, ctx: any, profile: string, signal?: AbortSignal) {
-  return withLifecycleExclusion(async () => {
-    assertLifecycleActive();
-    return switchProfileLocked(pi, ctx, profile, signal);
-  });
-}
-
-async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: AbortSignal) {
+  assertLifecycleActive();
   assertProfileLabel(profile);
   const cwd = ctx.cwd || process.cwd();
   const previousCfg = configForLiveRuntime(resolveConfig(cwd));
-  const previousRuntime = { ...runtime };
   const previousProfile = previousCfg.profile?.value;
-  let preparedState: RuntimeState | undefined;
-
-  const result = await withPiPublicationBarrier("profile switch", () => performProfileSwitch({
-    resolve() {
-      const cfg = resolveConfig(cwd, profile);
-      assertRuntimeConfig(cfg);
-      // A configured alias is prepared without claiming; the claim happens at
-      // the pre-claim edge inside preparation, so a failed target preparation
-      // can no longer supersede the live named route.
-      const sameProfile = previousProfile === profile;
-      const sameBinding = sameRoomBinding(previousCfg, cfg);
-      const changed = !sameProfile || !sameBinding || !runtime.bootstrapped;
-      if (changed && pendingResponsiveMessages.length > 0) {
-        throw new Error("Parle profile switch is blocked while responsive messages are pending injection. Let the current turn settle, then retry.");
-      }
-      return { profile, roomId: cfg.roomId!.value, changed };
-    },
-    async prepare() {
-      const cfg = resolveConfig(cwd, profile);
-      const state: RuntimeState = { bootstrapped: false, watcherState: "off" };
-      preparedState = state;
-      try {
-        await bootstrap(ctx, cfg, signal, false, undefined, state, false, "profile_switch");
-      } catch (error: any) {
-        if (!error?.aliasClaimOutcomeUnknown) await endAgentSession(cfg, undefined, state).catch(() => undefined);
-        throw aliasClaimConflictHint(error, cfg.sessionAlias?.value);
-      }
-      return { cfg, state };
-    },
-    commit(value) {
-      // The host owns this synchronous final guard when no claim committed.
-      // Once it has, the address already routes here and local publication must
-      // not throw, so the guard runs pre-claim instead.
-      if (!preparedClaimAuthority.has(value.state)) assertPiCommitAllowed(previousRuntime, value.state, "profile_switch");
-      const candidateWake = preparedWakeSlots.get(value.state);
-      preparedWakeSlots.delete(value.state);
-      const unusedPreviousWake = prefetchedWake;
-      prefetchedWake = candidateWake;
-      stopWatcher(ctx);
-      activeProfileOverride = profile;
-      liveConfig = value.cfg;
-      lifecycleEpoch += 1;
-      resetRoomScopedRuntime({
-        ...value.state,
-        // Responsive continuity survives only when this switch superseded our
-        // own source session on the same alias in the same room. Across
-        // durable agents the address itself changes, so nothing transfers.
-        ...(value.state.sessionAlias && !(aliasSupersededSource(previousRuntime, value.state) && previousRuntime.roomId === value.state.roomId)
-          ? { responsiveContinuity: "exact_session_not_transferred" as const }
-          : {}),
-        watcherState: "off",
-        watcherStarted: false,
-        watcherEnabled: parseBoolEnabled(value.cfg.watchEnabled.value),
-      });
-      clearAutomaticFailureLatch();
-      clearRolloverStormProtection();
-      void cancelCandidateWake(unusedPreviousWake);
-      try { removeRuntimeFile(cwd); } catch {}
-      setStatus(ctx, value.cfg);
-      publishRuntimeState(ctx, value.cfg);
-      scheduleSessionRollover();
-    },
-    async discardPrepared(value) {
-      const candidateWake = preparedWakeSlots.get(value.state);
-      preparedWakeSlots.delete(value.state);
-      await cancelCandidateWake(candidateWake);
-      await endAgentSession(value.cfg, undefined, value.state).catch(() => undefined);
-    },
-    retireOldSession() {
-      // Alias authority is scoped by durable agent id. Only an authoritative
-      // pre-claim lookup naming the source session proves supersession; in
-      // every other case the source route stays live until it is ended
-      // explicitly with the source profile credential.
-      if (preparedState && aliasSupersededSource(previousRuntime, preparedState)) return Promise.resolve();
-      return endAgentSession(previousCfg, signal, previousRuntime);
-    },
-    restartWatcher(value) {
-      startWatcher(pi, ctx, value.cfg);
-    },
-  }));
-
+  const targetCfg = resolveConfig(cwd, profile);
+  assertRuntimeConfig(targetCfg);
+  const changed = previousProfile !== profile || !sameRoomBinding(previousCfg, targetCfg) || !client?.runtime.bootstrapped;
+  if (changed && pendingResponsiveMessages.length > 0) {
+    throw new Error("Parle profile switch is blocked while responsive messages are pending injection. Let the current turn settle, then retry.");
+  }
+  const live = agentClient(ctx, previousCfg);
+  const result = await live.switchProfile(profile, signal);
+  if (result.switched) {
+    stopWatcher(ctx);
+    activeProfileOverride = profile;
+    liveConfig = resolveConfig(cwd, profile);
+    clientBinding = clientBindingFor(cwd, liveConfig);
+    resetRoomScopedDeliveryState();
+    clearAutomaticFailureLatch();
+    runtime.watcherState = "off";
+    runtime.watcherStarted = false;
+    runtime.watcherEnabled = parseBoolEnabled(liveConfig.watchEnabled.value);
+    runtime.baselineAt = undefined;
+    runtime.baselineSkipped = undefined;
+    setStatus(ctx, liveConfig);
+    startWatcher(pi, ctx, liveConfig);
+  }
+  const view = sessionView();
   return {
-    ...result,
+    switched: result.switched,
+    profile: result.profile,
+    roomId: result.roomId,
+    ...(result.reason ? { reason: result.reason } : {}),
+    watcherRestarted: result.switched,
+    warnings: result.warnings,
     previousProfile,
-    sessionAddress: runtime.sessionAddress,
-    agentSessionId: runtime.agentSessionId,
-    participantId: runtime.participantId,
-    roomHandle: runtime.roomHandle,
-    expiresAt: runtime.expiresAt,
-    cursor: runtime.cursor,
+    sessionAddress: view.sessionAddress,
+    agentSessionId: view.agentSessionId,
+    participantId: view.participantId,
+    roomHandle: view.roomHandle,
+    expiresAt: view.expiresAt,
+    cursor: view.cursor,
     ephemeral: true,
     next: result.switched
       ? "This profile selection lasts for the current Pi process only. Use parle_switch_profile to move again; a cold restart returns to configured PARLE_PROFILE/default selection."
@@ -1801,94 +1319,34 @@ async function switchProfileLocked(pi: any, ctx: any, profile: string, signal?: 
   };
 }
 
-function assertSessionAlias(alias: string) {
-  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(alias) || alias.length < 2 || alias.length > 40) {
-    throw new Error("Parle session alias must be 2-40 lowercase letters, digits, and single hyphens.");
-  }
-}
-
+// The shared client owns the alias switch: candidate preparation, the
+// pre-claim guard, claim recovery, supersession, and publication. Pi keeps
+// the rate-limit recovery choreography and its watcher lifecycle, plus its
+// own tool-facing recovery phrasing.
 async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal) {
-  return withLifecycleExclusion(async () => {
-    assertLifecycleActive();
-    return useSessionAliasLocked(pi, ctx, cfg, alias, signal);
-  });
-}
-
-async function useSessionAliasLocked(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal) {
-  assertSessionAlias(alias);
-  // Replacement has to be explicit and recoverable (issue #27): the caller
-  // learns which route it left behind and that peers holding it are now
-  // addressing a retired session.
-  const priorAlias = runtime.sessionAlias;
-  const priorAddress = runtime.sessionAddress;
-  assertPiCommitAllowed(runtime, { ...runtime, sessionAlias: alias, responsiveContinuity: "alias" }, "alias_switch");
+  assertLifecycleActive();
+  const live = agentClient(ctx, cfg);
   const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
   const recovering = await prepareRateLimitRecovery(ctx);
-  const prepared: RuntimeState = {
-    bootstrapped: false,
-    watcherState: "off",
-    cursor: runtime.cursor,
-    sessionRevision: runtime.sessionRevision,
-  };
   try {
-    try {
-      await bootstrap(ctx, cfg, signal, true, alias, prepared, false, "alias_switch");
-    } catch (error: any) {
-      if (!error?.aliasClaimOutcomeUnknown) await endAgentSession(cfg, undefined, prepared).catch(() => undefined);
-      throw error;
-    }
-
-    const previousRuntime = { ...runtime };
-    assertPiCommitAllowed(previousRuntime, prepared, "alias_switch", true);
-    const candidateWake = preparedWakeSlots.get(prepared);
-    preparedWakeSlots.delete(prepared);
-    const unusedPreviousWake = prefetchedWake;
-    prefetchedWake = candidateWake;
+    const details = await live.switchSessionAlias(alias, signal);
     liveConfig = cfg;
-    lifecycleEpoch += 1;
-    runtime = {
-      ...runtime,
-      sessionHandle: prepared.sessionHandle,
-      sessionAddress: prepared.sessionAddress,
-      sessionAlias: prepared.sessionAlias,
-      sessionGeneration: prepared.sessionGeneration,
-      sessionRevision: prepared.sessionRevision,
-      createdAt: prepared.createdAt,
-      agentSessionId: prepared.agentSessionId,
-      expiresAt: prepared.expiresAt,
-      participantId: prepared.participantId,
-      roomId: prepared.roomId,
-      roomHandle: prepared.roomHandle,
-      responsiveContinuity: prepared.responsiveContinuity,
-      bootstrapped: true,
-      lastHeartbeatAt: undefined,
-      watcherState: "off",
-      watcherStarted: false,
-      watcherEnabled: parseBoolEnabled(cfg.watchEnabled.value),
-    };
     if (!recovering) clearAutomaticFailureLatch();
-    try { removeRuntimeFile(ctx.cwd || process.cwd()); } catch {}
+    runtime.watcherState = "off";
+    runtime.watcherStarted = false;
+    runtime.watcherEnabled = parseBoolEnabled(cfg.watchEnabled.value);
     setStatus(ctx, cfg);
-    publishRuntimeState(ctx, cfg);
-    await completePiCandidateHandoff(cfg, previousRuntime, runtime, signal, unusedPreviousWake, true);
-    if (!recovering) stopWatcher(ctx);
-    scheduleSessionRollover();
-
     if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
-    else startWatcher(pi, ctx, cfg);
-    const replaced = Boolean(priorAlias && priorAlias !== runtime.sessionAlias);
+    else {
+      stopWatcher(ctx);
+      startWatcher(pi, ctx, cfg);
+    }
     return {
-      status: "alias_active",
-      alias: runtime.sessionAlias,
-      generation: runtime.sessionGeneration,
-      sessionAddress: runtime.sessionAddress,
-      expiresAt: runtime.expiresAt,
-      ...(priorAlias ? { priorAlias } : {}),
-      ...(priorAddress ? { priorSessionAddress: priorAddress } : {}),
-      ...(replaced
+      ...details,
+      ...(details.priorAlias && details.warning
         ? {
-            warning: `This session left the alias ${priorAlias}. Peers still addressing @...${priorAlias} reach a retired route; tell them the new address, or run parle_session_alias with ${priorAlias} to reclaim it.`,
-            recovery: `parle_session_alias alias=${priorAlias}`,
+            warning: `This session left the alias ${details.priorAlias}. Peers still addressing @...${details.priorAlias} reach a retired route; tell them the new address, or run parle_session_alias with ${details.priorAlias} to reclaim it.`,
+            recovery: `parle_session_alias alias=${details.priorAlias}`,
           }
         : {}),
     };
@@ -1899,86 +1357,10 @@ async function useSessionAliasLocked(pi: any, ctx: any, cfg: ParleConfig, alias:
 }
 
 async function withRebootstrap<T>(ctx: any, cfg: ParleConfig, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  await ensureBootstrapped(ctx, cfg, signal);
-  try {
-    const result = await fn();
-    clearRolloverStormProtection(true);
-    return result;
-  } catch (error: any) {
-    if (error?.action !== "rebootstrap") throw error;
-    const failedHandle = runtime.sessionHandle;
-    await withLifecycleExclusion(async () => {
-      assertLifecycleActive();
-      if (runtime.bootstrapped && runtime.sessionHandle && runtime.sessionHandle !== failedHandle) return;
-      const hadBaseline = Boolean(runtime.baselineAt);
-      await bootstrap(ctx, cfg, signal, true);
-      if (hadBaseline && !runtime.sessionAlias) await baselineResponsiveDelivery(ctx, cfg, signal);
-    });
-    const result = await fn();
-    clearRolloverStormProtection(true);
-    return result;
-  }
-}
-
-function shouldHeartbeat(now = Date.now()): boolean {
-  if (!runtime.agentSessionId || !runtime.sessionHandle) return false;
-  if (!runtime.lastHeartbeatAt) return true;
-  return now - Date.parse(runtime.lastHeartbeatAt) >= HEARTBEAT_INTERVAL_MS;
-}
-
-async function heartbeatAgentSession(cfg: ParleConfig, signal?: AbortSignal) {
-  if (!runtime.agentSessionId || !runtime.sessionHandle) return;
-  await requestJson(cfg, `/v/agent/sessions/${encodeURIComponent(runtime.agentSessionId)}/heartbeat`, { method: "POST", session: true, signal });
-  runtime.lastHeartbeatAt = new Date().toISOString();
-}
-
-async function maybeHeartbeatAgentSession(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
-  if (!shouldHeartbeat()) return;
-  await withRebootstrap(ctx, cfg, async () => heartbeatAgentSession(cfg, signal), signal);
-}
-
-async function endAgentSession(cfg: ParleConfig, signal?: AbortSignal, state = runtime) {
-  if (!state.agentSessionId || !state.sessionHandle || !cfg.enabled || !cfg.agentToken?.value) return;
-  await requestJson(cfg, `/v/agent/sessions/${encodeURIComponent(state.agentSessionId)}/end`, { method: "POST", session: true, signal, timeoutMs: 2000 }, state);
-  state.lastEndSessionAt = new Date().toISOString();
-}
-
-function updateCursorFromMessages(current: number | undefined, messages: any[], watermark?: number): number | undefined {
-  const base = typeof current === "number" ? current : 0;
-  const seqs = messages.map((m: any) => typeof m.seq === "number" ? m.seq : undefined).filter((n: any) => typeof n === "number") as number[];
-  if (seqs.length > 0) return Math.max(base, ...seqs);
-  if (typeof watermark === "number" && watermark >= base) return watermark;
-  return current;
-}
-
-function capProjectionMessages(messages: any[], maxMessages: number, maxBytes: number): { messages: any[]; truncated: boolean; bytes: number; returnedBytes: number } {
-  const out: any[] = [];
-  let truncated = messages.length > maxMessages;
-  for (const message of messages.slice(0, maxMessages)) {
-    const candidate = JSON.parse(JSON.stringify(message));
-    const candidateText = JSON.stringify([...out, candidate]);
-    if (Buffer.byteLength(candidateText, "utf8") <= maxBytes) {
-      out.push(candidate);
-      continue;
-    }
-    const contentPath = typeof candidate.content === "string" ? "content" : typeof candidate.payload?.body === "string" ? "payload.body" : undefined;
-    if (contentPath) {
-      const remaining = Math.max(0, maxBytes - Buffer.byteLength(JSON.stringify(out), "utf8") - 1024);
-      const original = contentPath === "content" ? candidate.content : candidate.payload.body;
-      const capped = truncateText(original, remaining);
-      if (contentPath === "content") candidate.content = capped.text;
-      else candidate.payload.body = capped.text;
-      candidate.content_truncated = true;
-      candidate.content_bytes = capped.bytes;
-      candidate.returned_content_bytes = capped.returnedBytes;
-      if (Buffer.byteLength(JSON.stringify([...out, candidate]), "utf8") <= maxBytes) out.push(candidate);
-    }
-    truncated = true;
-    break;
-  }
-  const fullBytes = Buffer.byteLength(JSON.stringify(messages), "utf8");
-  const returnedBytes = Buffer.byteLength(JSON.stringify(out), "utf8");
-  return { messages: out, truncated, bytes: fullBytes, returnedBytes };
+  const live = agentClient(ctx, cfg);
+  await live.ensureBootstrapped(signal);
+  liveConfig = cfg;
+  return live.withRebootstrap(fn, signal);
 }
 
 function deliveryKey(message: any): string | undefined {
@@ -2107,38 +1489,34 @@ function promptFitsResponsiveBatch(messages: any[], responsePreamble?: string): 
 }
 
 function assertDeliveryFenceCurrent(fence: DeliveryFence) {
-  if (fence.roomId !== runtime.roomId) throw new Error("Parle responsive delivery belongs to a prior room binding");
+  const view = sessionView();
+  if (fence.roomId !== view.roomId) throw new Error("Parle responsive delivery belongs to a prior room binding");
   if (fence.cursorScope === "alias") {
-    if (!fence.sessionAlias || fence.sessionAlias !== runtime.sessionAlias) throw new Error("Parle responsive delivery belongs to a prior alias binding");
+    if (!fence.sessionAlias || fence.sessionAlias !== view.sessionAlias) throw new Error("Parle responsive delivery belongs to a prior alias binding");
     return;
   }
-  if (fence.sessionRevision !== (runtime.sessionRevision || 0) || fence.agentSessionId !== runtime.agentSessionId) {
+  if (fence.sessionRevision !== (view.sessionRevision || 0) || fence.agentSessionId !== view.agentSessionId) {
     throw new Error("Parle exact-session responsive delivery belongs to a prior session revision");
   }
 }
 
 async function ackResponsiveMessage(cfg: ParleConfig, message: any, signal?: AbortSignal, fence = deliveryFence()) {
   // Host-owned synchronous pre-commit fence. No await occurs between this
-  // check and request construction, so a successor credential can never be
-  // attached to exact-session work from its predecessor.
+  // check and the credentialed acknowledgement, so a successor credential can
+  // never be attached to exact-session work from its predecessor.
   assertDeliveryFenceCurrent(fence);
-  await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery/ack`, {
-    method: "POST",
-    session: true,
-    body: { seq: message.seq, event_id: message.event_id },
-    signal,
-  });
+  const live = agentClient(lastCtx, cfg);
+  await live.ackResponsiveDelivery({ seq: message.seq, event_id: message.event_id }, signal);
   runtime.lastAckedSeq = typeof message.seq === "number" ? message.seq : runtime.lastAckedSeq;
 }
 
 async function baselineResponsiveDelivery(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
+  const live = agentClient(ctx, cfg);
   let skipped = 0;
   while (!signal?.aborted) {
-    assertPiResponsiveFenceAllowed();
-    const responseFence = deliveryFence();
-    activeResponsiveReads.add(responseFence);
+    const read = await live.drainResponsiveDeliveryWithFence(signal);
     try {
-      const delivery = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/responsive-delivery?wait=0`, { session: true, signal });
+      const delivery = read.delivery;
       const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
       const heldCount = Number(delivery?.held_backlog?.held_count || 0);
       if (heldCount > 0) {
@@ -2146,7 +1524,6 @@ async function baselineResponsiveDelivery(ctx: any, cfg: ParleConfig, signal?: A
         runtime.lastHeldBacklogAt = new Date().toISOString();
       }
       if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-      if (delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias") runtime.responsiveCursorScope = delivery.delivery.cursor_scope;
       if (messages.length === 0) break;
       for (const message of messages) {
         const key = deliveryKey(message);
@@ -2158,12 +1535,12 @@ async function baselineResponsiveDelivery(ctx: any, cfg: ParleConfig, signal?: A
           await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => undefined);
           return;
         }
-        await ackResponsiveMessage(cfg, message, signal, responseFence);
+        await ackResponsiveMessage(cfg, message, signal, { ...read.fence });
         skipped += 1;
         if (skipped > WATCH_BASELINE_ACK_LIMIT) throw new Error("responsive delivery baseline exceeded ack limit");
       }
     } finally {
-      activeResponsiveReads.delete(responseFence);
+      read.release();
     }
   }
   runtime.baselineSkipped = (runtime.baselineSkipped || 0) + skipped;
@@ -2400,15 +1777,16 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
   setStatus(ctx, cfg);
   try {
     await ensureBootstrapped(ctx, cfg, signal);
-    if (!runtime.baselineAt && !runtime.sessionAlias) await baselineResponsiveDelivery(ctx, cfg, signal);
+    if (!runtime.baselineAt && !client?.runtime.sessionAlias) await baselineResponsiveDelivery(ctx, cfg, signal);
     while (!signal.aborted && watcherConfigured(cfg) && !automaticGateClosed(cfg)) {
       try {
-        await maybeHeartbeatAgentSession(ctx, cfg, signal);
         runtime.watcherState = "waiting";
         setStatus(ctx, cfg);
-        await withRebootstrap(ctx, cfg, async () => consumeWakeStream(pi, ctx, cfg, signal), signal);
+        // The client's openWakeStream and drains rebootstrap themselves; the
+        // watcher only supplies host retry policy around them.
+        await consumeWakeStream(pi, ctx, cfg, signal);
         recordWatcherSuccess(true);
-        if (!signal.aborted) await sleep(WATCH_EMPTY_BACKOFF_MS, signal);
+        if (!signal.aborted) await watcherSleep(WATCH_EMPTY_BACKOFF_MS, signal);
       } catch (error: any) {
         if (signal.aborted || runId !== activeWatcherRunId) break;
         if (!recordAutomaticFailure(error, cfg, runId)) break;
@@ -2546,7 +1924,8 @@ function formatResult(details: any) {
 function statusDetails(ctx: any) {
   const resolved = resolveConfig(ctx.cwd || process.cwd());
   const cfg = configForLiveRuntime(resolved);
-  const bindingWarning = runtime.bootstrapped && !sameRoomBinding(resolved, cfg)
+  const view = sessionView();
+  const bindingWarning = view.bootstrapped && !sameRoomBinding(resolved, cfg)
     ? "Configured Parle profile changed while this room session was live. The active room remains unchanged; use parle_switch_profile to move safely."
     : undefined;
   return {
@@ -2574,19 +1953,19 @@ function statusDetails(ctx: any) {
     profile: redactedValue(cfg.profile),
     warnings: Array.from(new Set([...cfg.warnings, ...(bindingWarning ? [bindingWarning] : [])])),
     runtime: {
-      bootstrapped: runtime.bootstrapped,
-      sessionAddress: runtime.sessionAddress,
-      sessionAlias: runtime.sessionAlias,
-      sessionGeneration: runtime.sessionGeneration,
-      sessionRevision: runtime.sessionRevision,
-      createdAt: runtime.createdAt,
-      agentSessionId: runtime.agentSessionId,
-      expiresAt: runtime.expiresAt,
-      participantId: runtime.participantId,
-      roomId: runtime.roomId,
-      roomHandle: runtime.roomHandle,
-      cursor: runtime.cursor,
-      lastError: runtime.lastError,
+      bootstrapped: view.bootstrapped,
+      sessionAddress: view.sessionAddress,
+      sessionAlias: view.sessionAlias,
+      sessionGeneration: view.sessionGeneration,
+      sessionRevision: view.sessionRevision,
+      createdAt: view.createdAt,
+      agentSessionId: view.agentSessionId,
+      expiresAt: view.expiresAt,
+      participantId: view.participantId,
+      roomId: view.roomId,
+      roomHandle: view.roomHandle,
+      cursor: view.cursor,
+      lastError: view.lastError,
       terminalCause: runtime.terminalCause,
       nextRetryAt: runtime.nextRetryAt,
       rateLimitConsecutive429s: runtime.rateLimitConsecutive429s,
@@ -2606,11 +1985,11 @@ function statusDetails(ctx: any) {
       watcherEnabled: runtime.watcherEnabled,
       lastEligibleSeq: runtime.lastEligibleSeq,
       lastInjectedSeq: runtime.lastInjectedSeq,
-      lastAckedSeq: runtime.lastAckedSeq,
-      responsiveCursorScope: runtime.responsiveCursorScope,
-      responsiveContinuity: runtime.responsiveContinuity,
-      rolloverFailures: runtime.rolloverFailures,
-      rolloverLatched: runtime.rolloverLatched,
+      lastAckedSeq: view.lastAckedSeq,
+      responsiveCursorScope: view.responsiveCursorScope,
+      responsiveContinuity: view.responsiveContinuity,
+      rolloverFailures: view.rolloverFailures,
+      rolloverLatched: view.rolloverLatched,
       pendingResponsiveCount: runtime.pendingResponsiveCount,
       lastBufferedSeq: runtime.lastBufferedSeq,
       lastEmptyWakeAt: runtime.lastEmptyWakeAt,
@@ -2625,20 +2004,20 @@ function statusDetails(ctx: any) {
       lastWakeHintAt: runtime.lastWakeHintAt,
       lastDeliveryFetchAt: runtime.lastDeliveryFetchAt,
       lastSuccessAt: runtime.lastSuccessAt,
-      lastHttpStatus: runtime.lastHttpStatus,
+      lastHttpStatus: view.lastHttpStatus,
       lastErrorClass: runtime.lastErrorClass,
       consecutiveWatcherFailures: runtime.consecutiveWatcherFailures,
-      lastHeartbeatAt: runtime.lastHeartbeatAt,
       lastEndSessionAt: runtime.lastEndSessionAt,
-      sessionHandle: runtime.sessionHandle ? "<redacted>" : undefined,
+      sessionHandle: view.sessionHandle ? "<redacted>" : undefined,
     },
     guidance: { ai: AI_GUIDANCE_URL, api: DEFAULT_API_BASE },
   };
 }
 
 function hasConnectionFailure(): boolean {
-  if (runtime.bootstrapped || runtime.sessionAddress) return false;
-  return Boolean(runtime.lastError || runtime.lastHttpStatus || runtime.lastErrorClass);
+  const view = sessionView();
+  if (view.bootstrapped || view.sessionAddress) return false;
+  return Boolean(view.lastError || view.lastHttpStatus || view.lastErrorClass);
 }
 
 function shouldShowFooterError(): boolean {
@@ -2651,18 +2030,19 @@ function shouldShowFooterError(): boolean {
 }
 
 function footerErrorLabel(): string {
-  if (runtime.watcherState === "auth_expired" || runtime.lastHttpStatus === 401 || runtime.lastHttpStatus === 403) return "parle x check auth";
-  if (runtime.watcherState === "session_expired") return "parle x session expired";
-  if (runtime.watcherState === "rate_limited") return "parle x rate limited";
-  if (runtime.watcherState === "disconnected") return "parle x disconnected";
-  if (runtime.lastHttpStatus === 400) {
-    if (/version/i.test(runtime.lastError || "")) return "parle x check version";
+  const view = sessionView();
+  if (view.watcherState === "auth_expired" || view.lastHttpStatus === 401 || view.lastHttpStatus === 403) return "parle x check auth";
+  if (view.watcherState === "session_expired") return "parle x session expired";
+  if (view.watcherState === "rate_limited") return "parle x rate limited";
+  if (view.watcherState === "disconnected") return "parle x disconnected";
+  if (view.lastHttpStatus === 400) {
+    if (/version/i.test(view.lastError || "")) return "parle x check version";
     return "parle x check config";
   }
-  if (runtime.lastErrorClass === "network" || runtime.lastErrorClass === "timeout") return "parle x network";
-  if (runtime.lastHttpStatus && runtime.lastHttpStatus >= 500) return "parle x server error";
-  if (runtime.lastError || runtime.lastErrorClass || runtime.lastHttpStatus) return "parle x run parle_status";
-  return `parle x ${runtime.watcherState || "error"}`;
+  if (view.lastErrorClass === "network" || view.lastErrorClass === "timeout") return "parle x network";
+  if (view.lastHttpStatus && view.lastHttpStatus >= 500) return "parle x server error";
+  if (view.lastError || view.lastErrorClass || view.lastHttpStatus) return "parle x run parle_status";
+  return `parle x ${view.watcherState || "error"}`;
 }
 
 export const __testing = {
@@ -2670,7 +2050,6 @@ export const __testing = {
   compactServerWrappedContent,
   inboundPrompt,
   summarizeSendDelivery,
-  maybeHeartbeatAgentSession,
   terminalWatcherState,
   watcherRetryDelayMs,
   automaticGateClosed,
@@ -2680,17 +2059,41 @@ export const __testing = {
   handleWakeHint,
   queueResponsiveMessages,
   flushPendingResponsiveMessages,
-  parseSSEBlocks,
-  fetchWakeStream,
-  parleRequest,
-  requestJson,
+  baselineResponsiveDelivery,
   resolveConfig,
   clientInstanceId: PI_CLIENT_INSTANCE_ID,
   useSessionAlias,
   performSessionRollover,
-  scheduleSessionRollover,
-  runtimeState() { return runtime; },
-  patchRuntime(patch: Partial<RuntimeState>) { runtime = { ...runtime, ...patch }; },
+  parseSSEBlocks,
+  agentClient() { return client; },
+  bindContext(ctx: any) { lastCtx = ctx; },
+  runtimeState() { return sessionView(); },
+  // Session-owned fields patch the client's runtime and bearer room; watcher
+  // policy fields patch Pi's own state. A client is constructed on demand from
+  // the bound context so tests can seed live-session state directly.
+  patchRuntime(patch: Partial<RuntimeState>) {
+    const sessionKeys = new Set(["bootstrapped", "sessionHandle", "sessionAddress", "sessionAlias", "sessionGeneration", "sessionRevision", "createdAt", "agentSessionId", "expiresAt", "responsiveCursorScope", "responsiveContinuity", "rolloverFailures", "rolloverLatched"]);
+    const roomKeys = new Set(["participantId", "roomId", "roomHandle", "cursor"]);
+    const needsClient = Object.keys(patch).some((key) => sessionKeys.has(key) || roomKeys.has(key));
+    if (needsClient && !client) {
+      const ctx = lastCtx || { cwd: process.cwd() };
+      agentClient(ctx, configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd())));
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (sessionKeys.has(key)) {
+        (client!.runtime as any)[key] = value;
+      } else if (roomKeys.has(key)) {
+        const rooms = client!.runtime.rooms;
+        if (!rooms[0]) rooms.push({ roomId: "", participantId: "", cursor: 0, state: "ready" });
+        (rooms[0] as any)[key] = value;
+        // The published rooms[] is a view; the room runtime map is the
+        // authority reads and cursor updates consult.
+        (client!.roomRuntime(rooms[0].roomId) as any)[key] = value;
+      } else {
+        (runtime as any)[key] = value;
+      }
+    }
+  },
   setWatcherTiming(timing: { wallNowMs?: () => number; monotonicNowMs?: () => number; sleep?: typeof sleep }) {
     if (timing.wallNowMs) wallNowMs = timing.wallNowMs;
     if (timing.monotonicNowMs) monotonicNowMs = timing.monotonicNowMs;
@@ -2703,14 +2106,10 @@ export const __testing = {
   setStatus,
   resetRuntime() {
     runtime = { bootstrapped: false, watcherState: "off" };
+    detachClient();
     activeProfileOverride = undefined;
     liveConfig = undefined;
-    injectedKeys.clear();
-    injectedKeyOrder.length = 0;
-    seenKeys.clear();
-    seenKeyOrder.length = 0;
-    clearPendingResponsiveMessages();
-    activeResponsiveReads.clear();
+    resetRoomScopedDeliveryState();
     watcherAbort?.abort();
     watcherAbort = undefined;
     watcherTask = undefined;
@@ -2726,12 +2125,6 @@ export const __testing = {
     rolloverSetTimer = (callback, delayMs) => setTimeout(callback, delayMs);
     rolloverClearTimer = (timer) => clearTimeout(timer);
     automaticFailureBinding = undefined;
-    stopSessionRolloverTimer();
-    rolloverInFlight = undefined;
-    void cancelCandidateWake(prefetchedWake);
-    prefetchedWake = undefined;
-    lifecycleTail = Promise.resolve();
-    lifecycleEpoch = 0;
     lifecycleEnded = false;
     shutdownRequested = false;
     lastPi = undefined;
@@ -2743,23 +2136,24 @@ function setStatus(ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   try {
     const ui = ctx?.ui;
     if (!ui?.setStatus) return;
-    const connectedLabel = runtime.roomHandle
-      ? `#${runtime.roomHandle}`
-      : runtime.roomId
-        ? `#room-${runtime.roomId.slice(0, 8)}`
+    const view = sessionView();
+    const connectedLabel = view.roomHandle
+      ? `#${view.roomHandle}`
+      : view.roomId
+        ? `#room-${view.roomId.slice(0, 8)}`
         : "parle";
     let label = "parle x setup";
     if (!cfg.enabled) label = "parle off";
-    else if (shouldShowFooterError()) label = runtime.sessionAddress ? `${connectedLabel} x ${runtime.sessionAddress}` : footerErrorLabel();
-    else if (runtime.sessionAddress && pendingResponsiveMessages.length > 0) label = `${connectedLabel} ◷ ${pendingResponsiveMessages.length} ${runtime.sessionAddress}`;
-    else if (runtime.sessionAddress) label = `${connectedLabel} ✓ ${runtime.sessionAddress}`;
+    else if (shouldShowFooterError()) label = view.sessionAddress ? `${connectedLabel} x ${view.sessionAddress}` : footerErrorLabel();
+    else if (view.sessionAddress && pendingResponsiveMessages.length > 0) label = `${connectedLabel} ◷ ${pendingResponsiveMessages.length} ${view.sessionAddress}`;
+    else if (view.sessionAddress) label = `${connectedLabel} ✓ ${view.sessionAddress}`;
     else if (cfg.roomId?.value && cfg.agentToken?.value) label = `parle ✓ ${cfg.roomHandle?.value || "ready"}`;
     ui.setStatus(EXTENSION_ID, label);
   } catch {}
 }
 
 function resolveLifecycleConfig(ctx: any): ParleConfig | undefined {
-  if (liveConfig && runtime.agentSessionId && runtime.sessionHandle) return liveConfig;
+  if (liveConfig && client?.runtime.agentSessionId && client?.runtime.sessionHandle) return liveConfig;
   try {
     return configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
   } catch (error) {
@@ -2772,45 +2166,34 @@ function resolveLifecycleConfig(ctx: any): ParleConfig | undefined {
   }
 }
 
-async function shutdownLifecycle(ctx: any, cfg?: ParleConfig) {
+async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
   if (shutdownRequested) return;
   shutdownRequested = true;
   stopWatcher();
-  stopSessionRolloverTimer();
   removeRuntimeFile(ctx.cwd || process.cwd());
-  await withLifecycleExclusion(async () => {
-    lifecycleEnded = true;
-    lifecycleEpoch += 1;
-    const task = watcherTask;
-    stopWatcher();
-    if (task) await task.catch(() => undefined);
-    watcherLoopRunning = false;
-    const unusedWake = prefetchedWake;
-    prefetchedWake = undefined;
-    await cancelCandidateWake(unusedWake);
-    if (cfg) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2000);
-      timer.unref?.();
-      try {
-        await endAgentSession(cfg, controller.signal);
-      } catch (error) {
-        runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-      } finally {
-        clearTimeout(timer);
-      }
+  lifecycleEnded = true;
+  const task = watcherTask;
+  stopWatcher();
+  if (task) await task.catch(() => undefined);
+  watcherLoopRunning = false;
+  if (client) {
+    try {
+      // endSession retires the live agent session with a bounded timeout and
+      // drops the client's runtime snapshot.
+      await client.endSession();
+      runtime.lastEndSessionAt = new Date().toISOString();
+    } catch (error) {
+      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
     }
-    runtime = {
-      bootstrapped: false,
-      watcherState: "off",
-      sessionRevision: runtime.sessionRevision,
-      rolloverFailures: runtime.rolloverFailures,
-      rolloverLatched: runtime.rolloverLatched,
-      lastError: runtime.lastError,
-    };
-    liveConfig = undefined;
-    clearPendingResponsiveMessages();
-  });
+  }
+  runtime = {
+    bootstrapped: false,
+    watcherState: "off",
+    lastError: runtime.lastError,
+  };
+  detachClient();
+  liveConfig = undefined;
+  clearPendingResponsiveMessages();
 }
 
 export default function parleExtension(pi: any) {
@@ -2887,14 +2270,13 @@ export default function parleExtension(pi: any) {
       lastCtx = ctx;
       const cfg = configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
       // Status is automatic observation, not an explicit recovery tool. Once a
-      // terminal bootstrap/heartbeat fault closes this binding, it must make no
-      // network calls until credentials or binding change.
-      if (cfg.enabled && cfg.roomId?.value && cfg.agentToken?.value && !runtime.bootstrapped && !automaticGateClosed(cfg)) {
+      // terminal bootstrap fault closes this binding, it must make no network
+      // calls until credentials or binding change.
+      if (cfg.enabled && cfg.roomId?.value && cfg.agentToken?.value && !client?.runtime.bootstrapped && !automaticGateClosed(cfg)) {
         try {
           await ensureBootstrapped(ctx, cfg, signal);
         } catch (error) {
           recordAutomaticFailure(error, cfg);
-          publishRuntimeState(ctx, cfg);
         }
       }
       startWatcher(pi, ctx, cfg);
@@ -3119,7 +2501,7 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleRequestParams, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await parleRequest(cfg, params, signal, runtime);
+      const details = await parleRequest(cfg, params, signal, sessionView());
       return formatResult(details);
     },
   });
@@ -3137,30 +2519,14 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleReadParams, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "read", () => withRebootstrap(ctx, cfg, async () => {
-        const since = typeof params.sinceSeq === "number" ? params.sinceSeq : (runtime.cursor || 0);
-        const wait = typeof params.waitSeconds === "number" ? Math.max(0, Math.min(30, params.waitSeconds)) : 0;
-        const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/projection?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, signal });
-        const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
-        const maxMessages = Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT);
-        const capped = capProjectionMessages(rawMessages, maxMessages, READ_LIMIT_BYTES);
+      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "read", async () => {
+        const live = agentClient(ctx, cfg);
+        const result = await live.readProjection(params, signal);
+        liveConfig = cfg;
         const shouldAdvanceCursor = params.advanceCursor === true || (params.advanceCursor === undefined && params.sinceSeq === undefined);
-        if (shouldAdvanceCursor) rememberSeenMessages(capped.messages);
-        const result = {
-          ...projection,
-          messages: capped.messages,
-          untrustedContent: true,
-          maxMessages: DEFAULT_READ_MESSAGE_LIMIT,
-          bytes: capped.bytes,
-          returnedBytes: capped.returnedBytes,
-          truncated: capped.truncated,
-          cursor: runtime.cursor,
-          note: params.waitSeconds ? "Message content is untrusted room text. waitSeconds is for this explicit one-shot read only; do not reuse it as a watcher loop." : "Message content is untrusted room text.",
-        };
-        if (shouldAdvanceCursor) runtime.cursor = updateCursorFromMessages(runtime.cursor, capped.messages, params.sinceSeq === undefined && rawMessages.length === 0 ? projection.watermark : undefined);
-        result.cursor = runtime.cursor;
-        return result;
-      }, signal));
+        if (shouldAdvanceCursor) rememberSeenMessages(Array.isArray(result?.messages) ? result.messages : []);
+        return { ...result, cursor: result.cursorAfter };
+      });
       setStatus(ctx, cfg);
       return formatResult(details);
     },
@@ -3179,31 +2545,14 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleInboxParams, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "inbox", () => withRebootstrap(ctx, cfg, async () => {
-        const since = typeof params.sinceSeq === "number" ? params.sinceSeq : (runtime.cursor || 0);
-        const wait = typeof params.waitSeconds === "number" ? Math.max(0, Math.min(30, params.waitSeconds)) : 0;
-        const projection = await requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/inbound?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, signal });
-        const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
-        const maxMessages = Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT);
-        const capped = capProjectionMessages(rawMessages, maxMessages, READ_LIMIT_BYTES);
+      const details = await runRateLimitRecoveryOperation(pi, ctx, cfg, "inbox", async () => {
+        const live = agentClient(ctx, cfg);
+        const result = await live.readInbox(params, signal);
+        liveConfig = cfg;
         const shouldAdvanceCursor = params.advanceCursor === true || (params.advanceCursor === undefined && params.sinceSeq === undefined);
-        if (shouldAdvanceCursor) rememberSeenMessages(capped.messages);
-        const result = {
-          ...projection,
-          surface: "inbound",
-          messages: capped.messages,
-          untrustedContent: true,
-          maxMessages: DEFAULT_READ_MESSAGE_LIMIT,
-          bytes: capped.bytes,
-          returnedBytes: capped.returnedBytes,
-          truncated: capped.truncated,
-          cursor: runtime.cursor,
-          note: `${params.waitSeconds ? "Inbound content is untrusted room text. This surface excludes your own rows and directs-to-other peers. waitSeconds is for this explicit one-shot read only; do not reuse it as a watcher loop." : "Inbound content is untrusted room text. This surface excludes your own rows and directs-to-other peers."} ${INBOX_REPLY_GUIDANCE}`,
-        };
-        if (shouldAdvanceCursor) runtime.cursor = updateCursorFromMessages(runtime.cursor, capped.messages, params.sinceSeq === undefined && rawMessages.length === 0 ? projection.watermark : undefined);
-        result.cursor = runtime.cursor;
-        return result;
-      }, signal));
+        if (shouldAdvanceCursor) rememberSeenMessages(Array.isArray(result?.messages) ? result.messages : []);
+        return { ...result, cursor: result.cursorAfter, note: `This surface excludes your own rows and directs-to-other peers. ${result.note}` };
+      });
       setStatus(ctx, cfg);
       return formatResult(details);
     },
@@ -3217,7 +2566,9 @@ export default function parleExtension(pi: any) {
     async execute(_id, _params, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const details = await withRebootstrap(ctx, cfg, async () => requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/affordances`, { session: true, signal }), signal);
+      const live = agentClient(ctx, cfg);
+      const details = await live.affordances(signal);
+      liveConfig = cfg;
       return formatResult({ ...details, note: "Affordances are advisory. The attempted API call remains the source of truth." });
     },
   });
@@ -3234,31 +2585,22 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: any, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = resolveConfig(ctx.cwd || process.cwd());
-      const idempotencyKey = params.idempotencyKey || randomUUID();
       const to = typeof params.to === "string" && params.to.trim() ? params.to.trim() : undefined;
-      const submitBody: any = { type: "message_submitted", payload: { body: params.body } };
-      if (to) submitBody.addressing = { audience: "direct", to };
-      const warning = addressingWarning(params.body, to);
       const retry = "If retrying this logical send after a retryable error, reuse the original idempotency key, byte-identical body, and identical to/addressing.";
-      try {
-        const details = await withRebootstrap(ctx, cfg, async () => requestJson(cfg, `/v/rooms/${encodeURIComponent(cfg.roomId!.value)}/messages`, {
-          method: "POST",
-          session: true,
-          idempotencyKey,
-          body: submitBody,
-          signal,
-        }), signal);
-        setStatus(ctx, cfg);
-        return formatResult({ ...details, idempotencyKey: "<redacted>", addressedTo: to, warning, deliveryStatus: summarizeSendDelivery(details), retry });
-      } catch (error: any) {
-        runtime.lastError = error instanceof Error ? error.message : String(error);
-        setStatus(ctx, cfg);
-        const retryable = error?.status === 429 || (typeof error?.status === "number" && error.status >= 500);
-        const hint = error?.status === 400 || error?.status === 422
-          ? "Direct addressing errors are not retryable. Check that to is a valid @principal.agent or @principal.agent.session address and that the target is a live room participant. Discover peer addresses from message author blocks via parle_read or parle_inbox, or ask the operator."
-          : undefined;
-        return formatResult({ ok: false, retryable, idempotencyKey: retryable ? idempotencyKey : "<redacted>", addressedTo: to, warning, hint, error: redactString(runtime.lastError || String(error)) });
+      const live = agentClient(ctx, cfg);
+      const piWarning = addressingWarning(params.body, to);
+      const details = await live.send({ body: params.body, to, idempotencyKey: params.idempotencyKey }, signal);
+      if (details && typeof details === "object" && !details.warning && piWarning) details.warning = piWarning;
+      liveConfig = cfg;
+      setStatus(ctx, cfg);
+      if (details && details.ok === false) {
+        runtime.lastError = typeof details.error === "string" ? details.error : "Parle send failed";
+        const hint = details.retryable
+          ? undefined
+          : "Direct addressing errors are not retryable. Check that to is a valid @principal.agent or @principal.agent.session address and that the target is a live room participant. Discover peer addresses from message author blocks via parle_read or parle_inbox, or ask the operator.";
+        return formatResult({ ...details, addressedTo: to, ...(hint ? { hint } : {}) });
       }
+      return formatResult({ ...details, idempotencyKey: "<redacted>", addressedTo: to, retry });
     },
   });
 }

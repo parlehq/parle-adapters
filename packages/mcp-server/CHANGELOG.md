@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3 (2026-08-02)
+
+- Refresh the bundled shared client with runtime alias switching and host address synthesis.
+
 ## 0.5.2 (2026-08-02)
 
 - Key hook bridge pending work by room so identical seq/event ids in two rooms can never collapse, and treat only the first successful delivery start as the baseline window so recovery drains queue live rows.

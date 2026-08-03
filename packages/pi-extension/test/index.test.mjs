@@ -26,6 +26,7 @@ function installHarness(cwd) {
   mod.default(pi);
   const statuses = [];
   const ctx = { cwd, ui: { setStatus(id, label) { statuses.push({ id, label }); }, notify() {} } };
+  __testing.bindContext(ctx);
   return {
     tools,
     commands,
@@ -339,10 +340,10 @@ test("watcher autonomously retries a retryable startup bootstrap failure", async
   __testing.resetRuntime();
 });
 
-function installWatcherFailureHarness(heartbeatResponse) {
+function installWatcherFailureHarness(wakeResponse) {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
   let sessionCreates = 0;
-  const heartbeatAt = [];
+  const wakeAt = [];
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
@@ -352,37 +353,51 @@ function installWatcherFailureHarness(heartbeatResponse) {
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-watch" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-    if (u.includes("/heartbeat")) {
-      heartbeatAt.push(Date.now());
-      return heartbeatResponse(heartbeatAt.length);
+    if (u.endsWith("/v/agent/wake")) {
+      wakeAt.push(Date.now());
+      return wakeResponse(wakeAt.length);
     }
     throw new Error("unexpected " + u);
   };
   const harness = installHarness(cwd);
-  return { harness, heartbeatAt, sessionCreates: () => sessionCreates };
+  return { harness, wakeAt, sessionCreates: () => sessionCreates };
 }
 
-test("watcher stops after one terminal invalid-token heartbeat", async () => {
+test("watcher stops after one terminal invalid-token wake open", async () => {
   const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 }));
 
   await probe.harness.call("parle_status");
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await eventually(() => __testing.runtimeState().watcherState === "auth_expired");
 
   assert.equal(probe.sessionCreates(), 1);
-  assert.equal(probe.heartbeatAt.length, 1);
+  assert.equal(probe.wakeAt.length, 1);
   assert.equal(__testing.runtimeState().watcherState, "auth_expired");
 });
 
 test("watcher honors 429 Retry-After before a terminal 401 stops it", async () => {
+  // Deterministic timing: the watcher's retry sleep is observed through the
+  // injected seam, advances a virtual wall clock by exactly the requested
+  // delay, and resolves immediately. The assertion is on the delay the
+  // watcher REQUESTED, never on wall-clock scheduling.
+  const sleeps = [];
+  let wall = 3_000_000;
   const probe = installWatcherFailureHarness((attempt) => attempt === 1
     ? new Response(JSON.stringify({ error: { code: "rate_limited", message: "back off", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 100 } }), { status: 429 })
     : new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 }));
+  __testing.setWatcherTiming({
+    wallNowMs: () => wall,
+    sleep(ms) {
+      sleeps.push(ms);
+      wall += ms;
+      return Promise.resolve();
+    },
+  });
 
   await probe.harness.call("parle_status");
-  await eventually(() => probe.heartbeatAt.length === 2 && __testing.runtimeState().watcherState === "auth_expired");
+  await eventually(() => probe.wakeAt.length === 2 && __testing.runtimeState().watcherState === "auth_expired");
 
-  assert.equal(probe.heartbeatAt.length, 2);
-  assert.ok(probe.heartbeatAt[1] - probe.heartbeatAt[0] >= 90);
+  assert.equal(probe.wakeAt.length, 2);
+  assert.ok(sleeps.some((ms) => ms >= 90 && ms <= 110), `the 429 retry honors the server deadline, saw sleeps ${JSON.stringify(sleeps)}`);
   assert.equal(__testing.runtimeState().watcherState, "auth_expired");
   assert.equal(__testing.runtimeState().nextRetryAt, undefined, "the admitted terminal fault replaces the retry gate");
   assert.equal(__testing.runtimeState().terminalCause.action, "reauthorize");
@@ -422,7 +437,7 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
   let wall = 2_000_000;
   let monotonic = 20_000;
-  let heartbeatCalls = 0;
+  let wakeCalls = 0;
   let sleepStarted = false;
   let sleepAborted = false;
   let recoveryReadObservedJoin = false;
@@ -431,16 +446,15 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-rate", session_credential: "parle_ses_rate", expires_at: "later", address: "@p.a.rate" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
     if (u.includes("/projection")) {
-      if (heartbeatCalls > 0) recoveryReadObservedJoin = sleepAborted;
+      if (wakeCalls > 0) recoveryReadObservedJoin = sleepAborted;
       return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     }
     if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-    if (u.includes("/heartbeat")) {
-      heartbeatCalls += 1;
-      if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "rate_limited", message: "wait", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 20 * 60 * 1000 } }), { status: 429 });
-      return new Response(null, { status: 204 });
+    if (u.endsWith("/v/agent/wake")) {
+      wakeCalls += 1;
+      if (wakeCalls === 1) return new Response(JSON.stringify({ error: { code: "rate_limited", message: "wait", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 20 * 60 * 1000 } }), { status: 429 });
+      return new Response("");
     }
-    if (u.endsWith("/v/agent/wake")) return new Response("");
     throw new Error("unexpected " + u);
   };
   const harness = installHarness(cwd);
@@ -458,8 +472,7 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
   });
 
   await harness.call("parle_status");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(sleepStarted, true);
+  await eventually(() => sleepStarted);
   const retainedRetryAt = __testing.runtimeState().nextRetryAt;
   wall += 15 * 60 * 1000;
   monotonic += 15 * 60 * 1000;
@@ -470,9 +483,9 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
   monotonic += 5 * 60 * 1000;
 
   await harness.call("parle_read");
-  await new Promise((resolve) => setImmediate(resolve));
+  await eventually(() => __testing.runtimeState().rateLimitParkedCause === undefined);
   assert.equal(recoveryReadObservedJoin, true, "explicit recovery request begins only after the automatic watcher joins");
-  assert.equal(heartbeatCalls, 2);
+  assert.ok(wakeCalls >= 2, "the healthy restarted watcher reopened the wake stream");
   assert.equal(__testing.runtimeState().rateLimitParkedCause, undefined);
   assert.equal(__testing.runtimeState().rateLimitConsecutive429s, undefined);
   assert.equal(__testing.runtimeState().nextRetryAt, undefined);
@@ -541,6 +554,8 @@ test("non-recovery send rebootstrap cannot clear parked containment", async () =
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.endsWith("/messages")) {
       sends += 1;
       if (sends === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session" } }), { status: 401 });
@@ -612,9 +627,9 @@ test("watcher stops on a terminal stop action", async () => {
   const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "participant_revoked", message: "removed", action: "stop", retryable: false, scope: "room_access", retry_after_ms: null } }), { status: 403 }));
 
   await probe.harness.call("parle_status");
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await eventually(() => __testing.runtimeState().watcherState === "disconnected");
 
-  assert.equal(probe.heartbeatAt.length, 1);
+  assert.equal(probe.wakeAt.length, 1);
   assert.equal(__testing.runtimeState().watcherState, "disconnected");
 });
 
@@ -661,7 +676,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.3.2" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.4.0" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -717,6 +732,7 @@ test("parle_session_alias prepares the replacement before retiring the active se
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-alias-tool", room_id: "room-1", room_handle: "actual-room" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 9, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
     throw new Error("unexpected " + u);
   };
   const harness = installHarness(cwd);
@@ -770,7 +786,7 @@ test("Pi proactively swaps a configured alias and immediately drains alias-scope
   assert.equal(state.responsiveCursorScope, "alias");
   assert.equal(state.responsiveContinuity, "alias");
   assert.equal(wakeReadiness, 2);
-  const handedOffWake = await __testing.fetchWakeStream(__testing.resolveConfig(cwd), new AbortController().signal);
+  const handedOffWake = await __testing.agentClient().openWakeStream(new AbortController().signal);
   assert.match(await handedOffWake.text(), /ready/);
   assert.equal(wakeReadiness, 2, "the successor watcher consumes the response opened before claim without another stream open");
   assert.equal(drains, 1);
@@ -1324,17 +1340,16 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   };
   const harness = installHarness(cwd);
   __testing.patchRuntime({ sessionHandle: "parle_ses_pi", agentSessionId: "as-pi", roomId: "room-1", bootstrapped: true });
-  const cfg = __testing.resolveConfig(cwd);
 
-  await __testing.requestJson(cfg, "/v/probe", { session: true });
+  await __testing.agentClient().requestJson("/v/probe", { session: true });
   await harness.call("parle_request", { path: "/v/rooms/room-1/projection", authMode: "agent_token", headers: { "X-Test": "safe" } });
-  await __testing.fetchWakeStream(cfg, new AbortController().signal);
+  await __testing.agentClient().openWakeStream(new AbortController().signal);
 
   assert.match(__testing.clientInstanceId, /^[0-9a-f-]{36}$/);
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.3.2");
+    assert.equal(call.headers["Parle-Client-Version"], "0.4.0");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1883,7 +1898,7 @@ async function runPiCursorRead({ cursor, messages = [], watermark = 20, params =
     throw new Error("unexpected " + u);
   });
   await harness.call("parle_status");
-  if (typeof cursor === "number") __testing.runtimeState().cursor = cursor;
+  if (typeof cursor === "number") __testing.patchRuntime({ cursor });
   return { harness, result: await harness.call("parle_inbox", params) };
 }
 
@@ -2189,70 +2204,14 @@ test("non-committing manual reads do not consume responsive delivery", async () 
   assert.equal(__testing.runtimeState().seenSuppressed, undefined);
 });
 
-test("heartbeat rebootstrap action replaces the session before the watcher can wedge", async () => {
-  let sessionCreates = 0;
-  let heartbeatCalls = 0;
-  const harness = installSendHarness(async (url, init = {}) => {
-    const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) {
-      sessionCreates += 1;
-      return new Response(JSON.stringify({ agent_session_id: `as-heart-${sessionCreates}`, session_credential: `parle_ses_heart-session-${sessionCreates}`, session_handle: `heart-session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.heart-session-${sessionCreates}` }), { status: 201 });
-    }
-    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-heart" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-    if (u.includes("/heartbeat")) {
-      heartbeatCalls += 1;
-      assert.equal(init.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-      assert.equal(init.headers["Parle-Client-Version"], "0.3.2");
-      assert.equal(init.headers["Parle-Client-Instance"], __testing.clientInstanceId);
-      if (heartbeatCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
-      return new Response(null, { status: 204 });
-    }
-    throw new Error("unexpected " + u);
-  });
-
-  await harness.call("parle_status");
-  const cfg = __testing.resolveConfig(harness.cwd);
-  await __testing.maybeHeartbeatAgentSession(harness.ctx, cfg);
-
-  assert.equal(sessionCreates, 2);
-  assert.equal(heartbeatCalls, 2);
-  assert.equal(__testing.runtimeState().agentSessionId, "as-heart-2");
-  assert.equal(typeof __testing.runtimeState().lastHeartbeatAt, "string");
-});
-
-test("terminal invalid agent token does not rebootstrap or enter a heartbeat loop", async () => {
-  let sessionCreates = 0;
-  let heartbeatCalls = 0;
-  const harness = installSendHarness(async (url) => {
-    const u = String(url);
-    if (u.endsWith("/v/agent/sessions")) {
-      sessionCreates += 1;
-      return new Response(JSON.stringify({ agent_session_id: "as-terminal", session_credential: "parle_ses_terminal", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.terminal" }), { status: 201 });
-    }
-    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-terminal" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-    if (u.includes("/heartbeat")) {
-      heartbeatCalls += 1;
-      return new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token", retry_after_ms: null } }), { status: 401 });
-    }
-    throw new Error("unexpected " + u);
-  });
-
-  await harness.call("parle_status");
-  const cfg = __testing.resolveConfig(harness.cwd);
-  await assert.rejects(__testing.maybeHeartbeatAgentSession(harness.ctx, cfg), (error) => {
-    assert.equal(error.status, 401);
-    assert.equal(error.code, "invalid_agent_token");
-    assert.equal(error.action, "reauthorize");
-    assert.equal(error.retryable, false);
-    return true;
-  });
-
-  assert.equal(sessionCreates, 1);
-  assert.equal(heartbeatCalls, 1);
+// Session keep-alive is client-owned now: proactive rollover replaces the
+// session before expiry, and the rebootstrap-on-server-action and terminal
+// latch paths are exercised through the data plane and wake stream below.
+test("watcher error classification maps terminal actions and honors server retry delays", () => {
   assert.equal(__testing.terminalWatcherState({ action: "reauthorize" }), "auth_expired");
   assert.equal(__testing.terminalWatcherState({ action: "fix_client" }), "disconnected");
+  assert.equal(__testing.terminalWatcherState({ action: "stop" }), "disconnected");
+  assert.equal(__testing.terminalWatcherState({ action: "backoff" }), undefined);
   assert.equal(__testing.watcherRetryDelayMs({ retryAfterMs: 120_000 }), 120_000);
 });
 
@@ -2267,6 +2226,7 @@ test("room tool calls rebootstrap on the server action", async () => {
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-reboot" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
     if (u.includes("/inbound")) {
       inboxCalls += 1;
       if (inboxCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
@@ -2282,11 +2242,12 @@ test("room tool calls rebootstrap on the server action", async () => {
   assert.equal(inboxCalls, 2);
 });
 
-test("mid-run unpinned rebootstrap baselines the new session before retry", async () => {
+test("mid-run unpinned rebootstrap baselines the new session before the next delivery injects", async () => {
   let sessionCreates = 0;
   let inboxCalls = 0;
-  let baselineCalls = 0;
-  const harness = installSendHarness(async (url) => {
+  const acked = [];
+  let backlog = [];
+  const harness = installSendHarness(async (url, init = {}) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
       sessionCreates += 1;
@@ -2294,9 +2255,15 @@ test("mid-run unpinned rebootstrap baselines the new session before retry", asyn
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-baseline" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
+    if (u.endsWith("/responsive-delivery/ack")) {
+      const body = JSON.parse(init.body);
+      acked.push(body.event_id);
+      backlog = backlog.filter((row) => row.event_id !== body.event_id);
+      return new Response(JSON.stringify({ acked: true }), { status: 200 });
+    }
     if (u.includes("/responsive-delivery")) {
-      baselineCalls += 1;
-      return new Response(JSON.stringify({ watermark: 0, delivery: { last_acked_seq: 0 }, messages: [] }), { status: 200 });
+      return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: backlog }), { status: 200 });
     }
     if (u.includes("/inbound")) {
       inboxCalls += 1;
@@ -2313,7 +2280,14 @@ test("mid-run unpinned rebootstrap baselines the new session before retry", asyn
   assert.equal(result.details.surface, "inbound");
   assert.equal(sessionCreates, 2);
   assert.equal(inboxCalls, 2);
-  assert.equal(baselineCalls, 2, "replacement drains immediately, then the unpinned baseline confirms the empty acknowledgement boundary");
+
+  // The replacement session's server-side backlog is skipped at the next
+  // delivery edge and acknowledged as baseline, never injected into Pi.
+  backlog.push({ seq: 5, event_id: "stale-5", content: "stale backlog" });
+  await __testing.handleWakeHint(harness.pi, harness.ctx, __testing.resolveConfig(harness.cwd));
+  assert.deepEqual(acked, ["stale-5"]);
+  assert.equal(harness.injected.length, 0, "stale-session backlog is never injected");
+  assert.ok((__testing.runtimeState().baselineSkipped || 0) >= 1);
 });
 
 test("parle_send treats direct addressing failures as non-retryable with hint", async () => {
@@ -2428,13 +2402,13 @@ test("an unclassified watcher failure clears an expired retry deadline and retai
   assert.ok(__testing.watcherRetryDelayMs(new TypeError("fetch failed")) >= 5000);
 });
 
-test("bootstrapped terminal heartbeat latches status and stale runs cannot replace its cause", async () => {
+test("bootstrapped terminal wake failure latches status and stale runs cannot replace its cause", async () => {
   const probe = installWatcherFailureHarness(() => new Response(JSON.stringify({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }), { status: 401 }));
   await probe.harness.call("parle_status");
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  const callsBefore = probe.heartbeatAt.length;
+  await eventually(() => Boolean(__testing.runtimeState().terminalCause));
+  const callsBefore = probe.wakeAt.length;
   await probe.harness.call("parle_status");
-  assert.equal(probe.heartbeatAt.length, callsBefore);
+  assert.equal(probe.wakeAt.length, callsBefore);
   const cause = __testing.runtimeState().terminalCause;
   __testing.recordAutomaticFailure({ status: 400, action: "fix_client", message: "stale" }, __testing.resolveConfig(probe.harness.cwd), -1);
   assert.equal(__testing.runtimeState().terminalCause.message, cause.message);

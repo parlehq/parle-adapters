@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 (2026-08-02)
+
+- Move the Pi session spine onto the shared ParleAgentClient: bootstrap, alias claim and recovery, rollover, session publication, room runtime, request layer, and session end are client-owned, with one session owner.
+- Keep Pi-only semantics in Pi: five-source configuration with session_file and the runtime profile override, address synthesis from principal and agent handles, rate-limit parking and failure latches, footer UX, and the pending-injection queue with its pre-ack fences.
+- Route parle_read, parle_inbox, parle_send, parle_affordances, parle_switch_profile, and parle_session_alias through the shared client data plane and switch orchestration.
+- Replace session keep-alive heartbeats with client-owned proactive rollover, and make the 429/401 watcher tests deterministic through the existing clock and sleep seams.
+
 ## 0.3.2 (2026-08-02)
 
 - Refresh the bundled shared client with restartable controller delivery after a terminal wake failure.

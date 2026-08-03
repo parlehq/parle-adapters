@@ -34036,6 +34036,7 @@ var ParleAgentClient = class _ParleAgentClient {
   // preparation after every non-mutating call has succeeded and immediately
   // before the alias claim, which is the only authority-transferring step.
   preClaimGuard;
+  deriveSessionAddress;
   lastCandidateAliasFacts;
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
@@ -34056,6 +34057,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
+    this.deriveSessionAddress = options.synthesizeSessionAddress || ((_route, serverAddress) => serverAddress);
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : void 0;
@@ -34469,7 +34471,7 @@ var ParleAgentClient = class _ParleAgentClient {
       bootstrapped: false,
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
-      sessionAddress: typeof session.address === "string" ? session.address : null,
+      sessionAddress: this.deriveSessionAddress({ sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof session.address === "string" ? session.address : null),
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
       createdAt: String(session.created_at || ""),
@@ -34542,7 +34544,7 @@ var ParleAgentClient = class _ParleAgentClient {
         aliasClaimed = true;
         candidate.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
         candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
-        candidate.sessionAddress = typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress;
+        candidate.sessionAddress = this.deriveSessionAddress({ alias: candidate.sessionAlias, sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress);
         candidate.createdAt = String(claimed.created_at || candidate.createdAt);
         candidate.expiresAt = String(claimed.expires_at || candidate.expiresAt);
         candidate.responsiveContinuity = "alias";
@@ -35009,6 +35011,50 @@ var ParleAgentClient = class _ParleAgentClient {
     const unusedPreviousWake = this.commitCandidate(prepared, epoch);
     await this.completeCandidateHandoff(old, prepared.state, "rollover", signal, unusedPreviousWake, true);
     return { ...this.runtime };
+  }
+  // Move the live session onto a durable alias without touching persistent
+  // configuration. Uses the same candidate machinery as rollover, so the
+  // pre-claim guard, publication barrier, and supersession semantics hold; a
+  // later proactive rollover re-claims the switched alias because rollover
+  // prefers the runtime alias over the configured one.
+  async switchSessionAlias(alias, signal) {
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(alias) || alias.length < 2 || alias.length > 40) {
+      throw new ParleApiError("Parle session alias must be 2-40 lowercase letters, digits, and single hyphens.", { code: "validation_failed", action: "fix_client", scope: "request" });
+    }
+    return this.withLifecycleExclusion(async () => {
+      this.assertLifecycleActive();
+      const epoch = this.lifecycleEpoch;
+      const old = { ...this.runtime };
+      const priorAlias = old.sessionAlias;
+      const priorAddress = old.sessionAddress;
+      this.assertConfigured();
+      let prepared;
+      this.preClaimGuard = (candidate) => {
+        this.assertLifecycleActive(epoch);
+        this.assertSessionCommitAllowed(old, candidate, "alias_switch");
+      };
+      try {
+        prepared = await this.withPublicationBarrier("alias switch", () => this.prepareCandidate(alias, signal, true, true));
+      } finally {
+        this.preClaimGuard = void 0;
+      }
+      const unusedPreviousWake = this.commitCandidate(prepared, epoch);
+      await this.completeCandidateHandoff(old, prepared.state, "alias_switch", signal, unusedPreviousWake, true);
+      const replaced = Boolean(priorAlias && priorAlias !== this.runtime.sessionAlias);
+      return {
+        status: "alias_active",
+        alias: this.runtime.sessionAlias,
+        generation: this.runtime.sessionGeneration,
+        sessionAddress: this.runtime.sessionAddress ?? null,
+        expiresAt: this.runtime.expiresAt,
+        ...priorAlias ? { priorAlias } : {},
+        ...priorAddress ? { priorSessionAddress: priorAddress } : {},
+        ...replaced ? {
+          warning: `This session left the alias ${priorAlias}. Peers still addressing @...${priorAlias} reach a retired route; tell them the new address, or switch back to ${priorAlias} to reclaim it.`,
+          recovery: `switchSessionAlias(${JSON.stringify(priorAlias)})`
+        } : {}
+      };
+    });
   }
   async retireSession(state, signal) {
     if (!state.agentSessionId || !state.sessionHandle)
@@ -35821,7 +35867,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.5.2";
+var MCP_CLIENT_VERSION = "0.5.3";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

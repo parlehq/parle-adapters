@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 (2026-08-02)
+
+- Add switchSessionAlias: a runtime durable-alias switch on the shared candidate machinery, with the pre-claim guard, publication barrier, supersession semantics, and prior-route warning; proactive rollover re-claims the switched alias.
+- Add an alias_switch session commit reason and a synthesizeSessionAddress option so hosts that know their principal and agent handles can derive an address when the server omits one.
+
 ## 0.3.2 (2026-08-02)
 
 - Clear the responsive delivery controller loop when it settles so a terminal wake failure reports running=false and a later start() resumes delivery instead of no-opping forever.

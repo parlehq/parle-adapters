@@ -138,6 +138,11 @@ export type ClientOptions = {
   // .parle/runtime/<pid>.json on every bootstrap state change (see runtime-file.ts)
   // and prunes provably stale sibling files at construction.
   publishRuntime?: { adapterName: string; adapterVersion?: string };
+  // Hosts whose configuration knows the principal and agent handles can
+  // synthesize a session address when the server response omits one. The
+  // callback receives the route (alias or public session handle) and the
+  // server-provided address; returning null leaves the address unset.
+  synthesizeSessionAddress?: (route: { alias?: string; sessionHandle?: string }, serverAddress: string | null) => string | null;
 };
 
 export type RequestOptions = {
@@ -353,7 +358,7 @@ export type SessionRevisionEvent = {
   agentSessionId: string;
   generation: number;
   alias?: string;
-  reason: "bootstrap" | "rollover" | "profile_switch";
+  reason: "bootstrap" | "rollover" | "profile_switch" | "alias_switch";
 };
 
 export type SessionCommitPlan = {
@@ -888,6 +893,7 @@ export class ParleAgentClient {
   // preparation after every non-mutating call has succeeded and immediately
   // before the alias claim, which is the only authority-transferring step.
   private preClaimGuard?: (candidate: RuntimeState) => void;
+  private readonly deriveSessionAddress: (route: { alias?: string; sessionHandle?: string }, serverAddress: string | null) => string | null;
   private lastCandidateAliasFacts?: { priorAliasOwnerSessionId?: string; aliasClaimed: boolean };
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
@@ -915,6 +921,7 @@ export class ParleAgentClient {
     this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
+    this.deriveSessionAddress = options.synthesizeSessionAddress || ((_route, serverAddress) => serverAddress);
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : undefined;
@@ -1331,7 +1338,10 @@ export class ParleAgentClient {
       bootstrapped: false,
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
-      sessionAddress: typeof session.address === "string" ? session.address : null,
+      sessionAddress: this.deriveSessionAddress(
+        { sessionHandle: typeof session.session_handle === "string" ? session.session_handle : undefined },
+        typeof session.address === "string" ? session.address : null,
+      ),
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
       createdAt: String(session.created_at || ""),
@@ -1398,7 +1408,10 @@ export class ParleAgentClient {
         aliasClaimed = true;
         candidate.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
         candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
-        candidate.sessionAddress = typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress;
+        candidate.sessionAddress = this.deriveSessionAddress(
+          { alias: candidate.sessionAlias, sessionHandle: typeof session.session_handle === "string" ? session.session_handle : undefined },
+          typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress,
+        );
         candidate.createdAt = String(claimed.created_at || candidate.createdAt);
         candidate.expiresAt = String(claimed.expires_at || candidate.expiresAt);
         candidate.responsiveContinuity = "alias";
@@ -1899,6 +1912,64 @@ export class ParleAgentClient {
     const unusedPreviousWake = this.commitCandidate(prepared, epoch);
     await this.completeCandidateHandoff(old, prepared.state, "rollover", signal, unusedPreviousWake, true);
     return { ...this.runtime };
+  }
+
+  // Move the live session onto a durable alias without touching persistent
+  // configuration. Uses the same candidate machinery as rollover, so the
+  // pre-claim guard, publication barrier, and supersession semantics hold; a
+  // later proactive rollover re-claims the switched alias because rollover
+  // prefers the runtime alias over the configured one.
+  async switchSessionAlias(alias: string, signal?: AbortSignal): Promise<{
+    status: "alias_active";
+    alias?: string;
+    generation?: number;
+    sessionAddress: string | null;
+    expiresAt: string;
+    priorAlias?: string;
+    priorSessionAddress?: string | null;
+    warning?: string;
+    recovery?: string;
+  }> {
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(alias) || alias.length < 2 || alias.length > 40) {
+      throw new ParleApiError("Parle session alias must be 2-40 lowercase letters, digits, and single hyphens.", { code: "validation_failed", action: "fix_client", scope: "request" });
+    }
+    return this.withLifecycleExclusion(async () => {
+      this.assertLifecycleActive();
+      const epoch = this.lifecycleEpoch;
+      const old = { ...this.runtime };
+      const priorAlias = old.sessionAlias;
+      const priorAddress = old.sessionAddress;
+      this.assertConfigured();
+      let prepared: PreparedCandidate;
+      this.preClaimGuard = (candidate) => {
+        this.assertLifecycleActive(epoch);
+        this.assertSessionCommitAllowed(old, candidate, "alias_switch");
+      };
+      try {
+        prepared = await this.withPublicationBarrier("alias switch", () =>
+          this.prepareCandidate(alias, signal, true, true));
+      } finally {
+        this.preClaimGuard = undefined;
+      }
+      const unusedPreviousWake = this.commitCandidate(prepared, epoch);
+      await this.completeCandidateHandoff(old, prepared.state, "alias_switch", signal, unusedPreviousWake, true);
+      const replaced = Boolean(priorAlias && priorAlias !== this.runtime.sessionAlias);
+      return {
+        status: "alias_active" as const,
+        alias: this.runtime.sessionAlias,
+        generation: this.runtime.sessionGeneration,
+        sessionAddress: this.runtime.sessionAddress ?? null,
+        expiresAt: this.runtime.expiresAt,
+        ...(priorAlias ? { priorAlias } : {}),
+        ...(priorAddress ? { priorSessionAddress: priorAddress } : {}),
+        ...(replaced
+          ? {
+              warning: `This session left the alias ${priorAlias}. Peers still addressing @...${priorAlias} reach a retired route; tell them the new address, or switch back to ${priorAlias} to reclaim it.`,
+              recovery: `switchSessionAlias(${JSON.stringify(priorAlias)})`,
+            }
+          : {}),
+      };
+    });
   }
 
   private async retireSession(state: RuntimeState, signal?: AbortSignal): Promise<void> {
