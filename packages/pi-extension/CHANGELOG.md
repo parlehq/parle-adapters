@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6 (2026-08-03)
+
+- Refresh the shared account client so `parle_login` can create an explicitly targeted missing profile without weakening other account operations.
+
 ## 0.7.5 (2026-08-03)
 
 - Delegate login, room creation, own-agent seat admission, API-base validation, ADR-0036 framing, broad direct-looking mention warnings including `ask` and `tell`, and UTF-8-safe truncation to the shared client; complete and mint login actions now require explicit mutation confirmation plus a reason (#71).

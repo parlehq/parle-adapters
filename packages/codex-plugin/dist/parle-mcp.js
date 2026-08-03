@@ -32404,7 +32404,7 @@ function readBounded(path, maxBytes, label) {
 function firstValue2(key, env, dotEnv) {
   return env[key] || dotEnv[key] || void 0;
 }
-function resolveAccountBaseConfig(cwd, env) {
+function resolveAccountBaseConfig(cwd, env, options = {}) {
   const dotEnvPath = join4(cwd, ".env");
   const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue2("PARLE_PROFILES_PATH", env, dotEnv);
@@ -32421,7 +32421,7 @@ function resolveAccountBaseConfig(cwd, env) {
   let selectedProfile;
   if (existsSync3(catalogPath)) {
     const profileName = firstValue2("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
-    if (profileName)
+    if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath)))
       selectedProfile = loadProfile(profileName, catalogPath);
   }
   if (!configuredApiBase && selectedProfile)
@@ -32869,7 +32869,7 @@ var ParleAccountClient = class {
     const action = params.action || (params.code ? "complete" : "start");
     if (action !== "start" && (params.confirmMutation !== true || !params.reason?.trim()))
       throw new Error(`parle_login ${action} requires confirmMutation=true and a reason before persisting credentials or minting a token.`);
-    const config2 = resolveAccountBaseConfig(this.cwd, this.env);
+    const config2 = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true });
     const writeCredentials = params.writeCredentials !== false;
     const profileName = params.profile || "default";
     if (action === "start") {
@@ -36314,7 +36314,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.0";
+var MCP_CLIENT_VERSION = "0.7.1";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

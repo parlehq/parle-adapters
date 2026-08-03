@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1 (2026-08-03)
+
+- Refresh the bundled shared client so account login can create an explicitly targeted missing profile without weakening other account operations.
+
 ## 0.8.0 (2026-08-03)
 
 - Refresh the bundled MCP server with shared account bootstrap, room creation, and own-agent seat tools, with explicit mutation confirmation and documentation of Desktop host-managed credentials versus deliberately persisted `~/.parle` account state (#71).

@@ -196,7 +196,7 @@ function firstValue(key: string, env: Record<string, string | undefined>, dotEnv
   return env[key] || dotEnv[key] || undefined;
 }
 
-function resolveAccountBaseConfig(cwd: string, env: Record<string, string | undefined>): AccountBaseConfig {
+function resolveAccountBaseConfig(cwd: string, env: Record<string, string | undefined>, options: { allowMissingProfile?: boolean } = {}): AccountBaseConfig {
   const dotEnvPath = join(cwd, ".env");
   const dotEnv = existsSync(dotEnvPath) ? parseDotEnv(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue("PARLE_PROFILES_PATH", env, dotEnv);
@@ -212,7 +212,7 @@ function resolveAccountBaseConfig(cwd: string, env: Record<string, string | unde
   let selectedProfile: CredentialProfile | undefined;
   if (existsSync(catalogPath)) {
     const profileName = firstValue("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : undefined);
-    if (profileName) selectedProfile = loadProfile(profileName, catalogPath);
+    if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath))) selectedProfile = loadProfile(profileName, catalogPath);
   }
   if (!configuredApiBase && selectedProfile) configuredApiBase = selectedProfile.apiBase;
   const rawApiBase = configuredApiBase || DEFAULT_API_BASE;
@@ -602,7 +602,7 @@ export class ParleAccountClient {
   async login(params: LoginParams, signal?: AbortSignal) {
     const action = params.action || (params.code ? "complete" : "start");
     if (action !== "start" && (params.confirmMutation !== true || !params.reason?.trim())) throw new Error(`parle_login ${action} requires confirmMutation=true and a reason before persisting credentials or minting a token.`);
-    const config = resolveAccountBaseConfig(this.cwd, this.env);
+    const config = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true });
     const writeCredentials = params.writeCredentials !== false;
     const profileName = params.profile || "default";
 

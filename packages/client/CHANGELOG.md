@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1 (2026-08-03)
+
+- Allow login to bootstrap an explicitly targeted missing profile in an otherwise populated catalog while retaining strict selected-profile resolution for other account operations.
+
 ## 0.8.0 (2026-08-03)
 
 - Move email login, room creation, and own-agent seat admission into `ParleAccountClient`, including shared session-cookie and profile-catalog persistence that requires explicit mutation confirmation, rejects user-owned symlinked path components, revalidates sinks before atomic replacement, and reports actionable catalog-lock contention.

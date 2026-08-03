@@ -95,6 +95,39 @@ test("login credential mutations require explicit confirmation and reason before
   } finally { f.cleanup(); }
 });
 
+test("login can bootstrap a missing selected profile while other account operations fail closed", async () => {
+  const f = loginFixture();
+  const state = join(f.home, ".parle");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  writeFileSync(join(state, "profiles"), `[other]\nroom_id = ${ROOM_ID}\nagent_token = parle_agt_other\n`, { mode: 0o600 });
+  writeFileSync(join(state, "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
+  let calls = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: { ...f.env, PARLE_PROFILE: "work" },
+      fetch: async (url) => {
+        calls += 1;
+        const path = new URL(url).pathname;
+        if (path === "/v/rooms") return response({ rooms: [{ room_id: ROOM_ID, room_handle: "room-one" }] });
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+
+    await assert.rejects(
+      client.createRoom({ kind: "shared", confirmMutation: true, reason: "must retain strict profile selection" }),
+      /Profile.*work|work.*profile/i,
+    );
+    assert.equal(calls, 0);
+
+    const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "bootstrap work profile", profile: "work", roomId: ROOM_ID, agentId: AGENT_ID });
+    assert.equal(result.profile, "work");
+    assert.match(readFileSync(join(state, "profiles"), "utf8"), /^\[work\]$/m);
+  } finally { f.cleanup(); }
+});
+
 test("login profile publication refuses a concurrent catalog writer without deleting its lock", async () => {
   const f = loginFixture();
   const lockPath = join(f.home, ".parle", "profiles.lock");

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-08-03)
+
+- Refresh the bundled shared client so account login can create an explicitly targeted missing profile without weakening other account operations.
+
 ## 0.6.0 (2026-08-03)
 
 - Refresh the bundled MCP server with shared account bootstrap, room creation, and own-agent seat tools (#71).

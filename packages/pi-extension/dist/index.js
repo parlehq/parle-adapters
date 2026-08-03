@@ -1466,7 +1466,7 @@ function readBounded(path, maxBytes, label) {
 function firstValue2(key, env, dotEnv) {
   return env[key] || dotEnv[key] || void 0;
 }
-function resolveAccountBaseConfig(cwd, env) {
+function resolveAccountBaseConfig(cwd, env, options = {}) {
   const dotEnvPath = join4(cwd, ".env");
   const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue2("PARLE_PROFILES_PATH", env, dotEnv);
@@ -1483,7 +1483,7 @@ function resolveAccountBaseConfig(cwd, env) {
   let selectedProfile;
   if (existsSync3(catalogPath)) {
     const profileName = firstValue2("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
-    if (profileName)
+    if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath)))
       selectedProfile = loadProfile(profileName, catalogPath);
   }
   if (!configuredApiBase && selectedProfile)
@@ -1931,7 +1931,7 @@ var ParleAccountClient = class {
     const action = params.action || (params.code ? "complete" : "start");
     if (action !== "start" && (params.confirmMutation !== true || !params.reason?.trim()))
       throw new Error(`parle_login ${action} requires confirmMutation=true and a reason before persisting credentials or minting a token.`);
-    const config = resolveAccountBaseConfig(this.cwd, this.env);
+    const config = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true });
     const writeCredentials = params.writeCredentials !== false;
     const profileName = params.profile || "default";
     if (action === "start") {
@@ -5030,7 +5030,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.5";
+var PI_EXTENSION_VERSION = "0.7.6";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
