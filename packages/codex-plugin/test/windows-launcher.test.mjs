@@ -72,17 +72,29 @@ function setup() {
   return { base, pluginRoot, home, hostilePath, hostileCwd, empty };
 }
 
+// Windows environment names are case-insensitive, and the inherited block
+// often uses different casing (LOCALAPPDATA vs LocalAppData). A plain object
+// spread would leave both variants in the child block and cmd could resolve
+// the inherited one, so every override first deletes all case-variants.
+function setEnvCaseInsensitive(env, key, value) {
+  for (const existing of Object.keys(env)) {
+    if (existing.toLowerCase() === key.toLowerCase()) delete env[existing];
+  }
+  if (value !== undefined) env[key] = value;
+}
+
 function launcherEnv(fixture, overrides = {}) {
-  const env = {
-    ...process.env,
+  const env = { ...process.env };
+  const values = {
     PLUGIN_ROOT: fixture.pluginRoot,
     HOME: fixture.home,
     USERPROFILE: fixture.home,
     PATH: `${fixture.hostilePath};${process.env.PATH ?? ""}`,
     ...overrides,
   };
-  delete env.PARLE_PROFILES_PATH;
-  if (!("PARLE_HOOK_RUNTIME" in overrides)) delete env.PARLE_HOOK_RUNTIME;
+  for (const [key, value] of Object.entries(values)) setEnvCaseInsensitive(env, key, value);
+  setEnvCaseInsensitive(env, "PARLE_PROFILES_PATH", undefined);
+  if (!("PARLE_HOOK_RUNTIME" in overrides)) setEnvCaseInsensitive(env, "PARLE_HOOK_RUNTIME", undefined);
   return env;
 }
 
