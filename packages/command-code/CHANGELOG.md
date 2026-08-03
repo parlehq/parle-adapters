@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0 (2026-08-03)
+
+- Refresh the bundled MCP server with shared account bootstrap, room creation, and own-agent seat tools (#71).
+
 ## 0.5.6 (2026-08-03)
 
 - Refresh the bundled MCP server with the shared wake-open lifecycle callback. Existing Command Code behavior is unchanged.

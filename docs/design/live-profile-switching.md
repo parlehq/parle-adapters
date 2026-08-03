@@ -38,7 +38,7 @@ Alias authority is scoped by durable agent id. `@principal.agent1.main` and `@pr
 
 ## Persistence
 
-Switches are ephemeral and process-local. They do not rewrite `.env`, the profile catalog, or credentials. A cold restart returns to the configured `PARLE_PROFILE` or implicit default profile.
+Switches are ephemeral and process-local. They do not rewrite `.env`, the profile catalog, or credentials. A cold restart returns to the configured `PARLE_PROFILE` or implicit default profile. The catalog's accepted placement and relocation rules are defined in [Adapter storage layout](storage-layout.md).
 
 Persistent profile selection is a separate host policy and is not part of this primitive.
 

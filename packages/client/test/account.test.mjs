@@ -18,6 +18,20 @@ const ADDITIONAL_AGENT_TOKEN_ID = "019f7c00-0000-7000-8000-000000000007";
 const SECRET = `parle_inv_${"z".repeat(43)}`;
 const CODE = "ABCDEFGHIJ";
 
+function loginFixture() {
+  const home = mkdtempSync(join(tmpdir(), "parle-account-login-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-account-login-cwd-"));
+  return {
+    home,
+    cwd,
+    env: { HOME: home },
+    cleanup: () => {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    },
+  };
+}
+
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "parle-account-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-account-cwd-"));
@@ -39,6 +53,102 @@ function fixture() {
 function response(json, status = 200) {
   return new Response(JSON.stringify(json), { status, headers: { "Content-Type": "application/json" } });
 }
+
+test("login persists the shared session and profile path without returning secrets", async () => {
+  const f = loginFixture();
+  const calls = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, method: init.method, body: init.body && JSON.parse(init.body), cookie: init.headers.Cookie });
+        if (path === "/v/auth/email/complete") return new Response(JSON.stringify({ status: "logged_in" }), { status: 201, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_shared-cookie; Path=/; HttpOnly; Secure" } });
+        if (path === "/v/rooms") return response({ rooms: [{ room_id: ROOM_ID, room_handle: "room-one" }] });
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    const result = await client.login({ action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
+    assert.equal(result.status, "credentials_saved");
+    assert.equal(JSON.stringify(result).includes("shared-cookie"), false);
+    assert.equal(JSON.stringify(result).includes("parle_agt_"), false);
+    assert.equal(readFileSync(join(f.home, ".parle", "session"), "utf8"), "__Host-parle_session=parle_ses_shared-cookie\n");
+    const profiles = readFileSync(join(f.home, ".parle", "profiles"), "utf8");
+    assert.match(profiles, /^\[default\]$/m);
+    assert.match(profiles, new RegExp(`room_id = ${ROOM_ID}`));
+    assert.deepEqual(calls.map((call) => call.path), ["/v/auth/email/complete", "/v/rooms", "/v/agents", `/v/agents/${AGENT_ID}/tokens`]);
+    assert.equal(calls.slice(1).every((call) => call.cookie === "__Host-parle_session=parle_ses_shared-cookie"), true);
+  } finally { f.cleanup(); }
+});
+
+test("login credential mutations require explicit confirmation and reason before network access", async () => {
+  const f = loginFixture();
+  let called = false;
+  try {
+    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { called = true; throw new Error("unexpected network access"); } });
+    await assert.rejects(client.login({ action: "complete", email: "user@example.test", code: "123456" }), /confirmMutation=true and a reason/);
+    await assert.rejects(client.login({ action: "mint-from-session", confirmMutation: true, roomId: ROOM_ID, agentId: AGENT_ID }), /confirmMutation=true and a reason/);
+    assert.equal(called, false);
+  } finally { f.cleanup(); }
+});
+
+test("login profile publication refuses a concurrent catalog writer without deleting its lock", async () => {
+  const f = loginFixture();
+  const lockPath = join(f.home, ".parle", "profiles.lock");
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url) => {
+        const path = new URL(url).pathname;
+        if (path === "/v/auth/email/complete") return new Response(JSON.stringify({ status: "logged_in" }), { status: 201, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_shared-cookie; Path=/; HttpOnly; Secure" } });
+        if (path === "/v/rooms") return response({ rooms: [{ room_id: ROOM_ID, room_handle: "room-one" }] });
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/agents/${AGENT_ID}/tokens`) {
+          writeFileSync(lockPath, "other-writer\n", { mode: 0o600, flag: "wx" });
+          return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+
+    await assert.rejects(
+      client.login({ action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" }),
+      /profile catalog is locked.*Retry after the active writer finishes.*stale lock manually/,
+    );
+    assert.equal(readFileSync(lockPath, "utf8"), "other-writer\n");
+    assert.equal(existsSync(join(f.home, ".parle", "profiles")), false);
+  } finally { f.cleanup(); }
+});
+
+test("shared account client creates rooms and admits own agents through fixed human-session endpoints", async () => {
+  const f = fixture();
+  const calls = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, method: init.method, body: JSON.parse(init.body), cookie: init.headers.Cookie });
+        if (path === "/v/rooms") return response({ room_id: ROOM_ID, room_handle: "shared-room", kind: "shared", seat_id: SEAT_ID }, 201);
+        if (path === `/v/rooms/${ROOM_ID}/seats`) return response({ seat_id: SEAT_ID, agent_id: AGENT_ID, admitted_at: "2026-08-03T12:00:00Z" }, 201);
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    const room = await client.createRoom({ kind: "shared", roomHandle: "Shared-Room", confirmMutation: true, reason: "create" });
+    const seat = await client.addOwnAgentSeat({ roomId: ROOM_ID, agentId: AGENT_ID, confirmMutation: true, reason: "admit" });
+    assert.equal(room.room_handle, "shared-room");
+    assert.equal(seat.agent_id, AGENT_ID);
+    assert.deepEqual(calls, [
+      { path: "/v/rooms", method: "POST", body: { kind: "shared", room_handle: "shared-room" }, cookie: "__Host-parle_session=human-cookie" },
+      { path: `/v/rooms/${ROOM_ID}/seats`, method: "POST", body: { agent_id: AGENT_ID }, cookie: "__Host-parle_session=human-cookie" },
+    ]);
+  } finally { f.cleanup(); }
+});
 
 test("principal invite mint resolves a handle and returns a non-secret target-session locator", async () => {
   const f = fixture();
@@ -186,7 +296,7 @@ test("principal invite preview and complete use the private bundle and delete it
     assert.equal(preview.roomId, ROOM_ID);
     assert.equal(preview.historyVisible, true);
     assert.equal(existsSync(handoffPath), true);
-    const complete = await client.claimPrincipalInvite({ action: "complete", handoffPath, confirmMutation: true, reason: "Kyle approved admission" });
+    const complete = await client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "Kyle approved admission" });
     assert.equal(complete.seatId, SEAT_ID);
     assert.equal(complete.handoffDeleted, true);
     assert.equal(existsSync(handoffPath), false);
@@ -207,7 +317,7 @@ test("a successful claim consumes the handoff even when advisory response fields
     const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
     writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-01", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ accepted: true }, 201) });
-    const result = await client.claimPrincipalInvite({ action: "complete", handoffPath, confirmMutation: true, reason: "claim" });
+    const result = await client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "claim" });
     assert.equal(result.state, "completed");
     assert.equal(result.roomId, ROOM_ID);
     assert.equal(result.handoffDeleted, true);
@@ -226,7 +336,7 @@ test("claim failures redact the capability and preserve the handoff", async () =
     const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
     writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-01", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ error: { code: "unauthenticated", message: `bad ${SECRET} ${CODE}` } }, 401) });
-    await assert.rejects(client.claimPrincipalInvite({ action: "complete", handoffPath, confirmMutation: true, reason: "claim" }), (error) => {
+    await assert.rejects(client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "claim" }), (error) => {
       assert.equal(error.message.includes(SECRET), false);
       assert.equal(error.message.includes(CODE), false);
       assert.match(error.message, /<redacted>/);
@@ -311,7 +421,7 @@ test("connect workflow previews immutable selection and publishes a credential w
     assert.equal(preview.agent, "selected");
     assert.match(preview.next, /createAgentHandle/);
     assert.match(preview.next, /new durable agent/);
-    const complete = await client.connectOwnAgent({ action: "complete", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" });
+    const complete = await client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" });
     assert.equal(complete.profile, "galexc-kyleops");
     assert.equal(complete.credential, "profile_ready");
     assert.equal(JSON.stringify(complete).includes("parle_agt_"), false);
@@ -349,7 +459,7 @@ test("connect can deliberately create and connect an additional durable agent", 
     assert.equal(preview.agents[0].agentHandle, "morty");
     assert.match(preview.next, /additional-agent handle/);
 
-    const complete = await client.connectOwnAgent({ action: "complete", invitation: INVITE_ID, createAgentHandle: "rick", confirmMutation: true, reason: "Add a second durable agent" });
+    const complete = await client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, createAgentHandle: "rick", confirmMutation: true, reason: "Add a second durable agent" });
     assert.equal(complete.agent, "created");
     assert.equal(complete.selectedAgent.agentId, ADDITIONAL_AGENT_ID);
     assert.equal(complete.profile, "galexc-kyleops-rick");
@@ -379,7 +489,7 @@ test("connect treats token-mint 5xx as outcome unknown and never retries", async
       }
       throw new Error(`unexpected ${method} ${path}`);
     } });
-    const result = await client.connectOwnAgent({ action: "complete", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" });
+    const result = await client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" });
     assert.equal(result.credential, "outcome_unknown");
     assert.equal(result.recoveryAgentId, AGENT_ID);
     assert.match(result.next, /Do not retry/);
@@ -412,7 +522,7 @@ test("connect revokes a known minted token when atomic profile publication fails
       }
       throw new Error(`unexpected ${method} ${path}`);
     } });
-    await assert.rejects(client.connectOwnAgent({ action: "complete", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" }), (error) => {
+    await assert.rejects(client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" }), (error) => {
       assert.match(error.message, /profile catalog changed after preflight/);
       assert.match(error.message, /Credential cleanup succeeded/);
       assert.equal(error.message.includes(token), false);
@@ -439,7 +549,7 @@ test("connect never clobbers an occupied explicit profile and does not mint", as
       if (path === `/v/agents/${AGENT_ID}/tokens` && method === "POST") { minted = true; return response({}, 201); }
       throw new Error(`unexpected ${method} ${path}`);
     } });
-    await assert.rejects(client.connectOwnAgent({ action: "complete", invitation: INVITE_ID, agentId: AGENT_ID, profileLabel: "default", confirmMutation: true, reason: "connect" }), /already exists with an unproven binding/);
+    await assert.rejects(client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, agentId: AGENT_ID, profileLabel: "default", confirmMutation: true, reason: "connect" }), /already exists with an unproven binding/);
     assert.equal(minted, false);
     assert.equal(readFileSync(catalog, "utf8"), original);
   } finally { f.cleanup(); }

@@ -14,6 +14,7 @@ import {
   formatVersionErrorHint,
   addressingWarning,
   assertSafeBase,
+  bodyLooksLikeAddressedText,
   capProjectionMessages,
   clampWaitSeconds,
   compactServerWrappedContent,
@@ -30,6 +31,7 @@ import {
   responsiveDeliveryKey,
   summarizeSendDelivery,
   terminalStatusFor,
+  truncateText,
   updateCursorFromMessages,
 } from "../dist/index.js";
 
@@ -233,11 +235,15 @@ test("key value parser preserves the adapter config-file contract", () => {
   });
 });
 
-test("safe base rejects non-Parle hosts unless loopback opt-in is set", () => {
+test("safe base rejects non-Parle hosts unless the loopback opt-in is set", () => {
   assert.doesNotThrow(() => assertSafeBase("https://api.parle.sh"));
   assert.throws(() => assertSafeBase("http://evil.example"));
   assert.throws(() => assertSafeBase("https://evilparle.sh"));
+  assert.throws(() => assertSafeBase("http://localhost:3000"));
+  assert.throws(() => assertSafeBase("ftp://localhost:3000", { PARLE_ALLOW_INSECURE_LOCAL: "1" }));
+  assert.throws(() => assertSafeBase("https://user:pass@api.parle.sh"));
   assert.doesNotThrow(() => assertSafeBase("http://localhost:3000", { PARLE_ALLOW_INSECURE_LOCAL: "1" }));
+  assert.doesNotThrow(() => assertSafeBase("https://localhost:8443", { PARLE_ALLOW_INSECURE_LOCAL: "1" }));
   assert.doesNotThrow(() => assertSafeBase("http://[::1]:3000", { PARLE_ALLOW_INSECURE_LOCAL: "1" }));
 });
 
@@ -324,8 +330,13 @@ test("message cap does not drop an oversized first content row", () => {
   assert.equal(capped.truncated, true);
 });
 
-test("addressing warning fires only for body mentions without structured to", () => {
+test("addressing warning catches direct-looking mention, ask, and tell forms", () => {
+  assert.equal(bodyLooksLikeAddressedText("@gilman.agent hello"), true);
+  assert.equal(bodyLooksLikeAddressedText("ask @gilman.agent hello"), true);
+  assert.equal(bodyLooksLikeAddressedText("tell @gilman.agent hello"), true);
   assert.match(addressingWarning("@gilman.agent hello"), /will not wake/);
+  assert.match(addressingWarning("ask @gilman.agent hello"), /will not wake/);
+  assert.match(addressingWarning("tell @gilman.agent hello"), /will not wake/);
   assert.equal(addressingWarning("@gilman.agent hello", "@gilman.agent.session"), undefined);
 });
 
@@ -341,6 +352,16 @@ test("send delivery summary classifies moderation envelopes", () => {
   assert.deepEqual(summarizeSendDelivery({ moderation: { delivered: true } }), { state: "delivered", message: "Message accepted and delivered." });
   assert.equal(Object.hasOwn({ event_id: "evt-1" }, "deliveryStatus"), false);
   assert.equal(summarizeSendDelivery({ event_id: "evt-1" }), undefined);
+});
+
+test("truncation keeps UTF-8 boundaries, byte metadata, and an explicit marker", () => {
+  const result = truncateText("😀".repeat(10), 20);
+  assert.deepEqual(result, { text: "😀😀\n[truncated]", truncated: true, bytes: 40, returnedBytes: 20 });
+  const normal = truncateText("abc", 8);
+  assert.deepEqual(normal, { text: "abc", truncated: false, bytes: 3, returnedBytes: 3 });
+  const replacement = truncateText("kept \uFFFD value and a long tail", 22);
+  assert.equal(replacement.text.startsWith("kept \uFFFD"), true);
+  assert.equal(replacement.text.endsWith("\n[truncated]"), true);
 });
 
 test("wrapped content compacts only exact same-response framing", () => {

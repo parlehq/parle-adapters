@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0 (2026-08-03)
+
+- Refresh the bundled MCP server with shared account bootstrap, room creation, and own-agent seat tools, with explicit mutation confirmation and documentation of Desktop host-managed credentials versus deliberately persisted `~/.parle` account state (#71).
+
 ## 0.7.10 (2026-08-03)
 
 - Refresh the bundled MCP server with the shared wake-open lifecycle callback. Existing Desktop behavior is unchanged.

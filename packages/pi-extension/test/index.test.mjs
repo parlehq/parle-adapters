@@ -281,6 +281,16 @@ test("Pi delegates .env parsing to the agent client", () => {
   assert.match(source, /return parseKeyValueFile\(readFileSync\(path, "utf8"\)\);/);
 });
 
+test("Pi delegates account-plane operations and protocol helpers to the agent client", () => {
+  const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(source, /FENCE_SUFFIX[^\n]*assertSafeBase[^\n]*bodyLooksLikeAddressedText[^\n]*compactServerWrappedContent as compactSharedServerWrappedContent[^\n]*truncateText[^\n]*from "@parlehq\/agent-client"/);
+  assert.match(source, /accountClient\(ctx\.cwd \|\| process\.cwd\(\)\)\.login\(params, signal\)/);
+  assert.match(source, /accountClient\(ctx\.cwd \|\| process\.cwd\(\)\)\.createRoom\(params, signal\)/);
+  assert.match(source, /accountClient\(ctx\.cwd \|\| process\.cwd\(\)\)\.addOwnAgentSeat\(params, signal\)/);
+  assert.doesNotMatch(source, /async function parle(?:Login|CreateRoom|AddOwnAgentSeat)/);
+  assert.doesNotMatch(source, /function (?:assertSafeBase|bodyLooksLikeAddressedText|truncateText)/);
+});
+
 test("deployed entrypoint is the committed bundle", () => {
   // The Pi harness loads the committed dist bundle in deployed checkouts
   // (no installs, no builds there); check-pi-artifact.mjs gates freshness.
@@ -721,7 +731,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.4" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.5" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1395,7 +1405,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.4");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.5");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1616,7 +1626,7 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
   };
   const harness = installHarness(cwd);
 
-  const result = await harness.call("parle_login", { action: "complete", email: "user@example.test", code: "123456" });
+  const result = await harness.call("parle_login", { action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
 
   assert.equal(result.details.status, "credentials_saved");
   assert.equal(JSON.stringify(result.details).includes("parle_ses_cookie-secret"), false);
@@ -1658,11 +1668,11 @@ test("parle_login validates labels and requires force before replacing a profile
   };
   const harness = installHarness(cwd);
 
-  await assert.rejects(harness.call("parle_login", { action: "mint-from-session", profile: "bad]label", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }), /profile must be/);
-  await assert.rejects(harness.call("parle_login", { action: "mint-from-session", profile: "target", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }), /force=true/);
+  await assert.rejects(harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "bad]label", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }), /profile must be/);
+  await assert.rejects(harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "target", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }), /force=true/);
   assert.equal(called, false);
 
-  const result = await harness.call("parle_login", { action: "mint-from-session", profile: "target", force: true, roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
+  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "target", force: true, roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
   assert.equal(result.details.profile, "target");
   assert.equal(result.details.profileReplaced, true);
   assert.equal(result.details.prior_agent_token_id, "019f2946-aef5-77ad-a41d-747ce0fd6a23");
@@ -1674,51 +1684,62 @@ test("parle_login validates labels and requires force before replacing a profile
   assert.match(updated, /\[target\]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_new\nagent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1f\n/);
 });
 
-test("parle_login writes profiles through an owned directory symlink", async () => {
+test("parle_login refuses a symlinked profile directory before network or credential mint", async () => {
   const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
   const targetDir = join(process.env.HOME, "profile-store");
   mkdirSync(targetDir, { recursive: true });
   symlinkSync(targetDir, join(process.env.HOME, ".parle"));
-  globalThis.fetch = async (url) => {
-    const u = String(url);
-    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "one" }] }), { status: 200 });
-    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
-    if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_dir_symlink" }), { status: 201 });
-    throw new Error("unexpected " + u);
-  };
+  let fetched = false;
+  globalThis.fetch = async () => { fetched = true; throw new Error("symlink rejection must happen before network access"); };
 
-  const result = await installHarness(cwd).call("parle_login", { action: "mint-from-session", profile: "linked-dir", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
+  await assert.rejects(
+    installHarness(cwd).call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "linked-dir", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }),
+    /symlinked (?:path component|directory)/,
+  );
 
-  assert.equal(result.details.profile, "linked-dir");
+  assert.equal(fetched, false);
   assert.equal(lstatSync(join(process.env.HOME, ".parle")).isSymbolicLink(), true);
-  assert.match(readFileSync(join(targetDir, "profiles"), "utf8"), /^\[linked-dir\]$/m);
-  assert.equal(statSync(join(targetDir, "profiles")).mode & 0o777, 0o600);
+  assert.equal(existsSync(join(targetDir, "profiles")), false);
 });
 
-test("parle_login atomically updates an owned symlink profile catalog", async () => {
+test("parle_login refuses a user-owned symlinked profile ancestor before network or credential mint", async () => {
+  const cwd = tempProject("PARLE_PROFILES_PATH=./linked/nested/profiles\nPARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
+  const targetDir = join(cwd, "target");
+  mkdirSync(targetDir, { recursive: true });
+  symlinkSync(targetDir, join(cwd, "linked"));
+  let fetched = false;
+  globalThis.fetch = async () => { fetched = true; throw new Error("ancestor symlink rejection must happen before network access"); };
+
+  await assert.rejects(
+    installHarness(cwd).call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "linked-ancestor", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }),
+    /user-owned symlinked path component/,
+  );
+
+  assert.equal(fetched, false);
+  assert.equal(existsSync(join(targetDir, "nested", "profiles")), false);
+});
+
+test("parle_login refuses a symlinked profile catalog before network or credential mint", async () => {
   const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
   const catalogDir = join(process.env.HOME, ".parle");
   const targetDir = join(process.env.HOME, "profile-store");
   mkdirSync(catalogDir, { recursive: true });
   mkdirSync(targetDir, { recursive: true });
   const target = join(targetDir, "profiles");
-  writeFileSync(target, "[keep]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a20\nagent_token = parle_agt_keep\n", { mode: 0o600 });
+  const original = "[keep]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a20\nagent_token = parle_agt_keep\n";
+  writeFileSync(target, original, { mode: 0o600 });
   symlinkSync(target, join(catalogDir, "profiles"));
-  globalThis.fetch = async (url) => {
-    const u = String(url);
-    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "one" }] }), { status: 200 });
-    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
-    if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_symlink" }), { status: 201 });
-    throw new Error("unexpected " + u);
-  };
+  let fetched = false;
+  globalThis.fetch = async () => { fetched = true; throw new Error("symlink rejection must happen before network access"); };
 
-  const result = await installHarness(cwd).call("parle_login", { action: "mint-from-session", profile: "linked", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
+  await assert.rejects(
+    installHarness(cwd).call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "linked", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }),
+    /symlinked catalog/,
+  );
 
-  assert.equal(result.details.profile, "linked");
+  assert.equal(fetched, false);
   assert.equal(lstatSync(join(catalogDir, "profiles")).isSymbolicLink(), true);
-  assert.match(readFileSync(target, "utf8"), /^\[linked\]$/m);
-  assert.match(readFileSync(join(catalogDir, "profiles"), "utf8"), /^\[keep\]$/m);
-  assert.equal(statSync(target).mode & 0o777, 0o600);
+  assert.equal(readFileSync(target, "utf8"), original);
 });
 
 test("parle_login preserves session cookie when room or agent selection is ambiguous", async () => {
@@ -1737,7 +1758,7 @@ test("parle_login preserves session cookie when room or agent selection is ambig
   };
   const harness = installHarness(cwd);
 
-  const result = await harness.call("parle_login", { action: "complete", email: "user@example.test", code: "123456" });
+  const result = await harness.call("parle_login", { action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
 
   assert.equal(result.details.status, "selection_required");
   assert.equal(result.details.wroteSessionCookie, true);
@@ -1757,7 +1778,7 @@ test("parle_login complete refuses to consume a code when credentials will not b
   const harness = installHarness(cwd);
 
   await assert.rejects(
-    harness.call("parle_login", { action: "complete", email: "user@example.test", code: "123456", writeCredentials: false }),
+    harness.call("parle_login", { action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456", writeCredentials: false }),
     /consume a one-time code/,
   );
   assert.equal(called, false);
@@ -1775,7 +1796,7 @@ test("parle_login routes persistence through PARLE_PROFILES_PATH", async () => {
   };
   const harness = installHarness(cwd);
 
-  const result = await harness.call("parle_login", { action: "mint-from-session", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1", profile: "team" });
+  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1", profile: "team" });
 
   assert.equal(result.details.status, "credentials_saved");
   assert.equal(result.details.profilePath, join(cwd, "secrets", "parle-profiles"));
@@ -1798,11 +1819,11 @@ test("parle_login fails closed on conflicting or duplicate selection", async () 
   const harness = installHarness(cwd);
 
   await assert.rejects(
-    harness.call("parle_login", { action: "mint-from-session", roomId: "room-1", roomHandle: "two", agentId: "agent-1" }),
+    harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomId: "room-1", roomHandle: "two", agentId: "agent-1" }),
     /selection conflict/,
   );
   await assert.rejects(
-    harness.call("parle_login", { action: "mint-from-session", roomHandle: "one", agentHandle: "dup" }),
+    harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomHandle: "one", agentHandle: "dup" }),
     /Multiple agents match/,
   );
 });
@@ -1817,7 +1838,7 @@ test("parle_login mint-from-session refuses to mint when credentials will not be
   const harness = installHarness(cwd);
 
   await assert.rejects(
-    harness.call("parle_login", { action: "mint-from-session", writeCredentials: false, roomId: "room-1", agentId: "agent-1" }),
+    harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", writeCredentials: false, roomId: "room-1", agentId: "agent-1" }),
     /mint a plaintext token/,
   );
   assert.equal(called, false);
@@ -1854,21 +1875,23 @@ test("parle_send includes direct addressing when to is present", async () => {
   assert.match(result.details.retry, /identical to\/addressing/);
 });
 
-test("parle_send without to stays unaddressed and warns on leading body mention", async () => {
-  let messageRequest;
+test("parle_send without to stays unaddressed and warns on direct-looking mention forms", async () => {
+  const messageRequests = [];
   const harness = installSendHarness(async (url, init = {}) => {
     const u = String(url);
     if (u.endsWith("/v/rooms/room-send/messages")) {
-      messageRequest = JSON.parse(init.body);
-      return new Response(JSON.stringify({ seq: 2, event_id: "event-2" }), { status: 201 });
+      messageRequests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ seq: messageRequests.length + 1, event_id: `event-${messageRequests.length + 1}` }), { status: 201 });
     }
     return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
   });
 
-  const result = await harness.call("parle_send", { body: "ask @gilman.galexc.mme3hxrdumknrpvv what time it is", idempotencyKey: "idem-2" });
+  const mention = await harness.call("parle_send", { body: "@gilman.galexc.mme3hxrdumknrpvv what time is it", idempotencyKey: "idem-2" });
+  const prefixed = await harness.call("parle_send", { body: "ask @gilman.galexc.mme3hxrdumknrpvv what time it is", idempotencyKey: "idem-3" });
 
-  assert.equal(Object.hasOwn(messageRequest, "addressing"), false);
-  assert.match(result.details.warning, /will not wake a peer watcher/);
+  assert.equal(messageRequests.every((request) => !Object.hasOwn(request, "addressing")), true);
+  assert.match(mention.details.warning, /will not wake a peer watcher/);
+  assert.match(prefixed.details.warning, /will not wake a peer watcher/);
 });
 
 test("responsive delivery prompt tells agents how to reply directly", () => {

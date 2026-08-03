@@ -12,7 +12,13 @@ Claude Desktop collects these values through the MCPB user configuration form:
 - `PARLE_ROOM_ID`
 - `PARLE_ROOM_AGENT_TOKEN`, marked sensitive
 
-Desktop setup is env-only in v1. Project `.env` discovery is not documented as a supported Desktop setup path because Claude Desktop controls the server working directory.
+Desktop connection bootstrap is env-only in v1. Project `.env` discovery is not documented as a supported Desktop setup path because Claude Desktop controls the server working directory. The sensitive room token injected by Desktop remains authoritative for that MCP server process and may be stored by the host in the operating-system credential store.
+
+## Account tools and credential locations
+
+The shared Desktop bundle intentionally exposes `parle_login`, `parle_create_room`, and `parle_add_own_agent_seat`. These are separate account-plane operations, not Desktop connection bootstrap. Credential-persisting `parle_login` operations require `confirmMutation: true` plus a nonempty reason before they can write a protected human-session record and room-bound profile under the resolved `~/.parle` account-state root. They do not replace Desktop's injected room token or change the live Desktop connection automatically.
+
+Desktop therefore has two explicit credential custody locations: host-managed sensitive configuration for the active MCP process, and `~/.parle` only when a user deliberately invokes an account tool that persists credentials. The profile and session files remain available to CLI and coding-harness adapters. See [the accepted storage decision](../../docs/design/storage-layout.md).
 
 ## Account hardening
 
@@ -43,9 +49,19 @@ Use disposable room credentials for first validation.
 
 1. Build and test this package.
 2. Install `out/parle-claude-desktop-extension.mcpb` in Claude Desktop.
-3. Fill the required user config through Desktop prompts.
-4. Confirm `parle_status` redacts the token.
-5. Confirm `parle_setup` reports useful diagnostics with missing or incomplete config.
-6. With a disposable live room, confirm `parle_inbox` works and `parle_send` returns `deliveryStatus` when moderation state is present.
-7. Restart Claude Desktop and confirm process-local cursor reset behavior is understandable from tool output.
-8. Remove the extension and confirm credentials were not written into repo files or the MCPB archive.
+3. Fill the required user config through Desktop prompts using a disposable room token.
+4. In Keychain Access, record the item name and service without revealing the credential.
+5. Confirm the disposable token is absent from plaintext under `~/Library/Application Support/Claude/`.
+6. Confirm the disposable token is absent from `~/Library/Logs/Claude/mcp-server-*.log`.
+7. Confirm `parle_status` redacts the token.
+8. Confirm `parle_setup` reports useful diagnostics with missing or incomplete config.
+9. With a disposable live room, confirm `parle_inbox` works and `parle_send` returns `deliveryStatus` when moderation state is present.
+10. Install an upgraded package and record whether Desktop prompts for the sensitive value again.
+11. Rotate the disposable token through the Desktop UI, restart Desktop, and confirm the new process uses the replacement while the revoked token fails.
+12. Repeat with `~/.parle/profiles` present and confirm Desktop's injected process environment remains authoritative for that Desktop process.
+13. With disposable account credentials, confirm `parle_login` refuses complete and mint operations without `confirmMutation: true` plus a reason, then confirm an explicitly authorized call writes only the expected protected files under `~/.parle`, returns no secrets, and does not replace the live Desktop connection token.
+14. Restart Claude Desktop and confirm process-local cursor reset behavior is understandable from tool output.
+15. Remove the extension and confirm credentials were not written into repo files or the MCPB archive. Account credentials deliberately persisted under `~/.parle` are independent user state and are not removed with the extension.
+16. On Windows, repeat the credential-store checks against Credential Manager. If no Windows host is available, track that validation explicitly rather than claiming coverage.
+
+Never print or paste the disposable token into an issue, log, shell history, or validation transcript. Record only pass or fail evidence and credential-store metadata.

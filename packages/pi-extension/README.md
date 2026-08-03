@@ -27,7 +27,7 @@ profile in process environment or project `.env`:
 PARLE_PROFILE=my-room
 ```
 
-Profiles live in the UTF-8 INI catalog `~/.parle/profiles`:
+Profiles live in the UTF-8 INI catalog `~/.parle/profiles`. See [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md) for the accepted storage rationale and reconsideration triggers:
 
 ```ini
 [my-room]
@@ -64,13 +64,14 @@ beside the resolved profile catalog (`~/.parle/session` by default; one
 `PARLE_PROFILES_PATH` override relocates the whole secrets home) for later
 `mint-from-session` calls, mints a room-bound agent token, and atomically
 writes the selected profile to the resolved catalog with `0600` permissions. Because complete and mint operations
-handle plaintext credentials, `writeCredentials: false` is rejected. `profile`
+handle plaintext credentials, they require `confirmMutation: true` plus a nonempty `reason`, and `writeCredentials: false` is rejected. `profile`
 defaults to `default`. Labels are 1 to 64 characters, start with a letter or
 number, and contain only letters, numbers, dot, underscore, or hyphen. Replacing
 an existing section requires `force: true`; the result includes the prior
 `agent_token_id` when the section had one, and unrelated catalog bytes are
-preserved exactly. A catalog symlink is supported when both the link and its
-regular-file target are owned by the current user.
+preserved exactly. Credential writes reject user-owned symlinked path ancestors,
+profile directories, and catalog files before network access or token mint, then
+revalidate the directory and target immediately before atomic replacement.
 
 Room and agent selectors may be passed directly as `roomId` or `roomHandle` and
 `agentId` or `agentHandle`. When omitted, login uses the corresponding resolved
@@ -111,7 +112,7 @@ The extension registers these Pi tools:
 - `parle_status` - show redacted config provenance and runtime state.
 - `parle_switch_profile` - atomically switch this live Pi process to another named profile without editing `.env` or persistent configuration.
 - `parle_setup` - diagnose missing configuration.
-- `parle_login` - request and complete email login, capture the human session cookie, mint a room-bound agent token, and save a named personal profile. Pass `force: true` only when intentionally replacing that profile.
+- `parle_login` - request and complete email login, capture the human session cookie, mint a room-bound agent token, and save a named personal profile. Complete and mint operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
 - `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a shared room's seat plane.
 - `parle_harden_account` - perform one typed account-hardening transition without accepting a secret or path. The human separately runs `parle-hardening-secret` on a controlling TTY; it is never auto-launched.

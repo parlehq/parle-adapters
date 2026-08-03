@@ -22,7 +22,7 @@ codex plugin list
 codex mcp get parle
 ```
 
-The MCP server resolves `~/.parle/profiles` directly. If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Codex with `PARLE_PROFILE` naming the intended profile.
+The MCP server resolves `~/.parle/profiles` directly. The accepted rationale is recorded in [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md). If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Codex with `PARLE_PROFILE` naming the intended profile.
 
 A normal prompt can then be concise:
 

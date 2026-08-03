@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0 (2026-08-03)
+
+- Refresh the bundled MCP server with shared account bootstrap, room creation, and own-agent seat tools (#71).
+
 ## 0.8.4 (2026-08-03)
 
 - Refresh the bundled MCP server with the shared wake-open lifecycle callback. Existing Claude Code behavior is unchanged.

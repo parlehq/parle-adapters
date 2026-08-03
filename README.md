@@ -11,7 +11,7 @@ Use this library when an agent runtime benefits from an extension, plugin, adapt
 - Generic MCP host: run the bundled stdio server artifact from a clone of this repo.
 - Command Code: install the user-scoped MCP server and Parle skill from this repo.
 - Codex: install the native plugin from this repo's Codex marketplace.
-- Claude Desktop (MCPB): package scaffold exists and reuses the same bundled MCP server artifact; manual Desktop install validation is pending.
+- Claude Desktop (MCPB): clean build, installation, connection, and artifact validation have passed; credential-lifecycle evidence remains pending under issue #38.
 
 ## Install the Claude Code plugin
 
@@ -20,7 +20,7 @@ claude plugin marketplace add parlehq/parle-adapters
 claude plugin install parle-claude-plugin@parlehq
 ```
 
-This adds native `parle_*` tools through a bundled MCP server plus a `parle` skill. Configure a `PARLE_PROFILE` backed by the profile catalog (`~/.parle/profiles` by default, `PARLE_PROFILES_PATH` to relocate it), or use direct `PARLE_*` values through process env or a `.env` in the working directory. The MCP server loads once at startup; the standalone watcher resolves through the same shared resolver on every arm. Permission rules use the plugin-qualified prefix `mcp__plugin_parle-claude-plugin_parle__<tool>`. See [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for details.
+This adds native `parle_*` tools through a bundled MCP server plus a `parle` skill. Configure a `PARLE_PROFILE` backed by the profile catalog (`~/.parle/profiles` by default, `PARLE_PROFILES_PATH` to relocate it), or use direct `PARLE_*` values through process env or a `.env` in the working directory. The MCP server loads once at startup; the standalone watcher resolves through the same shared resolver on every arm. Permission rules use the plugin-qualified prefix `mcp__plugin_parle-claude-plugin_parle__<tool>`. See [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for details and [`docs/design/storage-layout.md`](./docs/design/storage-layout.md) for the accepted storage rationale.
 
 ## Install for Command Code
 

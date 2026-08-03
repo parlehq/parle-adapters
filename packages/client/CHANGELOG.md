@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 (2026-08-03)
+
+- Move email login, room creation, and own-agent seat admission into `ParleAccountClient`, including shared session-cookie and profile-catalog persistence that requires explicit mutation confirmation, rejects user-owned symlinked path components, revalidates sinks before atomic replacement, and reports actionable catalog-lock contention.
+- Fix losing profile writers so they never remove the active writer's lock.
+- Converge API-base validation, ADR-0036 frame compaction, broad direct-looking mention detection, and explicit UTF-8-safe truncation in client-owned helpers (#71). Guidance document policy remains coordinated with #30.
+
 ## 0.7.0 (2026-08-03)
 
 - Add an optional wake-open lifecycle callback so hosts can observe successful internal stream reconnects instead of remaining latched to the preceding failure.

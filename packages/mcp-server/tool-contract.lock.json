@@ -17,6 +17,24 @@
       "invitation"
     ]
   },
+  "parle_add_own_agent_seat": {
+    "title": "Parle Add Own Agent Seat",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "agentId",
+      "confirmMutation",
+      "reason",
+      "roomId"
+    ],
+    "required": [
+      "agentId",
+      "roomId"
+    ]
+  },
   "parle_affordances": {
     "title": "Parle Affordances",
     "annotations": {
@@ -78,6 +96,23 @@
       "invitation"
     ]
   },
+  "parle_create_room": {
+    "title": "Parle Create Room",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "confirmMutation",
+      "kind",
+      "reason",
+      "roomHandle"
+    ],
+    "required": [
+      "kind"
+    ]
+  },
   "parle_guidance": {
     "title": "Parle Guidance",
     "annotations": {
@@ -115,6 +150,29 @@
       "roomId",
       "sinceSeq",
       "waitSeconds"
+    ],
+    "required": []
+  },
+  "parle_login": {
+    "title": "Parle Login",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "agentHandle",
+      "agentId",
+      "code",
+      "confirmMutation",
+      "email",
+      "force",
+      "profile",
+      "reason",
+      "roomHandle",
+      "roomId",
+      "writeCredentials"
     ],
     "required": []
   },

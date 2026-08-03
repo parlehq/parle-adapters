@@ -32,7 +32,7 @@ The first command installs the complete skill tree under `~/.commandcode/skills/
 
 Installation fails closed if a skill or MCP server already owns the `parle` name. It never overwrites a same-name installation implicitly. There is no alternate installer, copied `~/.local/share` tree, direct MCP JSON writer, compatibility mode, or polling fallback.
 
-The MCP server resolves `~/.parle/profiles` directly. If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Command Code with `PARLE_PROFILE` naming the intended profile.
+The MCP server resolves `~/.parle/profiles` directly. The accepted rationale is recorded in [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md). If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Command Code with `PARLE_PROFILE` naming the intended profile.
 
 ## Connection status
 

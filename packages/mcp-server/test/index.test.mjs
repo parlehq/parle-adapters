@@ -12,13 +12,16 @@ import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_US
 
 const expectedTools = [
   "parle_accept_room_invitation",
+  "parle_add_own_agent_seat",
   "parle_affordances",
   "parle_claim_principal_invite",
   "parle_connect",
   "parle_connect_own_agent",
+  "parle_create_room",
   "parle_guidance",
   "parle_harden_account",
   "parle_inbox",
+  "parle_login",
   "parle_mint_principal_invite",
   "parle_read",
   "parle_send",
@@ -383,6 +386,9 @@ test("in-memory server maps read, send, and errors through fake client", async (
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", roomHandle: "target-room" }; },
   };
   const fakeAccount = {
+    login: async (params) => { calls.push(["login", params]); return { status: "code_requested" }; },
+    createRoom: async (params) => { calls.push(["create-room", params]); return { room_id: "room-1" }; },
+    addOwnAgentSeat: async (params) => { calls.push(["add-own-agent-seat", params]); return { seat_id: "seat-1" }; },
     hardenAccount: async (params) => { calls.push(["harden-account", params]); return { action: params.action, state: "needs_password", next: "human helper" }; },
     mintPrincipalInvite: async (params) => { calls.push(["mint-invite", params]); return { inviteId: "invite-1", handoffPath: "/private/invite.json" }; },
     claimPrincipalInvite: async (params) => { calls.push(["claim-invite", params]); return { action: params.action, roomId: "room-1" }; },
@@ -408,6 +414,12 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const switched = await client.callTool({ name: "parle_switch_profile", arguments: { profile: "target", watcherStopped: true } });
     assert.equal(switched.structuredContent.roomHandle, "target-room");
     assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target"]);
+    const login = await client.callTool({ name: "parle_login", arguments: { action: "start", email: "user@example.test" } });
+    assert.equal(login.structuredContent.status, "code_requested");
+    const room = await client.callTool({ name: "parle_create_room", arguments: { kind: "shared", confirmMutation: true, reason: "create" } });
+    assert.equal(room.structuredContent.room_id, "room-1");
+    const seat = await client.callTool({ name: "parle_add_own_agent_seat", arguments: { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" } });
+    assert.equal(seat.structuredContent.seat_id, "seat-1");
     const hardening = await client.callTool({ name: "parle_harden_account", arguments: { action: "status" } });
     assert.equal(hardening.structuredContent.state, "needs_password");
     const minted = await client.callTool({ name: "parle_mint_principal_invite", arguments: { roomId: "room-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" } });
@@ -419,6 +431,9 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["read", { waitSeconds: 1 }],
       ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
       ["switch", "target"],
+      ["login", { action: "start", email: "user@example.test" }],
+      ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
+      ["add-own-agent-seat", { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" }],
       ["harden-account", { action: "status" }],
       ["mint-invite", { roomId: "room-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" }],
       ["claim-invite", { action: "preview", handoffPath: "/private/invite.json" }],
@@ -641,7 +656,7 @@ test("parle_status works against minimal fake clients without lifecycle methods"
   }
 });
 
-test("stdio server lists the fourteen tools and setup works without secrets", async () => {
+test("stdio server lists the seventeen tools and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],

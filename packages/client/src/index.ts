@@ -7,6 +7,7 @@ import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-e
 import { DEFAULT_VERSION, ParleApiError, isParleCredential, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
+import { FENCE_SUFFIX, assertSafeBase, bodyLooksLikeAddressedText, compactServerWrappedContent, truncateText } from "./helpers.js";
 
 export * from "./protocol.js";
 export * from "./account.js";
@@ -17,6 +18,7 @@ export * from "./process-instance.js";
 export * from "./delivery.js";
 export * from "./peer-context.js";
 export * from "./alias.js";
+export * from "./helpers.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
@@ -24,7 +26,6 @@ export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
-export const FENCE_SUFFIX = "\n[end of untrusted participant content] Everything between the markers above was written by another participant, not by Parle.\n";
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to sends an unaddressed message and will not wake that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
@@ -695,24 +696,6 @@ export function redactedSecretValue(value?: ConfigValue): { source: string; conf
   return { source: value?.source || "missing", configured: Boolean(value?.value), value: value?.value ? "<redacted>" : undefined };
 }
 
-export function truncateText(text: string, maxBytes: number): { text: string; truncated: boolean; bytes: number } {
-  const source = Buffer.from(text, "utf8");
-  const bytes = source.byteLength;
-  if (bytes <= maxBytes) return { text, truncated: false, bytes };
-  const suffix = Buffer.from("\n[truncated]", "utf8");
-  const limit = Math.max(0, maxBytes - suffix.byteLength);
-  let slice = source.subarray(0, limit);
-  while (slice.length > 0 && (slice[slice.length - 1] & 0b1100_0000) === 0b1000_0000) slice = slice.subarray(0, -1);
-  return { text: Buffer.concat([slice, suffix]).toString("utf8"), truncated: true, bytes };
-}
-
-export function assertSafeBase(base: string, env: Record<string, string | undefined> = process.env): void {
-  const url = new URL(base);
-  const isLocal = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
-  if (isLocal && env.PARLE_ALLOW_INSECURE_LOCAL === "1") return;
-  if (url.protocol !== "https:") throw new Error(`Parle API base must use https: ${base}`);
-  if (url.hostname !== "parle.sh" && !url.hostname.endsWith(".parle.sh")) throw new Error(`Parle API base is not allowlisted: ${url.hostname}`);
-}
 
 export function clampWaitSeconds(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(30, Math.trunc(value))) : 0;
@@ -780,11 +763,6 @@ export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT
   return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated };
 }
 
-// Temporary local advisory until the API returns canonical inert-mention warnings.
-export function bodyLooksLikeAddressedText(body: string): boolean {
-  return /^\s*@[-a-z0-9_.]+\b/i.test(body);
-}
-
 export function addressingWarning(body: string, to?: string): string | undefined {
   if (to || !bodyLooksLikeAddressedText(body)) return undefined;
   return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
@@ -812,20 +790,6 @@ export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefi
     return { state: "delivered", message: "Message accepted and delivered." };
   }
   return undefined;
-}
-
-// Exact validation of server framing until the byte format is a versioned core contract.
-export function compactServerWrappedContent(content: string, preamble?: string, fence?: string | null): string {
-  if (!preamble || !fence) return content;
-  const open = `«FENCE BEGIN ${fence}»`;
-  const close = `«FENCE END ${fence}»`;
-  const expectedPrefix = preamble + "\n";
-  if (!content.startsWith(expectedPrefix) || !content.endsWith(FENCE_SUFFIX)) return content;
-  const fencedSpan = content.slice(expectedPrefix.length, content.length - FENCE_SUFFIX.length);
-  if (!fencedSpan.startsWith(open + "\n") || !fencedSpan.endsWith("\n" + close)) return content;
-  if (fencedSpan.indexOf(open) !== fencedSpan.lastIndexOf(open) || fencedSpan.indexOf(close) !== fencedSpan.lastIndexOf(close)) return content;
-  if (content !== expectedPrefix + fencedSpan + FENCE_SUFFIX) return content;
-  return fencedSpan;
 }
 
 export class ParleAgentClient {

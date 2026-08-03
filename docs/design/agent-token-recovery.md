@@ -225,7 +225,7 @@ The recovery tools do not ship while Pi retains a second account transport.
 
 ## Human-session confinement
 
-The session store becomes a versioned record beside the resolved profile catalog:
+The session store becomes a versioned record beside the resolved profile catalog. The accepted home-directory placement and relocation rules are defined in [Adapter storage layout](storage-layout.md).
 
 ```json
 {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 (2026-08-03)
+
+- Expose shared `parle_login`, `parle_create_room`, and `parle_add_own_agent_seat` account-plane tools to MCP hosts, with explicit mutation confirmation for credential-persisting login actions (#71).
+
 ## 0.6.4 (2026-08-03)
 
 - Expose the shared client wake-open lifecycle callback in the bundled runtime. Existing MCP host behavior is unchanged.

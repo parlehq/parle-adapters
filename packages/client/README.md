@@ -33,7 +33,7 @@ Responsive delivery reports the server-selected `delivery.cursor_scope` as `sess
 
 ## Credential profiles
 
-Keep room-bound credentials in a UTF-8 INI profile catalog. The resolver checks `~/.parle/profiles` first, then falls back to project-local `./.parle/profiles`:
+Keep room-bound credentials in a UTF-8 INI profile catalog. The accepted storage rationale and reconsideration triggers are recorded in [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md). The resolver checks `~/.parle/profiles` first, then falls back to project-local `./.parle/profiles`:
 
 ```ini
 [default]

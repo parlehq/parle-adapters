@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type HardenAccountParams, type MintPrincipalInviteParams, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.6.4";
+export const MCP_CLIENT_VERSION = "0.7.0";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -89,6 +89,9 @@ const switchProfileSchema = {
 };
 
 export type ParleAccountClientLike = {
+  login(params: LoginParams): Promise<unknown>;
+  createRoom(params: CreateRoomParams): Promise<unknown>;
+  addOwnAgentSeat(params: AddOwnAgentSeatParams): Promise<unknown>;
   mintPrincipalInvite(params: MintPrincipalInviteParams): Promise<unknown>;
   claimPrincipalInvite(params: ClaimPrincipalInviteParams): Promise<unknown>;
   acceptRoomInvitation(params: AcceptRoomInvitationParams): Promise<unknown>;
@@ -223,6 +226,59 @@ export function createParleMcpServer(
       } : { restartRequired: false },
     };
   }));
+
+  server.registerTool("parle_login", {
+    title: "Parle Login",
+    description: "Request or complete an email-code login, then save the human session cookie and a room-bound agent profile beside the resolved profile catalog. Complete and mint-from-session require confirmMutation=true plus a reason, always persist credentials, and never return a session cookie or token.",
+    inputSchema: {
+      action: z.enum(["start", "complete", "mint-from-session"]).optional(),
+      email: z.string().optional(),
+      code: z.string().optional(),
+      roomId: z.string().optional(),
+      roomHandle: z.string().optional(),
+      agentId: z.string().optional(),
+      agentHandle: z.string().optional(),
+      writeCredentials: z.boolean().optional(),
+      profile: z.string().optional(),
+      force: z.boolean().optional(),
+      confirmMutation: z.boolean().optional(),
+      reason: z.string().optional(),
+    },
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.login(params as LoginParams));
+  });
+
+  server.registerTool("parle_create_room", {
+    title: "Parle Create Room",
+    description: "Create one private or shared room through the fixed human-session endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, add members, or configure moderation.",
+    inputSchema: {
+      roomHandle: z.string().optional(),
+      kind: z.enum(["private", "shared"]),
+      confirmMutation: z.boolean().optional(),
+      reason: z.string().optional(),
+    },
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.createRoom(params as CreateRoomParams));
+  });
+
+  server.registerTool("parle_add_own_agent_seat", {
+    title: "Parle Add Own Agent Seat",
+    description: "Admit one authenticated principal-owned durable agent to a shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
+    inputSchema: {
+      roomId: z.string(),
+      agentId: z.string(),
+      confirmMutation: z.boolean().optional(),
+      reason: z.string().optional(),
+    },
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.addOwnAgentSeat(params as AddOwnAgentSeatParams));
+  });
 
   server.registerTool("parle_harden_account", {
     title: "Parle Harden Account",
