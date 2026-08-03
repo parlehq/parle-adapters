@@ -678,7 +678,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.5.0" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.6.0" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -705,7 +705,7 @@ test("footer prefers alias route when session uses an alias", async () => {
   assert.equal(status.details.runtime.sessionAddress, "@p.a.parle-landing");
   assert.equal(status.details.runtime.sessionAlias, "parle-landing");
   assert.equal(status.details.runtime.sessionGeneration, 2);
-  assert.equal(status.details.runtime.roomHandle, "actual-room");
+  assert.equal(status.details.runtime.rooms[0].roomHandle, "actual-room");
   assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
 });
 
@@ -1151,8 +1151,9 @@ test("parle_switch_profile prepares the target before atomically replacing room 
   assert.equal(status.details.profile.value, "target");
   assert.equal(status.details.profile.source, "runtime_profile");
   assert.equal(status.details.roomId.value, newRoom);
-  assert.equal(status.details.runtime.roomId, newRoom);
-  assert.equal(status.details.runtime.roomHandle, "target-room");
+  assert.equal(status.details.runtime.rooms.length, 1, "the room list carries the switched room, never a primary projection");
+  assert.equal(status.details.runtime.rooms[0].roomId, newRoom);
+  assert.equal(status.details.runtime.rooms[0].roomHandle, "target-room");
   assert.equal(harness.statuses.at(-1).label, "#target-room ✓ @p.a.target");
   const affordances = await harness.call("parle_affordances");
   assert.equal(affordances.details.affordances[0].action, "post_message");
@@ -1294,7 +1295,7 @@ test("parle_switch_profile leaves the live profile intact when target preparatio
   const status = await harness.call("parle_status");
   assert.equal(status.details.profile.value, "default");
   assert.equal(status.details.roomId.value, oldRoom);
-  assert.equal(status.details.runtime.roomId, oldRoom);
+  assert.equal(status.details.runtime.rooms[0].roomId, oldRoom);
   assert.equal(status.details.runtime.sessionAddress, "@p.a.old");
 });
 
@@ -1351,7 +1352,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.5.0");
+    assert.equal(call.headers["Parle-Client-Version"], "0.6.0");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2467,4 +2468,121 @@ test("replacing an active alias reports the route left behind and how to reclaim
   assert.match(second.details.warning, /left the alias workshop/);
   assert.match(second.details.warning, /reach a retired route/);
   assert.equal(second.details.recovery, "parle_session_alias alias=workshop");
+});
+
+// --- Pi multi-room host adoption (#66) ---
+
+function multiRoomPiProject({ env = "PARLE_WATCH_ENABLED=0\nPARLE_PROFILES=alpha, beta\n" } = {}) {
+  const roomA = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const roomB = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
+  const cwd = tempProject(env);
+  mkdirSync(join(process.env.HOME, ".parle"), { recursive: true });
+  writeFileSync(join(process.env.HOME, ".parle", "profiles"), `[alpha]\nroom_id = ${roomA}\nagent_token = parle_agt_alpha\n\n[beta]\nroom_id = ${roomB}\nagent_token = parle_agt_beta\n`, { mode: 0o600 });
+  const calls = [];
+  const acks = [];
+  const queues = new Map([[roomA, []], [roomB, []]]);
+  let sessionCreates = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const auth = init.headers?.Authorization;
+    calls.push([init.method || "GET", path, auth]);
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      sessionCreates += 1;
+      return new Response(JSON.stringify({ agent_session_id: "as-multi", session_credential: "parle_ses_multi", session_handle: "multi", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.multi" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: path.includes(roomA) ? "part-a" : "part-b", room_handle: path.includes(roomA) ? "room-alpha" : "room-beta" }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: path.includes(roomA) ? 10 : 20, messages: [] }), { status: 200 });
+    if (path.includes("/inbound")) return new Response(JSON.stringify({ watermark: path.includes(roomA) ? 11 : 21, messages: [{ seq: path.includes(roomA) ? 11 : 21, event_id: "row", payload: { body: "x" } }] }), { status: 200 });
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+    if (path.endsWith("/responsive-delivery/ack")) {
+      const roomId = path.split("/")[3];
+      const body = JSON.parse(String(init.body));
+      acks.push([roomId, body.seq, body.event_id, auth]);
+      queues.set(roomId, (queues.get(roomId) || []).filter((row) => row.event_id !== body.event_id));
+      return new Response(JSON.stringify({ acked: true }), { status: 200 });
+    }
+    if (path.includes("/responsive-delivery")) {
+      const roomId = path.split("/")[3];
+      return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: queues.get(roomId) || [] }), { status: 200 });
+    }
+    if (path.endsWith("/messages")) return new Response(JSON.stringify({ seq: 30, event_id: "sent" }), { status: 201 });
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path} ${auth}`);
+  };
+  return { cwd, roomA, roomB, calls, acks, queues, sessionCreates: () => sessionCreates };
+}
+
+test("Pi resolves PARLE_PROFILES into one multi-room client and publishes rooms[]", async () => {
+  const project = multiRoomPiProject();
+  const harness = installHarness(project.cwd);
+  const status = await harness.call("parle_status");
+
+  assert.equal(project.sessionCreates(), 1, "one roomless session enters every configured room");
+  assert.equal(status.details.profiles.value, "alpha, beta");
+  assert.equal(status.details.roomId.set, false, "no single-room binding is projected in multi-room mode");
+  assert.equal(status.details.runtime.roomId, undefined, "no primary-room projection on the session block");
+  assert.deepEqual(status.details.runtime.rooms.map((room) => [room.roomId, room.state, room.cursor]), [
+    [project.roomA, "ready", 10],
+    [project.roomB, "ready", 20],
+  ]);
+  const participantsAuth = project.calls.filter(([, path]) => path.endsWith("/participants"));
+  assert.ok(participantsAuth.every(([, path, auth]) => auth === (path.includes(project.roomA) ? "Bearer parle_agt_alpha" : "Bearer parle_agt_beta")), "each room enters with its own bearer");
+});
+
+test("Pi multi-room reads fail closed without roomId, route per-room bearers, and keep cursors independent", async () => {
+  const project = multiRoomPiProject();
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+
+  await assert.rejects(harness.call("parle_inbox"), /roomId is required/);
+  const inbox = await harness.call("parle_inbox", { roomId: project.roomB });
+  assert.equal(inbox.details.roomId, project.roomB);
+  assert.equal(inbox.details.cursor, 21);
+  const inboundAuth = project.calls.find(([, path]) => path.includes(`/v/rooms/${project.roomB}/inbound`));
+  assert.equal(inboundAuth[2], "Bearer parle_agt_beta");
+
+  const status = await harness.call("parle_status");
+  assert.deepEqual(status.details.runtime.rooms.map((room) => room.cursor), [10, 21], "another room's cursor never moves");
+
+  const sent = await harness.call("parle_send", { body: "hello", roomId: project.roomA });
+  assert.equal(sent.details.seq, 30);
+  const sendCall = project.calls.find(([method, path]) => method === "POST" && path === `/v/rooms/${project.roomA}/messages`);
+  assert.equal(sendCall[2], "Bearer parle_agt_alpha");
+});
+
+test("Pi multi-room selector conflicts fail closed before any network activity", async () => {
+  const conflictProfile = multiRoomPiProject({ env: "PARLE_WATCH_ENABLED=0\nPARLE_PROFILES=alpha, beta\nPARLE_PROFILE=alpha\n" });
+  globalThis.fetch = async () => { throw new Error("must not reach the network"); };
+  await assert.rejects(installHarness(conflictProfile.cwd).call("parle_status"), /PARLE_PROFILES from project_env conflicts with PARLE_PROFILE/);
+
+  const conflictDirect = multiRoomPiProject({ env: "PARLE_WATCH_ENABLED=0\nPARLE_PROFILES=alpha, beta\nPARLE_ROOM_ID=direct-room\n" });
+  globalThis.fetch = async () => { throw new Error("must not reach the network"); };
+  await assert.rejects(installHarness(conflictDirect.cwd).call("parle_status"), /conflicts with direct room configuration/);
+});
+
+test("Pi injects identical seq/event rows from two rooms separately and never mixes rooms in a batch", async () => {
+  const project = multiRoomPiProject();
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+
+  project.queues.set(project.roomA, [{ seq: 7, event_id: "evt-7", participant_id: "p-peer", provenance: { author: "peer", kind: "participant" }, content: "alpha row" }]);
+  project.queues.set(project.roomB, [{ seq: 7, event_id: "evt-7", participant_id: "p-peer", provenance: { author: "peer", kind: "participant" }, content: "beta row" }]);
+  await __testing.handleWakeHint(harness.pi, harness.ctx, __testing.resolveConfig(project.cwd));
+
+  assert.equal(harness.injected.length, 2, "cross-room rows with identical identifiers never collapse");
+  assert.match(harness.injected.join("\n"), /alpha row/);
+  assert.match(harness.injected.join("\n"), /beta row/);
+  assert.deepEqual(project.acks.map(([roomId, seq, eventId]) => [roomId, seq, eventId]).sort(), [
+    [project.roomA, 7, "evt-7"],
+    [project.roomB, 7, "evt-7"],
+  ].sort(), "each room acknowledges its own row with its own bearer");
+  const ackAuths = project.acks.map(([roomId, , , auth]) => [roomId, auth]);
+  assert.ok(ackAuths.every(([roomId, auth]) => auth === (roomId === project.roomA ? "Bearer parle_agt_alpha" : "Bearer parle_agt_beta")));
+});
+
+test("Pi live profile switching fails closed while multi-room mode is active", async () => {
+  const project = multiRoomPiProject();
+  const harness = installHarness(project.cwd);
+  await harness.call("parle_status");
+  await assert.rejects(harness.call("parle_switch_profile", { profile: "alpha" }), /unavailable while PARLE_PROFILES configures 2 rooms/);
 });

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 (2026-08-02)
+
+- Adopt real multi-room operation (#66): PARLE_PROFILES resolves through Pi's own env and project sources into the shared client room set, preserving five-source single-binding semantics when the selector is absent.
+- Make parle_read, parle_inbox, parle_send, parle_affordances, and parle_request room-explicit with sole-room omission compatibility; multi-room omission fails closed and lists the configured rooms.
+- Publish rooms[] on status with no primary-room projection, label the footer with the room count, and run one shared delivery controller across the room set with room-scoped dedupe keys and room-tagged injection batches.
+- Keep live profile switching fail-closed while multi-room mode is active.
+
 ## 0.5.0 (2026-08-02)
 
 - Move Pi responsive delivery onto the shared ResponsiveDeliveryController: the controller owns the wake loop, drain, dedupe, and acknowledgement; Pi's handler queues rows as deferred and the idle flush completes them per row in order after injection, preserving cumulative-ack crash safety for seen rows behind un-injected predecessors.
