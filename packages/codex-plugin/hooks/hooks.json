@@ -1,6 +1,20 @@
 {
   "description": "Inject queued Parle responsive delivery at supported Codex lifecycle boundaries.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
+            "commandWindows": "cmd /d /s /c \"echo {}\"",
+            "timeout": 5,
+            "statusMessage": "Re-anchoring Parle peer context",
+            "additionalContextLimit": 5000
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

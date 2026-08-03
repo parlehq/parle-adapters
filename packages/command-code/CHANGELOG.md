@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 (2026-08-02)
+
+- Render peer context on the per-tool boundary as well: shipped Command Code 1.5.0 has no compact-source SessionStart, so PreToolUse re-anchors the first post-compaction tool call, with the residual no-tool-turn gap documented.
+
 ## 0.5.0 (2026-08-02)
 
 - Re-anchor operator-tagged stable peer context through the managed SessionStart hook and ship the TTY-only parle-peers helper (#53).

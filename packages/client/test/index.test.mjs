@@ -1885,6 +1885,12 @@ test("peer context store is operator-owned, bounded, and renders retention langu
 
     assert.throws(() => addStablePeer(catalog, { label: "bad label!", address: "@a.b" }), /peer label/);
     assert.throws(() => addStablePeer(catalog, { label: "x", address: "not-an-address" }), /peer address/);
+    // A full route is two or three non-empty labels; fragments are rejected.
+    for (const malformed of ["@a", "@a.", "@a..b", "@.a.b", "@a.b.", "@a.b.c.d", "@a-.b"]) {
+      assert.throws(() => addStablePeer(catalog, { label: "x", address: malformed }), /peer address/, `rejects ${malformed}`);
+    }
+    addStablePeer(catalog, { label: "agentlevel", address: "@gilman.galexc" });
+    removeStablePeer(catalog, "agentlevel");
 
     removeStablePeer(catalog, "pinned");
     assert.deepEqual(readPeerContext(catalog).peers.map((peer) => peer.label), ["lead"]);

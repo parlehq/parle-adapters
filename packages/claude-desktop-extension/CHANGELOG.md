@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.7 (2026-08-02)
+
+- Refresh the bundled MCP server with the peer-context review hardening.
+
 ## 0.7.6 (2026-08-02)
 
 - Refresh the bundled MCP server with the read-only stable peer-context status surface (#53).

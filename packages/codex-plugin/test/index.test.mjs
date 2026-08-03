@@ -29,7 +29,7 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   });
 
   const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
-  assert.deepEqual(Object.keys(hooks.hooks), ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
+  assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
   for (const definitions of Object.values(hooks.hooks)) {
     // Trust is recorded against the command definition. Keep this launcher
     // literal stable so handler-only releases do not require renewed approval.

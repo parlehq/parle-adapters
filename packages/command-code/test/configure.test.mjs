@@ -41,7 +41,7 @@ test("skill configurator uses native MCP registration and preserves unrelated ho
     const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal(settings.theme, "dark");
     assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command === "/tmp/quality-gate")), true);
-    assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command.endsWith("/skills/parle/scripts/parle-hook.mjs --bind"))), true);
+    assert.equal(settings.hooks.Stop.some((definition) => definition.hooks.some((hook) => hook.command.endsWith("/skills/parle/scripts/parle-hook.mjs --bind --peers-on-prompt"))), true);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // Operator-owned stable peer-context store (issue #53).
@@ -27,8 +28,15 @@ export type PeerContext = {
 export const PEER_CONTEXT_MARKER = "[Parle stable peer context]";
 const MAX_PEERS = 64;
 const MAX_FIELD = 200;
+const MAX_STORE_BYTES = 64 * 1024;
 const PEER_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const PEER_ADDRESS_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+// A full route is @principal.agent or @principal.agent.route: two or three
+// non-empty dot-separated labels, no leading/trailing hyphen, bounded length.
+const ADDRESS_LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?";
+const PEER_ADDRESS_RE = new RegExp(`^@${ADDRESS_LABEL}\\.${ADDRESS_LABEL}(?:\\.${ADDRESS_LABEL})?$`);
+function validAddress(address: string): boolean {
+  return address.length <= MAX_FIELD && PEER_ADDRESS_RE.test(address);
+}
 
 export function peerContextFilePath(catalogPath: string): string {
   return join(dirname(catalogPath), "peers");
@@ -46,7 +54,7 @@ function sanitizePeer(raw: unknown): StablePeer | undefined {
   const peer = raw as Record<string, unknown>;
   const label = typeof peer?.label === "string" ? peer.label.slice(0, MAX_FIELD) : "";
   const address = typeof peer?.address === "string" ? peer.address.slice(0, MAX_FIELD) : "";
-  if (!PEER_LABEL_RE.test(label) || !PEER_ADDRESS_RE.test(address)) return undefined;
+  if (!PEER_LABEL_RE.test(label) || !validAddress(address)) return undefined;
   return {
     label,
     address,
@@ -63,6 +71,9 @@ export function readPeerContext(catalogPath: string): PeerContext {
   const path = peerContextFilePath(catalogPath);
   try {
     if (!existsSync(path) || !ownerOnlyFile(path)) return { version: 1, peers: [] };
+    const link = lstatSync(path);
+    const size = (link.isSymbolicLink() ? statSync(path) : link).size;
+    if (size > MAX_STORE_BYTES) return { version: 1, peers: [] };
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     const peers = Array.isArray(parsed?.peers) ? parsed.peers : [];
     return {
@@ -78,15 +89,26 @@ function writePeerContext(catalogPath: string, context: PeerContext): string {
   const path = peerContextFilePath(catalogPath);
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (existsSync(path) && !ownerOnlyFile(path)) {
-    throw new Error(`Refusing to write Parle peer context because ${path} is not an owner-only regular file.`);
+  const dirStat = lstatSync(dir);
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+    throw new Error(`Refusing to write Parle peer context because ${dir} is not a regular directory.`);
   }
-  const tmp = join(dir, `.peers.${process.pid}.${Date.now()}.tmp`);
+  if (process.platform !== "win32" && dirStat.uid !== process.getuid?.()) {
+    throw new Error(`Refusing to write Parle peer context because ${dir} is not owned by the current user.`);
+  }
+  chmodSync(dir, 0o700);
+  let writePath = path;
+  if (existsSync(path)) {
+    if (!ownerOnlyFile(path)) throw new Error(`Refusing to write Parle peer context because ${path} is not an owner-only regular file.`);
+    // Replace the resolved file, never a link at the store path.
+    writePath = lstatSync(path).isSymbolicLink() ? realpathSync(path) : path;
+  }
+  const tmp = join(dir, `.peers.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   try {
-    writeFileSync(tmp, `${JSON.stringify(context, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(tmp, `${JSON.stringify(context, null, 2)}\n`, { mode: 0o600, flag: "wx" });
     chmodSync(tmp, 0o600);
-    renameSync(tmp, path);
-    chmodSync(path, 0o600);
+    renameSync(tmp, writePath);
+    chmodSync(writePath, 0o600);
   } catch (error) {
     try { if (existsSync(tmp)) unlinkSync(tmp); } catch {}
     throw error;
@@ -96,7 +118,7 @@ function writePeerContext(catalogPath: string, context: PeerContext): string {
 
 export function addStablePeer(catalogPath: string, peer: { label: string; address: string; role?: string; note?: string }, now = new Date()): PeerContext {
   if (!PEER_LABEL_RE.test(peer.label)) throw new Error("Parle peer label must be 1-64 characters of letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
-  if (!PEER_ADDRESS_RE.test(peer.address)) throw new Error("Parle peer address must be a full @principal.agent or @principal.agent.route address.");
+  if (!validAddress(peer.address)) throw new Error("Parle peer address must be a full @principal.agent or @principal.agent.route address.");
   const context = readPeerContext(catalogPath);
   if (context.peers.length >= MAX_PEERS && !context.peers.some((entry) => entry.label === peer.label)) {
     throw new Error(`Parle peer context is capped at ${MAX_PEERS} entries. Remove one first.`);

@@ -30954,7 +30954,7 @@ var StdioServerTransport = class {
 
 // src/index.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync6 } from "node:fs";
+import { existsSync as existsSync6, readFileSync as readFileSync7 } from "node:fs";
 import { dirname as dirname6, join as join8 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -33514,12 +33514,17 @@ var ResponsiveDeliveryController = class {
 };
 
 // ../client/dist/peer-context.js
-import { chmodSync as chmodSync3, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync5, renameSync as renameSync4, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync4, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname4, join as join5 } from "node:path";
 var MAX_PEERS = 64;
 var MAX_FIELD = 200;
+var MAX_STORE_BYTES = 64 * 1024;
 var PEER_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var PEER_ADDRESS_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+var ADDRESS_LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?";
+var PEER_ADDRESS_RE = new RegExp(`^@${ADDRESS_LABEL}\\.${ADDRESS_LABEL}(?:\\.${ADDRESS_LABEL})?$`);
+function validAddress(address) {
+  return address.length <= MAX_FIELD && PEER_ADDRESS_RE.test(address);
+}
 function peerContextFilePath(catalogPath) {
   return join5(dirname4(catalogPath), "peers");
 }
@@ -33536,7 +33541,7 @@ function sanitizePeer(raw) {
   const peer = raw;
   const label = typeof peer?.label === "string" ? peer.label.slice(0, MAX_FIELD) : "";
   const address = typeof peer?.address === "string" ? peer.address.slice(0, MAX_FIELD) : "";
-  if (!PEER_LABEL_RE.test(label) || !PEER_ADDRESS_RE.test(address))
+  if (!PEER_LABEL_RE.test(label) || !validAddress(address))
     return void 0;
   return {
     label,
@@ -33550,6 +33555,10 @@ function readPeerContext(catalogPath) {
   const path = peerContextFilePath(catalogPath);
   try {
     if (!existsSync4(path) || !ownerOnlyFile(path))
+      return { version: 1, peers: [] };
+    const link = lstatSync4(path);
+    const size = (link.isSymbolicLink() ? statSync3(path) : link).size;
+    if (size > MAX_STORE_BYTES)
       return { version: 1, peers: [] };
     const parsed = JSON.parse(readFileSync5(path, "utf8"));
     const peers = Array.isArray(parsed?.peers) ? parsed.peers : [];
@@ -35934,7 +35943,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.6.0";
+var MCP_CLIENT_VERSION = "0.6.1";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -36020,7 +36029,14 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
       const watcher = connected ? bridgeStatus ? bridgeStatus.lastError ? { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus.running ? { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
       const enriched = watcher ? { ...status, watcher } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
-      const peerCatalog = resolveProfileCatalogPath(process.env.PARLE_PROFILES_PATH, process.cwd(), process.env);
+      let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
+      if (!profilesPathOverride) {
+        try {
+          profilesPathOverride = parseKeyValueFile(readFileSync7(join8(process.cwd(), ".env"), "utf8")).PARLE_PROFILES_PATH;
+        } catch {
+        }
+      }
+      const peerCatalog = resolveProfileCatalogPath(profilesPathOverride, process.cwd(), process.env);
       const peerContext = {
         peers: readPeerContext(peerCatalog).peers,
         note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the parle-peers helper in an interactive terminal."

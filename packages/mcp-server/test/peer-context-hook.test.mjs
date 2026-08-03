@@ -52,8 +52,38 @@ test("hook renders the actionable empty-store guidance and skips non-boundary ev
     assert.deepEqual(runHook(home, { hook_event_name: "UserPromptSubmit", session_id: "", cwd: home }), {});
     const perTurn = runHook(home, { hook_event_name: "UserPromptSubmit", session_id: "", cwd: home }, ["--peers-on-prompt"]);
     assert.match(perTurn.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
+    // The per-tool boundary (Command Code 1.5.0 has no compact SessionStart)
+    // renders behind the same opt-in flag.
+    const perTool = runHook(home, { hook_event_name: "PreToolUse", session_id: "", cwd: home }, ["--peers-on-prompt"]);
+    assert.match(perTool.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
     // Stop never carries peers context.
     assert.deepEqual(runHook(home, { hook_event_name: "Stop", session_id: "", cwd: home }, ["--peers-on-prompt"]), {});
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("hook resolves the peers store canonically through a project .env relative path", () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-peers-dotenv-"));
+  const project = join(home, "project");
+  mkdirSync(join(project, "relocated"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(project, ".env"), "PARLE_PROFILES_PATH=./relocated/profiles\n");
+  writeFileSync(join(project, "relocated", "peers"), JSON.stringify({ version: 1, peers: [{ label: "lead", address: "@gilman.galexc.lead", taggedAt: "2026-08-01T00:00:00Z" }] }), { mode: 0o600 });
+  chmodSync(join(project, "relocated", "peers"), 0o600);
+  // A stale $HOME store must NOT be read when the project relocates the catalog.
+  mkdirSync(join(home, ".parle"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home, ".parle", "peers"), JSON.stringify({ version: 1, peers: [{ label: "stale", address: "@gilman.galexc.stale", taggedAt: "2026-08-01T00:00:00Z" }] }), { mode: 0o600 });
+  chmodSync(join(home, ".parle", "peers"), 0o600);
+  try {
+    const output = execFileSync(process.execPath, [hookPath], {
+      input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "", cwd: project }),
+      cwd: project,
+      env: { ...process.env, HOME: home, PARLE_PROFILES_PATH: "", COMMANDCODE_SESSION_ID: "" },
+      encoding: "utf8",
+    });
+    const context = JSON.parse(output.trim().split("\n")[0]).hookSpecificOutput.additionalContext;
+    assert.match(context, /lead: @gilman\.galexc\.lead/);
+    assert.doesNotMatch(context, /stale/, "the hook reads the same relocated store as the client, never the stale home store");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

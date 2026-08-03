@@ -86,3 +86,22 @@ cmd skills remove parle --global --yes
 ```
 
 Restart Command Code after reinstalling or removing Parle.
+
+
+## Stable peer routes (issue #53)
+
+Operator-tagged peer routes survive context compaction. Tag, list, or clear
+them with the bundled helper from an interactive terminal (mutations refuse
+hooks, pipes, and automation and confirm on the controlling terminal):
+
+```sh
+node skills/parle/scripts/parle-peers.mjs list
+node skills/parle/scripts/parle-peers.mjs add lead @principal.agent.route implementation lead
+node skills/parle/scripts/parle-peers.mjs remove lead
+node skills/parle/scripts/parle-peers.mjs clear
+```
+
+The store lives beside the resolved profile catalog
+(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), and the hook
+re-injects the tagged block at the host's session boundary. Models read it
+via `parle_status.peerContext`; nothing model-callable mutates it.

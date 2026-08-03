@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.1 (2026-08-02)
+
+- Refresh the bundled hook and helper with review hardening; helper mirrors are now covered by artifact parity checks and documented in the README.
+
 ## 0.8.0 (2026-08-02)
 
 - Add SessionStart hooks that re-anchor operator-tagged stable peer context after compaction restarts, and ship the bundled hook plus TTY-only parle-peers helper (#53).

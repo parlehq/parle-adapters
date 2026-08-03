@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.0";
+const PI_EXTENSION_VERSION = "0.7.1";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2303,9 +2303,12 @@ export default function parleExtension(pi: any) {
     },
   });
 
-  // Operator-only stable peer-context mutations (issue #53). Extension
-  // commands carry host-verified operator provenance; nothing model-callable
-  // or peer-authored reaches this store.
+  // Operator-only stable peer-context mutations (issue #53). The command
+  // surface keeps mutation out of every model-callable tool and out of
+  // peer-authored parsing; command dispatch provenance is as strong as the
+  // host makes it (Pi can dispatch commands from RPC), so the structural
+  // guarantee is the absence of a model tool and of content parsing, not a
+  // proof of typed-human origin.
   pi.registerCommand("parle-peers", {
     description: "Operator-tag stable Parle peer routes retained across compaction: list, add <label> <@address> [role...], remove <label>, clear.",
     handler: async (args: string, ctx: any) => {
@@ -2349,7 +2352,7 @@ export default function parleExtension(pi: any) {
       const messages = (Array.isArray(event?.messages) ? event.messages : []).filter(
         (message: any) => !(message?.role === "custom" && message?.customType === "parle-peer-context"),
       );
-      messages.push({ role: "custom", customType: "parle-peer-context", content: block, display: false });
+      messages.push({ role: "custom", customType: "parle-peer-context", content: block, display: false, timestamp: Date.now() });
       return { messages };
     } catch {
       return undefined;

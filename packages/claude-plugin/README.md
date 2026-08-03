@@ -113,3 +113,22 @@ Validated with Claude Code 2.1.201 on macOS:
 - `parle_setup` and `parle_status` both ran in a headless session. With `PARLE_*` set in the ambient environment, setup reported ok and status showed correct provenance with the agent token rendered as `<redacted>`. No secrets appeared in output or logs.
 - Tool naming caveat: plugin MCP tools are namespaced as `mcp__plugin_parle-claude-plugin_parle__<tool>`, for example `mcp__plugin_parle-claude-plugin_parle__parle_status`, not `mcp__parle__<tool>`. Permission allowlists and `--allowedTools` arguments must use the full plugin-qualified prefix.
 - Plugin version displays as `0.0.0` from `package.json` rather than `plugin.json`; align the two if version display matters.
+
+
+## Stable peer routes (issue #53)
+
+Operator-tagged peer routes survive context compaction. Tag, list, or clear
+them with the bundled helper from an interactive terminal (mutations refuse
+hooks, pipes, and automation and confirm on the controlling terminal):
+
+```sh
+node hooks/parle-peers.mjs list
+node hooks/parle-peers.mjs add lead @principal.agent.route implementation lead
+node hooks/parle-peers.mjs remove lead
+node hooks/parle-peers.mjs clear
+```
+
+The store lives beside the resolved profile catalog
+(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), and the hook
+re-injects the tagged block at the host's session boundary. Models read it
+via `parle_status.peerContext`; nothing model-callable mutates it.

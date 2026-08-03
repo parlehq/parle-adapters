@@ -1,5 +1,5 @@
 // src/index.ts
-import { chmodSync as chmodSync4, existsSync as existsSync6, lstatSync as lstatSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync7, realpathSync as realpathSync2, renameSync as renameSync5, statSync as statSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync4, existsSync as existsSync6, lstatSync as lstatSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync7, realpathSync as realpathSync3, renameSync as renameSync5, statSync as statSync4, unlinkSync as unlinkSync4, writeFileSync as writeFileSync4 } from "node:fs";
 import { basename as basename2, dirname as dirname5, join as join7 } from "node:path";
 
 // ../client/dist/index.js
@@ -2458,13 +2458,19 @@ var ResponsiveDeliveryController = class {
 };
 
 // ../client/dist/peer-context.js
-import { chmodSync as chmodSync3, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync5, renameSync as renameSync4, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync as chmodSync3, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync4, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname4, join as join5 } from "node:path";
 var PEER_CONTEXT_MARKER = "[Parle stable peer context]";
 var MAX_PEERS = 64;
 var MAX_FIELD = 200;
+var MAX_STORE_BYTES = 64 * 1024;
 var PEER_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var PEER_ADDRESS_RE = /^@[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+var ADDRESS_LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?";
+var PEER_ADDRESS_RE = new RegExp(`^@${ADDRESS_LABEL}\\.${ADDRESS_LABEL}(?:\\.${ADDRESS_LABEL})?$`);
+function validAddress(address) {
+  return address.length <= MAX_FIELD && PEER_ADDRESS_RE.test(address);
+}
 function peerContextFilePath(catalogPath) {
   return join5(dirname4(catalogPath), "peers");
 }
@@ -2481,7 +2487,7 @@ function sanitizePeer(raw) {
   const peer = raw;
   const label = typeof peer?.label === "string" ? peer.label.slice(0, MAX_FIELD) : "";
   const address = typeof peer?.address === "string" ? peer.address.slice(0, MAX_FIELD) : "";
-  if (!PEER_LABEL_RE.test(label) || !PEER_ADDRESS_RE.test(address))
+  if (!PEER_LABEL_RE.test(label) || !validAddress(address))
     return void 0;
   return {
     label,
@@ -2495,6 +2501,10 @@ function readPeerContext(catalogPath) {
   const path = peerContextFilePath(catalogPath);
   try {
     if (!existsSync4(path) || !ownerOnlyFile(path))
+      return { version: 1, peers: [] };
+    const link = lstatSync4(path);
+    const size = (link.isSymbolicLink() ? statSync3(path) : link).size;
+    if (size > MAX_STORE_BYTES)
       return { version: 1, peers: [] };
     const parsed = JSON.parse(readFileSync5(path, "utf8"));
     const peers = Array.isArray(parsed?.peers) ? parsed.peers : [];
@@ -2511,16 +2521,27 @@ function writePeerContext(catalogPath, context) {
   const dir = dirname4(path);
   if (!existsSync4(dir))
     mkdirSync4(dir, { recursive: true, mode: 448 });
-  if (existsSync4(path) && !ownerOnlyFile(path)) {
-    throw new Error(`Refusing to write Parle peer context because ${path} is not an owner-only regular file.`);
+  const dirStat = lstatSync4(dir);
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+    throw new Error(`Refusing to write Parle peer context because ${dir} is not a regular directory.`);
   }
-  const tmp = join5(dir, `.peers.${process.pid}.${Date.now()}.tmp`);
+  if (process.platform !== "win32" && dirStat.uid !== process.getuid?.()) {
+    throw new Error(`Refusing to write Parle peer context because ${dir} is not owned by the current user.`);
+  }
+  chmodSync3(dir, 448);
+  let writePath = path;
+  if (existsSync4(path)) {
+    if (!ownerOnlyFile(path))
+      throw new Error(`Refusing to write Parle peer context because ${path} is not an owner-only regular file.`);
+    writePath = lstatSync4(path).isSymbolicLink() ? realpathSync2(path) : path;
+  }
+  const tmp = join5(dir, `.peers.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
   try {
     writeFileSync3(tmp, `${JSON.stringify(context, null, 2)}
-`, { mode: 384 });
+`, { mode: 384, flag: "wx" });
     chmodSync3(tmp, 384);
-    renameSync4(tmp, path);
-    chmodSync3(path, 384);
+    renameSync4(tmp, writePath);
+    chmodSync3(writePath, 384);
   } catch (error) {
     try {
       if (existsSync4(tmp))
@@ -2534,7 +2555,7 @@ function writePeerContext(catalogPath, context) {
 function addStablePeer(catalogPath, peer, now = /* @__PURE__ */ new Date()) {
   if (!PEER_LABEL_RE.test(peer.label))
     throw new Error("Parle peer label must be 1-64 characters of letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
-  if (!PEER_ADDRESS_RE.test(peer.address))
+  if (!validAddress(peer.address))
     throw new Error("Parle peer address must be a full @principal.agent or @principal.agent.route address.");
   const context = readPeerContext(catalogPath);
   if (context.peers.length >= MAX_PEERS && !context.peers.some((entry2) => entry2.label === peer.label)) {
@@ -4620,7 +4641,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.0";
+var PI_EXTENSION_VERSION = "0.7.1";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -5077,7 +5098,7 @@ function ensureProfileDirectory(path) {
   if (!existsSync6(dir)) mkdirSync5(dir, { recursive: true, mode: 448 });
   const link = lstatSync5(dir);
   if (!link.isSymbolicLink() && !link.isDirectory()) throw new Error(`Refusing to write Parle profiles because ${dir} is not a regular directory.`);
-  const writeDir = link.isSymbolicLink() ? realpathSync2(dir) : dir;
+  const writeDir = link.isSymbolicLink() ? realpathSync3(dir) : dir;
   const target = statSync4(writeDir);
   if (!target.isDirectory()) throw new Error(`Refusing to write Parle profiles because ${dir} does not resolve to a regular directory.`);
   if (process.platform !== "win32" && target.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${dir} does not resolve to a directory owned by the current user.`);
@@ -5089,7 +5110,7 @@ function safeProfileWritePath(path) {
   const link = lstatSync5(path);
   if (process.platform !== "win32" && link.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${path} is not owned by the current user.`);
   if (!link.isSymbolicLink() && !link.isFile()) throw new Error(`Refusing to write Parle profiles because ${path} is not a regular file.`);
-  const writePath = link.isSymbolicLink() ? realpathSync2(path) : path;
+  const writePath = link.isSymbolicLink() ? realpathSync3(path) : path;
   const target = statSync4(writePath);
   if (!target.isFile()) throw new Error(`Refusing to write Parle profiles because ${path} does not resolve to a regular file.`);
   if (process.platform !== "win32" && target.uid !== process.getuid?.()) throw new Error(`Refusing to write Parle profiles because ${path} does not resolve to a file owned by the current user.`);
@@ -6478,7 +6499,7 @@ function parleExtension(pi) {
       const messages = (Array.isArray(event?.messages) ? event.messages : []).filter(
         (message) => !(message?.role === "custom" && message?.customType === "parle-peer-context")
       );
-      messages.push({ role: "custom", customType: "parle-peer-context", content: block, display: false });
+      messages.push({ role: "custom", customType: "parle-peer-context", content: block, display: false, timestamp: Date.now() });
       return { messages };
     } catch {
       return void 0;

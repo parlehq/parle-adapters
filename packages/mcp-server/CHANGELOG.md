@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-08-02)
+
+- Peer-context fix-forward per adversarial review: canonical PARLE_PROFILES_PATH resolution (process env, project .env, relative-to-cwd) in the status surface, hook, and helper; a per-tool rendering boundary for hosts without a compact session start; controlling-terminal confirmation and honestly narrowed provenance claims in the mutation helper; bounded reads and full-route address grammar in the hook.
+
 ## 0.6.0 (2026-08-02)
 
 - Render the operator-tagged stable peer block from the bundled hook at SessionStart (and per-prompt behind --peers-on-prompt for hosts without a session boundary), ship the TTY-only parle-peers mutation helper, and expose a read-only peerContext section on parle_status (#53).

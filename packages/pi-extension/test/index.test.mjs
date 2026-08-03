@@ -678,7 +678,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.0" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.1" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1352,7 +1352,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.0");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.1");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2661,6 +2661,11 @@ test("operator-tagged peer context survives compaction boundaries and resists pe
   const first = __testing ? harness.handlers.context({ messages: [{ role: "user", content: "hi" }] }, harness.ctx) : undefined;
   const firstBlocks = first.messages.filter((message) => message.customType === "parle-peer-context");
   assert.equal(firstBlocks.length, 1);
+  // Pi 0.83 CustomMessage contract: role, customType, content, display, and
+  // a numeric timestamp are all required.
+  assert.equal(firstBlocks[0].role, "custom");
+  assert.equal(typeof firstBlocks[0].timestamp, "number");
+  assert.equal(firstBlocks[0].display, false);
   assert.match(firstBlocks[0].content, /lead: @gilman\.galexc\.lead \(implementation lead\)/);
   assert.match(firstBlocks[0].content, /not retained and may belong to expired sessions/);
 

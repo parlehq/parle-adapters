@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 (2026-08-02)
+
+- Add the required numeric timestamp to the injected peer-context message per the Pi 0.83 CustomMessage contract, and narrow the command-provenance claim to what the host actually guarantees.
+
 ## 0.7.0 (2026-08-02)
 
 - Retain operator-tagged stable peer routes across compaction (#53): a /parle-peers operator command owns mutation, the context event re-injects exactly one authoritative block before every LLM call, session_compact notifies re-anchoring, and parle_status exposes a read-only peerContext section.

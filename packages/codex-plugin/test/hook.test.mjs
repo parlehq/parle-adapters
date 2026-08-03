@@ -137,15 +137,30 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
           hook_event_name: hookEventName,
         });
         assert.equal(result.code, 0, result.stderr);
+        assert.deepEqual(JSON.parse(result.stdout), {});
+      }
+      {
+        // SessionStart (including Codex 0.146's compact source) is the peers
+        // boundary: the block renders even for an empty store so missing
+        // context stays actionable.
+        const result = await runProcess(shell, ["-lc", command], {
+          cwd: project,
+          env: {
+            ...process.env,
+            HOME: home,
+            ZDOTDIR: home,
+            PLUGIN_ROOT: pluginRoot,
+            PATH: `${hostileBin}:${process.env.PATH}`,
+          },
+        }, {
+          cwd: project,
+          session_id: "codex-thread",
+          hook_event_name: "SessionStart",
+        });
+        assert.equal(result.code, 0, result.stderr);
         const parsed = JSON.parse(result.stdout);
-        if (hookEventName === "UserPromptSubmit") {
-          // Per-turn peers boundary: the block renders even for an empty
-          // store so missing context stays actionable.
-          assert.match(parsed.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
-          assert.match(parsed.hookSpecificOutput.additionalContext, /No stable peer routes are tagged/);
-        } else {
-          assert.deepEqual(parsed, {});
-        }
+        assert.match(parsed.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
+        assert.match(parsed.hookSpecificOutput.additionalContext, /No stable peer routes are tagged/);
       }
     } finally {
       rmSync(home, { recursive: true, force: true });

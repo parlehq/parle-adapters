@@ -20,9 +20,14 @@ change, no discovery, no roster.
   inferred from address shape. A route is stable because an operator
   explicitly tagged it through a host-verified input surface, and only the
   tagged set is retained.
-- **Mutation lives outside model-callable surfaces.** Peer-authored content
-  and ordinary tool calls cannot rewrite retained identity, structurally: the
-  store has no parser and the writing surfaces prove operator provenance.
+- **Mutation lives outside model-callable surfaces.** The structural
+  guarantees are exactly two: no model-callable tool mutates the store, and
+  peer content is never parsed for identities. The writing surfaces add
+  interactivity friction (a TTY gate plus a confirmation typed on the
+  controlling terminal; Pi's extension command), which excludes hooks, pipes,
+  and casual automation but is not proof of human origin: a host that grants
+  an agent unrestricted shell or command-dispatch access can cross it, and
+  for such hosts the enforceable boundary is the host's own permissioning.
 - **Rehydration is bounded and deterministic.** Each host re-renders one
   authoritative block at a boundary its runtime actually fires, never a
   best-effort prompt convention.
@@ -55,8 +60,9 @@ which hook owns refresh and rendering; how stale context is cleared.
 
 - Store: the shared peers file, read through the shared client module.
 - Tagging: a `/parle-peers add <label> <address> [role…]` extension command.
-  Commands run with `ExtensionCommandContext`, which only exists for
-  operator-typed input, so provenance is the host's own guarantee.
+  This keeps mutation out of every model-callable tool; command dispatch
+  provenance is only as strong as the host makes it (Pi can dispatch
+  commands from RPC), per the mutation principle above.
 - Rejection of ephemeral routes: the rendered block lists only tagged
   routes and states that session-qualified routes not listed are not
   retained and must not be reused; the agent is told to request an
@@ -84,30 +90,44 @@ which hook owns refresh and rendering; how stale context is cleared.
 
 - Store: the shared peers file.
 - Tagging: the TTY-only helper.
-- Refresh/rendering owner: the adapter's already-managed `SessionStart`
-  hook invocation of the bundled hook script, which now appends the peers
-  block to its `additionalContext` output alongside queued delivery.
+- Refresh/rendering owner: shipped Command Code 1.5.0 fires `SessionStart`
+  only for startup, resume, and clear - not for compaction - so SessionStart
+  alone is not a compact boundary. The managed hook therefore renders the
+  block on `SessionStart` and on every `PreToolUse` (via `--peers-on-prompt`
+  on the managed command), which re-anchors the first time a post-compaction
+  turn touches any tool. Residual, documented gap: a post-compaction turn
+  that uses no tools is not re-anchored until the next tool call or session
+  start; closing it fully needs a compact-source SessionStart upstream.
 - Stale clearing: the TTY helper.
 
 ### Codex (codex-plugin)
 
 - Store: the shared peers file.
 - Tagging: the TTY-only helper.
-- Refresh/rendering owner: Codex exposes no session-start or compaction
-  hook, so its deterministic boundary is per-turn: the bundled hook script
-  invoked from the existing `UserPromptSubmit` hook renders the block when
-  passed `--peers-on-prompt`. The block is idempotent and bounded, so
-  per-turn repetition is safe within the configured context budget.
+- Refresh/rendering owner: Codex 0.146 exposes `SessionStart` including a
+  `compact` source, so the plugin registers a `SessionStart` hook and the
+  bundled script renders the block there - no per-turn repetition. The
+  launcher's trusted-runtime discovery accepts, in order, an absolute
+  `PARLE_HOOK_RUNTIME` override, the live hook-bridge runtime handles, and
+  fixed absolute system Node paths, so peer context renders even when no
+  responsive-delivery bridge is armed while a hostile `PATH` still cannot
+  substitute the runtime. Windows hooks remain the existing `echo {}`
+  no-op: peer re-anchoring is currently not available on Windows Codex and
+  is documented rather than simulated.
 - Stale clearing: the TTY helper.
 
 ### The TTY-only helper
 
-MCP-wrapper hosts have no operator-typed command surface with provable
-provenance, so mutation ships as a small CLI beside the bundled server
-artifact (`parle-peers add|remove|clear|list`). It refuses to run without a
-TTY on stdin, which keeps hook processes, piped automation, and
-model-initiated shells out of the mutation path. Reads remain available to
-models through the status surface only.
+MCP-wrapper hosts have no operator-typed command surface, so mutation ships
+as a small CLI beside the bundled server artifact
+(`node <bundle-dir>/parle-peers.mjs add|remove|clear|list`). It refuses to
+run without a TTY on stdin and requires the confirmation to be typed on the
+controlling terminal, which keeps hook processes, pipes, and casual
+automation out of the mutation path; see the principle above for what this
+does and does not prove. It resolves `PARLE_PROFILES_PATH` canonically
+(process environment, then the project `.env`, relative against the cwd) so
+it always edits the same store every renderer reads. Reads remain available
+to models through the status surface only.
 
 ## What models can and cannot do
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-08-02)
+
+- Harden the peer-context store per adversarial review: full-route address grammar, bounded reads, exclusive temporary creation with parent-directory ownership checks, and symlink-target replacement.
+
 ## 0.6.0 (2026-08-02)
 
 - Add the operator-owned stable peer-context store (#53): explicit-tag-only retention beside the profile catalog with cookie-file safety discipline, a bounded deterministic retention block, and no address-shape inference or peer-content parsing.

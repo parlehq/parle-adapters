@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 (2026-08-02)
+
+- Move peer-context rendering to the SessionStart boundary (Codex 0.146 exposes a compact source) and drop per-prompt repetition; the launcher gains an absolute PARLE_HOOK_RUNTIME override and fixed absolute Node fallbacks so peer context renders without a live delivery bridge. Windows hooks remain a documented no-op.
+
 ## 0.5.0 (2026-08-02)
 
 - Render operator-tagged stable peer context on every prompt boundary via --peers-on-prompt and ship the TTY-only parle-peers helper (#53).

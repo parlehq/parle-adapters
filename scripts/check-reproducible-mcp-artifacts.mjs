@@ -25,6 +25,26 @@ const wrapperArtifacts = [
   "packages/command-code/skills/parle/server/parle-mcp.js",
   "packages/codex-plugin/dist/parle-mcp.js",
 ];
+// Hook-runtime mirrors: every wrapper copy must be byte-identical to the
+// canonical script so a release can never ship a stale hook or peers helper.
+const hookMirrorSets = [
+  {
+    canonical: "packages/mcp-server/hooks/parle-hook.mjs",
+    mirrors: [
+      "packages/claude-plugin/hooks/parle-hook.mjs",
+      "packages/command-code/skills/parle/scripts/parle-hook.mjs",
+      "packages/codex-plugin/hooks/parle-hook.mjs",
+    ],
+  },
+  {
+    canonical: "packages/mcp-server/hooks/parle-peers.mjs",
+    mirrors: [
+      "packages/claude-plugin/hooks/parle-peers.mjs",
+      "packages/command-code/skills/parle/scripts/parle-peers.mjs",
+      "packages/codex-plugin/hooks/parle-peers.mjs",
+    ],
+  },
+];
 const staleSentinel = "stale-ignored-client-dist-fixture";
 
 function run(command, args, cwd) {
@@ -103,7 +123,17 @@ try {
   assertStaleFixtureWasRebuilt(isolatedRoot);
   assertArtifactsMatch(isolatedRoot);
   assertDivergenceDetection(isolatedRoot);
-  console.log("Clean MCP artifact reproducibility, stale-dist isolation, and wrapper divergence checks passed.");
+  for (const set of hookMirrorSets) {
+  const canonicalBytes = readFileSync(resolve(repoRoot, set.canonical));
+  for (const mirror of set.mirrors) {
+    const mirrorBytes = readFileSync(resolve(repoRoot, mirror));
+    if (!canonicalBytes.equals(mirrorBytes)) {
+      throw new Error(`Hook mirror ${mirror} diverges from ${set.canonical}. Run pnpm refresh:mcp-artifacts.`);
+    }
+  }
+}
+
+console.log("Clean MCP artifact reproducibility, hook/helper mirror parity, stale-dist isolation, and wrapper divergence checks passed.");
 } finally {
   rmSync(isolatedRoot, { recursive: true, force: true });
 }

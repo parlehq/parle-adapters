@@ -55,3 +55,22 @@ pnpm -F @parlehq/codex-plugin test
 ```
 
 The server bundled inside the plugin is tracked and byte-checked against the shared MCP server build.
+
+
+## Stable peer routes (issue #53)
+
+Operator-tagged peer routes survive context compaction. Tag, list, or clear
+them with the bundled helper from an interactive terminal (mutations refuse
+hooks, pipes, and automation and confirm on the controlling terminal):
+
+```sh
+node hooks/parle-peers.mjs list
+node hooks/parle-peers.mjs add lead @principal.agent.route implementation lead
+node hooks/parle-peers.mjs remove lead
+node hooks/parle-peers.mjs clear
+```
+
+The store lives beside the resolved profile catalog
+(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), and the hook
+re-injects the tagged block at the host's session boundary. Models read it
+via `parle_status.peerContext`; nothing model-callable mutates it.

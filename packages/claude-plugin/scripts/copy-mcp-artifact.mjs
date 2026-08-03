@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,4 +18,6 @@ mkdirSync(dirname(target), { recursive: true });
 copyFileSync(source, target);
 mkdirSync(dirname(hookTarget), { recursive: true });
 copyFileSync(hookSource, hookTarget);
+chmodSync(hookTarget, 0o755);
 copyFileSync(peersSource, peersTarget);
+chmodSync(peersTarget, 0o755);
