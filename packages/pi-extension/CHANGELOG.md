@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4 (2026-08-03)
+
+- Restore watcher and footer health after a retryable wake failure successfully reconnects internally, while preserving terminal and rate-limit containment.
+
 ## 0.7.3 (2026-08-03)
 
 - Refresh the bundled shared client with unenveloped gateway retryability and reusable failure idempotency keys.

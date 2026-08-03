@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.6 (2026-08-03)
+
+- Refresh the bundled MCP server with the shared wake-open lifecycle callback. Existing Command Code behavior is unchanged.
+
 ## 0.5.5 (2026-08-03)
 
 - Refresh the bundled MCP server with unenveloped gateway retryability and reusable failure idempotency keys.

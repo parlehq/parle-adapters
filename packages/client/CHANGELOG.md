@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0 (2026-08-03)
+
+- Add an optional wake-open lifecycle callback so hosts can observe successful internal stream reconnects instead of remaining latched to the preceding failure.
+
 ## 0.6.3 (2026-08-03)
 
 - Preserve absent server retryability as unknown, fall back to retryable HTTP 429 and 5xx only at status-aware transport boundaries, and always return send idempotency keys on failure.

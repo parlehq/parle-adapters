@@ -374,6 +374,40 @@ test("watcher stops after one terminal invalid-token wake open", async () => {
   assert.equal(__testing.runtimeState().watcherState, "auth_expired");
 });
 
+test("watcher returns from ordinary backoff when the controller reconnects internally", async () => {
+  let releaseReconnect;
+  const probe = installWatcherFailureHarness((attempt) => attempt === 1
+    ? new Response(JSON.stringify({ error: { code: "unavailable", message: "temporarily unavailable", action: "retry_with_backoff", retryable: true, scope: "request", retry_after_ms: 25 } }), { status: 502 })
+    : new Response(new ReadableStream({ start() {} }), { status: 200 }));
+  __testing.setWatcherTiming({
+    sleep(_ms, signal) {
+      return new Promise((resolve, reject) => {
+        releaseReconnect = resolve;
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    },
+  });
+
+  await probe.harness.call("parle_status");
+  await eventually(() => __testing.runtimeState().watcherState === "backoff" && typeof releaseReconnect === "function");
+  const failed = __testing.runtimeState();
+  assert.equal(failed.consecutiveWatcherFailures, 1);
+  assert.equal(failed.lastHttpStatus, 502);
+  assert.match(failed.lastError, /temporarily unavailable/);
+
+  releaseReconnect();
+  await eventually(() => probe.wakeAt.length === 2 && __testing.runtimeState().watcherState === "watching");
+  const recovered = __testing.runtimeState();
+  assert.equal(recovered.consecutiveWatcherFailures, 0);
+  assert.equal(recovered.lastErrorClass, undefined);
+  assert.equal(recovered.lastHttpStatus, 200, "the shared client reports the successful reconnect status");
+  assert.equal(recovered.lastError, undefined);
+  assert.equal(recovered.watcherBackoffCount, 0);
+  assert.equal(recovered.terminalCause, undefined);
+  assert.equal(recovered.rateLimitParkedCause, undefined);
+  __testing.resetRuntime();
+});
+
 test("watcher honors 429 Retry-After before a terminal 401 stops it", async () => {
   // Deterministic timing: the watcher's retry sleep is observed through the
   // injected seam, advances a virtual wall clock by exactly the requested
@@ -443,6 +477,8 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
   let sleepStarted = false;
   let sleepAborted = false;
   let recoveryReadObservedJoin = false;
+  let recoveryWakePending = false;
+  let releaseRecoveryWake;
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-rate", session_credential: "parle_ses_rate", expires_at: "later", address: "@p.a.rate" }), { status: 201 });
@@ -455,7 +491,10 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
     if (u.endsWith("/v/agent/wake")) {
       wakeCalls += 1;
       if (wakeCalls === 1) return new Response(JSON.stringify({ error: { code: "rate_limited", message: "wait", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 20 * 60 * 1000 } }), { status: 429 });
-      return new Response("");
+      recoveryWakePending = true;
+      return new Promise((resolve) => {
+        releaseRecoveryWake = () => resolve(new Response(new ReadableStream({ start() {} }), { status: 200 }));
+      });
     }
     throw new Error("unexpected " + u);
   };
@@ -485,10 +524,14 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
   monotonic += 5 * 60 * 1000;
 
   await harness.call("parle_read");
-  await eventually(() => __testing.runtimeState().rateLimitParkedCause === undefined);
+  await eventually(() => recoveryWakePending && typeof releaseRecoveryWake === "function");
   assert.equal(recoveryReadObservedJoin, true, "explicit recovery request begins only after the automatic watcher joins");
-  assert.ok(wakeCalls >= 2, "the healthy restarted watcher reopened the wake stream");
-  assert.equal(__testing.runtimeState().rateLimitParkedCause, undefined);
+  assert.equal(__testing.runtimeState().rateLimitParkedCause.reason, "elapsed", "a pending wake fetch is not recovery proof");
+  assert.equal(__testing.runtimeState().watcherState, "rate_limited");
+
+  releaseRecoveryWake();
+  await eventually(() => __testing.runtimeState().rateLimitParkedCause === undefined);
+  assert.equal(__testing.runtimeState().watcherState, "watching");
   assert.equal(__testing.runtimeState().rateLimitConsecutive429s, undefined);
   assert.equal(__testing.runtimeState().nextRetryAt, undefined);
   assert.equal(__testing.runtimeState().watcherBackoffCount, 0);
@@ -678,7 +721,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.3" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.4" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1352,7 +1395,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.3");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.4");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

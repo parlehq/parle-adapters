@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.4 (2026-08-03)
+
+- Expose the shared client wake-open lifecycle callback in the bundled runtime. Existing MCP host behavior is unchanged.
+
 ## 0.6.3 (2026-08-03)
 
 - Refresh the bundled shared client with unenveloped gateway retryability and reusable failure idempotency keys.

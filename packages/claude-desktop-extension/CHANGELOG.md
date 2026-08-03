@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.10 (2026-08-03)
+
+- Refresh the bundled MCP server with the shared wake-open lifecycle callback. Existing Desktop behavior is unchanged.
+
 ## 0.7.9 (2026-08-03)
 
 - Refresh the bundled MCP server with unenveloped gateway retryability and reusable failure idempotency keys.

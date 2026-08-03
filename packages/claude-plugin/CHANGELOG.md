@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.4 (2026-08-03)
+
+- Refresh the bundled MCP server with the shared wake-open lifecycle callback. Existing Claude Code behavior is unchanged.
+
 ## 0.8.3 (2026-08-03)
 
 - Refresh the bundled MCP server with unenveloped gateway retryability and reusable failure idempotency keys.

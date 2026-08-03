@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.3";
+const PI_EXTENSION_VERSION = "0.7.4";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1193,11 +1193,13 @@ function parseJsonMaybe(text: string): any {
 function ensureDeliveryController(pi: any, ctx: any, cfg: ParleConfig): ResponsiveDeliveryController {
   const live = agentClient(ctx, cfg);
   if (deliveryController && deliveryControllerClient === live) return deliveryController;
+  const controllerRunId = activeWatcherRunId;
   deliveryController = new ResponsiveDeliveryController(live, {
     handler: (input) => piDeliveryHandler(pi ?? lastPi, ctx, cfg, input),
     sleep: (ms, sig) => watcherSleep(ms, sig),
     reconnectDelayMs: WATCH_ERROR_BACKOFF_MS,
-    onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, activeWatcherRunId),
+    onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, controllerRunId),
+    onWakeOpen: () => watcherWakeOpenPolicy(ctx, cfg, controllerRunId),
   });
   deliveryControllerClient = live;
   return deliveryController;
@@ -1619,21 +1621,16 @@ function classifyWatcherError(error: any): WatcherErrorClass {
 
 function recordWatcherSuccess(wakeStreamCompleted = false) {
   runtime.lastSuccessAt = new Date(wallNowMs()).toISOString();
+  if (runtime.terminalCause) return;
   if (runtime.rateLimitParkedCause && (!runtime.rateLimitRecoveryHealthy || !wakeStreamCompleted)) return;
   runtime.consecutiveWatcherFailures = 0;
+  runtime.watcherBackoffCount = 0;
+  runtime.lastError = undefined;
+  runtime.lastHttpStatus = undefined;
   runtime.lastErrorClass = undefined;
-  if (runtime.rateLimitParkedCause) {
-    runtime.watcherBackoffCount = 0;
-    runtime.lastError = undefined;
-    runtime.lastHttpStatus = undefined;
-    clearRateLimitContainment();
-  } else {
-    clearRateLimitContainment();
-  }
-  if (!runtime.terminalCause) {
-    runtime.nextRetryAt = undefined;
-    automaticFailureBinding = undefined;
-  }
+  clearRateLimitContainment();
+  runtime.nextRetryAt = undefined;
+  automaticFailureBinding = undefined;
 }
 
 function recordWatcherError(error: any) {
@@ -1816,6 +1813,14 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
 // around it. Wake errors reach watcherWakeErrorPolicy, which records
 // containment and latches and settles the loop with "stop" when parked or
 // terminal; a later startWatcher (or explicit recovery) is the restart path.
+function watcherWakeOpenPolicy(ctx: any, cfg: ParleConfig, runId: number) {
+  if (shutdownRequested || lifecycleEnded || runId !== activeWatcherRunId) return;
+  recordWatcherSuccess(true);
+  if (runtime.terminalCause || runtime.rateLimitParkedCause) return;
+  runtime.watcherState = "watching";
+  setStatus(ctx, cfg);
+}
+
 function watcherWakeErrorPolicy(ctx: any, cfg: ParleConfig, error: any, runId: number): "continue" | "stop" {
   if (shutdownRequested || lifecycleEnded) return "stop";
   if (runId !== activeWatcherRunId) return "stop";
@@ -1836,7 +1841,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
-  runtime.watcherState = "starting";
+  runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : "starting";
   setStatus(ctx, cfg);
   try {
     await ensureBootstrapped(ctx, cfg, signal);
@@ -1855,9 +1860,6 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       runtime.baselineAt = new Date().toISOString();
       runtime.baselineSkipped = runtime.baselineSkipped || 0;
     }
-    recordWatcherSuccess(true);
-    runtime.watcherState = "watching";
-    setStatus(ctx, cfg);
     await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   } catch (error: any) {
     if (!signal.aborted && runId === activeWatcherRunId) {

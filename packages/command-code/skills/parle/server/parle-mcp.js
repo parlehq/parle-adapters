@@ -33174,6 +33174,7 @@ var ResponsiveDeliveryController = class {
   reconnectDelayMs;
   sleep;
   onWakeError;
+  onWakeOpen;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -33204,6 +33205,7 @@ var ResponsiveDeliveryController = class {
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
     this.onWakeError = options.onWakeError;
+    this.onWakeOpen = options.onWakeOpen;
   }
   status() {
     return {
@@ -33302,6 +33304,8 @@ var ResponsiveDeliveryController = class {
         const reader = response.body?.getReader();
         if (!reader)
           throw new Error("Parle wake stream has no body");
+        this.lastError = void 0;
+        this.onWakeOpen?.();
         const cancelRead = () => void reader.cancel().catch(() => void 0);
         wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
         const decoder = new TextDecoder();
@@ -35949,7 +35953,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.6.3";
+var MCP_CLIENT_VERSION = "0.6.4";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

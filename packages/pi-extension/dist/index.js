@@ -2118,6 +2118,7 @@ var ResponsiveDeliveryController = class {
   reconnectDelayMs;
   sleep;
   onWakeError;
+  onWakeOpen;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -2148,6 +2149,7 @@ var ResponsiveDeliveryController = class {
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
     this.onWakeError = options.onWakeError;
+    this.onWakeOpen = options.onWakeOpen;
   }
   status() {
     return {
@@ -2246,6 +2248,8 @@ var ResponsiveDeliveryController = class {
         const reader = response.body?.getReader();
         if (!reader)
           throw new Error("Parle wake stream has no body");
+        this.lastError = void 0;
+        this.onWakeOpen?.();
         const cancelRead = () => void reader.cancel().catch(() => void 0);
         wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
         const decoder = new TextDecoder();
@@ -4647,7 +4651,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.3";
+var PI_EXTENSION_VERSION = "0.7.4";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -5490,11 +5494,13 @@ function parseJsonMaybe2(text) {
 function ensureDeliveryController(pi, ctx, cfg) {
   const live = agentClient(ctx, cfg);
   if (deliveryController && deliveryControllerClient === live) return deliveryController;
+  const controllerRunId = activeWatcherRunId;
   deliveryController = new ResponsiveDeliveryController(live, {
     handler: (input) => piDeliveryHandler(pi ?? lastPi, ctx, cfg, input),
     sleep: (ms, sig) => watcherSleep(ms, sig),
     reconnectDelayMs: WATCH_ERROR_BACKOFF_MS,
-    onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, activeWatcherRunId)
+    onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, controllerRunId),
+    onWakeOpen: () => watcherWakeOpenPolicy(ctx, cfg, controllerRunId)
   });
   deliveryControllerClient = live;
   return deliveryController;
@@ -5845,21 +5851,16 @@ function classifyWatcherError(error) {
 }
 function recordWatcherSuccess(wakeStreamCompleted = false) {
   runtime.lastSuccessAt = new Date(wallNowMs()).toISOString();
+  if (runtime.terminalCause) return;
   if (runtime.rateLimitParkedCause && (!runtime.rateLimitRecoveryHealthy || !wakeStreamCompleted)) return;
   runtime.consecutiveWatcherFailures = 0;
+  runtime.watcherBackoffCount = 0;
+  runtime.lastError = void 0;
+  runtime.lastHttpStatus = void 0;
   runtime.lastErrorClass = void 0;
-  if (runtime.rateLimitParkedCause) {
-    runtime.watcherBackoffCount = 0;
-    runtime.lastError = void 0;
-    runtime.lastHttpStatus = void 0;
-    clearRateLimitContainment();
-  } else {
-    clearRateLimitContainment();
-  }
-  if (!runtime.terminalCause) {
-    runtime.nextRetryAt = void 0;
-    automaticFailureBinding = void 0;
-  }
+  clearRateLimitContainment();
+  runtime.nextRetryAt = void 0;
+  automaticFailureBinding = void 0;
 }
 function recordWatcherError(error) {
   runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
@@ -6010,6 +6011,13 @@ async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
     setStatus(ctx, cfg);
   }
 }
+function watcherWakeOpenPolicy(ctx, cfg, runId) {
+  if (shutdownRequested || lifecycleEnded || runId !== activeWatcherRunId) return;
+  recordWatcherSuccess(true);
+  if (runtime.terminalCause || runtime.rateLimitParkedCause) return;
+  runtime.watcherState = "watching";
+  setStatus(ctx, cfg);
+}
 function watcherWakeErrorPolicy(ctx, cfg, error, runId) {
   if (shutdownRequested || lifecycleEnded) return "stop";
   if (runId !== activeWatcherRunId) return "stop";
@@ -6029,7 +6037,7 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
-  runtime.watcherState = "starting";
+  runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : "starting";
   setStatus(ctx, cfg);
   try {
     await ensureBootstrapped(ctx, cfg, signal);
@@ -6048,9 +6056,6 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
       runtime.baselineAt = (/* @__PURE__ */ new Date()).toISOString();
       runtime.baselineSkipped = runtime.baselineSkipped || 0;
     }
-    recordWatcherSuccess(true);
-    runtime.watcherState = "watching";
-    setStatus(ctx, cfg);
     await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   } catch (error) {
     if (!signal.aborted && runId === activeWatcherRunId) {

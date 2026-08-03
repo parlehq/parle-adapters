@@ -34,7 +34,7 @@ async function eventually(condition, timeoutMs = 2000) {
 // Two configured rooms, each with its own queue of responsive rows. Rows are
 // only removed from a queue by an acknowledgement, which is what makes the
 // no-ack-on-failure and redelivery assertions meaningful.
-function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0, instantWakes = false } = {}) {
+function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0, retryFirstWakes = 0, instantWakes = false } = {}) {
   const wakeSink = { push: () => {} };
   const home = mkdtempSync(join(tmpdir(), "parle-delivery-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-delivery-project-"));
@@ -57,6 +57,9 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta",
       wakeOpens += 1;
       if (wakeOpens <= failFirstWakes) {
         return json({ error: { message: "wake refused terminally", action: "fix_client", scope: "request" } }, 401);
+      }
+      if (wakeOpens <= failFirstWakes + retryFirstWakes) {
+        return json({ error: { message: "wake temporarily unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 502);
       }
       if (instantWakes) return new Response("", { status: 200 });
       return heldWakeStream(wakeSink);
@@ -467,6 +470,29 @@ test("a terminal wake failure settles the loop and a later start resumes deliver
     await controller.start();
     assert.equal(controller.status().running, true);
     await eventually(() => h.acks.some(([, eventId]) => eventId === "after-restart"));
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("a successful internal reconnect reports the live wake stream to the host", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", retryFirstWakes: 1 });
+  const opens = [];
+  const failures = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: () => "handled",
+    reconnectDelayMs: 5,
+    sleep: async () => {},
+    onWakeError: (error) => { failures.push(error); return "continue"; },
+    onWakeOpen: () => { opens.push(h.wakeOpens()); },
+  });
+  try {
+    await controller.start();
+    await eventually(() => h.wakeOpens() === 2);
+    assert.equal(failures.length, 1, "the retryable failure reaches host policy");
+    assert.deepEqual(opens, [2], "only the subsequently opened live stream reports success");
+    assert.equal(controller.status().lastError, undefined, "a live stream supersedes the retryable error");
   } finally {
     await controller.stop();
     h.cleanup();

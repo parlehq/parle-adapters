@@ -45,6 +45,10 @@ export type DeliveryControllerOptions = {
   // retry; the host's later start() is the recovery path. Any other return
   // keeps the controller's own terminal and backoff handling.
   onWakeError?: (error: unknown) => "continue" | "stop" | void;
+  // A valid wake response has opened and exposed a readable body. Unlike
+  // start(), this fires for every internal reconnect so host connectivity
+  // state follows the live stream instead of the most recent failure.
+  onWakeOpen?: () => void;
 };
 
 export type DeliveryRoomStatus = {
@@ -97,6 +101,7 @@ export class ResponsiveDeliveryController {
   private readonly reconnectDelayMs: number;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly onWakeError?: (error: unknown) => "continue" | "stop" | void;
+  private readonly onWakeOpen?: () => void;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -127,6 +132,7 @@ export class ResponsiveDeliveryController {
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
     this.onWakeError = options.onWakeError;
+    this.onWakeOpen = options.onWakeOpen;
   }
 
   status(): DeliveryControllerStatus {
@@ -233,6 +239,8 @@ export class ResponsiveDeliveryController {
         const response = await this.client.openWakeStream(wakeAbort.signal);
         const reader = response.body?.getReader();
         if (!reader) throw new Error("Parle wake stream has no body");
+        this.lastError = undefined;
+        this.onWakeOpen?.();
         // A held stream does not observe an AbortSignal on its own, so the
         // pending read is cancelled explicitly; otherwise stop() would wait
         // forever on a stream that never produces another frame.
