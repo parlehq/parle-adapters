@@ -12,6 +12,24 @@ permissions:
   contents: read
 
 jobs:
+  windows-codex-hooks:
+    name: Codex Windows hook launcher
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Self-contained: the launcher tests spawn the exact commandWindows
+      # string against the committed hooks, so no workspace install is needed.
+      - name: Run Windows launcher behavioral tests
+        run: node --test packages/codex-plugin/test/windows-launcher.test.mjs
+
   ci:
     name: Typecheck and test
     runs-on: ubuntu-latest

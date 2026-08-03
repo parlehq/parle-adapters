@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3 (2026-08-02)
+
+- Restore parle-peers helper usage docs, clearly labeled as not providing compaction retention on this host.
+
 ## 0.5.2 (2026-08-02)
 
 - Explicitly remove #53 stable-peer retention support: shipped Command Code 1.5.0 has no always-before-model or compact boundary, so the per-tool peers flag is dropped from the managed hook command and the capability stays blocked on an upstream host API. SessionStart rendering and the TTY helper remain.

@@ -42,10 +42,19 @@ test("Codex Windows launcher discovers only trusted absolute runtimes and fails 
   const launcherPath = resolve(root, "hooks/run-parle-hook.cmd");
   assert.equal(existsSync(launcherPath), true);
   const launcher = readFileSync(launcherPath, "utf8");
-  // Same trust posture as run-parle-hook.sh: an explicit absolute override,
-  // then fixed absolute install locations - never PATH resolution.
-  assert.match(launcher, /if defined PARLE_HOOK_RUNTIME/);
-  assert.match(launcher, /"%PARLE_HOOK_RUNTIME%" "%PLUGIN_ROOT%\\hooks\\parle-hook\.mjs" %\*/);
+  // Same trust posture as run-parle-hook.sh: an explicit fully absolute
+  // override, then fixed absolute install locations - never PATH or cwd
+  // resolution. The override is executed only after the UNC/drive-rooted
+  // guards route to :override; relative and drive-relative values fall
+  // through to the fixed fallbacks. Behavioral proof of the rejection lives
+  // in windows-launcher.test.mjs on the Windows CI job.
+  assert.match(launcher, /if not defined PARLE_HOOK_RUNTIME goto :fallbacks/);
+  assert.match(launcher, /if "%PARLE_OVERRIDE:~0,2%"=="\\\\" goto :override/);
+  assert.match(launcher, /if not "%PARLE_OVERRIDE:~1,1%"==":" goto :fallbacks/);
+  assert.match(launcher, /if "%PARLE_OVERRIDE:~2,1%"=="\\" goto :override/);
+  assert.match(launcher, /if "%PARLE_OVERRIDE:~2,1%"=="\/" goto :override/);
+  assert.match(launcher, /:override\r?\nif not exist "%PARLE_OVERRIDE%" goto :fallbacks\r?\n"%PARLE_OVERRIDE%" "%PLUGIN_ROOT%\\hooks\\parle-hook\.mjs" %\*/);
+  assert.doesNotMatch(launcher, /"%PARLE_HOOK_RUNTIME%" "%PLUGIN_ROOT%/);
   assert.match(launcher, /%ProgramFiles%\\nodejs\\node\.exe/);
   assert.match(launcher, /%ProgramFiles\(x86\)%\\nodejs\\node\.exe/);
   assert.match(launcher, /%LocalAppData%\\Programs\\nodejs\\node\.exe/);

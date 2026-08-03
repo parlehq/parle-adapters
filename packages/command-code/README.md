@@ -105,3 +105,15 @@ operator-owned store other hosts render
 `SessionStart` hook renders the tagged block on startup, resume, and clear,
 and models can read the store via `parle_status.peerContext`. Nothing
 model-callable mutates it. None of that constitutes compaction retention.
+
+Helper usage (does NOT provide compaction retention on this host - it edits
+the shared store rendered here only at startup/resume/clear and rendered at
+real compaction boundaries by other hosts). Mutations refuse hooks, pipes,
+and automation and confirm on the controlling terminal:
+
+```sh
+node skills/parle/scripts/parle-peers.mjs list
+node skills/parle/scripts/parle-peers.mjs add lead @principal.agent.route implementation lead
+node skills/parle/scripts/parle-peers.mjs remove lead
+node skills/parle/scripts/parle-peers.mjs clear
+```

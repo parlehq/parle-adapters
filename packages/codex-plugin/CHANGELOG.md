@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.3 (2026-08-02)
+
+- Enforce the Windows launcher's absolute-only PARLE_HOOK_RUNTIME override (relative and drive-relative values fall through to the fixed install paths) and prove the wiring behaviorally on a Windows CI job: the exact commandWindows string runs through cmd /d /s /c with a spaced plugin root, hostile cwd/PATH, and no bridge state.
+
 ## 0.5.2 (2026-08-02)
 
 - Replace the Windows hook no-op with a real launcher (run-parle-hook.cmd): absolute PARLE_HOOK_RUNTIME override, fixed absolute Node install paths, fail-open {}. SessionStart peer context (including the compact source) now renders on Windows without a live bridge.

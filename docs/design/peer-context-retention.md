@@ -117,12 +117,16 @@ which hook owns refresh and rendering; how stale context is cleared.
   fixed absolute system Node paths, so peer context renders even when no
   responsive-delivery bridge is armed while a hostile `PATH` still cannot
   substitute the runtime. Windows uses a real launcher
-  (`run-parle-hook.cmd`) with the same posture: an absolute
-  `PARLE_HOOK_RUNTIME` override, then fixed absolute Node install paths
-  (`%ProgramFiles%\nodejs`, `%ProgramFiles(x86)%\nodejs`,
-  `%LocalAppData%\Programs\nodejs`), never `PATH`, failing open with `{}` on
-  every miss, so SessionStart (including the compact source) renders peer
-  context on Windows without a live bridge.
+  (`run-parle-hook.cmd`) with the same posture: a fully absolute
+  `PARLE_HOOK_RUNTIME` override (relative and drive-relative values are
+  rejected so a hostile session cwd can never supply the runtime), then
+  fixed absolute Node install paths (`%ProgramFiles%\nodejs`,
+  `%ProgramFiles(x86)%\nodejs`, `%LocalAppData%\Programs\nodejs`), never
+  `PATH`, failing open with `{}` on every miss. A dedicated Windows CI job
+  executes the exact `commandWindows` string through cmd's `/d /s /c` shape
+  with a spaced plugin root, hostile cwd/PATH, and no bridge state, proving
+  SessionStart (including the compact source) renders peer context on
+  Windows and that relative overrides fail open.
 - Stale clearing: the TTY helper.
 
 ### The TTY-only helper
