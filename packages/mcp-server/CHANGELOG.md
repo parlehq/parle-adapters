@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 (2026-08-02)
+
+- Refresh the bundled shared client with paced wake reopens, the delivery handler preamble, and host wake-error policy hooks.
+
 ## 0.5.3 (2026-08-02)
 
 - Refresh the bundled shared client with runtime alias switching and host address synthesis.

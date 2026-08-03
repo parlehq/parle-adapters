@@ -2089,6 +2089,374 @@ var ParleAccountClient = class {
   }
 };
 
+// ../client/dist/delivery.js
+var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
+var DEFAULT_MAX_DRAIN_BATCHES = 100;
+var DEFAULT_RECONNECT_MS = 5e3;
+var EMPTY_STREAM_REOPEN_MS = 250;
+var MAX_REMEMBERED_KEYS = 5e3;
+function deliveryKey(roomId, message) {
+  return `${roomId}:${message.event_id}`;
+}
+function defaultSleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted)
+      return reject(new Error("aborted"));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    }, { once: true });
+  });
+}
+var ResponsiveDeliveryController = class {
+  client;
+  abort = new AbortController();
+  handler;
+  maxHandlerAttempts;
+  maxDrainBatches;
+  reconnectDelayMs;
+  sleep;
+  onWakeError;
+  // Deduplication is keyed by (roomId, eventId) and deliberately survives
+  // session replacement: a new participant restarts server-side ack state, so
+  // the same row can legitimately arrive again under a new generation.
+  seen = /* @__PURE__ */ new Set();
+  attempts = /* @__PURE__ */ new Map();
+  // Rows whose handler ran but whose acknowledgement has not yet succeeded.
+  // Retrying one of these re-acknowledges only; the handler never re-runs.
+  handled = /* @__PURE__ */ new Map();
+  poisonedKeys = /* @__PURE__ */ new Set();
+  rerunRequested = /* @__PURE__ */ new Set();
+  stats = /* @__PURE__ */ new Map();
+  // Rows a host accepted for later effective handling. They are never
+  // re-offered to the handler and never acknowledged until the host reports
+  // completion, so a crash before injection leaves the row redeliverable.
+  deferred = /* @__PURE__ */ new Map();
+  drainInFlight = /* @__PURE__ */ new Map();
+  loop;
+  unsubscribeRevision;
+  wakeAbort;
+  ignoredWakeHints = 0;
+  lastIgnoredWakeRoomId;
+  lastError;
+  constructor(client2, options) {
+    this.client = client2;
+    this.handler = options.handler;
+    this.maxHandlerAttempts = options.maxHandlerAttempts ?? DEFAULT_MAX_HANDLER_ATTEMPTS;
+    this.maxDrainBatches = options.maxDrainBatches ?? DEFAULT_MAX_DRAIN_BATCHES;
+    this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
+    this.sleep = options.sleep ?? defaultSleep;
+    this.onWakeError = options.onWakeError;
+  }
+  status() {
+    return {
+      running: Boolean(this.loop) && !this.abort.signal.aborted,
+      rooms: this.configuredRooms().map((room) => {
+        const stat = this.stats.get(room.roomId) || { delivered: 0, skipped: 0, poisoned: 0 };
+        return {
+          roomId: room.roomId,
+          ...room.roomHandle ? { roomHandle: room.roomHandle } : {},
+          ...room.profile ? { profile: room.profile } : {},
+          delivered: stat.delivered,
+          skipped: stat.skipped,
+          poisoned: stat.poisoned,
+          deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
+          ...stat.lastError ? { lastError: stat.lastError } : {}
+        };
+      }),
+      ignoredWakeHints: this.ignoredWakeHints,
+      ...this.lastIgnoredWakeRoomId ? { lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {},
+      ...this.lastError ? { lastError: this.lastError } : {}
+    };
+  }
+  async start() {
+    if (this.loop)
+      return;
+    await this.client.ensureBootstrapped(this.abort.signal);
+    this.unsubscribeRevision?.();
+    this.unsubscribeRevision = this.client.onSessionRevision?.(() => {
+      this.wakeAbort?.abort();
+      void this.drainAll().catch(() => void 0);
+    });
+    await this.drainAll();
+    const loop = this.watchLoop();
+    this.loop = loop;
+    void loop.catch((error) => {
+      if (!this.abort.signal.aborted)
+        this.lastError = redactString(error instanceof Error ? error.message : String(error));
+    }).finally(() => {
+      if (this.loop === loop)
+        this.loop = void 0;
+    });
+  }
+  async stop() {
+    this.abort.abort();
+    this.wakeAbort?.abort();
+    this.unsubscribeRevision?.();
+    this.unsubscribeRevision = void 0;
+    await this.loop?.catch(() => void 0);
+    this.loop = void 0;
+  }
+  // A host reports effective handling of a deferred row. Only then is the row
+  // acknowledged, and a failed acknowledgement is retried without re-running
+  // the host handler.
+  async completeDeferred(roomId, message, outcome = "handled") {
+    const key = deliveryKey(roomId, message);
+    if (this.seen.has(key))
+      return true;
+    const stat = this.stat(roomId);
+    try {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
+    } catch (error) {
+      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    this.deferred.delete(key);
+    this.handled.delete(key);
+    this.remember(key);
+    if (outcome === "intentionally_skipped")
+      stat.skipped += 1;
+    else
+      stat.delivered += 1;
+    return true;
+  }
+  // Test seam for drain coalescing and acknowledgement retry, which are not
+  // observable through the wake stream alone.
+  drainForTest(roomId) {
+    const room = this.configuredRooms().find((entry) => entry.roomId === roomId);
+    if (!room)
+      return Promise.resolve();
+    return this.drainRoom(room);
+  }
+  configuredRooms() {
+    return this.client.runtime.rooms || [];
+  }
+  readyRooms() {
+    return this.configuredRooms().filter((room) => room.state === "ready");
+  }
+  async watchLoop() {
+    while (!this.abort.signal.aborted) {
+      const wakeAbort = new AbortController();
+      this.wakeAbort = wakeAbort;
+      const onAbort = () => wakeAbort.abort();
+      this.abort.signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        const response = await this.client.openWakeStream(wakeAbort.signal);
+        const reader = response.body?.getReader();
+        if (!reader)
+          throw new Error("Parle wake stream has no body");
+        const cancelRead = () => void reader.cancel().catch(() => void 0);
+        wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let sawEvent = false;
+        while (!wakeAbort.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done)
+            break;
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSSEBlocks(buffer);
+          buffer = parsed.rest;
+          for (const event of parsed.events) {
+            sawEvent = true;
+            if (event.event === "wake")
+              await this.handleWake(event.data);
+          }
+        }
+        this.lastError = void 0;
+        if (!wakeAbort.signal.aborted && !sawEvent)
+          await this.sleep(EMPTY_STREAM_REOPEN_MS, this.abort.signal);
+      } catch (error) {
+        if (this.abort.signal.aborted)
+          break;
+        if (wakeAbort.signal.aborted)
+          continue;
+        this.lastError = redactString(error instanceof Error ? error.message : String(error));
+        if (this.onWakeError?.(error) === "stop")
+          return;
+        if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || ""))
+          throw error;
+        const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
+        try {
+          await this.sleep(Math.max(retryAfter, this.reconnectDelayMs), this.abort.signal);
+        } catch {
+          break;
+        }
+      } finally {
+        this.abort.signal.removeEventListener("abort", onAbort);
+      }
+    }
+  }
+  // A hint names the room with traffic. An unknown room is counted and ignored;
+  // a hintless wake falls back to draining every ready room.
+  async handleWake(data) {
+    let hinted;
+    try {
+      const parsed = data ? JSON.parse(data) : void 0;
+      if (parsed && typeof parsed === "object" && typeof parsed.room_id === "string")
+        hinted = parsed.room_id;
+    } catch {
+    }
+    if (!hinted)
+      return this.drainAll();
+    const room = this.configuredRooms().find((entry) => entry.roomId === hinted);
+    if (!room) {
+      this.ignoredWakeHints += 1;
+      this.lastIgnoredWakeRoomId = hinted;
+      return;
+    }
+    await this.drainDeliverable(room);
+  }
+  async drainAll() {
+    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room).catch(() => void 0)));
+  }
+  // A degraded room is recovered before it is drained. Recovery reconciles
+  // room entry and re-reads the watermark; a room that cannot be recovered is
+  // left degraded with its error recorded rather than silently skipped.
+  async drainDeliverable(room) {
+    if (room.state !== "ready") {
+      const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
+      if (!recovered) {
+        const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
+        this.stat(room.roomId).lastError = live?.lastError || "room is degraded and could not be reinitialized";
+        return;
+      }
+    }
+    const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
+    await this.drainRoom(current);
+  }
+  // Coalescing must not swallow a requested drain. Joining an in-flight drain
+  // would lose the immediate post-replacement pass a session revision promises,
+  // because the in-flight drain may already have read past the new rows. One
+  // rerun is queued per room instead.
+  drainRoom(room) {
+    const existing = this.drainInFlight.get(room.roomId);
+    if (existing) {
+      this.rerunRequested.add(room.roomId);
+      return existing;
+    }
+    const run = (async () => {
+      try {
+        await this.doDrainRoom(room);
+      } finally {
+        this.drainInFlight.delete(room.roomId);
+      }
+      if (this.rerunRequested.delete(room.roomId) && !this.abort.signal.aborted) {
+        const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
+        await this.drainRoom(current);
+      }
+    })();
+    this.drainInFlight.set(room.roomId, run);
+    return run;
+  }
+  stat(roomId) {
+    let entry = this.stats.get(roomId);
+    if (!entry) {
+      entry = { delivered: 0, skipped: 0, poisoned: 0 };
+      this.stats.set(roomId, entry);
+    }
+    return entry;
+  }
+  async doDrainRoom(room) {
+    for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
+      if (this.abort.signal.aborted)
+        return;
+      let delivery;
+      try {
+        delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+      } catch (error) {
+        this.stat(room.roomId).lastError = redactString(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
+      if (messages.length === 0)
+        return;
+      const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
+      const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
+      let progressed = 0;
+      for (const message of messages) {
+        if (this.abort.signal.aborted)
+          return;
+        const key = deliveryKey(room.roomId, message);
+        if (this.seen.has(key))
+          continue;
+        if (await this.processRow(room, message, key, cursorScope, preamble))
+          progressed += 1;
+      }
+      if (progressed === 0)
+        return;
+    }
+    this.stat(room.roomId).lastError = `responsive drain exceeded ${this.maxDrainBatches} batches`;
+  }
+  // Handling and acknowledgement are separate facts. A handler that succeeded
+  // and an ack that failed must never re-run the handler: the host has already
+  // acted on the row (Pi injects it), so replaying it would duplicate a visible
+  // side effect. Deduplication therefore guards the handler, not the ack.
+  async processRow(room, message, key, cursorScope, preamble) {
+    const stat = this.stat(room.roomId);
+    let outcome = this.handled.get(key);
+    if (outcome === "deferred")
+      return false;
+    if (outcome === void 0) {
+      try {
+        outcome = await this.handler({
+          roomId: room.roomId,
+          ...room.roomHandle ? { roomHandle: room.roomHandle } : {},
+          ...room.profile ? { profile: room.profile } : {},
+          ...cursorScope ? { cursorScope } : {},
+          ...preamble ? { preamble } : {},
+          message
+        });
+        this.handled.set(key, outcome);
+        this.attempts.delete(key);
+        if (outcome === "deferred") {
+          this.deferred.set(key, { roomId: room.roomId, message });
+          return true;
+        }
+      } catch (error) {
+        const attempts = (this.attempts.get(key) || 0) + 1;
+        this.attempts.set(key, attempts);
+        stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+        if (attempts < this.maxHandlerAttempts)
+          return true;
+        this.attempts.delete(key);
+        outcome = "intentionally_skipped";
+        this.handled.set(key, outcome);
+        this.poisonedKeys.add(key);
+        stat.poisoned += 1;
+      }
+    }
+    try {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
+    } catch (error) {
+      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    this.handled.delete(key);
+    this.remember(key);
+    if (outcome === "intentionally_skipped")
+      stat.skipped += 1;
+    else
+      stat.delivered += 1;
+    return true;
+  }
+  // Bounded memory for a long-lived controller: dedupe only has to outlive
+  // server-side redelivery, not the whole process lifetime.
+  remember(key) {
+    this.seen.add(key);
+    if (this.seen.size <= MAX_REMEMBERED_KEYS)
+      return;
+    const overflow = this.seen.size - MAX_REMEMBERED_KEYS;
+    let removed = 0;
+    for (const entry of this.seen) {
+      this.seen.delete(entry);
+      if (++removed >= overflow)
+        break;
+    }
+  }
+};
+
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
@@ -2384,7 +2752,7 @@ function formatVersionErrorHint(cfg, errorObj) {
 }
 var REQUEST_RETRY_ATTEMPTS = 5;
 var REQUEST_RETRY_WINDOW_MS = 6e4;
-function defaultSleep(ms, signal) {
+function defaultSleep2(ms, signal) {
   return new Promise((resolve) => {
     if (signal?.aborted || ms <= 0)
       return resolve();
@@ -2639,7 +3007,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.activeProfile = this.multiRoom ? void 0 : this.cfg.profile?.value;
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => /* @__PURE__ */ new Date());
-    this.sleepImpl = options.sleep || defaultSleep;
+    this.sleepImpl = options.sleep || defaultSleep2;
     this.randomUUID = options.randomUUID || randomUUID2;
     this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
@@ -4017,7 +4385,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!responsiveDeliveryKey(message))
       throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
     const roomId = this.roomTarget(roomIdParam ?? (typeof message.room_id === "string" ? message.room_id : void 0)).roomId.value;
-    return this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
+    const result = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
       method: "POST",
       session: true,
       roomId,
@@ -4025,6 +4393,13 @@ var ParleAgentClient = class _ParleAgentClient {
       retry: false,
       body: { seq: message.seq, event_id: message.event_id }
     }), signal);
+    const room = this.roomRuntimes.get(roomId);
+    if (room) {
+      room.lastAckedSeq = Math.max(room.lastAckedSeq || 0, message.seq);
+      room.lastAckEventId = message.event_id;
+      this.publishRoomRuntimes();
+    }
+    return result;
   }
   async readProjection(params = {}, signal) {
     return this.readSurface("projection", params, signal);
@@ -4108,7 +4483,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.4.0";
+var PI_EXTENSION_VERSION = "0.5.0";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -4117,18 +4492,15 @@ var CATALOG_URL = "https://api.parle.sh/catalog";
 var GUIDANCE_LIMIT_BYTES = 128 * 1024;
 var REQUEST_LIMIT_BYTES = 128 * 1024;
 var READ_LIMIT_BYTES2 = 256 * 1024;
-var WATCH_STREAM_MAX_MS = 4 * 60 * 1e3;
 var WATCH_ERROR_BACKOFF_MS = 5e3;
 var WATCH_ERROR_BACKOFF_JITTER_MS = 1e3;
-var WATCH_EMPTY_BACKOFF_MS = 250;
-var WATCH_BASELINE_ACK_LIMIT = 5e3;
 var HEARTBEAT_INTERVAL_MS = 5 * 60 * 1e3;
 var FOOTER_FAILURE_THRESHOLD = 3;
 var FOOTER_FAILURE_AGE_MS = 6e4;
 var RATE_LIMIT_FAILURE_THRESHOLD = 5;
 var RATE_LIMIT_MAX_ELAPSED_MS = 15 * 60 * 1e3;
 var INJECTED_KEY_LIMIT = 4096;
-var runtime = { bootstrapped: false, watcherState: "off" };
+var runtime = { watcherState: "off" };
 var client;
 var clientBinding;
 var unsubscribeCommitGuard;
@@ -4157,6 +4529,8 @@ var seenKeys = /* @__PURE__ */ new Set();
 var seenKeyOrder = [];
 var pendingResponsiveMessages = [];
 var responsiveFlushRunning = false;
+var deliveryController;
+var deliveryControllerClient;
 var lifecycleEnded = false;
 var shutdownRequested = false;
 function assertLifecycleActive() {
@@ -4190,7 +4564,7 @@ function agentClient(ctx, cfg) {
   assertRuntimeConfig(cfg);
   const binding = clientBindingFor(ctx?.cwd || process.cwd(), cfg);
   if (client && clientBinding === binding) return client;
-  if (client && runtime.bootstrapped !== void 0 && client.runtime.bootstrapped) {
+  if (client && client.runtime.bootstrapped) {
     throw new Error("Parle profile configuration changed while a room session is live. Use parle_switch_profile instead of editing PARLE_PROFILE or .env in place.");
   }
   detachClient();
@@ -4214,7 +4588,15 @@ function agentClient(ctx, cfg) {
   unsubscribeCommitGuard = client.onBeforeSessionCommit((plan) => guardPiCommit(plan));
   unsubscribeSessionRevision = client.onSessionRevision((event) => {
     if (event.reason !== "bootstrap" && event.reason !== "rollover") return;
-    if (!client?.runtime.sessionAlias && runtime.baselineAt) baselineNeeded = true;
+    if (client?.runtime.sessionAlias || !runtime.baselineAt) return;
+    baselineNeeded = true;
+    const roomId = client?.runtime.rooms?.[0]?.roomId;
+    const controller = deliveryController;
+    if (controller && roomId) {
+      void controller.drainForTest(roomId).catch(() => void 0).finally(() => {
+        baselineNeeded = false;
+      });
+    }
   });
   return client;
 }
@@ -4244,21 +4626,21 @@ function sessionView() {
     ...runtime,
     bootstrapped: Boolean(c?.bootstrapped),
     sessionHandle: c?.sessionHandle || void 0,
-    sessionAddress: c ? c.sessionAddress : runtime.sessionAddress,
+    sessionAddress: c ? c.sessionAddress : void 0,
     sessionAlias: c?.sessionAlias,
     sessionGeneration: c?.sessionGeneration,
-    sessionRevision: c?.sessionRevision ?? runtime.sessionRevision,
+    sessionRevision: c?.sessionRevision,
     createdAt: c?.createdAt || void 0,
     agentSessionId: c?.agentSessionId || void 0,
     expiresAt: c?.expiresAt || void 0,
     participantId: room?.participantId || void 0,
-    roomId: room?.roomId ?? runtime.roomId,
-    roomHandle: room?.roomHandle ?? runtime.roomHandle,
-    cursor: room?.cursor ?? runtime.cursor,
-    responsiveCursorScope: c?.responsiveCursorScope ?? runtime.responsiveCursorScope,
+    roomId: room?.roomId,
+    roomHandle: room?.roomHandle,
+    cursor: room?.cursor,
+    responsiveCursorScope: c?.responsiveCursorScope,
     responsiveContinuity: c?.responsiveContinuity,
-    rolloverFailures: c?.rolloverFailures ?? runtime.rolloverFailures,
-    rolloverLatched: c?.rolloverLatched ?? runtime.rolloverLatched,
+    rolloverFailures: c?.rolloverFailures,
+    rolloverLatched: c?.rolloverLatched,
     lastError: runtime.lastError ?? (c?.lastError || c?.lastBootstrapError || void 0),
     lastHttpStatus: runtime.lastHttpStatus ?? c?.lastHttpStatus,
     lastAckedSeq: room?.lastAckedSeq ?? runtime.lastAckedSeq
@@ -4924,93 +5306,85 @@ function parseJsonMaybe2(text) {
     return void 0;
   }
 }
-function withTimeoutSignal(parent, timeoutMs) {
-  const controller = new AbortController();
-  let didTimeout = false;
-  const timer = setTimeout(() => {
-    didTimeout = true;
-    controller.abort();
-  }, timeoutMs);
-  const onAbort = () => controller.abort();
-  parent?.addEventListener("abort", onAbort, { once: true });
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      clearTimeout(timer);
-      parent?.removeEventListener("abort", onAbort);
+function ensureDeliveryController(pi, ctx, cfg) {
+  const live = agentClient(ctx, cfg);
+  if (deliveryController && deliveryControllerClient === live) return deliveryController;
+  deliveryController = new ResponsiveDeliveryController(live, {
+    handler: (input) => piDeliveryHandler(pi ?? lastPi, ctx, cfg, input),
+    sleep: (ms, sig) => watcherSleep(ms, sig),
+    reconnectDelayMs: WATCH_ERROR_BACKOFF_MS,
+    onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, activeWatcherRunId)
+  });
+  deliveryControllerClient = live;
+  return deliveryController;
+}
+function discardDeliveryController() {
+  const controller = deliveryController;
+  deliveryController = void 0;
+  deliveryControllerClient = void 0;
+  if (controller) void controller.stop().catch(() => void 0);
+}
+function piDeliveryHandler(pi, ctx, cfg, input) {
+  const key = deliveryKey2(input.message);
+  if (!key) {
+    runtime.lastError = "responsive delivery row missing seq or event_id";
+    runtime.lastWatcherErrorAt = (/* @__PURE__ */ new Date()).toISOString();
+    runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
+    setStatus(ctx, cfg);
+    return "intentionally_skipped";
+  }
+  if (baselineNeeded && input.cursorScope !== "alias") {
+    runtime.baselineSkipped = (runtime.baselineSkipped || 0) + 1;
+    return "intentionally_skipped";
+  }
+  if (injectedKeys.has(key) || seenKeys.has(key)) {
+    if (seenKeys.has(key) && !injectedKeys.has(key)) runtime.seenSuppressed = (runtime.seenSuppressed || 0) + 1;
+    else runtime.duplicateSuppressed = (runtime.duplicateSuppressed || 0) + 1;
+    if (pendingResponsiveMessages.length === 0) {
+      runtime.lastAckedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastAckedSeq || 0, input.message.seq) : runtime.lastAckedSeq;
+      return "intentionally_skipped";
+    }
+    queuePendingResponsive(input, key, true);
+    return "deferred";
+  }
+  if (pendingResponsiveMessages.some((item) => item.key === key)) return "deferred";
+  queuePendingResponsive(input, key, false);
+  runtime.lastEligibleSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, input.message.seq) : runtime.lastEligibleSeq;
+  runtime.lastBufferedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, input.message.seq) : runtime.lastBufferedSeq;
+  return "deferred";
+}
+function queuePendingResponsive(input, key, skip) {
+  const view = sessionView();
+  pendingResponsiveMessages.push({
+    key,
+    message: input.message,
+    responsePreamble: input.preamble,
+    fence: {
+      sessionRevision: view.sessionRevision || 0,
+      cursorScope: input.cursorScope,
+      roomId: input.roomId,
+      sessionAlias: view.sessionAlias,
+      agentSessionId: view.agentSessionId
     },
-    timedOut: () => didTimeout
-  };
+    ...skip ? { skip: true } : {}
+  });
+  updatePendingResponsiveState();
 }
 async function handleWakeHint(pi, ctx, cfg, signal) {
   runtime.lastWakeHintAt = (/* @__PURE__ */ new Date()).toISOString();
   runtime.lastDeliveryFetchAt = runtime.lastWakeHintAt;
   const live = agentClient(ctx, cfg);
-  if (baselineNeeded) {
-    baselineNeeded = false;
-    await baselineResponsiveDelivery(ctx, cfg, signal);
-  }
-  const read = await live.drainResponsiveDeliveryWithFence(signal);
-  try {
-    if (baselineNeeded) {
-      baselineNeeded = false;
-      await baselineResponsiveDelivery(ctx, cfg, signal);
-      setStatus(ctx, cfg);
-      return;
-    }
-    const delivery = read.delivery;
-    recordWatcherSuccess();
-    const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-    const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-    if (heldCount > 0) {
-      runtime.watcherState = "held";
-      runtime.lastHeldBacklogAt = (/* @__PURE__ */ new Date()).toISOString();
-    }
-    if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-    if (messages.length === 0) {
-      runtime.lastEmptyWakeAt = (/* @__PURE__ */ new Date()).toISOString();
-      setStatus(ctx, cfg);
-      return;
-    }
-    const responsePreamble = typeof delivery?.preamble === "string" ? delivery.preamble : void 0;
-    await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, { ...read.fence });
-    await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
-    runtime.watcherState = "watching";
-    setStatus(ctx, cfg);
-  } finally {
-    read.release();
-  }
+  const controller = ensureDeliveryController(pi, ctx, cfg);
+  const roomId = live.runtime.rooms?.[0]?.roomId || cfg.roomId.value;
+  await controller.drainForTest(roomId);
+  if (baselineNeeded) baselineNeeded = false;
+  const roomError = controller.status().rooms.find((room) => room.roomId === roomId)?.lastError;
+  if (roomError && /prior|revision|binding/.test(roomError) === false) runtime.lastError = runtime.lastError ?? roomError;
+  await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
+  runtime.watcherState = watcherLoopRunning ? "watching" : runtime.watcherState;
+  setStatus(ctx, cfg);
 }
-async function consumeWakeStream(pi, ctx, cfg, signal) {
-  const scoped = withTimeoutSignal(signal, WATCH_STREAM_MAX_MS);
-  try {
-    const live = agentClient(ctx, cfg);
-    const response = await live.openWakeStream(scoped.signal);
-    runtime.lastWakeStreamOpenedAt = (/* @__PURE__ */ new Date()).toISOString();
-    runtime.watcherState = "watching";
-    setStatus(ctx, cfg);
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("Parle wake stream response body is not readable");
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (!scoped.signal.aborted) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parsed = parseSSEBlocks(buffer);
-      buffer = parsed.rest;
-      for (const event of parsed.events) {
-        if (event.event === "wake") await handleWakeHint(pi, ctx, cfg, signal);
-      }
-    }
-  } catch (error) {
-    if (scoped.timedOut()) return;
-    throw error;
-  } finally {
-    scoped.cleanup();
-  }
-}
-function deliveryFence() {
+function injectionFence() {
   const view = sessionView();
   return {
     sessionRevision: view.sessionRevision || 0,
@@ -5119,7 +5493,7 @@ async function useSessionAlias(pi, ctx, cfg, alias, signal) {
     throw error;
   }
 }
-function deliveryKey(message) {
+function deliveryKey2(message) {
   if (typeof message?.seq !== "number" || typeof message?.event_id !== "string" || !message.event_id) return void 0;
   return `${message.seq}:${message.event_id}`;
 }
@@ -5144,7 +5518,7 @@ function rememberInjectedKey(key) {
 }
 function rememberSeenMessages(messages) {
   for (const message of messages) {
-    const key = deliveryKey(message);
+    const key = deliveryKey2(message);
     if (key) rememberBoundedKey(seenKeys, seenKeyOrder, key);
   }
 }
@@ -5244,48 +5618,16 @@ function assertDeliveryFenceCurrent(fence) {
     throw new Error("Parle exact-session responsive delivery belongs to a prior session revision");
   }
 }
-async function ackResponsiveMessage(cfg, message, signal, fence = deliveryFence()) {
-  assertDeliveryFenceCurrent(fence);
-  const live = agentClient(lastCtx, cfg);
-  await live.ackResponsiveDelivery({ seq: message.seq, event_id: message.event_id }, signal);
-  runtime.lastAckedSeq = typeof message.seq === "number" ? message.seq : runtime.lastAckedSeq;
-}
-async function baselineResponsiveDelivery(ctx, cfg, signal) {
-  const live = agentClient(ctx, cfg);
-  let skipped = 0;
-  while (!signal?.aborted) {
-    const read = await live.drainResponsiveDeliveryWithFence(signal);
-    try {
-      const delivery = read.delivery;
-      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-      const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-      if (heldCount > 0) {
-        runtime.watcherState = "held";
-        runtime.lastHeldBacklogAt = (/* @__PURE__ */ new Date()).toISOString();
-      }
-      if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-      if (messages.length === 0) break;
-      for (const message of messages) {
-        const key = deliveryKey(message);
-        if (!key) {
-          runtime.lastError = "responsive delivery row missing seq or event_id during baseline";
-          runtime.lastWatcherErrorAt = (/* @__PURE__ */ new Date()).toISOString();
-          runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
-          setStatus(ctx, cfg);
-          await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => void 0);
-          return;
-        }
-        await ackResponsiveMessage(cfg, message, signal, { ...read.fence });
-        skipped += 1;
-        if (skipped > WATCH_BASELINE_ACK_LIMIT) throw new Error("responsive delivery baseline exceeded ack limit");
-      }
-    } finally {
-      read.release();
-    }
+async function completePendingResponsive(pi, ctx, cfg, item) {
+  assertDeliveryFenceCurrent(item.fence);
+  const controller = ensureDeliveryController(pi, ctx, cfg);
+  const roomId = item.fence.roomId || cfg.roomId.value;
+  const acked = await controller.completeDeferred(roomId, { seq: item.message.seq, event_id: item.message.event_id }, item.skip ? "intentionally_skipped" : "handled");
+  if (!acked) {
+    const roomError = controller.status().rooms.find((room) => room.roomId === roomId)?.lastError;
+    throw new Error(`Parle responsive acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
   }
-  runtime.baselineSkipped = (runtime.baselineSkipped || 0) + skipped;
-  runtime.baselineAt = (/* @__PURE__ */ new Date()).toISOString();
-  setStatus(ctx, cfg);
+  runtime.lastAckedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastAckedSeq || 0, item.message.seq) : runtime.lastAckedSeq;
 }
 function classifyWatcherError(error) {
   if (error?.code === "timeout") return "timeout";
@@ -5347,10 +5689,6 @@ function maybeParkRateLimitedWatcher() {
     return true;
   }
   return false;
-}
-function rateLimitParkDelayMs() {
-  if (rateLimitFirst429MonotonicMs === void 0 || runtime.rateLimitParkedCause) return void 0;
-  return Math.max(0, RATE_LIMIT_MAX_ELAPSED_MS - rateLimitElapsedMs());
 }
 function isRateLimitError(error) {
   return error?.status === 429;
@@ -5414,40 +5752,21 @@ function clearPendingResponsiveMessages() {
   responsiveFlushRunning = false;
   updatePendingResponsiveState();
 }
-async function queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, responseFence = deliveryFence()) {
-  let ackablePrefix;
-  let blockedByPending = pendingResponsiveMessages.length > 0;
-  let lastPending = pendingResponsiveMessages.at(-1);
-  const pendingKeys = new Set(pendingResponsiveMessages.map((item) => item.key));
+async function queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, responseFence = injectionFence()) {
+  const controller = ensureDeliveryController(lastPi, ctx, cfg);
+  const roomId = responseFence.roomId || cfg.roomId.value;
   for (const message of messages) {
     if (signal?.aborted) break;
-    const key = deliveryKey(message);
-    if (!key) {
-      runtime.lastError = "responsive delivery row missing seq or event_id";
-      runtime.lastWatcherErrorAt = (/* @__PURE__ */ new Date()).toISOString();
-      runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
-      setStatus(ctx, cfg);
-      await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => void 0);
-      return;
+    const outcome = piDeliveryHandler(lastPi, ctx, cfg, {
+      roomId,
+      ...responseFence.cursorScope ? { cursorScope: responseFence.cursorScope } : {},
+      ...responsePreamble ? { preamble: responsePreamble } : {},
+      message
+    });
+    if (outcome === "intentionally_skipped" && deliveryKey2(message)) {
+      await controller.completeDeferred(roomId, { seq: message.seq, event_id: message.event_id }, "intentionally_skipped");
     }
-    if (injectedKeys.has(key) || seenKeys.has(key)) {
-      if (seenKeys.has(key) && !injectedKeys.has(key)) runtime.seenSuppressed = (runtime.seenSuppressed || 0) + 1;
-      else runtime.duplicateSuppressed = (runtime.duplicateSuppressed || 0) + 1;
-      if (!blockedByPending) ackablePrefix = message;
-      else if (lastPending) lastPending.ackThrough = message;
-      continue;
-    }
-    blockedByPending = true;
-    if (pendingKeys.has(key)) continue;
-    const pending = { key, message, responsePreamble, fence: responseFence };
-    pendingResponsiveMessages.push(pending);
-    lastPending = pending;
-    pendingKeys.add(key);
-    runtime.lastEligibleSeq = typeof message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, message.seq) : runtime.lastEligibleSeq;
-    runtime.lastBufferedSeq = typeof message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, message.seq) : runtime.lastBufferedSeq;
   }
-  updatePendingResponsiveState();
-  if (ackablePrefix) await ackResponsiveMessage(cfg, ackablePrefix, signal, responseFence);
   setStatus(ctx, cfg);
 }
 async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
@@ -5458,14 +5777,14 @@ async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
     const batch = [];
     for (const item of pendingResponsiveMessages) {
       if (item.responsePreamble !== first.responsePreamble) break;
-      const candidate = [...batch.map((entry) => entry.message), item.message];
-      if (batch.length > 0 && !promptFitsResponsiveBatch(candidate, first.responsePreamble)) break;
+      const candidate = [...batch.filter((entry) => !entry.skip).map((entry) => entry.message), ...item.skip ? [] : [item.message]];
+      if (batch.length > 0 && candidate.length > 1 && !promptFitsResponsiveBatch(candidate, first.responsePreamble)) break;
       batch.push(item);
     }
     if (batch.length === 0) return;
     runtime.watcherState = "injecting";
     setStatus(ctx, cfg);
-    const notYetInjected = batch.filter((item) => !item.injected);
+    const notYetInjected = batch.filter((item) => !item.injected && !item.skip);
     if (notYetInjected.length > 0) {
       await pi.sendUserMessage(inboundBatchPrompt(notYetInjected.map((item) => item.message), first.responsePreamble));
       for (const item of notYetInjected) {
@@ -5474,17 +5793,32 @@ async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
         runtime.lastInjectedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastInjectedSeq || 0, item.message.seq) : runtime.lastInjectedSeq;
       }
     }
-    const last = batch.at(-1);
-    await ackResponsiveMessage(cfg, last.ackThrough || last.message, signal, last.fence);
-    pendingResponsiveMessages.splice(0, batch.length);
-    updatePendingResponsiveState();
+    for (const item of batch) {
+      await completePendingResponsive(pi, ctx, cfg, item);
+      pendingResponsiveMessages.shift();
+      updatePendingResponsiveState();
+    }
   } finally {
     responsiveFlushRunning = false;
     setStatus(ctx, cfg);
   }
 }
+function watcherWakeErrorPolicy(ctx, cfg, error, runId) {
+  if (shutdownRequested || lifecycleEnded) return "stop";
+  if (runId !== activeWatcherRunId) return "stop";
+  if (!recordAutomaticFailure(error, cfg, runId)) return "stop";
+  const terminalState = terminalWatcherState(error);
+  runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+  setStatus(ctx, cfg);
+  if (isRateLimitError(error)) maybeParkRateLimitedWatcher();
+  if (terminalState || runtime.rateLimitParkedCause) {
+    watcherLoopRunning = false;
+    setStatus(ctx, cfg);
+    return "stop";
+  }
+  return "continue";
+}
 async function runWatcher(pi, ctx, cfg, signal, runId) {
-  let restartAfterBootstrapFailure = false;
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
@@ -5492,67 +5826,54 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
   setStatus(ctx, cfg);
   try {
     await ensureBootstrapped(ctx, cfg, signal);
-    if (!runtime.baselineAt && !client?.runtime.sessionAlias) await baselineResponsiveDelivery(ctx, cfg, signal);
-    while (!signal.aborted && watcherConfigured(cfg) && !automaticGateClosed(cfg)) {
-      try {
-        runtime.watcherState = "waiting";
-        setStatus(ctx, cfg);
-        await consumeWakeStream(pi, ctx, cfg, signal);
-        recordWatcherSuccess(true);
-        if (!signal.aborted) await watcherSleep(WATCH_EMPTY_BACKOFF_MS, signal);
-      } catch (error) {
-        if (signal.aborted || runId !== activeWatcherRunId) break;
-        if (!recordAutomaticFailure(error, cfg, runId)) break;
-        const terminalState = terminalWatcherState(error);
-        runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
-        setStatus(ctx, cfg);
-        if (terminalState || runtime.rateLimitParkedCause) break;
-        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
-        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : void 0;
-        await watcherSleep(parkDelay === void 0 ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => void 0);
-        if (!signal.aborted && runId === activeWatcherRunId && maybeParkRateLimitedWatcher()) {
-          setStatus(ctx, cfg);
-          break;
-        }
-      }
+    const live = agentClient(ctx, cfg);
+    const initialBaseline = !runtime.baselineAt && !live.runtime.sessionAlias;
+    if (initialBaseline) baselineNeeded = true;
+    discardDeliveryController();
+    const controller = ensureDeliveryController(pi, ctx, cfg);
+    if (signal.aborted) return;
+    signal.addEventListener("abort", () => {
+      if (deliveryController === controller) void controller.stop().catch(() => void 0);
+    }, { once: true });
+    await controller.start();
+    if (initialBaseline) {
+      baselineNeeded = false;
+      runtime.baselineAt = (/* @__PURE__ */ new Date()).toISOString();
+      runtime.baselineSkipped = runtime.baselineSkipped || 0;
     }
+    recordWatcherSuccess(true);
+    runtime.watcherState = "watching";
+    setStatus(ctx, cfg);
+    await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   } catch (error) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
       const terminalState = terminalWatcherState(error);
       runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+      watcherLoopRunning = false;
       setStatus(ctx, cfg);
       if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
         const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
-        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : void 0;
-        await watcherSleep(parkDelay === void 0 ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => void 0);
-        if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher()) restartAfterBootstrapFailure = true;
+        await watcherSleep(retryDelay, signal).catch(() => void 0);
+        if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher() && !shutdownRequested && !lifecycleEnded) {
+          startWatcher(pi, ctx, cfg);
+        }
       }
-    }
-  } finally {
-    if (runId === activeWatcherRunId) {
-      watcherLoopRunning = false;
-      if (signal.aborted) {
-        runtime.watcherState = "disconnected";
-      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "rate_limited" && runtime.watcherState !== "disconnected") {
-        runtime.watcherState = "off";
-      }
-      setStatus(ctx, cfg);
-      if (restartAfterBootstrapFailure && !shutdownRequested && !lifecycleEnded) startWatcher(pi, ctx, cfg);
     }
   }
 }
 function startWatcher(pi, ctx, cfg = resolveConfig2(ctx.cwd || process.cwd())) {
   if (shutdownRequested || lifecycleEnded) return;
-  if (runtime.bootstrapped && runtime.roomId && runtime.roomId !== cfg.roomId?.value) return;
+  if (client?.runtime.bootstrapped && client.runtime.rooms?.[0]?.roomId && client.runtime.rooms[0].roomId !== cfg.roomId?.value) return;
   if (!watcherConfigured(cfg) || automaticGateClosed(cfg)) return;
-  if (watcherLoopRunning && watcherAbort && !watcherAbort.signal.aborted) return;
+  const controllerRunning = Boolean(deliveryController?.status().running);
+  if ((watcherLoopRunning || controllerRunning) && watcherAbort && !watcherAbort.signal.aborted) return;
   watcherAbort?.abort();
   watcherAbort = new AbortController();
   const runId = ++activeWatcherRunId;
   const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
   watcherTask = task;
-  void task.finally(() => {
+  void task.catch(() => void 0).finally(() => {
     if (watcherTask === task) watcherTask = void 0;
   });
 }
@@ -5562,13 +5883,17 @@ function stopWatcher(ctx) {
   watcherAbort = void 0;
   recoveryRestartAbort?.abort();
   recoveryRestartAbort = void 0;
+  discardDeliveryController();
+  watcherLoopRunning = false;
   runtime.watcherEnabled = false;
   runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : "off";
   if (ctx) setStatus(ctx);
 }
 async function quiesceWatcher(ctx) {
   const task = watcherTask;
+  const controller = deliveryController;
   stopWatcher(ctx);
+  if (controller) await controller.stop().catch(() => void 0);
   if (task) await task.catch(() => void 0);
   watcherLoopRunning = false;
 }
@@ -5750,7 +6075,9 @@ var __testing = {
   handleWakeHint,
   queueResponsiveMessages,
   flushPendingResponsiveMessages,
-  baselineResponsiveDelivery,
+  deliveryController() {
+    return deliveryController;
+  },
   resolveConfig: resolveConfig2,
   clientInstanceId: PI_CLIENT_INSTANCE_ID,
   useSessionAlias,
@@ -5800,7 +6127,8 @@ var __testing = {
   },
   setStatus,
   resetRuntime() {
-    runtime = { bootstrapped: false, watcherState: "off" };
+    runtime = { watcherState: "off" };
+    discardDeliveryController();
     detachClient();
     activeProfileOverride = void 0;
     liveConfig = void 0;
@@ -5860,6 +6188,7 @@ async function shutdownLifecycle(ctx, _cfg) {
   if (shutdownRequested) return;
   shutdownRequested = true;
   stopWatcher();
+  discardDeliveryController();
   removeRuntimeFile2(ctx.cwd || process.cwd());
   lifecycleEnded = true;
   const task = watcherTask;
@@ -5875,7 +6204,6 @@ async function shutdownLifecycle(ctx, _cfg) {
     }
   }
   runtime = {
-    bootstrapped: false,
     watcherState: "off",
     lastError: runtime.lastError
   };

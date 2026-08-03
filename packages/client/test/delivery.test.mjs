@@ -34,7 +34,7 @@ async function eventually(condition, timeoutMs = 2000) {
 // Two configured rooms, each with its own queue of responsive rows. Rows are
 // only removed from a queue by an acknowledgement, which is what makes the
 // no-ack-on-failure and redelivery assertions meaningful.
-function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0 } = {}) {
+function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0, instantWakes = false } = {}) {
   const wakeSink = { push: () => {} };
   const home = mkdtempSync(join(tmpdir(), "parle-delivery-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-delivery-project-"));
@@ -58,6 +58,7 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta",
       if (wakeOpens <= failFirstWakes) {
         return json({ error: { message: "wake refused terminally", action: "fix_client", scope: "request" } }, 401);
       }
+      if (instantWakes) return new Response("", { status: 200 });
       return heldWakeStream(wakeSink);
     }
     if (path.endsWith("/responsive-delivery/ack")) {
@@ -466,6 +467,27 @@ test("a terminal wake failure settles the loop and a later start resumes deliver
     await controller.start();
     assert.equal(controller.status().running, true);
     await eventually(() => h.acks.some(([, eventId]) => eventId === "after-restart"));
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("an event-less wake stream reopen is paced instead of spinning on microtasks", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", instantWakes: true });
+  const sleeps = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: () => "handled",
+    sleep: async (ms) => { sleeps.push(ms); await new Promise((resolve) => setTimeout(resolve, 1)); },
+  });
+  try {
+    await controller.start();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Without pacing the loop reopens on resolved microtasks alone: timers
+    // starve (this settling timeout would never fire) and opens are unbounded.
+    // With pacing every reopen passes through the injected sleep first.
+    assert.ok(sleeps.length >= 1 && sleeps.every((ms) => ms === 250), `each event-less stream end sleeps before reopening, saw ${JSON.stringify(sleeps.slice(0, 3))}`);
+    assert.ok(h.wakeOpens() <= sleeps.length + 2, `wake reopen is paced, saw ${h.wakeOpens()} opens for ${sleeps.length} sleeps`);
   } finally {
     await controller.stop();
     h.cleanup();

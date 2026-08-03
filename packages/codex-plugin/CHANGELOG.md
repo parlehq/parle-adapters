@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.5 (2026-08-02)
+
+- Refresh the bundled MCP server with paced wake reopens and shared-controller delivery policy hooks.
+
 ## 0.4.4 (2026-08-02)
 
 - Refresh the bundled MCP server with the shared client's runtime alias switching and host address synthesis.

@@ -2350,7 +2350,7 @@ export class ParleAgentClient {
   async ackResponsiveDelivery(message: ResponsiveDeliveryMessage, signal?: AbortSignal, roomIdParam?: string): Promise<any> {
     if (!responsiveDeliveryKey(message)) throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
     const roomId = this.roomTarget(roomIdParam ?? (typeof (message as any).room_id === "string" ? (message as any).room_id : undefined)).roomId!.value!;
-    return this.withRebootstrap(
+    const result = await this.withRebootstrap(
       () => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
         method: "POST",
         session: true,
@@ -2361,6 +2361,15 @@ export class ParleAgentClient {
       }),
       signal,
     );
+    // The room runtime is the display authority for delivery progress; record
+    // the acknowledged watermark so host status surfaces stay truthful.
+    const room = this.roomRuntimes.get(roomId);
+    if (room) {
+      room.lastAckedSeq = Math.max(room.lastAckedSeq || 0, message.seq);
+      room.lastAckEventId = message.event_id;
+      this.publishRoomRuntimes();
+    }
+    return result;
   }
 
   async readProjection(params: ReadParams = {}, signal?: AbortSignal) {

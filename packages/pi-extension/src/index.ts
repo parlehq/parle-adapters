@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, parseSSEBlocks, processClientInstanceId, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, assertNoReservedProtocolHeaders, catalogGitExposureWarning, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, parseSSEBlocks, processClientInstanceId, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, type AcceptRoomInvitationParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CredentialProfile, type HardenAccountParams, type MintPrincipalInviteParams, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.4.0";
+const PI_EXTENSION_VERSION = "0.5.0";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -18,10 +18,8 @@ const CATALOG_URL = "https://api.parle.sh/catalog";
 const GUIDANCE_LIMIT_BYTES = 128 * 1024;
 const REQUEST_LIMIT_BYTES = 128 * 1024;
 const READ_LIMIT_BYTES = 256 * 1024;
-const WATCH_STREAM_MAX_MS = 4 * 60 * 1000;
 const WATCH_ERROR_BACKOFF_MS = 5000;
 const WATCH_ERROR_BACKOFF_JITTER_MS = 1000;
-const WATCH_EMPTY_BACKOFF_MS = 250;
 const WATCH_BASELINE_ACK_LIMIT = 5000;
 const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const FOOTER_FAILURE_THRESHOLD = 3;
@@ -80,20 +78,13 @@ type TerminalCause = {
   streak: number;
 };
 
-type RuntimeState = {
-  sessionHandle?: string;
-  sessionAddress?: string | null;
-  sessionAlias?: string;
-  sessionGeneration?: number;
-  sessionRevision?: number;
-  createdAt?: string;
-  agentSessionId?: string;
-  expiresAt?: string;
-  participantId?: string;
-  roomId?: string;
-  roomHandle?: string;
-  cursor?: number;
-  bootstrapped: boolean;
+// Host-policy state Pi owns: watcher lifecycle, failure containment, and
+// injection bookkeeping. Session, room, alias, and cursor state is
+// client-owned and only ever composed into the read-only view below.
+type PiWatchRuntime = {
+  watcherState?: WatcherState;
+  watcherStarted?: boolean;
+  watcherEnabled?: boolean;
   lastError?: string;
   // Kept apart from lastError so later transient watcher failures cannot hide
   // the terminal reason that closed automatic activity.
@@ -104,16 +95,9 @@ type RuntimeState = {
   rateLimitParkedCause?: RateLimitParkedCause;
   rateLimitRecoveryOperation?: RateLimitRecoveryOperation;
   rateLimitRecoveryHealthy?: boolean;
-  watcherState?: WatcherState;
-  watcherStarted?: boolean;
-  watcherEnabled?: boolean;
   lastEligibleSeq?: number;
   lastInjectedSeq?: number;
   lastAckedSeq?: number;
-  responsiveCursorScope?: ResponsiveCursorScope;
-  responsiveContinuity?: "alias" | "exact_session_not_transferred";
-  rolloverFailures?: number;
-  rolloverLatched?: boolean;
   pendingResponsiveCount?: number;
   lastBufferedSeq?: number;
   lastEmptyWakeAt?: string;
@@ -131,8 +115,30 @@ type RuntimeState = {
   lastHttpStatus?: number;
   lastErrorClass?: WatcherErrorClass;
   consecutiveWatcherFailures?: number;
-  lastHeartbeatAt?: string;
   lastEndSessionAt?: string;
+};
+
+// The composed host view over the client's session and bearer room. This is
+// what status surfaces, footers, and the test seams read; nothing writes
+// session fields here.
+type RuntimeState = PiWatchRuntime & {
+  bootstrapped: boolean;
+  sessionHandle?: string;
+  sessionAddress?: string | null;
+  sessionAlias?: string;
+  sessionGeneration?: number;
+  sessionRevision?: number;
+  createdAt?: string;
+  agentSessionId?: string;
+  expiresAt?: string;
+  participantId?: string;
+  roomId?: string;
+  roomHandle?: string;
+  cursor?: number;
+  responsiveCursorScope?: ResponsiveCursorScope;
+  responsiveContinuity?: "alias" | "exact_session_not_transferred";
+  rolloverFailures?: number;
+  rolloverLatched?: boolean;
 };
 
 type TruncatedText = {
@@ -213,7 +219,7 @@ type ParleSwitchProfileParams = {
 // Pi owns only watcher policy state here: rate-limit parking, failure latches,
 // backoff bookkeeping, and the pending injection queue. The session, rooms,
 // cursor, alias, and lifecycle all live in the shared ParleAgentClient.
-let runtime: RuntimeState = { bootstrapped: false, watcherState: "off" };
+let runtime: PiWatchRuntime = { watcherState: "off" };
 let client: ParleAgentClient | undefined;
 let clientBinding: string | undefined;
 let unsubscribeCommitGuard: (() => void) | undefined;
@@ -252,9 +258,15 @@ type DeliveryFence = {
   sessionAlias?: string;
   agentSessionId?: string;
 };
-type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; ackThrough?: any; fence: DeliveryFence; injected?: boolean };
+type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; fence: DeliveryFence; injected?: boolean; skip?: boolean };
 const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
 let responsiveFlushRunning = false;
+// The shared controller owns wake, drain, dedupe, and acknowledgement. One
+// controller serves one client binding and one watcher run; stop() is
+// terminal, so every watcher (re)start builds a fresh controller while Pi's
+// injected/seen keys carry dedupe memory across runs.
+let deliveryController: ResponsiveDeliveryController | undefined;
+let deliveryControllerClient: ParleAgentClient | undefined;
 let lifecycleEnded = false;
 let shutdownRequested = false;
 
@@ -297,7 +309,7 @@ function agentClient(ctx: any, cfg: ParleConfig): ParleAgentClient {
   assertRuntimeConfig(cfg);
   const binding = clientBindingFor(ctx?.cwd || process.cwd(), cfg);
   if (client && clientBinding === binding) return client;
-  if (client && runtime.bootstrapped !== undefined && client.runtime.bootstrapped) {
+  if (client && client.runtime.bootstrapped) {
     throw new Error("Parle profile configuration changed while a room session is live. Use parle_switch_profile instead of editing PARLE_PROFILE or .env in place.");
   }
   detachClient();
@@ -321,7 +333,16 @@ function agentClient(ctx: any, cfg: ParleConfig): ParleAgentClient {
   unsubscribeCommitGuard = client.onBeforeSessionCommit((plan) => guardPiCommit(plan));
   unsubscribeSessionRevision = client.onSessionRevision((event) => {
     if (event.reason !== "bootstrap" && event.reason !== "rollover") return;
-    if (!client?.runtime.sessionAlias && runtime.baselineAt) baselineNeeded = true;
+    if (client?.runtime.sessionAlias || !runtime.baselineAt) return;
+    // The replaced session's server-side backlog must be skipped, never
+    // injected. The boundary is the drain that runs under the flag: joining
+    // the controller's in-flight drain keeps it deterministic.
+    baselineNeeded = true;
+    const roomId = client?.runtime.rooms?.[0]?.roomId;
+    const controller = deliveryController;
+    if (controller && roomId) {
+      void controller.drainForTest(roomId).catch(() => undefined).finally(() => { baselineNeeded = false; });
+    }
   });
   return client;
 }
@@ -366,21 +387,21 @@ function sessionView(): RuntimeState {
     ...runtime,
     bootstrapped: Boolean(c?.bootstrapped),
     sessionHandle: c?.sessionHandle || undefined,
-    sessionAddress: c ? c.sessionAddress : runtime.sessionAddress,
+    sessionAddress: c ? c.sessionAddress : undefined,
     sessionAlias: c?.sessionAlias,
     sessionGeneration: c?.sessionGeneration,
-    sessionRevision: c?.sessionRevision ?? runtime.sessionRevision,
+    sessionRevision: c?.sessionRevision,
     createdAt: c?.createdAt || undefined,
     agentSessionId: c?.agentSessionId || undefined,
     expiresAt: c?.expiresAt || undefined,
     participantId: room?.participantId || undefined,
-    roomId: room?.roomId ?? runtime.roomId,
-    roomHandle: room?.roomHandle ?? runtime.roomHandle,
-    cursor: room?.cursor ?? runtime.cursor,
-    responsiveCursorScope: c?.responsiveCursorScope ?? runtime.responsiveCursorScope,
+    roomId: room?.roomId,
+    roomHandle: room?.roomHandle,
+    cursor: room?.cursor,
+    responsiveCursorScope: c?.responsiveCursorScope,
     responsiveContinuity: c?.responsiveContinuity,
-    rolloverFailures: c?.rolloverFailures ?? runtime.rolloverFailures,
-    rolloverLatched: c?.rolloverLatched ?? runtime.rolloverLatched,
+    rolloverFailures: c?.rolloverFailures,
+    rolloverLatched: c?.rolloverLatched,
     lastError: runtime.lastError ?? (c?.lastError || c?.lastBootstrapError || undefined),
     lastHttpStatus: runtime.lastHttpStatus ?? c?.lastHttpStatus,
     lastAckedSeq: room?.lastAckedSeq ?? runtime.lastAckedSeq,
@@ -1131,100 +1152,103 @@ function parseJsonMaybe(text: string): any {
   try { return JSON.parse(text); } catch { return undefined; }
 }
 
-function withTimeoutSignal(parent: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
-  const controller = new AbortController();
-  let didTimeout = false;
-  const timer = setTimeout(() => {
-    didTimeout = true;
-    controller.abort();
-  }, timeoutMs);
-  const onAbort = () => controller.abort();
-  parent?.addEventListener("abort", onAbort, { once: true });
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      clearTimeout(timer);
-      parent?.removeEventListener("abort", onAbort);
-    },
-    timedOut: () => didTimeout,
-  };
+// One controller per live client binding. A controller created here without
+// the watcher (manual drains, tests, WATCH_ENABLED=0 hosts) never opens a
+// wake stream; it only drains and acknowledges on demand.
+function ensureDeliveryController(pi: any, ctx: any, cfg: ParleConfig): ResponsiveDeliveryController {
+  const live = agentClient(ctx, cfg);
+  if (deliveryController && deliveryControllerClient === live) return deliveryController;
+  deliveryController = new ResponsiveDeliveryController(live, {
+    handler: (input) => piDeliveryHandler(pi ?? lastPi, ctx, cfg, input),
+    sleep: (ms, sig) => watcherSleep(ms, sig),
+    reconnectDelayMs: WATCH_ERROR_BACKOFF_MS,
+    onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, activeWatcherRunId),
+  });
+  deliveryControllerClient = live;
+  return deliveryController;
 }
 
+function discardDeliveryController() {
+  const controller = deliveryController;
+  deliveryController = undefined;
+  deliveryControllerClient = undefined;
+  if (controller) void controller.stop().catch(() => undefined);
+}
+
+// The host handler: baseline and duplicate policy decide between an
+// acknowledged skip and a deferred row queued for idle injection. Server acks
+// are cumulative, so a duplicate row behind un-injected predecessors must ride
+// the queue as a completed skip instead of acknowledging ahead of them.
+function piDeliveryHandler(pi: any, ctx: any, cfg: ParleConfig, input: DeliveryHandlerInput): DeliveryHandlerResult {
+  const key = deliveryKey(input.message);
+  if (!key) {
+    runtime.lastError = "responsive delivery row missing seq or event_id";
+    runtime.lastWatcherErrorAt = new Date().toISOString();
+    runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
+    setStatus(ctx, cfg);
+    return "intentionally_skipped";
+  }
+  if (baselineNeeded && input.cursorScope !== "alias") {
+    runtime.baselineSkipped = (runtime.baselineSkipped || 0) + 1;
+    return "intentionally_skipped";
+  }
+  if (injectedKeys.has(key) || seenKeys.has(key)) {
+    if (seenKeys.has(key) && !injectedKeys.has(key)) runtime.seenSuppressed = (runtime.seenSuppressed || 0) + 1;
+    else runtime.duplicateSuppressed = (runtime.duplicateSuppressed || 0) + 1;
+    if (pendingResponsiveMessages.length === 0) {
+      runtime.lastAckedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastAckedSeq || 0, input.message.seq) : runtime.lastAckedSeq;
+      return "intentionally_skipped";
+    }
+    queuePendingResponsive(input, key, true);
+    return "deferred";
+  }
+  if (pendingResponsiveMessages.some((item) => item.key === key)) return "deferred";
+  queuePendingResponsive(input, key, false);
+  runtime.lastEligibleSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, input.message.seq) : runtime.lastEligibleSeq;
+  runtime.lastBufferedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, input.message.seq) : runtime.lastBufferedSeq;
+  return "deferred";
+}
+
+function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: boolean) {
+  const view = sessionView();
+  pendingResponsiveMessages.push({
+    key,
+    message: input.message,
+    responsePreamble: input.preamble,
+    fence: {
+      sessionRevision: view.sessionRevision || 0,
+      cursorScope: input.cursorScope,
+      roomId: input.roomId,
+      sessionAlias: view.sessionAlias,
+      agentSessionId: view.agentSessionId,
+    },
+    ...(skip ? { skip: true } : {}),
+  });
+  updatePendingResponsiveState();
+}
+
+// Manual drain edge shared by the wake test seam and immediate post-handoff
+// drains: one controller drain of the bearer room, then an idle flush.
 async function handleWakeHint(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
   runtime.lastWakeHintAt = new Date().toISOString();
   runtime.lastDeliveryFetchAt = runtime.lastWakeHintAt;
   const live = agentClient(ctx, cfg);
-  // A rebootstrapped anonymous session must skip its server-side backlog
-  // before any row can queue for injection, even when the rebootstrap
-  // happened inside another call's retry.
-  if (baselineNeeded) {
-    baselineNeeded = false;
-    await baselineResponsiveDelivery(ctx, cfg, signal);
-  }
-  const read = await live.drainResponsiveDeliveryWithFence(signal);
-  try {
-    if (baselineNeeded) {
-      // The drain itself rebootstrapped: this batch is stale-session backlog.
-      baselineNeeded = false;
-      await baselineResponsiveDelivery(ctx, cfg, signal);
-      setStatus(ctx, cfg);
-      return;
-    }
-    const delivery = read.delivery;
-    recordWatcherSuccess();
-    const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-    const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-    if (heldCount > 0) {
-      runtime.watcherState = "held";
-      runtime.lastHeldBacklogAt = new Date().toISOString();
-    }
-    if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-    if (messages.length === 0) {
-      runtime.lastEmptyWakeAt = new Date().toISOString();
-      setStatus(ctx, cfg);
-      return;
-    }
-    const responsePreamble = typeof delivery?.preamble === "string" ? delivery.preamble : undefined;
-    await queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, { ...read.fence });
-    await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
-    runtime.watcherState = "watching";
-    setStatus(ctx, cfg);
-  } finally {
-    read.release();
-  }
+  const controller = ensureDeliveryController(pi, ctx, cfg);
+  const roomId = live.runtime.rooms?.[0]?.roomId || cfg.roomId!.value;
+  await controller.drainForTest(roomId);
+  if (baselineNeeded) baselineNeeded = false;
+  const roomError = controller.status().rooms.find((room) => room.roomId === roomId)?.lastError;
+  if (roomError && /prior|revision|binding/.test(roomError) === false) runtime.lastError = runtime.lastError ?? roomError;
+  await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
+  runtime.watcherState = watcherLoopRunning ? "watching" : runtime.watcherState;
+  setStatus(ctx, cfg);
 }
 
-async function consumeWakeStream(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal) {
-  const scoped = withTimeoutSignal(signal, WATCH_STREAM_MAX_MS);
-  try {
-    const live = agentClient(ctx, cfg);
-    const response = await live.openWakeStream(scoped.signal);
-    runtime.lastWakeStreamOpenedAt = new Date().toISOString();
-    runtime.watcherState = "watching";
-    setStatus(ctx, cfg);
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("Parle wake stream response body is not readable");
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (!scoped.signal.aborted) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parsed = parseSSEBlocks(buffer);
-      buffer = parsed.rest;
-      for (const event of parsed.events) {
-        if (event.event === "wake") await handleWakeHint(pi, ctx, cfg, signal);
-      }
-    }
-  } catch (error: any) {
-    if (scoped.timedOut()) return;
-    throw error;
-  } finally {
-    scoped.cleanup();
-  }
-}
-
-function deliveryFence(): DeliveryFence {
+// Snapshot of the live session identity taken when a row is queued for UI
+// injection. This is host injection state, not server read authority: the
+// client owns read fences; this one only pins queued work to the session it
+// was drained under so a successor can never acknowledge it.
+function injectionFence(): DeliveryFence {
   const view = sessionView();
   return {
     sessionRevision: view.sessionRevision || 0,
@@ -1500,52 +1524,21 @@ function assertDeliveryFenceCurrent(fence: DeliveryFence) {
   }
 }
 
-async function ackResponsiveMessage(cfg: ParleConfig, message: any, signal?: AbortSignal, fence = deliveryFence()) {
-  // Host-owned synchronous pre-commit fence. No await occurs between this
-  // check and the credentialed acknowledgement, so a successor credential can
-  // never be attached to exact-session work from its predecessor.
-  assertDeliveryFenceCurrent(fence);
-  const live = agentClient(lastCtx, cfg);
-  await live.ackResponsiveDelivery({ seq: message.seq, event_id: message.event_id }, signal);
-  runtime.lastAckedSeq = typeof message.seq === "number" ? message.seq : runtime.lastAckedSeq;
-}
-
-async function baselineResponsiveDelivery(ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
-  const live = agentClient(ctx, cfg);
-  let skipped = 0;
-  while (!signal?.aborted) {
-    const read = await live.drainResponsiveDeliveryWithFence(signal);
-    try {
-      const delivery = read.delivery;
-      const messages = Array.isArray(delivery.messages) ? delivery.messages : [];
-      const heldCount = Number(delivery?.held_backlog?.held_count || 0);
-      if (heldCount > 0) {
-        runtime.watcherState = "held";
-        runtime.lastHeldBacklogAt = new Date().toISOString();
-      }
-      if (typeof delivery?.delivery?.last_acked_seq === "number") runtime.lastAckedSeq = delivery.delivery.last_acked_seq;
-      if (messages.length === 0) break;
-      for (const message of messages) {
-        const key = deliveryKey(message);
-        if (!key) {
-          runtime.lastError = "responsive delivery row missing seq or event_id during baseline";
-          runtime.lastWatcherErrorAt = new Date().toISOString();
-          runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
-          setStatus(ctx, cfg);
-          await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => undefined);
-          return;
-        }
-        await ackResponsiveMessage(cfg, message, signal, { ...read.fence });
-        skipped += 1;
-        if (skipped > WATCH_BASELINE_ACK_LIMIT) throw new Error("responsive delivery baseline exceeded ack limit");
-      }
-    } finally {
-      read.release();
-    }
+// Host-owned synchronous pre-commit fence plus the controller's deferred
+// completion. No await occurs between the fence check and the credentialed
+// acknowledgement, so a successor credential can never be attached to
+// exact-session work from its predecessor. Acknowledgements run per row in
+// queue order, so a crash mid-batch leaves the un-acked suffix redeliverable.
+async function completePendingResponsive(pi: any, ctx: any, cfg: ParleConfig, item: PendingResponsiveMessage): Promise<void> {
+  assertDeliveryFenceCurrent(item.fence);
+  const controller = ensureDeliveryController(pi, ctx, cfg);
+  const roomId = item.fence.roomId || cfg.roomId!.value;
+  const acked = await controller.completeDeferred(roomId, { seq: item.message.seq, event_id: item.message.event_id }, item.skip ? "intentionally_skipped" : "handled");
+  if (!acked) {
+    const roomError = controller.status().rooms.find((room) => room.roomId === roomId)?.lastError;
+    throw new Error(`Parle responsive acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
   }
-  runtime.baselineSkipped = (runtime.baselineSkipped || 0) + skipped;
-  runtime.baselineAt = new Date().toISOString();
-  setStatus(ctx, cfg);
+  runtime.lastAckedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastAckedSeq || 0, item.message.seq) : runtime.lastAckedSeq;
 }
 
 function classifyWatcherError(error: any): WatcherErrorClass {
@@ -1615,10 +1608,6 @@ function maybeParkRateLimitedWatcher(): boolean {
   return false;
 }
 
-function rateLimitParkDelayMs(): number | undefined {
-  if (rateLimitFirst429MonotonicMs === undefined || runtime.rateLimitParkedCause) return undefined;
-  return Math.max(0, RATE_LIMIT_MAX_ELAPSED_MS - rateLimitElapsedMs());
-}
 
 function isRateLimitError(error: any): boolean {
   return error?.status === 429;
@@ -1697,40 +1686,23 @@ function clearPendingResponsiveMessages() {
   updatePendingResponsiveState();
 }
 
-async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any[], responsePreamble?: string, signal?: AbortSignal, responseFence = deliveryFence()) {
-  let ackablePrefix: any | undefined;
-  let blockedByPending = pendingResponsiveMessages.length > 0;
-  let lastPending = pendingResponsiveMessages.at(-1);
-  const pendingKeys = new Set(pendingResponsiveMessages.map((item) => item.key));
+// Test seam and manual queue edge: routes rows through the same host handler
+// the controller drives, acknowledging immediate skips through the controller.
+async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any[], responsePreamble?: string, signal?: AbortSignal, responseFence = injectionFence()) {
+  const controller = ensureDeliveryController(lastPi, ctx, cfg);
+  const roomId = responseFence.roomId || cfg.roomId!.value;
   for (const message of messages) {
     if (signal?.aborted) break;
-    const key = deliveryKey(message);
-    if (!key) {
-      runtime.lastError = "responsive delivery row missing seq or event_id";
-      runtime.lastWatcherErrorAt = new Date().toISOString();
-      runtime.watcherBackoffCount = (runtime.watcherBackoffCount || 0) + 1;
-      setStatus(ctx, cfg);
-      await sleep(WATCH_ERROR_BACKOFF_MS, signal).catch(() => undefined);
-      return;
+    const outcome = piDeliveryHandler(lastPi, ctx, cfg, {
+      roomId,
+      ...(responseFence.cursorScope ? { cursorScope: responseFence.cursorScope } : {}),
+      ...(responsePreamble ? { preamble: responsePreamble } : {}),
+      message,
+    });
+    if (outcome === "intentionally_skipped" && deliveryKey(message)) {
+      await controller.completeDeferred(roomId, { seq: message.seq, event_id: message.event_id }, "intentionally_skipped");
     }
-    if (injectedKeys.has(key) || seenKeys.has(key)) {
-      if (seenKeys.has(key) && !injectedKeys.has(key)) runtime.seenSuppressed = (runtime.seenSuppressed || 0) + 1;
-      else runtime.duplicateSuppressed = (runtime.duplicateSuppressed || 0) + 1;
-      if (!blockedByPending) ackablePrefix = message;
-      else if (lastPending) lastPending.ackThrough = message;
-      continue;
-    }
-    blockedByPending = true;
-    if (pendingKeys.has(key)) continue;
-    const pending: PendingResponsiveMessage = { key, message, responsePreamble, fence: responseFence };
-    pendingResponsiveMessages.push(pending);
-    lastPending = pending;
-    pendingKeys.add(key);
-    runtime.lastEligibleSeq = typeof message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, message.seq) : runtime.lastEligibleSeq;
-    runtime.lastBufferedSeq = typeof message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, message.seq) : runtime.lastBufferedSeq;
   }
-  updatePendingResponsiveState();
-  if (ackablePrefix) await ackResponsiveMessage(cfg, ackablePrefix, signal, responseFence);
   setStatus(ctx, cfg);
 }
 
@@ -1742,14 +1714,14 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
     const batch: PendingResponsiveMessage[] = [];
     for (const item of pendingResponsiveMessages) {
       if (item.responsePreamble !== first.responsePreamble) break;
-      const candidate = [...batch.map((entry) => entry.message), item.message];
-      if (batch.length > 0 && !promptFitsResponsiveBatch(candidate, first.responsePreamble)) break;
+      const candidate = [...batch.filter((entry) => !entry.skip).map((entry) => entry.message), ...(item.skip ? [] : [item.message])];
+      if (batch.length > 0 && candidate.length > 1 && !promptFitsResponsiveBatch(candidate, first.responsePreamble)) break;
       batch.push(item);
     }
     if (batch.length === 0) return;
     runtime.watcherState = "injecting";
     setStatus(ctx, cfg);
-    const notYetInjected = batch.filter((item) => !item.injected);
+    const notYetInjected = batch.filter((item) => !item.injected && !item.skip);
     if (notYetInjected.length > 0) {
       await pi.sendUserMessage(inboundBatchPrompt(notYetInjected.map((item) => item.message), first.responsePreamble));
       for (const item of notYetInjected) {
@@ -1758,18 +1730,38 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
         runtime.lastInjectedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastInjectedSeq || 0, item.message.seq) : runtime.lastInjectedSeq;
       }
     }
-    const last = batch.at(-1)!;
-    await ackResponsiveMessage(cfg, last.ackThrough || last.message, signal, last.fence);
-    pendingResponsiveMessages.splice(0, batch.length);
-    updatePendingResponsiveState();
+    for (const item of batch) {
+      await completePendingResponsive(pi, ctx, cfg, item);
+      pendingResponsiveMessages.shift();
+      updatePendingResponsiveState();
+    }
   } finally {
     responsiveFlushRunning = false;
     setStatus(ctx, cfg);
   }
 }
 
+// The controller owns the wake loop; the watcher is Pi's failure policy
+// around it. Wake errors reach watcherWakeErrorPolicy, which records
+// containment and latches and settles the loop with "stop" when parked or
+// terminal; a later startWatcher (or explicit recovery) is the restart path.
+function watcherWakeErrorPolicy(ctx: any, cfg: ParleConfig, error: any, runId: number): "continue" | "stop" {
+  if (shutdownRequested || lifecycleEnded) return "stop";
+  if (runId !== activeWatcherRunId) return "stop";
+  if (!recordAutomaticFailure(error, cfg, runId)) return "stop";
+  const terminalState = terminalWatcherState(error);
+  runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+  setStatus(ctx, cfg);
+  if (isRateLimitError(error)) maybeParkRateLimitedWatcher();
+  if (terminalState || runtime.rateLimitParkedCause) {
+    watcherLoopRunning = false;
+    setStatus(ctx, cfg);
+    return "stop";
+  }
+  return "continue";
+}
+
 async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal, runId: number) {
-  let restartAfterBootstrapFailure = false;
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
@@ -1777,73 +1769,55 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
   setStatus(ctx, cfg);
   try {
     await ensureBootstrapped(ctx, cfg, signal);
-    if (!runtime.baselineAt && !client?.runtime.sessionAlias) await baselineResponsiveDelivery(ctx, cfg, signal);
-    while (!signal.aborted && watcherConfigured(cfg) && !automaticGateClosed(cfg)) {
-      try {
-        runtime.watcherState = "waiting";
-        setStatus(ctx, cfg);
-        // The client's openWakeStream and drains rebootstrap themselves; the
-        // watcher only supplies host retry policy around them.
-        await consumeWakeStream(pi, ctx, cfg, signal);
-        recordWatcherSuccess(true);
-        if (!signal.aborted) await watcherSleep(WATCH_EMPTY_BACKOFF_MS, signal);
-      } catch (error: any) {
-        if (signal.aborted || runId !== activeWatcherRunId) break;
-        if (!recordAutomaticFailure(error, cfg, runId)) break;
-        const terminalState = terminalWatcherState(error);
-        runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
-        setStatus(ctx, cfg);
-        if (terminalState || runtime.rateLimitParkedCause) break;
-        // recordAutomaticFailure chose the retry deadline once. The monotonic
-        // containment deadline may be earlier, in which case the watcher parks
-        // without issuing another request and retains the server deadline.
-        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
-        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : undefined;
-        await watcherSleep(parkDelay === undefined ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => undefined);
-        if (!signal.aborted && runId === activeWatcherRunId && maybeParkRateLimitedWatcher()) {
-          setStatus(ctx, cfg);
-          break;
-        }
-      }
+    const live = agentClient(ctx, cfg);
+    const initialBaseline = !runtime.baselineAt && !live.runtime.sessionAlias;
+    if (initialBaseline) baselineNeeded = true;
+    discardDeliveryController();
+    const controller = ensureDeliveryController(pi, ctx, cfg);
+    if (signal.aborted) return;
+    signal.addEventListener("abort", () => {
+      if (deliveryController === controller) void controller.stop().catch(() => undefined);
+    }, { once: true });
+    await controller.start();
+    if (initialBaseline) {
+      baselineNeeded = false;
+      runtime.baselineAt = new Date().toISOString();
+      runtime.baselineSkipped = runtime.baselineSkipped || 0;
     }
+    recordWatcherSuccess(true);
+    runtime.watcherState = "watching";
+    setStatus(ctx, cfg);
+    await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   } catch (error: any) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
       const terminalState = terminalWatcherState(error);
       runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
+      watcherLoopRunning = false;
       setStatus(ctx, cfg);
       if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
         const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
-        const parkDelay = isRateLimitError(error) ? rateLimitParkDelayMs() : undefined;
-        await watcherSleep(parkDelay === undefined ? retryDelay : Math.min(retryDelay, parkDelay), signal).catch(() => undefined);
-        if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher()) restartAfterBootstrapFailure = true;
+        await watcherSleep(retryDelay, signal).catch(() => undefined);
+        if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher() && !shutdownRequested && !lifecycleEnded) {
+          startWatcher(pi, ctx, cfg);
+        }
       }
-    }
-  } finally {
-    if (runId === activeWatcherRunId) {
-      watcherLoopRunning = false;
-      if (signal.aborted) {
-        runtime.watcherState = "disconnected";
-      } else if (runtime.watcherState !== "auth_expired" && runtime.watcherState !== "session_expired" && runtime.watcherState !== "backoff" && runtime.watcherState !== "rate_limited" && runtime.watcherState !== "disconnected") {
-        runtime.watcherState = "off";
-      }
-      setStatus(ctx, cfg);
-      if (restartAfterBootstrapFailure && !shutdownRequested && !lifecycleEnded) startWatcher(pi, ctx, cfg);
     }
   }
 }
 
 function startWatcher(pi: any, ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   if (shutdownRequested || lifecycleEnded) return;
-  if (runtime.bootstrapped && runtime.roomId && runtime.roomId !== cfg.roomId?.value) return;
+  if (client?.runtime.bootstrapped && client.runtime.rooms?.[0]?.roomId && client.runtime.rooms[0].roomId !== cfg.roomId?.value) return;
   if (!watcherConfigured(cfg) || automaticGateClosed(cfg)) return;
-  if (watcherLoopRunning && watcherAbort && !watcherAbort.signal.aborted) return;
+  const controllerRunning = Boolean(deliveryController?.status().running);
+  if ((watcherLoopRunning || controllerRunning) && watcherAbort && !watcherAbort.signal.aborted) return;
   watcherAbort?.abort();
   watcherAbort = new AbortController();
   const runId = ++activeWatcherRunId;
   const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
   watcherTask = task;
-  void task.finally(() => {
+  void task.catch(() => undefined).finally(() => {
     if (watcherTask === task) watcherTask = undefined;
   });
 }
@@ -1854,6 +1828,8 @@ function stopWatcher(ctx?: any) {
   watcherAbort = undefined;
   recoveryRestartAbort?.abort();
   recoveryRestartAbort = undefined;
+  discardDeliveryController();
+  watcherLoopRunning = false;
   runtime.watcherEnabled = false;
   runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : "off";
   if (ctx) setStatus(ctx);
@@ -1861,7 +1837,9 @@ function stopWatcher(ctx?: any) {
 
 async function quiesceWatcher(ctx: any) {
   const task = watcherTask;
+  const controller = deliveryController;
   stopWatcher(ctx);
+  if (controller) await controller.stop().catch(() => undefined);
   if (task) await task.catch(() => undefined);
   watcherLoopRunning = false;
 }
@@ -2059,7 +2037,7 @@ export const __testing = {
   handleWakeHint,
   queueResponsiveMessages,
   flushPendingResponsiveMessages,
-  baselineResponsiveDelivery,
+  deliveryController() { return deliveryController; },
   resolveConfig,
   clientInstanceId: PI_CLIENT_INSTANCE_ID,
   useSessionAlias,
@@ -2105,7 +2083,8 @@ export const __testing = {
   },
   setStatus,
   resetRuntime() {
-    runtime = { bootstrapped: false, watcherState: "off" };
+    runtime = { watcherState: "off" };
+    discardDeliveryController();
     detachClient();
     activeProfileOverride = undefined;
     liveConfig = undefined;
@@ -2170,6 +2149,7 @@ async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
   if (shutdownRequested) return;
   shutdownRequested = true;
   stopWatcher();
+  discardDeliveryController();
   removeRuntimeFile(ctx.cwd || process.cwd());
   lifecycleEnded = true;
   const task = watcherTask;
@@ -2187,7 +2167,6 @@ async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
     }
   }
   runtime = {
-    bootstrapped: false,
     watcherState: "off",
     lastError: runtime.lastError,
   };

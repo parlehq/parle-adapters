@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (2026-08-02)
+
+- Give the responsive delivery controller a per-batch preamble passthrough and an onWakeError host-policy hook so hosts keep rate-limit parking and failure latching while the controller owns the loop.
+- Pace event-less wake stream reopens so an instantly closing server response cannot spin the loop on microtasks and starve timers.
+- Record the acknowledged responsive watermark on the room runtime after every successful ack.
+
 ## 0.4.0 (2026-08-02)
 
 - Add switchSessionAlias: a runtime durable-alias switch on the shared candidate machinery, with the pre-claim guard, publication barrier, supersession semantics, and prior-route warning; proactive rollover re-claims the switched alias.

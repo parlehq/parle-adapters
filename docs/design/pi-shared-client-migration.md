@@ -1,6 +1,6 @@
 # Pi and hook-bridge convergence on the shared client
 
-Status: planned, with the dependency order established by probing (issue #63 S5, S6)
+Status: implemented. S5 slice 1 and 2 and S6 are landed; kept as the record of why the spine could not be split.
 
 ## Why the obvious slicing does not work
 

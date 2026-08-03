@@ -22,6 +22,9 @@ export type DeliveryHandlerInput = {
   // must be handled, while session-scoped backlog from a replaced session is
   // ordinarily skipped rather than replayed into a user's context.
   cursorScope?: ResponsiveCursorScope;
+  // Server room-context preamble for the batch, when present. Hosts that
+  // render peer content into prompts validate exact server wrapping with it.
+  preamble?: string;
   message: ResponsiveDeliveryMessage;
 };
 
@@ -37,6 +40,11 @@ export type DeliveryControllerOptions = {
   reconnectDelayMs?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => Date;
+  // Host failure policy for wake-loop errors (rate-limit parking, terminal
+  // latching, footer states). Returning "stop" settles the loop without a
+  // retry; the host's later start() is the recovery path. Any other return
+  // keeps the controller's own terminal and backoff handling.
+  onWakeError?: (error: unknown) => "continue" | "stop" | void;
 };
 
 export type DeliveryRoomStatus = {
@@ -63,6 +71,10 @@ export type DeliveryControllerStatus = {
 const DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 const DEFAULT_MAX_DRAIN_BATCHES = 100;
 const DEFAULT_RECONNECT_MS = 5000;
+// A healthy stream that closes without delivering a single event is reopened
+// on a short pause. Instant reopen against a server that answers and closes
+// immediately would spin the loop entirely on microtasks, starving timers.
+const EMPTY_STREAM_REOPEN_MS = 250;
 const MAX_REMEMBERED_KEYS = 5000;
 
 function deliveryKey(roomId: string, message: ResponsiveDeliveryMessage): string {
@@ -84,6 +96,7 @@ export class ResponsiveDeliveryController {
   private readonly maxDrainBatches: number;
   private readonly reconnectDelayMs: number;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly onWakeError?: (error: unknown) => "continue" | "stop" | void;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -113,6 +126,7 @@ export class ResponsiveDeliveryController {
     this.maxDrainBatches = options.maxDrainBatches ?? DEFAULT_MAX_DRAIN_BATCHES;
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
+    this.onWakeError = options.onWakeError;
   }
 
   status(): DeliveryControllerStatus {
@@ -226,6 +240,7 @@ export class ResponsiveDeliveryController {
         wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
         const decoder = new TextDecoder();
         let buffer = "";
+        let sawEvent = false;
         while (!wakeAbort.signal.aborted) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -233,15 +248,18 @@ export class ResponsiveDeliveryController {
           const parsed = parseSSEBlocks(buffer);
           buffer = parsed.rest;
           for (const event of parsed.events) {
+            sawEvent = true;
             if (event.event === "wake") await this.handleWake(event.data);
           }
         }
         this.lastError = undefined;
+        if (!wakeAbort.signal.aborted && !sawEvent) await this.sleep(EMPTY_STREAM_REOPEN_MS, this.abort.signal);
       } catch (error: any) {
         if (this.abort.signal.aborted) break;
         // A revision-driven restart is expected, not a failure.
         if (wakeAbort.signal.aborted) continue;
         this.lastError = redactString(error instanceof Error ? error.message : String(error));
+        if (this.onWakeError?.(error) === "stop") return;
         if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || "")) throw error;
         const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
         try {
@@ -348,12 +366,13 @@ export class ResponsiveDeliveryController {
       const cursorScope: ResponsiveCursorScope | undefined = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias"
         ? delivery.delivery.cursor_scope
         : undefined;
+      const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : undefined;
       let progressed = 0;
       for (const message of messages) {
         if (this.abort.signal.aborted) return;
         const key = deliveryKey(room.roomId, message);
         if (this.seen.has(key)) continue;
-        if (await this.processRow(room, message, key, cursorScope)) progressed += 1;
+        if (await this.processRow(room, message, key, cursorScope, preamble)) progressed += 1;
       }
       // A batch where nothing could be handled or acknowledged is this drain's
       // boundary. The room is not stopped: the next wake or revision drains it
@@ -367,7 +386,7 @@ export class ResponsiveDeliveryController {
   // and an ack that failed must never re-run the handler: the host has already
   // acted on the row (Pi injects it), so replaying it would duplicate a visible
   // side effect. Deduplication therefore guards the handler, not the ack.
-  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string, cursorScope?: ResponsiveCursorScope): Promise<boolean> {
+  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string, cursorScope?: ResponsiveCursorScope, preamble?: string): Promise<boolean> {
     const stat = this.stat(room.roomId);
     let outcome = this.handled.get(key);
     // A row already awaiting host completion is not progress. Counting it
@@ -381,6 +400,7 @@ export class ResponsiveDeliveryController {
           ...(room.roomHandle ? { roomHandle: room.roomHandle } : {}),
           ...(room.profile ? { profile: room.profile } : {}),
           ...(cursorScope ? { cursorScope } : {}),
+          ...(preamble ? { preamble } : {}),
           message,
         });
         this.handled.set(key, outcome);

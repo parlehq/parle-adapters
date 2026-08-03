@@ -1,6 +1,6 @@
 # Host convergence handoff: S5 and S6
 
-Status: ready to implement, with owner boundaries and seams established by probing
+Status: implemented. Retained as the record of the owner boundaries and the seams the probes established.
 
 This is the implementation contract for the two remaining host slices of issue
 #63. It exists so the next context starts from findings rather than

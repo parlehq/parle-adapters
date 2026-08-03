@@ -397,7 +397,9 @@ test("watcher honors 429 Retry-After before a terminal 401 stops it", async () =
   await eventually(() => probe.wakeAt.length === 2 && __testing.runtimeState().watcherState === "auth_expired");
 
   assert.equal(probe.wakeAt.length, 2);
-  assert.ok(sleeps.some((ms) => ms >= 90 && ms <= 110), `the 429 retry honors the server deadline, saw sleeps ${JSON.stringify(sleeps)}`);
+  // The shared controller floors reconnect pacing at its own delay, so the
+  // requested sleep must cover at least the server's 100ms deadline.
+  assert.ok(sleeps.some((ms) => ms >= 100), `the 429 retry honors the server deadline, saw sleeps ${JSON.stringify(sleeps)}`);
   assert.equal(__testing.runtimeState().watcherState, "auth_expired");
   assert.equal(__testing.runtimeState().nextRetryAt, undefined, "the admitted terminal fault replaces the retry gate");
   assert.equal(__testing.runtimeState().terminalCause.action, "reauthorize");
@@ -676,7 +678,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.4.0" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.5.0" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1349,7 +1351,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.4.0");
+    assert.equal(call.headers["Parle-Client-Version"], "0.5.0");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2066,7 +2068,9 @@ test("wake hint coalesces responsive delivery backlog into one follow-up", async
   assert.match(injected[0], /received 2 server-authenticated peer messages/);
   assert.match(injected[0], /responsive delivery 1\/2/);
   assert.match(injected[0], /responsive delivery 2\/2/);
-  assert.deepEqual(acked, [{ seq: 8, event_id: "evt-batch-8" }]);
+  // The shared controller acknowledges per row in queue order after the
+  // injection, so a crash mid-batch leaves the un-acked suffix redeliverable.
+  assert.deepEqual(acked, [{ seq: 7, event_id: "evt-batch-7" }, { seq: 8, event_id: "evt-batch-8" }]);
   assert.equal(__testing.runtimeState().lastInjectedSeq, 8);
 });
 
@@ -2105,7 +2109,7 @@ test("busy Pi buffers responsive rows until settled, then injects one batch", as
   await __testing.flushPendingResponsiveMessages(pi, harness.ctx, cfg);
   assert.equal(injected.length, 1);
   assert.match(injected[0], /received 2 server-authenticated peer messages/);
-  assert.deepEqual(acked, [{ seq: 8, event_id: "evt-settled-8" }]);
+  assert.deepEqual(acked, [{ seq: 7, event_id: "evt-settled-7" }, { seq: 8, event_id: "evt-settled-8" }]);
   assert.equal(__testing.runtimeState().pendingResponsiveCount, 0);
 });
 
@@ -2170,7 +2174,9 @@ test("wake hint acks seen and injected prefix only after successful injection", 
   const cfg = __testing.resolveConfig(harness.cwd);
   await __testing.handleWakeHint({ sendUserMessage: async () => order.push("send") }, harness.ctx, cfg);
 
-  assert.deepEqual(order, ["send", "ack:6"]);
+  // Acks stay behind injection and run per row in order: the seen suffix can
+  // never acknowledge ahead of its un-injected predecessor.
+  assert.deepEqual(order, ["send", "ack:5", "ack:6"]);
   assert.equal(__testing.runtimeState().seenSuppressed, 1);
   assert.equal(__testing.runtimeState().lastInjectedSeq, 5);
   assert.equal(__testing.runtimeState().lastAckedSeq, 6);

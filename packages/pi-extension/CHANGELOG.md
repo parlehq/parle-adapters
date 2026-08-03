@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (2026-08-02)
+
+- Move Pi responsive delivery onto the shared ResponsiveDeliveryController: the controller owns the wake loop, drain, dedupe, and acknowledgement; Pi's handler queues rows as deferred and the idle flush completes them per row in order after injection, preserving cumulative-ack crash safety for seen rows behind un-injected predecessors.
+- Keep watcher failure policy in Pi through the controller's onWakeError hook: rate-limit containment and parking, terminal latches, and footer states are unchanged host policy.
+- Slim Pi's local runtime to host-policy and injection fields; session and room state is read only through the composed client view.
+
 ## 0.4.0 (2026-08-02)
 
 - Move the Pi session spine onto the shared ParleAgentClient: bootstrap, alias claim and recovery, rollover, session publication, room runtime, request layer, and session end are client-owned, with one session owner.

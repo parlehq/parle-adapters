@@ -33149,6 +33149,7 @@ function compactStatusCardFromStatus(status) {
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 var DEFAULT_MAX_DRAIN_BATCHES = 100;
 var DEFAULT_RECONNECT_MS = 5e3;
+var EMPTY_STREAM_REOPEN_MS = 250;
 var MAX_REMEMBERED_KEYS = 5e3;
 function deliveryKey(roomId, message) {
   return `${roomId}:${message.event_id}`;
@@ -33172,6 +33173,7 @@ var ResponsiveDeliveryController = class {
   maxDrainBatches;
   reconnectDelayMs;
   sleep;
+  onWakeError;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -33201,6 +33203,7 @@ var ResponsiveDeliveryController = class {
     this.maxDrainBatches = options.maxDrainBatches ?? DEFAULT_MAX_DRAIN_BATCHES;
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
+    this.onWakeError = options.onWakeError;
   }
   status() {
     return {
@@ -33303,6 +33306,7 @@ var ResponsiveDeliveryController = class {
         wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
         const decoder = new TextDecoder();
         let buffer = "";
+        let sawEvent = false;
         while (!wakeAbort.signal.aborted) {
           const { value, done } = await reader.read();
           if (done)
@@ -33311,17 +33315,22 @@ var ResponsiveDeliveryController = class {
           const parsed = parseSSEBlocks(buffer);
           buffer = parsed.rest;
           for (const event of parsed.events) {
+            sawEvent = true;
             if (event.event === "wake")
               await this.handleWake(event.data);
           }
         }
         this.lastError = void 0;
+        if (!wakeAbort.signal.aborted && !sawEvent)
+          await this.sleep(EMPTY_STREAM_REOPEN_MS, this.abort.signal);
       } catch (error51) {
         if (this.abort.signal.aborted)
           break;
         if (wakeAbort.signal.aborted)
           continue;
         this.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+        if (this.onWakeError?.(error51) === "stop")
+          return;
         if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || ""))
           throw error51;
         const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
@@ -33420,6 +33429,7 @@ var ResponsiveDeliveryController = class {
       if (messages.length === 0)
         return;
       const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
+      const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
       let progressed = 0;
       for (const message of messages) {
         if (this.abort.signal.aborted)
@@ -33427,7 +33437,7 @@ var ResponsiveDeliveryController = class {
         const key = deliveryKey(room.roomId, message);
         if (this.seen.has(key))
           continue;
-        if (await this.processRow(room, message, key, cursorScope))
+        if (await this.processRow(room, message, key, cursorScope, preamble))
           progressed += 1;
       }
       if (progressed === 0)
@@ -33439,7 +33449,7 @@ var ResponsiveDeliveryController = class {
   // and an ack that failed must never re-run the handler: the host has already
   // acted on the row (Pi injects it), so replaying it would duplicate a visible
   // side effect. Deduplication therefore guards the handler, not the ack.
-  async processRow(room, message, key, cursorScope) {
+  async processRow(room, message, key, cursorScope, preamble) {
     const stat = this.stat(room.roomId);
     let outcome = this.handled.get(key);
     if (outcome === "deferred")
@@ -33451,6 +33461,7 @@ var ResponsiveDeliveryController = class {
           ...room.roomHandle ? { roomHandle: room.roomHandle } : {},
           ...room.profile ? { profile: room.profile } : {},
           ...cursorScope ? { cursorScope } : {},
+          ...preamble ? { preamble } : {},
           message
         });
         this.handled.set(key, outcome);
@@ -35430,7 +35441,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!responsiveDeliveryKey(message))
       throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
     const roomId = this.roomTarget(roomIdParam ?? (typeof message.room_id === "string" ? message.room_id : void 0)).roomId.value;
-    return this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
+    const result = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
       method: "POST",
       session: true,
       roomId,
@@ -35438,6 +35449,13 @@ var ParleAgentClient = class _ParleAgentClient {
       retry: false,
       body: { seq: message.seq, event_id: message.event_id }
     }), signal);
+    const room = this.roomRuntimes.get(roomId);
+    if (room) {
+      room.lastAckedSeq = Math.max(room.lastAckedSeq || 0, message.seq);
+      room.lastAckEventId = message.event_id;
+      this.publishRoomRuntimes();
+    }
+    return result;
   }
   async readProjection(params = {}, signal) {
     return this.readSurface("projection", params, signal);
@@ -35867,7 +35885,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.5.3";
+var MCP_CLIENT_VERSION = "0.5.4";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
