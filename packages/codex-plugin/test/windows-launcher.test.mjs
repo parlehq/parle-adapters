@@ -100,6 +100,41 @@ function launcherEnv(fixture, overrides = {}) {
 
 const sessionStart = { cwd: "C:\\codex-project", session_id: "codex-thread", hook_event_name: "SessionStart", source: "compact" };
 
+function runRaw(command, { env, cwd }) {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(command, [], { shell: true, env, cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", reject);
+    child.once("close", (code) => resolveResult({ code, stdout, stderr }));
+  });
+}
+
+test("Windows child cmd sees the overridden fallback locations", { skip: !onWindows }, async (t) => {
+  const fixture = setup();
+  try {
+    const env = launcherEnv(fixture, {
+      ProgramFiles: fixture.empty,
+      "ProgramFiles(x86)": fixture.empty,
+      LocalAppData: fixture.empty,
+    });
+    const probe = await runRaw('echo PF=[%ProgramFiles%] X86=[%ProgramFiles(x86)%] LAD=[%LocalAppData%] RT=[%PARLE_HOOK_RUNTIME%]', { env, cwd: fixture.hostileCwd });
+    t.diagnostic(`env probe: ${JSON.stringify(probe.stdout)}`);
+    assert.match(probe.stdout, new RegExp(`PF=\\[${fixture.empty.replace(/[\\.]/g, "\\$&")}\\]`));
+    // Trace the launcher with echo enabled so a wrong branch is visible in
+    // the CI log: same launcher minus its @echo off line.
+    const traced = join(fixture.pluginRoot, "hooks", "traced.cmd");
+    writeFileSync(traced, readFileSync(join(fixture.pluginRoot, "hooks", "run-parle-hook.cmd"), "utf8").replace(/^@echo off\r?\n/, ""));
+    const trace = await runRaw(`"${traced}" --scope codex-plugin`, { env, cwd: fixture.hostileCwd });
+    t.diagnostic(`launcher trace stdout: ${JSON.stringify(trace.stdout.slice(0, 4000))}`);
+    t.diagnostic(`launcher trace stderr: ${JSON.stringify(trace.stderr.slice(0, 2000))}`);
+  } finally {
+    rmSync(fixture.base, { recursive: true, force: true });
+  }
+});
+
 test("Windows commandWindows renders SessionStart compact peer context via an absolute override", { skip: !onWindows }, async () => {
   const fixture = setup();
   try {
