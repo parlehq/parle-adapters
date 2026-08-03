@@ -83,6 +83,17 @@ function setEnvCaseInsensitive(env, key, value) {
   if (value !== undefined) env[key] = value;
 }
 
+// cmd.exe re-derives %ProgramFiles% from ProgramW6432 when they disagree,
+// so neutralizing the fallback locations must override that root too.
+function emptyFallbacks(fixture) {
+  return {
+    ProgramFiles: fixture.empty,
+    "ProgramFiles(x86)": fixture.empty,
+    ProgramW6432: fixture.empty,
+    LocalAppData: fixture.empty,
+  };
+}
+
 function launcherEnv(fixture, overrides = {}) {
   const env = { ...process.env };
   const values = {
@@ -115,11 +126,7 @@ function runRaw(command, { env, cwd }) {
 test("Windows child cmd sees the overridden fallback locations", { skip: !onWindows }, async (t) => {
   const fixture = setup();
   try {
-    const env = launcherEnv(fixture, {
-      ProgramFiles: fixture.empty,
-      "ProgramFiles(x86)": fixture.empty,
-      LocalAppData: fixture.empty,
-    });
+    const env = launcherEnv(fixture, emptyFallbacks(fixture));
     const probe = await runRaw('echo PF=[%ProgramFiles%] X86=[%ProgramFiles(x86)%] LAD=[%LocalAppData%] RT=[%PARLE_HOOK_RUNTIME%]', { env, cwd: fixture.hostileCwd });
     t.diagnostic(`env probe: ${JSON.stringify(probe.stdout)}`);
     assert.match(probe.stdout, new RegExp(`PF=\\[${fixture.empty.replace(/[\\.]/g, "\\$&")}\\]`));
@@ -141,12 +148,7 @@ test("Windows commandWindows renders SessionStart compact peer context via an ab
     // Fallback locations are pointed at an empty directory, so a render here
     // can only have come through the absolute override.
     const result = await runLauncher({
-      env: launcherEnv(fixture, {
-        PARLE_HOOK_RUNTIME: process.execPath,
-        ProgramFiles: fixture.empty,
-        "ProgramFiles(x86)": fixture.empty,
-        LocalAppData: fixture.empty,
-      }),
+      env: launcherEnv(fixture, { PARLE_HOOK_RUNTIME: process.execPath, ...emptyFallbacks(fixture) }),
       cwd: fixture.hostileCwd,
     }, sessionStart);
     assert.equal(result.code, 0, result.stderr);
@@ -170,9 +172,9 @@ test("Windows commandWindows renders SessionStart peer context via the %ProgramF
     cpSync(process.execPath, join(programFiles, "nodejs", "node.exe"));
     const result = await runLauncher({
       env: launcherEnv(fixture, {
+        ...emptyFallbacks(fixture),
         ProgramFiles: programFiles,
-        "ProgramFiles(x86)": fixture.empty,
-        LocalAppData: fixture.empty,
+        ProgramW6432: programFiles,
       }),
       cwd: fixture.hostileCwd,
     }, sessionStart);
@@ -194,12 +196,7 @@ for (const override of ["node.exe", "evil\\node.exe", "C:evil\\node.exe"]) {
       // resolved relative values would render peer context here, so the
       // fail-open {} is the rejection proof.
       const result = await runLauncher({
-        env: launcherEnv(fixture, {
-          PARLE_HOOK_RUNTIME: override,
-          ProgramFiles: fixture.empty,
-          "ProgramFiles(x86)": fixture.empty,
-          LocalAppData: fixture.empty,
-        }),
+        env: launcherEnv(fixture, { PARLE_HOOK_RUNTIME: override, ...emptyFallbacks(fixture) }),
         cwd: fixture.hostileCwd,
       }, sessionStart);
       assert.equal(result.code, 0, result.stderr);
@@ -214,11 +211,7 @@ test("Windows launcher fails open when no trusted runtime exists", { skip: !onWi
   const fixture = setup();
   try {
     const result = await runLauncher({
-      env: launcherEnv(fixture, {
-        ProgramFiles: fixture.empty,
-        "ProgramFiles(x86)": fixture.empty,
-        LocalAppData: fixture.empty,
-      }),
+      env: launcherEnv(fixture, emptyFallbacks(fixture)),
       cwd: fixture.hostileCwd,
     }, sessionStart);
     assert.equal(result.code, 0, result.stderr);
@@ -236,12 +229,7 @@ test("Windows launcher falls through an absolute but missing override to the fal
     const missing = join(fixture.empty, "nope", "node.exe");
     assert.equal(existsSync(missing), false);
     const result = await runLauncher({
-      env: launcherEnv(fixture, {
-        PARLE_HOOK_RUNTIME: missing,
-        ProgramFiles: fixture.empty,
-        "ProgramFiles(x86)": fixture.empty,
-        LocalAppData: fixture.empty,
-      }),
+      env: launcherEnv(fixture, { PARLE_HOOK_RUNTIME: missing, ...emptyFallbacks(fixture) }),
       cwd: fixture.hostileCwd,
     }, sessionStart);
     assert.equal(result.code, 0, result.stderr);
