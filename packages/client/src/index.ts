@@ -984,7 +984,8 @@ export class ParleAgentClient {
         ? "Parle configuration is present and this process holds a session."
         : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
     const staleToken = this.staleTokenHint();
-    return { ok: missing.length === 0 && !staleToken, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...(staleToken ? { warning: staleToken } : {}) };
+    const configured = missing.length === 0;
+    return { ok: configured && !staleToken, configured, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...(staleToken ? { warning: staleToken } : {}) };
   }
 
   // Config is resolved at construction and may be refreshed once when a

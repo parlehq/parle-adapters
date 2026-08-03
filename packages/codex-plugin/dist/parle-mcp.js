@@ -34182,7 +34182,8 @@ var ParleAgentClient = class _ParleAgentClient {
       missing.push("PARLE_ROOM_AGENT_TOKEN");
     const note = missing.length ? "Set PARLE_PROFILE (a section of the profile catalog, ~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate) or direct configuration in env or .env (checked in that order; disk token rotations can be reloaded once during bootstrap recovery)." : this.runtime.bootstrapped ? "Parle configuration is present and this process holds a session." : "Parle configuration is present. Not yet connected in this process; a connect, read, or send call establishes the session.";
     const staleToken = this.staleTokenHint();
-    return { ok: missing.length === 0 && !staleToken, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...staleToken ? { warning: staleToken } : {} };
+    const configured = missing.length === 0;
+    return { ok: configured && !staleToken, configured, missing, connected: this.runtime.bootstrapped, apiBase: this.cfg.apiBase.value, note, ...staleToken ? { warning: staleToken } : {} };
   }
   // Config is resolved at construction and may be refreshed once when a
   // reauthorize bootstrap failure sees a different disk token. Compare against
@@ -35943,7 +35944,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.6.1";
+var MCP_CLIENT_VERSION = "0.6.2";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -36049,10 +36050,10 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     title: "Parle Setup",
     description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
     annotations: { readOnlyHint: true }
-  }, async (extra) => {
+  }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    return toolResult(client.setup());
-  });
+    return client.setup();
+  }, false));
   server.registerTool("parle_connect", {
     title: "Parle Connect",
     description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
@@ -36314,18 +36315,18 @@ function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = (
   process.on("SIGTERM", shutdown);
   process.on("exit", () => client.discardRuntimeFile());
 }
-function toolResult(value) {
+function toolResult(value, inferError = true) {
   const structuredContent = typeof value === "object" && value !== null ? value : { value };
-  const isError = structuredContent.ok === false;
+  const isError = inferError && structuredContent.ok === false;
   return {
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
     ...isError ? { isError } : {}
   };
 }
-async function safeTool(fn) {
+async function safeTool(fn, inferError = true) {
   try {
-    return toolResult(await fn());
+    return toolResult(await fn(), inferError);
   } catch (error51) {
     const accountFields = error51 && typeof error51 === "object" ? {
       ...typeof error51.code === "string" ? { code: error51.code } : {},

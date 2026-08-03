@@ -867,6 +867,7 @@ test("status exposes agent_session_id, redacts session handle, marks optional co
       return json({});
     },
   });
+  assert.equal(client.setup().configured, true);
   assert.equal(client.setup().connected, false);
   assert.match(client.setup().note, /Not yet connected/);
   await client.connect();
@@ -983,6 +984,7 @@ test("setup and status surface the stale-token warning", () => {
     });
     const setup = client.setup();
     assert.equal(setup.ok, false);
+    assert.equal(setup.configured, true);
     assert.deepEqual(setup.missing, []);
     assert.match(setup.warning, /likely rotated/);
     assert.ok(client.status().warnings.some((w) => /likely rotated/.test(w)));

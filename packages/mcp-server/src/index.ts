@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.6.1";
+export const MCP_CLIENT_VERSION = "0.6.2";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -171,10 +171,10 @@ export function createParleMcpServer(
     title: "Parle Setup",
     description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
     annotations: { readOnlyHint: true },
-  }, async (extra) => {
+  }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    return toolResult(client.setup());
-  });
+    return client.setup();
+  }, false));
 
   server.registerTool("parle_connect", {
     title: "Parle Connect",
@@ -470,9 +470,9 @@ function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: Hoo
   process.on("exit", () => client.discardRuntimeFile());
 }
 
-function toolResult(value: unknown): any {
+function toolResult(value: unknown, inferError = true): any {
   const structuredContent = typeof value === "object" && value !== null ? value : { value };
-  const isError = (structuredContent as any).ok === false;
+  const isError = inferError && (structuredContent as any).ok === false;
   return {
     structuredContent,
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
@@ -480,9 +480,9 @@ function toolResult(value: unknown): any {
   };
 }
 
-async function safeTool(fn: () => Promise<unknown>): Promise<any> {
+async function safeTool(fn: () => Promise<unknown>, inferError = true): Promise<any> {
   try {
-    return toolResult(await fn());
+    return toolResult(await fn(), inferError);
   } catch (error: any) {
     const accountFields = error && typeof error === "object"
       ? {

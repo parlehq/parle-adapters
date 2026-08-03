@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 (2026-08-03)
+
+- Refresh the bundled MCP server so routine `parle_setup` diagnostics no longer render as tool failures.
+
 ## 0.5.3 (2026-08-02)
 
 - Restore parle-peers helper usage docs, clearly labeled as not providing compaction retention on this host.

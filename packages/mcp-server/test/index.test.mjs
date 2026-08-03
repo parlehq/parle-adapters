@@ -332,6 +332,43 @@ test("watch launcher uses shared profile resolution and preserves direct config"
   }
 });
 
+test("parle_setup returns routine not-configured diagnostics as a successful tool result", async () => {
+  const server = createParleMcpServer({
+    setup: () => ({ ok: false, configured: false, missing: ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN"] }),
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-setup-diagnostic", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const result = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.ok, false);
+    assert.equal(result.structuredContent.configured, false);
+    assert.deepEqual(result.structuredContent.missing, ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN"]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("parle_setup preserves unexpected failures as MCP tool errors", async () => {
+  const server = createParleMcpServer({
+    setup: () => { throw new Error("profile catalog parse failed"); },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-setup-error", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const result = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.ok, false);
+    assert.match(result.structuredContent.error, /profile catalog parse failed/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("in-memory server maps read, send, and errors through fake client", async () => {
   const calls = [];
   const fakeClient = {
@@ -619,7 +656,9 @@ test("stdio server lists the fourteen tools and setup works without secrets", as
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), expectedTools);
     const setup = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(setup.isError, undefined);
     assert.equal(setup.structuredContent.ok, false);
+    assert.equal(setup.structuredContent.configured, false);
     assert.deepEqual(setup.structuredContent.missing, ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN"]);
     const read = tools.tools.find((tool) => tool.name === "parle_read");
     assert.match(read.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 (2026-08-03)
+
+- Refresh the bundled shared client with explicit setup configuration state for adapter parity.
+
 ## 0.7.1 (2026-08-02)
 
 - Add the required numeric timestamp to the injected peer-context message per the Pi 0.83 CustomMessage contract, and narrow the command-provenance claim to what the host actually guarantees.

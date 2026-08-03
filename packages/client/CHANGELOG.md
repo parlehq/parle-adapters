@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2 (2026-08-03)
+
+- Report configuration completeness explicitly from setup diagnostics while preserving warnings that still need attention.
+
 ## 0.6.1 (2026-08-02)
 
 - Harden the peer-context store per adversarial review: full-route address grammar, bounded reads, exclusive temporary creation with parent-directory ownership checks, and symlink-target replacement.

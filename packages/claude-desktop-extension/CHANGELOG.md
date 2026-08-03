@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.8 (2026-08-03)
+
+- Refresh the bundled MCP server so routine `parle_setup` diagnostics no longer render as tool failures.
+
 ## 0.7.7 (2026-08-02)
 
 - Refresh the bundled MCP server with the peer-context review hardening.

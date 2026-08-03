@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 (2026-08-03)
+
+- Refresh the bundled MCP server so routine `parle_setup` diagnostics no longer render as tool failures.
+
 ## 0.5.3 (2026-08-02)
 
 - Enforce the Windows launcher's absolute-only PARLE_HOOK_RUNTIME override (relative and drive-relative values fall through to the fixed install paths) and prove the wiring behaviorally on a Windows CI job: the exact commandWindows string runs through cmd /d /s /c with a spaced plugin root, hostile cwd/PATH, and no bridge state.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2 (2026-08-03)
+
+- Refresh the bundled MCP server so routine `parle_setup` diagnostics no longer render as tool failures.
+
 ## 0.8.1 (2026-08-02)
 
 - Refresh the bundled hook and helper with review hardening; helper mirrors are now covered by artifact parity checks and documented in the README.
