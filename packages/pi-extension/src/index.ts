@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, INBOX_REPLY_GUIDA
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.6.0";
+const PI_EXTENSION_VERSION = "0.6.1";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -268,6 +268,7 @@ type DeliveryFence = {
 type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; fence: DeliveryFence; injected?: boolean; skip?: boolean };
 const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
 let responsiveFlushRunning = false;
+let responsiveFlushScheduled = false;
 // The shared controller owns wake, drain, dedupe, and acknowledgement. One
 // controller serves one client binding and one watcher run; stop() is
 // terminal, so every watcher (re)start builds a fresh controller while Pi's
@@ -1234,13 +1235,35 @@ function piDeliveryHandler(pi: any, ctx: any, cfg: ParleConfig, input: DeliveryH
       return "intentionally_skipped";
     }
     queuePendingResponsive(input, key, true);
+    scheduleResponsiveFlush(pi, ctx, cfg);
     return "deferred";
   }
   if (pendingResponsiveMessages.some((item) => item.key === key)) return "deferred";
   queuePendingResponsive(input, key, false);
+  scheduleResponsiveFlush(pi, ctx, cfg);
   runtime.lastEligibleSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, input.message.seq) : runtime.lastEligibleSeq;
   runtime.lastBufferedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, input.message.seq) : runtime.lastBufferedSeq;
   return "deferred";
+}
+
+// Deferred rows must inject without any host event: an idle Pi has no
+// user-driven agent_settled coming. The flush is scheduled from the delivery
+// edge and resolves the host handle and context at fire time, so a stale
+// captured ctx.isIdle can never park delivery.
+function scheduleResponsiveFlush(pi: any, ctx: any, cfg: ParleConfig) {
+  if (responsiveFlushScheduled || shutdownRequested || lifecycleEnded) return;
+  responsiveFlushScheduled = true;
+  const timer = setTimeout(() => {
+    responsiveFlushScheduled = false;
+    if (shutdownRequested || lifecycleEnded || pendingResponsiveMessages.length === 0) return;
+    const firePi = lastPi ?? pi;
+    const fireCtx = lastCtx ?? ctx;
+    void flushPendingResponsiveMessages(firePi, fireCtx, cfg).catch((error) => {
+      recordWatcherError(error);
+      setStatus(fireCtx, cfg);
+    });
+  }, 0);
+  (timer as any).unref?.();
 }
 
 function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: boolean) {
@@ -1725,6 +1748,7 @@ function updatePendingResponsiveState() {
 function clearPendingResponsiveMessages() {
   pendingResponsiveMessages.length = 0;
   responsiveFlushRunning = false;
+  responsiveFlushScheduled = false;
   updatePendingResponsiveState();
 }
 

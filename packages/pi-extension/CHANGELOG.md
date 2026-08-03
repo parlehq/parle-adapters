@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-08-02)
+
+- Schedule the idle injection flush from the delivery edge with fire-time host context, so a row arriving while Pi is fully settled injects and acknowledges autonomously instead of waiting for the next user-driven turn to settle (#67).
+
 ## 0.6.0 (2026-08-02)
 
 - Adopt real multi-room operation (#66): PARLE_PROFILES resolves through Pi's own env and project sources into the shared client room set, preserving five-source single-binding semantics when the selector is absent.

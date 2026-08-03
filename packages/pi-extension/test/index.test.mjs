@@ -678,7 +678,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.6.0" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.6.1" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1352,7 +1352,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.6.0");
+    assert.equal(call.headers["Parle-Client-Version"], "0.6.1");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2585,4 +2585,48 @@ test("Pi live profile switching fails closed while multi-room mode is active", a
   const harness = installHarness(project.cwd);
   await harness.call("parle_status");
   await assert.rejects(harness.call("parle_switch_profile", { profile: "alpha" }), /unavailable while PARLE_PROFILES configures 2 rooms/);
+});
+
+test("a wake-delivered row injects autonomously while Pi is idle, with no host event", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
+  const wakeSink = { push: () => {} };
+  const acked = [];
+  let queue = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-idle", session_credential: "parle_ses_idle", session_handle: "idle", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.idle" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-idle" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/responsive-delivery/ack")) {
+      const body = JSON.parse(String(init.body));
+      acked.push([body.seq, body.event_id]);
+      queue = queue.filter((row) => row.event_id !== body.event_id);
+      return new Response(JSON.stringify({ acked: true }), { status: 200 });
+    }
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: [...queue] }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          wakeSink.push = (event) => controller.enqueue(new TextEncoder().encode(`event: wake\ndata: ${JSON.stringify(event)}\n\n`));
+        },
+      }), { status: 200 });
+    }
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  await eventually(() => Boolean(__testing.runtimeState().baselineAt));
+
+  // Pi is fully settled: no user turn, no agent_settled, no manual drain.
+  queue.push({ seq: 5, event_id: "evt-idle-5", participant_id: "p-peer", provenance: { author: "peer", kind: "participant" }, content: "autonomous row" });
+  wakeSink.push({});
+
+  await eventually(() => harness.injected.length === 1 && acked.length === 1);
+  assert.match(harness.injected[0], /autonomous row/);
+  assert.deepEqual(acked, [[5, "evt-idle-5"]]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(harness.injected.length, 1, "the row injects exactly once");
+  assert.equal(acked.length, 1, "the row acknowledges exactly once");
+  assert.equal(__testing.runtimeState().pendingResponsiveCount, 0);
+  __testing.resetRuntime();
 });

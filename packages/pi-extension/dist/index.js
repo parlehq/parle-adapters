@@ -4483,7 +4483,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.6.0";
+var PI_EXTENSION_VERSION = "0.6.1";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -4529,6 +4529,7 @@ var seenKeys = /* @__PURE__ */ new Set();
 var seenKeyOrder = [];
 var pendingResponsiveMessages = [];
 var responsiveFlushRunning = false;
+var responsiveFlushScheduled = false;
 var deliveryController;
 var deliveryControllerClient;
 var lifecycleEnded = false;
@@ -5361,13 +5362,30 @@ function piDeliveryHandler(pi, ctx, cfg, input) {
       return "intentionally_skipped";
     }
     queuePendingResponsive(input, key, true);
+    scheduleResponsiveFlush(pi, ctx, cfg);
     return "deferred";
   }
   if (pendingResponsiveMessages.some((item) => item.key === key)) return "deferred";
   queuePendingResponsive(input, key, false);
+  scheduleResponsiveFlush(pi, ctx, cfg);
   runtime.lastEligibleSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastEligibleSeq || 0, input.message.seq) : runtime.lastEligibleSeq;
   runtime.lastBufferedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, input.message.seq) : runtime.lastBufferedSeq;
   return "deferred";
+}
+function scheduleResponsiveFlush(pi, ctx, cfg) {
+  if (responsiveFlushScheduled || shutdownRequested || lifecycleEnded) return;
+  responsiveFlushScheduled = true;
+  const timer = setTimeout(() => {
+    responsiveFlushScheduled = false;
+    if (shutdownRequested || lifecycleEnded || pendingResponsiveMessages.length === 0) return;
+    const firePi = lastPi ?? pi;
+    const fireCtx = lastCtx ?? ctx;
+    void flushPendingResponsiveMessages(firePi, fireCtx, cfg).catch((error) => {
+      recordWatcherError(error);
+      setStatus(fireCtx, cfg);
+    });
+  }, 0);
+  timer.unref?.();
 }
 function queuePendingResponsive(input, key, skip) {
   const view = sessionView();
@@ -5772,6 +5790,7 @@ function updatePendingResponsiveState() {
 function clearPendingResponsiveMessages() {
   pendingResponsiveMessages.length = 0;
   responsiveFlushRunning = false;
+  responsiveFlushScheduled = false;
   updatePendingResponsiveState();
 }
 async function queueResponsiveMessages(ctx, cfg, messages, responsePreamble, signal, responseFence = injectionFence()) {
