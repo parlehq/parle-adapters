@@ -133,7 +133,7 @@ For responsive delivery, call `parle_send` with structured `to`:
 - `@principal.agent` for any live session of an agent
 - `@principal.agent.session` to pin one live session
 
-Body `@mentions` are inert text. They do not route the message and do not wake a peer watcher.
+Body `@mentions` are inert text. They do not route the message or create target-responsive work. Room wake signals are broad advisory hints and may still precede an empty responsive drain.
 
 ## Trust boundary
 

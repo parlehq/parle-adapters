@@ -67,10 +67,12 @@ not configure. A hintless wake keeps the unconditional drain.
 Two behaviours were confirmed against production during the two-room dogfood
 and are easy to misread when writing tests or host handlers.
 
-Only direct-addressed rows wake a peer. Responsive delivery is the direct
-attention surface, so an unaddressed room message deliberately does not wake
-anyone. A responsive probe must be addressed to the target session address; an
-unaddressed one proves nothing about wake routing.
+Only direct-addressed rows create target-responsive work. Unaddressed and
+broadcast rows remain durable room history and inbound attention without
+responsive eligibility. Room wake signals are broad advisory hints, so a wake
+may legitimately precede an empty responsive drain. A responsive probe must be
+addressed to the target session address; an unaddressed one proves nothing
+about target-responsive routing.
 
 A moderated room releases a row asynchronously. A submission there is accepted
 as held, and the row surfaces on the delivery surface after the scan completes

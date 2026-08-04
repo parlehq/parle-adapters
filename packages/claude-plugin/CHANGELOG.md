@@ -2,7 +2,7 @@
 
 ## 0.9.2 (2026-08-04)
 
-- Refresh the bundled MCP runtime with canonical routing and attention passthrough plus direct-only responsive guidance (#50).
+- Refresh the bundled MCP runtime with canonical routing and attention passthrough plus direct-only responsive guidance, and distinguish broad advisory wake signals from target-responsive work in the Claude skill (#50).
 
 ## 0.9.1 (2026-08-03)
 
