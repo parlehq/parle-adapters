@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.7 (2026-08-04)
+
+- Render canonical send-attention guidance, remove the duplicate body-shape warning, and refresh shared-client receipt handling (#50).
+
 ## 0.7.6 (2026-08-03)
 
 - Refresh the shared account client so `parle_login` can create an explicitly targeted missing profile without weakening other account operations.

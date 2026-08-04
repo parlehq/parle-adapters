@@ -39,11 +39,6 @@ export function assertSafeBase(base: string, env: Record<string, string | undefi
   if (url.hostname !== "parle.sh" && !url.hostname.endsWith(".parle.sh")) throw new Error(`Parle API base is not allowlisted: ${url.hostname}`);
 }
 
-// Temporary local advisory until the API returns canonical inert-mention warnings.
-export function bodyLooksLikeAddressedText(body: string): boolean {
-  return /^\s*(?:(?:ask|tell)\s+)?@[-a-z0-9_.]+\b/i.test(body);
-}
-
 // Exact validation of server framing until the byte format is a versioned core contract.
 export function compactServerWrappedContent(content: string, preamble?: string, fence?: string | null): string {
   if (!preamble || !fence) return content;

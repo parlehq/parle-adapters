@@ -7,7 +7,7 @@ import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-e
 import { DEFAULT_VERSION, ParleApiError, isParleCredential, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
-import { FENCE_SUFFIX, assertSafeBase, bodyLooksLikeAddressedText, compactServerWrappedContent, truncateText } from "./helpers.js";
+import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 
 export * from "./protocol.js";
 export * from "./account.js";
@@ -26,7 +26,8 @@ export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
-export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to sends an unaddressed message and will not wake that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
+export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
+export const SEND_ATTENTION_GUIDANCE = "Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
   "authorization",
@@ -343,7 +344,7 @@ export type SessionEstablishedBlock = {
 };
 
 export type SendDeliveryStatus = {
-  state: "accepted_scan_skipped" | "held_for_moderation" | "delivered";
+  state: "accepted_scan_skipped" | "held_for_moderation" | "delivered" | "blocked" | "accepted_unknown";
   message: string;
   nextStep?: string;
 };
@@ -763,15 +764,42 @@ export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT
   return { messages: capped, bytes: Buffer.byteLength(JSON.stringify(messages), "utf8"), returnedBytes, truncated };
 }
 
-export function addressingWarning(body: string, to?: string): string | undefined {
-  if (to || !bodyLooksLikeAddressedText(body)) return undefined;
-  return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
+export function sendAttentionWarnings(details: any): string[] | undefined {
+  const attention = details?.attention;
+  if (!attention || typeof attention !== "object" || !Object.hasOwn(attention, "responsive_scope")) return undefined;
+  if (attention.responsive_scope === "target") return undefined;
+  return [
+    "Message accepted, but the server did not report attention.responsive_scope as target. Do not rely on this send to start the intended peer's responsive turn. Unaddressed and broadcast sends are durable room history, not substitutes for direct addressing when acknowledgement or action is required.",
+  ];
 }
 
-// Remove or narrow this when the API exposes canonical delivery state semantics.
 export function summarizeSendDelivery(details: any): SendDeliveryStatus | undefined {
   const moderation = details?.moderation;
   if (!moderation || typeof moderation !== "object") return undefined;
+  if (Object.hasOwn(moderation, "delivery_state")) {
+    switch (moderation.delivery_state) {
+      case "accepted_scan_skipped":
+        return {
+          state: "accepted_scan_skipped",
+          message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion.",
+        };
+      case "held_for_moderation":
+        return {
+          state: "held_for_moderation",
+          message: moderation.reason || "Message accepted but held for moderation completion.",
+          nextStep: typeof details?.seq === "number" ? `Poll parle_read or parle_inbox around seq ${details.seq}; if held_backlog drains and the row never appears, it was blocked.` : "Poll parle_read or parle_inbox; if held_backlog drains and the row never appears, it was blocked.",
+        };
+      case "delivered":
+        return { state: "delivered", message: "Message accepted and delivered." };
+      case "blocked":
+        return { state: "blocked", message: moderation.reason || "Message accepted but blocked and not visible to peers." };
+      default:
+        return {
+          state: "accepted_unknown",
+          message: moderation.reason || "Message accepted with an unrecognized delivery state. Treat it as non-terminal and do not infer delivery from other moderation fields.",
+        };
+    }
+  }
   const steps = Array.isArray(moderation.steps) ? moderation.steps : [];
   if (moderation.scan === "skipped" && steps.length === 0) {
     return {
@@ -2401,11 +2429,12 @@ export class ParleAgentClient {
         roomId = this.roomTarget(params.roomId).roomId!.value!;
         const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", session: true, roomId, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
         const deliveryStatus = summarizeSendDelivery(result);
-        return { ...result, roomId, idempotencyKey, warning: addressingWarning(params.body, params.to), ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
+        const clientWarnings = sendAttentionWarnings(result);
+        return { ...result, roomId, idempotencyKey, ...(clientWarnings ? { clientWarnings } : {}), ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
       }, signal));
     } catch (error: any) {
       if (error instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, warning: addressingWarning(params.body, params.to), error: redactString(error.message) };
+        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
       }
       throw error;
     }

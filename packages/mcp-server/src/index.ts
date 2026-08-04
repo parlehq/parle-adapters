@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.1";
+export const MCP_CLIENT_VERSION = "0.7.2";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -402,7 +402,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_send", {
     title: "Parle Send",
-    description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text and do not wake peers. Pass to: \"@principal.agent\" or \"@principal.agent.session\" for responsive delivery. Failures return the idempotency key; reuse it with a byte-identical retry when the failure is retryable. ${ROOM_TEXT}`,
+    description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text. Pass to: \"@principal.agent\" or \"@principal.agent.session\" for responsive delivery. ${SEND_ATTENTION_GUIDANCE} Failures return the idempotency key; reuse it with a byte-identical retry when the failure is retryable. ${ROOM_TEXT}`,
     inputSchema: sendSchema,
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {

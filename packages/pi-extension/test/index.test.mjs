@@ -283,12 +283,12 @@ test("Pi delegates .env parsing to the agent client", () => {
 
 test("Pi delegates account-plane operations and protocol helpers to the agent client", () => {
   const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
-  assert.match(source, /FENCE_SUFFIX[^\n]*assertSafeBase[^\n]*bodyLooksLikeAddressedText[^\n]*compactServerWrappedContent as compactSharedServerWrappedContent[^\n]*truncateText[^\n]*from "@parlehq\/agent-client"/);
+  assert.match(source, /FENCE_SUFFIX[^\n]*SEND_ATTENTION_GUIDANCE[^\n]*assertSafeBase[^\n]*compactServerWrappedContent as compactSharedServerWrappedContent[^\n]*truncateText[^\n]*from "@parlehq\/agent-client"/);
   assert.match(source, /accountClient\(ctx\.cwd \|\| process\.cwd\(\)\)\.login\(params, signal\)/);
   assert.match(source, /accountClient\(ctx\.cwd \|\| process\.cwd\(\)\)\.createRoom\(params, signal\)/);
   assert.match(source, /accountClient\(ctx\.cwd \|\| process\.cwd\(\)\)\.addOwnAgentSeat\(params, signal\)/);
   assert.doesNotMatch(source, /async function parle(?:Login|CreateRoom|AddOwnAgentSeat)/);
-  assert.doesNotMatch(source, /function (?:assertSafeBase|bodyLooksLikeAddressedText|truncateText)/);
+  assert.doesNotMatch(source, /function (?:addressingWarning|assertSafeBase|bodyLooksLikeAddressedText|truncateText)/);
 });
 
 test("deployed entrypoint is the committed bundle", () => {
@@ -731,7 +731,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.6" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.7" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1405,7 +1405,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.6");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.7");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1859,7 +1859,7 @@ test("parle_send includes direct addressing when to is present", async () => {
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send/messages")) {
       messageRequest = JSON.parse(init.body);
-      return new Response(JSON.stringify({ seq: 1, event_id: "event-1", moderation: { held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending", reason: "awaiting moderation completion" } }), { status: 201 });
+      return new Response(JSON.stringify({ seq: 1, event_id: "event-1", routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, moderation: { delivery_state: "accepted_scan_skipped", held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending", reason: "awaiting moderation completion" } }), { status: 201 });
     }
     throw new Error("unexpected " + u);
   });
@@ -1869,29 +1869,37 @@ test("parle_send includes direct addressing when to is present", async () => {
   assert.deepEqual(messageRequest.addressing, { audience: "direct", to: "@gilman.galexc.mme3hxrdumknrpvv" });
   assert.equal(messageRequest.payload.body, "What time is it?");
   assert.equal(result.details.addressedTo, "@gilman.galexc.mme3hxrdumknrpvv");
-  assert.equal(result.details.warning, undefined);
+  assert.deepEqual(result.details.routing, { mode: "direct", target_level: "session", continuity: "ephemeral" });
+  assert.deepEqual(result.details.attention, { inbound_scope: "target", responsive_scope: "target" });
+  assert.equal(result.details.clientWarnings, undefined);
   assert.equal(result.details.deliveryStatus.state, "accepted_scan_skipped");
   assert.match(result.details.deliveryStatus.message, /do not describe it as awaiting moderation/);
   assert.match(result.details.retry, /identical to\/addressing/);
 });
 
-test("parle_send without to stays unaddressed and warns on direct-looking mention forms", async () => {
+test("parle_send without to preserves canonical attention and warns for all non-target scopes", async () => {
   const messageRequests = [];
+  const scopes = ["none", "future_scope"];
   const harness = installSendHarness(async (url, init = {}) => {
     const u = String(url);
     if (u.endsWith("/v/rooms/room-send/messages")) {
       messageRequests.push(JSON.parse(init.body));
-      return new Response(JSON.stringify({ seq: messageRequests.length + 1, event_id: `event-${messageRequests.length + 1}` }), { status: 201 });
+      const responsive_scope = scopes[messageRequests.length - 1];
+      return new Response(JSON.stringify({ seq: messageRequests.length + 1, event_id: `event-${messageRequests.length + 1}`, routing: { mode: "unaddressed", target_level: "none", continuity: "none" }, attention: { inbound_scope: "room", responsive_scope } }), { status: 201 });
     }
     return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
   });
 
-  const mention = await harness.call("parle_send", { body: "@gilman.galexc.mme3hxrdumknrpvv what time is it", idempotencyKey: "idem-2" });
-  const prefixed = await harness.call("parle_send", { body: "ask @gilman.galexc.mme3hxrdumknrpvv what time it is", idempotencyKey: "idem-3" });
+  const ordinary = await harness.call("parle_send", { body: "Substantive room update without a direct target", idempotencyKey: "idem-2" });
+  const future = await harness.call("parle_send", { body: "Another room update", idempotencyKey: "idem-3" });
 
   assert.equal(messageRequests.every((request) => !Object.hasOwn(request, "addressing")), true);
-  assert.match(mention.details.warning, /will not wake a peer watcher/);
-  assert.match(prefixed.details.warning, /will not wake a peer watcher/);
+  assert.deepEqual(ordinary.details.attention, { inbound_scope: "room", responsive_scope: "none" });
+  assert.match(ordinary.details.clientWarnings[0], /not substitutes for direct addressing/);
+  assert.deepEqual(future.details.attention, { inbound_scope: "room", responsive_scope: "future_scope" });
+  assert.match(future.details.clientWarnings[0], /did not report attention\.responsive_scope as target/);
+  assert.match(harness.tools.parle_send.description, /Successful sends return server-authored routing and attention/);
+  assert.match(harness.tools.parle_send.description, /Broadcast is likewise not a substitute for direct addressing/);
 });
 
 test("responsive delivery prompt tells agents how to reply directly", () => {
@@ -1952,7 +1960,7 @@ test("parle_inbox reads the inbound attention surface", async () => {
   assert.equal(result.details.cursor, 4);
   assert.match(result.details.note, /excludes your own rows/);
   assert.match(result.details.note, /parle_send with to set exactly to that message's author\.address/);
-  assert.match(result.details.note, /will not wake that peer/);
+  assert.match(result.details.note, /no target-responsive work for that peer/);
   assert.match(result.details.note, /do not guess from participant_id or provenance fields/);
   assert.match(harness.tools.parle_inbox.description, /parle_send with to set exactly to that message's author\.address/);
 });

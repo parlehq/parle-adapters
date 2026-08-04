@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_REPLY_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, assertNoReservedProtocolHeaders, assertSafeBase, bodyLooksLikeAddressedText, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.6";
+const PI_EXTENSION_VERSION = "0.7.7";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1036,11 +1036,6 @@ async function withRebootstrap<T>(ctx: any, cfg: ParleConfig, fn: () => Promise<
 function deliveryKey(roomId: string | undefined, message: any): string | undefined {
   if (typeof message?.seq !== "number" || typeof message?.event_id !== "string" || !message.event_id) return undefined;
   return `${roomId || ""}:${message.seq}:${message.event_id}`;
-}
-
-function addressingWarning(body: string, to?: string): string | undefined {
-  if (to || !bodyLooksLikeAddressedText(body)) return undefined;
-  return "Body @mentions do not address a Parle message. This message was sent unaddressed and will not wake a peer watcher. Pass to: \"@principal.agent\" or to: \"@principal.agent.session\" for responsive delivery.";
 }
 
 function rememberBoundedKey(keys: Set<string>, order: string[], key: string) {
@@ -2274,7 +2269,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_send",
     label: "Parle Send",
-    description: "Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text and will not wake a peer. Responsive delivery currently injects only direct-addressed rows. Prefer to: \"@principal.agent\" for any live session of an agent, or to: \"@principal.agent.session\" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. V1 does not auto-retry; failures include the idempotency key; reuse it with byte-identical body and addressing when the failure is retryable.",
+    description: `Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text. Prefer to: "@principal.agent" for any live session of an agent, or to: "@principal.agent.session" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. ${SEND_ATTENTION_GUIDANCE} V1 does not auto-retry; failures include the idempotency key; reuse it with byte-identical body and addressing when the failure is retryable.`,
     parameters: Type.Object({
       body: Type.String(),
       to: Type.Optional(Type.String()),
@@ -2287,9 +2282,7 @@ export default function parleExtension(pi: any) {
       const to = typeof params.to === "string" && params.to.trim() ? params.to.trim() : undefined;
       const retry = "If retrying this logical send after a retryable error, reuse the original idempotency key, byte-identical body, and identical to/addressing.";
       const live = agentClient(ctx, cfg);
-      const piWarning = addressingWarning(params.body, to);
       const details = await live.send({ body: params.body, to, roomId: params.roomId, idempotencyKey: params.idempotencyKey }, signal);
-      if (details && typeof details === "object" && !details.warning && piWarning) details.warning = piWarning;
       liveConfig = cfg;
       setStatus(ctx, cfg);
       if (details && details.ok === false) {

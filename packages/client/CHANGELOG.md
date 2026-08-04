@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2 (2026-08-04)
+
+- Surface server-authored routing and attention without local inference, warn conservatively from reported responsive scope, and give moderation.delivery_state precedence over legacy posture details (#50).
+
 ## 0.8.1 (2026-08-03)
 
 - Allow login to bootstrap an explicitly targeted missing profile in an otherwise populated catalog while retaining strict selected-profile resolution for other account operations.

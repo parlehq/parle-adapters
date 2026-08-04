@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 (2026-08-04)
+
+- Expose canonical send-attention guidance and refresh shared-client receipt handling (#50).
+
 ## 0.7.1 (2026-08-03)
 
 - Refresh the shared account client so login can create an explicitly targeted missing profile without weakening other account operations.

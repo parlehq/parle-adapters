@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2 (2026-08-04)
+
+- Refresh the bundled MCP runtime with canonical routing and attention passthrough plus direct-only responsive guidance (#50).
+
 ## 0.8.1 (2026-08-03)
 
 - Refresh the bundled shared client so account login can create an explicitly targeted missing profile without weakening other account operations.

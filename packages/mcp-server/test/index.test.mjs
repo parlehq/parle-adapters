@@ -382,7 +382,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     readProjection: async (params) => { calls.push(["read", params]); return { messages: [], cursorAfter: 3 }; },
     readInbox: async () => ({ messages: [] }),
     affordances: async () => ({ affordances: [] }),
-    send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
+    send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", roomHandle: "target-room" }; },
   };
   const fakeAccount = {
@@ -405,8 +405,14 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.match(connect.content[0].text, /\"agentSessionId\": \"as-1\"/);
     const read = await client.callTool({ name: "parle_read", arguments: { waitSeconds: 1 } });
     assert.equal(read.structuredContent.cursorAfter, 3);
+    const tools = await client.listTools();
+    const sendTool = tools.tools.find((tool) => tool.name === "parle_send");
+    assert.match(sendTool.description, /Successful sends return server-authored routing and attention/);
+    assert.match(sendTool.description, /Broadcast is likewise not a substitute for direct addressing/);
     const send = await client.callTool({ name: "parle_send", arguments: { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" } });
     assert.equal(send.structuredContent.idempotencyKey, "idem-1");
+    assert.deepEqual(send.structuredContent.routing, { mode: "direct", target_level: "session", continuity: "ephemeral" });
+    assert.deepEqual(send.structuredContent.attention, { inbound_scope: "target", responsive_scope: "target" });
     assert.equal(send.structuredContent.deliveryStatus.state, "accepted_scan_skipped");
     const refused = await client.callTool({ name: "parle_switch_profile", arguments: { profile: "target", watcherStopped: false } });
     assert.equal(refused.isError, true);
@@ -456,7 +462,7 @@ test("in-memory server send summarizes delivery state through real client", asyn
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
-      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 150, moderation: { held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending" } }, 201);
+      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 150, routing: { mode: "unaddressed", target_level: "none", continuity: "none" }, attention: { inbound_scope: "room", responsive_scope: "none" }, moderation: { delivery_state: "accepted_scan_skipped", held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending" } }, 201);
       return json({});
     },
   });
@@ -467,6 +473,9 @@ test("in-memory server send summarizes delivery state through real client", asyn
   try {
     const send = await client.callTool({ name: "parle_send", arguments: { body: "hello" } });
     assert.equal(send.structuredContent.idempotencyKey, "idem-real-client");
+    assert.deepEqual(send.structuredContent.routing, { mode: "unaddressed", target_level: "none", continuity: "none" });
+    assert.deepEqual(send.structuredContent.attention, { inbound_scope: "room", responsive_scope: "none" });
+    assert.match(send.structuredContent.clientWarnings[0], /not substitutes for direct addressing/);
     assert.equal(send.structuredContent.deliveryStatus.state, "accepted_scan_skipped");
   } finally {
     await client.close();
@@ -686,7 +695,7 @@ test("stdio server lists the seventeen tools and setup works without secrets", a
     assert.match(inbox.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
     assert.match(inbox.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
     assert.match(inbox.description, /parle_send with to set exactly to that message's author\.address/);
-    assert.match(inbox.description, /will not wake that peer/);
+    assert.match(inbox.description, /no target-responsive work for that peer/);
     assert.match(inbox.description, /do not guess from participant_id or provenance fields/);
     const connectOwnAgent = tools.tools.find((tool) => tool.name === "parle_connect_own_agent");
     assert.match(connectOwnAgent.description, /one owned durable agent per operation/);

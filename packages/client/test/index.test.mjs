@@ -12,9 +12,7 @@ import {
   ParleAgentClient,
   processClientInstanceId,
   formatVersionErrorHint,
-  addressingWarning,
   assertSafeBase,
-  bodyLooksLikeAddressedText,
   capProjectionMessages,
   clampWaitSeconds,
   compactServerWrappedContent,
@@ -29,6 +27,7 @@ import {
   resolveConfig,
   resolveRoomSet,
   responsiveDeliveryKey,
+  sendAttentionWarnings,
   summarizeSendDelivery,
   terminalStatusFor,
   truncateText,
@@ -330,25 +329,32 @@ test("message cap does not drop an oversized first content row", () => {
   assert.equal(capped.truncated, true);
 });
 
-test("addressing warning catches direct-looking mention, ask, and tell forms", () => {
-  assert.equal(bodyLooksLikeAddressedText("@gilman.agent hello"), true);
-  assert.equal(bodyLooksLikeAddressedText("ask @gilman.agent hello"), true);
-  assert.equal(bodyLooksLikeAddressedText("tell @gilman.agent hello"), true);
-  assert.match(addressingWarning("@gilman.agent hello"), /will not wake/);
-  assert.match(addressingWarning("ask @gilman.agent hello"), /will not wake/);
-  assert.match(addressingWarning("tell @gilman.agent hello"), /will not wake/);
-  assert.equal(addressingWarning("@gilman.agent hello", "@gilman.agent.session"), undefined);
+test("send attention warning follows only server-authored responsive scope", () => {
+  assert.equal(sendAttentionWarnings({ attention: { responsive_scope: "target" } }), undefined);
+  for (const responsive_scope of ["none", "room", "future_scope", null]) {
+    const warnings = sendAttentionWarnings({ attention: { responsive_scope } });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /did not report attention\.responsive_scope as target/);
+    assert.match(warnings[0], /not substitutes for direct addressing/);
+  }
+  assert.equal(sendAttentionWarnings({ attention: {} }), undefined);
+  assert.equal(sendAttentionWarnings({}), undefined);
 });
 
-test("send delivery summary classifies moderation envelopes", () => {
-  assert.deepEqual(summarizeSendDelivery({ seq: 7, moderation: { held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending", reason: "awaiting moderation completion" } }), {
+test("send delivery summary gives canonical state precedence and falls back only when absent", () => {
+  assert.deepEqual(summarizeSendDelivery({ moderation: { delivery_state: "accepted_scan_skipped", delivered: true } }), {
     state: "accepted_scan_skipped",
     message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion.",
   });
-  const held = summarizeSendDelivery({ seq: 8, moderation: { held: true, delivered: false, scan: "queued", steps: [{ name: "scan" }], verdict: "pending", reason: "awaiting scan" } });
+  const held = summarizeSendDelivery({ seq: 8, moderation: { delivery_state: "held_for_moderation", held: false, delivered: true, reason: "awaiting scan" } });
   assert.equal(held.state, "held_for_moderation");
   assert.equal(held.message, "awaiting scan");
   assert.match(held.nextStep, /seq 8/);
+  assert.deepEqual(summarizeSendDelivery({ moderation: { delivery_state: "delivered", held: true } }), { state: "delivered", message: "Message accepted and delivered." });
+  assert.deepEqual(summarizeSendDelivery({ moderation: { delivery_state: "blocked", delivered: true, reason: "policy denied" } }), { state: "blocked", message: "policy denied" });
+  assert.deepEqual(summarizeSendDelivery({ moderation: { delivery_state: "future_state", delivered: true, reason: "server reason" } }), { state: "accepted_unknown", message: "server reason" });
+  assert.equal(summarizeSendDelivery({ moderation: { delivery_state: null, delivered: true } }).state, "accepted_unknown");
+  assert.equal(summarizeSendDelivery({ moderation: { held: true, delivered: false, scan: "skipped", steps: [] } }).state, "accepted_scan_skipped");
   assert.deepEqual(summarizeSendDelivery({ moderation: { delivered: true } }), { state: "delivered", message: "Message accepted and delivered." });
   assert.equal(Object.hasOwn({ event_id: "evt-1" }, "deliveryStatus"), false);
   assert.equal(summarizeSendDelivery({ event_id: "evt-1" }), undefined);
@@ -447,19 +453,22 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 4, messages: [{ seq: 4, content: "hello" }] });
-      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 5, replayed: false, moderation: { held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending" } }, 201);
+      if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 5, replayed: false, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, moderation: { delivery_state: "accepted_scan_skipped", held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending" } }, 201);
       return json({});
     },
   });
   const inbox = await client.readInbox({ waitSeconds: 2 });
   assert.equal(inbox.cursorAfter, 4);
   assert.match(inbox.note, /parle_send with to set exactly to that message's author\.address/);
-  assert.match(inbox.note, /Omitting to sends an unaddressed message and will not wake that peer/);
+  assert.match(inbox.note, /Omitting to creates an unaddressed durable room row but no target-responsive work for that peer/);
   assert.match(inbox.note, /do not guess from participant_id or provenance fields/);
   const projection = await client.readProjection();
   assert.doesNotMatch(projection.note, /author\.address/);
   const sent = await client.send({ body: "hello", to: "@p.a.s1" });
   assert.equal(sent.idempotencyKey, "idem-1");
+  assert.deepEqual(sent.routing, { mode: "direct", target_level: "session", continuity: "ephemeral" });
+  assert.deepEqual(sent.attention, { inbound_scope: "target", responsive_scope: "target" });
+  assert.equal(sent.clientWarnings, undefined);
   assert.equal(sent.deliveryStatus.state, "accepted_scan_skipped");
   assert.equal(requests.some((r) => r.url.includes("/inbound?since_seq=3&wait=2")), true);
   const sendReq = requests.find((r) => r.url.includes("/messages"));
