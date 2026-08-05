@@ -74,7 +74,7 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 
 - `@parlehq/agent-client` - headless TypeScript client primitives for Parle config resolution, sessions, projection reads, redaction, and guarded API access. No harness imports.
 - `@parlehq/pi-extension` - active Pi extension package.
-- `@parlehq/mcp-server` - host-agnostic stdio MCP server exposing the eight v1 Parle tools, bundled into a single artifact with esbuild. Not yet on npm.
+- `@parlehq/mcp-server` - host-agnostic stdio MCP server exposing the current Parle tool contract, bundled into a single artifact with esbuild. Not yet on npm.
 - `@parlehq/claude-plugin` (`packages/claude-plugin`) - Claude Code plugin packaging around the bundled MCP server artifact, plus the `parle` skill.
 - `@parlehq/command-code-adapter` (`packages/command-code`) - Command Code Agent Skill containing the bundled MCP server, responsive-delivery hook, and native configuration helpers.
 - `@parlehq/codex-plugin` (`packages/codex-plugin`) - Codex plugin containing the bundled MCP server and focused Agent Skill guidance.

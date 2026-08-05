@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.9 (2026-08-05)
+
+- Refresh the shared room inventory with credential-origin, pagination, mutation-outcome, and ready-room truth safeguards.
+
 ## 0.7.8 (2026-08-04)
 
 - Add the read-only `parle_rooms` tool backed by the shared room inventory and label `parle_status.runtime.rooms` as active runtime state rather than exhaustive inventory (#685).

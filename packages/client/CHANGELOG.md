@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.4 (2026-08-05)
+
+- Bind account inventory to the selected deployment, reject unsafe human-session files and malformed cookies before fetch, report pagination ceilings truthfully, and fail closed on truncated login selection.
+- Make email completion persist only the human session; keep token minting in a separate confirmed `mint-from-session` action, report uncertain or unpublished credentials without exposing secrets, and never attempt an automatic noncanonical cleanup mutation.
+- Keep only ready runtime rooms in active inventory and retain direct local room configuration as a separate unverified source before bootstrap.
+
 ## 0.8.3 (2026-08-04)
 
 - Add one typed room-inventory path that composes active runtime rooms, redacted configured profiles, and paginated principal account rooms without conflating their authority; share deterministic formatting, bounded continuation, stable partial-failure states, and path-free diagnostics across hosts (#685).

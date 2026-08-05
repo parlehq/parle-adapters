@@ -32388,10 +32388,11 @@ function parseAccountRoomPage(raw) {
   });
   return { rooms, next };
 }
-function readConfiguredRoomSection(catalogPath) {
+function readConfiguredRoomSection(catalogPath, directRoomId) {
   try {
-    if (!profileCatalogExists(catalogPath))
-      return { state: "unavailable", reason: "profile_catalog_missing" };
+    if (!profileCatalogExists(catalogPath)) {
+      return directRoomId ? { state: "complete", rows: [{ profile: "direct", roomId: directRoomId }] } : { state: "unavailable", reason: "profile_catalog_missing" };
+    }
     const profiles = readProfiles(catalogPath, { modeWarning: () => void 0 });
     return {
       state: "complete",
@@ -32409,13 +32410,13 @@ function activeRoomSectionFromStatus(status) {
   }
   const source = Array.isArray(view.rooms) ? view.rooms : Array.isArray(runtime.rooms) ? runtime.rooms : [];
   const rows = source.flatMap((raw) => {
-    if (!raw || typeof raw !== "object" || typeof raw.roomId !== "string" || !raw.roomId)
+    if (!raw || typeof raw !== "object" || typeof raw.roomId !== "string" || !raw.roomId || raw.state !== "ready")
       return [];
     return [{
       roomId: raw.roomId,
       roomHandle: typeof raw.roomHandle === "string" ? raw.roomHandle : null,
       profile: typeof raw.profile === "string" && raw.profile ? raw.profile : "direct",
-      state: typeof raw.state === "string" && raw.state ? raw.state : "ready"
+      state: "ready"
     }];
   });
   return { state: "complete", rows };
@@ -32487,8 +32488,9 @@ function formatRoomInventory(active, configured, account) {
     }
     if (accountRows.length === 0)
       lines.push("| _None_ | | | | | |");
-    if (account.state === "truncated")
-      lines.push(`Account inventory truncated at the enforced ${account.limit}-row limit.`);
+    if (account.state === "truncated") {
+      lines.push(account.cause === "row_limit" ? `Account inventory truncated at the enforced ${account.limit}-row limit after ${account.pagesFetched} page(s).` : `Account inventory truncated after the enforced ${account.limit}-page limit with ${account.rowsReturned} row(s) returned.`);
+    }
   } else {
     lines.push(`${account.state}: ${account.reason}`);
   }
@@ -32533,6 +32535,7 @@ var MAX_ACCOUNT_ROOM_PAGES = 10;
 var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
+var SESSION_COOKIE_RE = /^__Host-parle_session=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
 var RESERVED_HANDLES = /* @__PURE__ */ new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
 var MINT_DENIAL_NEXT_ACTION = {
   unhardened: "set a password, then enroll a second factor",
@@ -32616,6 +32619,12 @@ function readBounded(path, maxBytes, label) {
 function firstValue2(key, env, dotEnv) {
   return env[key] || dotEnv[key] || void 0;
 }
+function validateSessionCookie(raw) {
+  const value = raw.trim();
+  if (!SESSION_COOKIE_RE.test(value))
+    throw new Error("Parle human session cookie must be one canonical __Host-parle_session cookie without separators or control characters.");
+  return value;
+}
 function resolveAccountBaseConfig(cwd, env, options = {}) {
   const dotEnvPath = join4(cwd, ".env");
   const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
@@ -32624,20 +32633,26 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
   const sessionPath = join4(dirname3(catalogPath), "session");
   let sessionCookie = firstValue2("PARLE_SESSION_COOKIE", env, dotEnv);
   if (!sessionCookie && existsSync3(sessionPath)) {
-    safeFile(sessionPath, "Parle human session file", true);
-    sessionCookie = readBounded(sessionPath, 8192, "Parle human session file").trim();
+    assertNoSymlinkPathComponents(sessionPath);
+    safeFile(sessionPath, "Parle human session file", false);
+    sessionCookie = readBounded(sessionPath, 8192, "Parle human session file");
   }
-  if (sessionCookie && /\r|\n/.test(sessionCookie))
-    throw new Error("Parle human session cookie contains invalid control characters.");
+  if (sessionCookie)
+    sessionCookie = validateSessionCookie(sessionCookie);
   let configuredApiBase = firstValue2("PARLE_API_BASE", env, dotEnv);
   let selectedProfile;
-  if (!options.skipProfileCatalog && existsSync3(catalogPath)) {
+  if (existsSync3(catalogPath)) {
     const profileName = firstValue2("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
     if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath)))
       selectedProfile = loadProfile(profileName, catalogPath);
   }
-  if (!configuredApiBase && selectedProfile)
-    configuredApiBase = selectedProfile.apiBase;
+  if (selectedProfile) {
+    const selectedApiBase = selectedProfile.apiBase || DEFAULT_API_BASE2;
+    if (configuredApiBase && new URL(configuredApiBase).origin !== new URL(selectedApiBase).origin) {
+      throw new Error("Parle profile API origin conflicts with direct PARLE_API_BASE configuration.");
+    }
+    configuredApiBase = selectedApiBase;
+  }
   const rawApiBase = configuredApiBase || DEFAULT_API_BASE2;
   assertSafeBase(rawApiBase, env);
   const apiBase = new URL(rawApiBase).origin;
@@ -32655,10 +32670,14 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     wakeBase: selectedProfile?.wakeBase || firstValue2("PARLE_WAKE_BASE", env, dotEnv)
   };
 }
-function resolveInventoryCatalogPath(cwd, env) {
+function resolveInventoryLocalConfig(cwd, env) {
   const dotEnvPath = join4(cwd, ".env");
   const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
-  return resolveProfileCatalogPath(firstValue2("PARLE_PROFILES_PATH", env, dotEnv), cwd, env);
+  const directRoomId = firstValue2("PARLE_ROOM_ID", env, dotEnv);
+  return {
+    catalogPath: resolveProfileCatalogPath(firstValue2("PARLE_PROFILES_PATH", env, dotEnv), cwd, env),
+    ...directRoomId ? { directRoomId: validateUUID(directRoomId, "PARLE_ROOM_ID") } : {}
+  };
 }
 function resolveAccountConfig(cwd, env) {
   const config2 = resolveAccountBaseConfig(cwd, env);
@@ -33075,13 +33094,21 @@ var ParleAccountClient = class {
     for (let pageNumber = 0; pageNumber < MAX_ACCOUNT_ROOM_PAGES; pageNumber += 1) {
       const path = after === null ? "/v/rooms" : `/v/rooms?after=${encodeURIComponent(after)}`;
       const page = parseAccountRoomPage(await this.request(config2, path, { signal }));
-      for (const row of page.rooms) {
+      for (const [rowIndex, row] of page.rooms.entries()) {
         if (roomIds.has(row.roomId))
           throw new RoomInventoryResponseError("account room response repeated a room across pages.");
         roomIds.add(row.roomId);
         rows.push(row);
         if (rows.length >= MAX_ACCOUNT_ROOM_ROWS) {
-          return page.next === null && rows.length === MAX_ACCOUNT_ROOM_ROWS ? { state: "complete", rows } : { state: "truncated", rows: rows.slice(0, MAX_ACCOUNT_ROOM_ROWS), limit: MAX_ACCOUNT_ROOM_ROWS };
+          const finalReturnedRow = page.next === null && rowIndex === page.rooms.length - 1;
+          return finalReturnedRow && rows.length === MAX_ACCOUNT_ROOM_ROWS ? { state: "complete", rows } : {
+            state: "truncated",
+            rows: rows.slice(0, MAX_ACCOUNT_ROOM_ROWS),
+            cause: "row_limit",
+            limit: MAX_ACCOUNT_ROOM_ROWS,
+            pagesFetched: pageNumber + 1,
+            rowsReturned: MAX_ACCOUNT_ROOM_ROWS
+          };
         }
       }
       if (page.next === null)
@@ -33091,31 +33118,42 @@ var ParleAccountClient = class {
       cursors.add(page.next);
       after = page.next;
     }
-    return { state: "truncated", rows, limit: MAX_ACCOUNT_ROOM_ROWS };
+    return {
+      state: "truncated",
+      rows,
+      cause: "page_limit",
+      limit: MAX_ACCOUNT_ROOM_PAGES,
+      pagesFetched: MAX_ACCOUNT_ROOM_PAGES,
+      rowsReturned: rows.length
+    };
   }
   async listRooms(active, signal) {
     let configured;
     try {
-      configured = readConfiguredRoomSection(resolveInventoryCatalogPath(this.cwd, this.env));
+      const local = resolveInventoryLocalConfig(this.cwd, this.env);
+      configured = readConfiguredRoomSection(local.catalogPath, local.directRoomId);
     } catch {
       configured = { state: "error", reason: "profile_catalog_invalid" };
     }
     let account;
-    try {
-      const base = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true, skipProfileCatalog: true });
-      if (!base.sessionCookie) {
-        account = { state: "unavailable", reason: "human_session_not_configured" };
-      } else {
-        account = await this.readAccountRooms(base, signal);
+    if (configured.state === "error") {
+      account = { state: "error", reason: "account_request_failed" };
+    } else
+      try {
+        const base = resolveAccountBaseConfig(this.cwd, this.env);
+        if (!base.sessionCookie) {
+          account = { state: "unavailable", reason: "human_session_not_configured" };
+        } else {
+          account = await this.readAccountRooms(base, signal);
+        }
+      } catch (error51) {
+        if (error51 instanceof RoomInventoryResponseError)
+          account = { state: "error", reason: "account_response_invalid" };
+        else if (error51?.status === 401)
+          account = { state: "unavailable", reason: "human_session_rejected" };
+        else
+          account = { state: "error", reason: "account_request_failed" };
       }
-    } catch (error51) {
-      if (error51 instanceof RoomInventoryResponseError)
-        account = { state: "error", reason: "account_response_invalid" };
-      else if (error51?.status === 401)
-        account = { state: "unavailable", reason: "human_session_rejected" };
-      else
-        account = { state: "error", reason: "account_request_failed" };
-    }
     return roomInventoryResult(active, configured, account);
   }
   async emailRequest(config2, path, body, signal) {
@@ -33158,12 +33196,18 @@ var ParleAccountClient = class {
         throw new Error("parle_login complete requires code.");
       if (!writeCredentials)
         throw new Error("parle_login complete refuses writeCredentials=false because it would consume a one-time code without durable credential recovery.");
-      preflightProfileWrite(profileName, params.force === true, config2.catalogPath);
       const completed = await this.emailRequest(config2, "/v/auth/email/complete", { email: params.email, code: params.code }, signal);
       sessionCookie = extractSessionCookie(completed.headers);
       if (!sessionCookie)
         throw new Error("Parle email login completed but no __Host-parle_session Set-Cookie header was present. Credential persistence cannot continue safely.");
-      writeSessionCookieFile(config2.catalogPath, sessionCookie);
+      const sessionCookiePath = writeSessionCookieFile(config2.catalogPath, sessionCookie);
+      return {
+        status: "session_saved",
+        wroteSessionCookie: true,
+        sessionCookiePath,
+        secrets: "redacted; PARLE_SESSION_COOKIE was not returned in tool output",
+        next: "Call parle_login with action:'mint-from-session', an exact room selector, and an exact agent selector to mint and save one room-bound profile."
+      };
     } else if (action === "mint-from-session") {
       if (!writeCredentials)
         throw new Error("parle_login mint-from-session refuses writeCredentials=false because it would mint a plaintext token without durable credential recovery.");
@@ -33182,35 +33226,100 @@ var ParleAccountClient = class {
     const roomHandle = params.roomHandle || (params.roomId ? void 0 : config2.roomHandle);
     const agentId = params.agentId || (params.agentHandle ? void 0 : config2.agentId);
     const agentHandle = params.agentHandle || (params.agentId ? void 0 : config2.agentHandle);
+    if (roomInventory.state === "truncated" && !params.roomId) {
+      return {
+        status: "selection_required",
+        wroteSessionCookie: false,
+        rooms: publicInventory(rooms, "room_id", "room_handle"),
+        agents: publicInventory(agents, "agent_id", "agent_handle"),
+        room_inventory: {
+          state: "truncated",
+          cause: roomInventory.cause,
+          limit: roomInventory.limit,
+          pages_fetched: roomInventory.pagesFetched,
+          rows_returned: roomInventory.rowsReturned
+        },
+        next: "Account room inventory is incomplete. Call parle_login with action:'mint-from-session' and an exact roomId from the returned rows plus either agentId or agentHandle. Room-handle selection and inference are disabled on truncated inventory."
+      };
+    }
     const room = chooseInventoryItem(rooms, "room_id", "room_handle", "room", roomId, roomHandle);
     const agent = chooseInventoryItem(agents, "agent_id", "agent_handle", "agent", agentId, agentHandle);
     if (!room || !agent) {
       return {
         status: "selection_required",
-        wroteSessionCookie: writeCredentials && action === "complete",
+        wroteSessionCookie: false,
         rooms: publicInventory(rooms, "room_id", "room_handle"),
         agents: publicInventory(agents, "agent_id", "agent_handle"),
-        next: "Call parle_login with action:'mint-from-session' and either roomId or roomHandle plus either agentId or agentHandle. The session cookie has been saved if writeCredentials was enabled."
+        next: "Call parle_login with action:'mint-from-session' and either roomId or roomHandle plus either agentId or agentHandle. The previously completed human session remains saved."
       };
     }
-    const tokenBody = await this.request(authenticated, `/v/agents/${encodeURIComponent(agent.agent_id)}/tokens`, {
-      method: "POST",
-      body: { room_id: room.room_id },
-      signal
-    });
-    const token = tokenBody?.token;
-    if (!token)
-      throw new Error("Parle token mint succeeded without returning a plaintext token; local credentials were not updated with an agent token.");
     if (action === "mint-from-session")
       writeSessionCookieFile(config2.catalogPath, sessionCookie);
-    const profileWrite = writeProfile({
-      name: profileName,
-      roomId: room.room_id,
-      agentToken: token,
-      agentTokenId: tokenBody.agent_token_id,
-      apiBase: config2.apiBase || DEFAULT_API_BASE2,
-      wakeBase: config2.wakeBase
-    }, params.force === true, config2.catalogPath);
+    let tokenBody;
+    try {
+      tokenBody = await this.request(authenticated, `/v/agents/${encodeURIComponent(agent.agent_id)}/tokens`, {
+        method: "POST",
+        body: { room_id: room.room_id },
+        signal
+      });
+    } catch (error51) {
+      if (!error51?.status || error51.status >= 500) {
+        return {
+          status: "outcome_unknown",
+          profile: profileName,
+          room: { room_id: room.room_id, room_handle: room.room_handle },
+          agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
+          secrets: "redacted; no session cookie or agent token was returned",
+          next: "Token mint outcome is unknown. Do not retry. Inspect safe token metadata for the selected agent before taking another action."
+        };
+      }
+      throw error51;
+    }
+    const candidateTokenId = optionalUUID(tokenBody?.agent_token_id);
+    let token;
+    let agentTokenId;
+    try {
+      token = String(tokenBody?.token || "");
+      agentTokenId = validateUUID(String(tokenBody?.agent_token_id || ""), "agent_token_id");
+      if (!/^parle_agt_\S{16,512}$/.test(token) || validateUUID(String(tokenBody?.agent_id || ""), "token agent_id") !== agent.agent_id || validateUUID(String(tokenBody?.room_id || ""), "token room_id") !== room.room_id) {
+        throw new Error("Parle token response did not match the selected room and agent.");
+      }
+    } catch {
+      return {
+        status: "outcome_unknown",
+        profile: profileName,
+        ...candidateTokenId ? { agent_token_id: candidateTokenId } : {},
+        credential_cleanup: "not_attempted",
+        room: { room_id: room.room_id, room_handle: room.room_handle },
+        agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
+        secrets: "redacted; no session cookie or agent token was returned",
+        next: "Token mint returned an invalid success shape. No automatic cleanup was attempted. Do not retry until safe token metadata is inspected and any revoke uses the explicit confirmed canonical operation."
+      };
+    }
+    let profileWrite;
+    try {
+      profileWrite = writeProfile({
+        name: profileName,
+        roomId: room.room_id,
+        agentToken: token,
+        agentTokenId,
+        apiBase: config2.apiBase || DEFAULT_API_BASE2,
+        wakeBase: config2.wakeBase
+      }, params.force === true, config2.catalogPath);
+    } catch (error51) {
+      const publicationError = scrub(String(error51?.message || error51), [authenticated.sessionCookie, token]);
+      return {
+        status: "credential_publication_failed",
+        publication_error: publicationError,
+        profile: profileName,
+        agent_token_id: agentTokenId,
+        credential_cleanup: "not_attempted",
+        room: { room_id: room.room_id, room_handle: room.room_handle },
+        agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
+        secrets: "redacted; no session cookie or agent token was returned",
+        next: "Local profile publication failed. No automatic cleanup was attempted. Do not retry until safe token metadata is inspected and any revoke uses the explicit confirmed canonical operation."
+      };
+    }
     return {
       status: "credentials_saved",
       wroteCredentials: writeCredentials,
@@ -33221,7 +33330,7 @@ var ParleAccountClient = class {
       sessionCookiePath: sessionCookieFilePath(config2.catalogPath),
       room: { room_id: room.room_id, room_handle: room.room_handle },
       agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
-      agent_token_id: tokenBody.agent_token_id,
+      agent_token_id: agentTokenId,
       secrets: "redacted; PARLE_SESSION_COOKIE and PARLE_ROOM_AGENT_TOKEN were not returned in tool output",
       next: `Set PARLE_PROFILE=${profileName} for this project, remove any direct room-binding configuration, restart the host, and run parle_status.`
     };
@@ -33656,19 +33765,6 @@ var ParleAccountClient = class {
       throw error51;
     }
     const candidateTokenId = optionalUUID(tokenResponse.agent_token_id);
-    const revokeMintedToken = async () => {
-      if (!candidateTokenId)
-        return false;
-      try {
-        const revoked = await this.fetchImpl(new URL(`/v/agents/${encodeURIComponent(selected.agentId)}/tokens/${encodeURIComponent(candidateTokenId)}`, config2.apiBase), {
-          method: "DELETE",
-          headers: { Accept: "application/json", "Parle-Version": config2.version, Cookie: config2.sessionCookie }
-        });
-        return revoked.ok;
-      } catch {
-        return false;
-      }
-    };
     let agentTokenId;
     let agentToken;
     try {
@@ -33679,9 +33775,24 @@ var ParleAccountClient = class {
       }
       publishNewProfile(sink.writePath, sink.original, { name: profileName, roomId: invitation.roomId, agentToken, agentTokenId, apiBase: config2.apiBase });
     } catch (error51) {
-      const cleaned = await revokeMintedToken();
       const safeMessage = scrub(String(error51?.message || error51), [config2.sessionCookie, String(tokenResponse?.token || "")]);
-      throw new Error(`${safeMessage} Credential cleanup ${cleaned ? "succeeded" : "could not be confirmed"}; inspect safe token metadata before retrying.`);
+      return {
+        action: "complete",
+        inviteId: invitation.inviteId,
+        roomId: invitation.roomId,
+        principal: "accepted",
+        agent: agentState,
+        selectedAgent: selected,
+        seat: "active",
+        seatId: validateUUID(String(seat.seat_id || ""), "seat_id"),
+        credential: "publication_failed",
+        connection: "host_restart_required",
+        profile: profileName,
+        ...candidateTokenId ? { agent_token_id: candidateTokenId } : {},
+        credential_cleanup: "not_attempted",
+        publication_error: safeMessage,
+        next: "Credential publication failed. No automatic cleanup was attempted. Do not retry until safe token metadata is inspected and any revoke uses the explicit confirmed canonical operation."
+      };
     }
     return {
       action: "complete",
@@ -36613,7 +36724,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.3";
+var MCP_CLIENT_VERSION = "0.7.4";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -36779,7 +36890,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   }));
   server.registerTool("parle_login", {
     title: "Parle Login",
-    description: "Request or complete an email-code login, then save the human session cookie and a room-bound agent profile beside the resolved profile catalog. Complete and mint-from-session require confirmMutation=true plus a reason, always persist credentials, and never return a session cookie or token.",
+    description: "Request or complete an email-code login, then separately mint a room-bound agent profile from the saved human session. Complete persists only the human session cookie. mint-from-session performs the non-idempotent token mint and profile publication. Both require confirmMutation=true plus a reason, always persist their credential, and never return a session cookie or token.",
     inputSchema: {
       action: external_exports.enum(["start", "complete", "mint-from-session"]).optional(),
       email: external_exports.string().optional(),

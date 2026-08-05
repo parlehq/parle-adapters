@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.4 (2026-08-05)
+
+- Refresh the bundled MCP runtime with hardened, truthful room inventory and login outcome handling.
+
 ## 0.8.3 (2026-08-04)
 
 - Refresh the bundled MCP runtime with the read-only `parle_rooms` inventory tool and non-exhaustive runtime-room guidance (#685).

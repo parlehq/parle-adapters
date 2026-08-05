@@ -59,12 +59,14 @@ PARLE_ROOM_AGENT_TOKEN=...
 ```
 
 For a returning account, use `parle_login` instead of raw `parle_request` calls.
-It sends the email code, persists the human session cookie to a `session` file
-beside the resolved profile catalog (`~/.parle/session` by default; one
-`PARLE_PROFILES_PATH` override relocates the whole secrets home) for later
-`mint-from-session` calls, mints a room-bound agent token, and atomically
-writes the selected profile to the resolved catalog with `0600` permissions. Because complete and mint operations
-handle plaintext credentials, they require `confirmMutation: true` plus a nonempty `reason`, and `writeCredentials: false` is rejected. `profile`
+It sends the email code and completes login by persisting only the human
+session cookie to a `session` file beside the resolved profile catalog
+(`~/.parle/session` by default; one `PARLE_PROFILES_PATH` override relocates
+the whole secrets home). A separate `mint-from-session` call with exact room
+and agent selectors mints a room-bound token and atomically writes the selected
+profile with `0600` permissions. Because both operations handle plaintext
+credentials, they require `confirmMutation: true` plus a nonempty `reason`, and
+`writeCredentials: false` is rejected. `profile`
 defaults to `default`. Labels are 1 to 64 characters, start with a letter or
 number, and contain only letters, numbers, dot, underscore, or hyphen. Replacing
 an existing section requires `force: true`; the result includes the prior
@@ -112,7 +114,7 @@ The extension registers these Pi tools:
 - `parle_status` - show redacted config provenance and runtime state.
 - `parle_switch_profile` - atomically switch this live Pi process to another named profile without editing `.env` or persistent configuration.
 - `parle_setup` - diagnose missing configuration.
-- `parle_login` - request and complete email login, capture the human session cookie, mint a room-bound agent token, and save a named personal profile. Complete and mint operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
+- `parle_login` - request and complete email login, persist only the human session, then separately mint and save a named room-bound profile with `mint-from-session`. Complete and mint operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
 - `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a shared room's seat plane.
 - `parle_harden_account` - perform one typed account-hardening transition without accepting a secret or path. The human separately runs `parle-hardening-secret` on a controlling TTY; it is never auto-launched.
@@ -120,6 +122,7 @@ The extension registers these Pi tools:
 - `parle_accept_room_invitation` - preview or accept the locator as its immutable authenticated target.
 - `parle_connect_own_agent` - separately preview and complete one agent connection, selecting an existing owned agent or deliberately creating an additional one before seating, credential custody, and profile publication.
 - `parle_claim_principal_invite` - preview or complete a legacy capability invitation from a private local handoff file.
+- `parle_rooms` - list ready runtime rooms, redacted local configuration, and signed-in account rooms as separate truth sources.
 - `parle_guidance` - fetch Parle guidance from `ai.parle.sh` or API docs surfaces.
 - `parle_request` - make guarded allowlisted unauthenticated or agent-token API requests. Generic human-session requests are intentionally unsupported.
 - `parle_read` - read projection rows from the current room.

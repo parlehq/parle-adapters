@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.4 (2026-08-05)
+
+- Refresh the bundled MCP runtime with hardened, truthful room inventory and login outcome handling.
+
 ## 0.9.3 (2026-08-04)
 
 - Refresh the bundled MCP runtime with `parle_rooms` and teach the Claude skill to keep active, configured, and principal account room inventory distinct and principal-private (#685).

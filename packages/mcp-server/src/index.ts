@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.3";
+export const MCP_CLIENT_VERSION = "0.7.4";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -239,7 +239,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_login", {
     title: "Parle Login",
-    description: "Request or complete an email-code login, then save the human session cookie and a room-bound agent profile beside the resolved profile catalog. Complete and mint-from-session require confirmMutation=true plus a reason, always persist credentials, and never return a session cookie or token.",
+    description: "Request or complete an email-code login, then separately mint a room-bound agent profile from the saved human session. Complete persists only the human session cookie. mint-from-session performs the non-idempotent token mint and profile publication. Both require confirmMutation=true plus a reason, always persist their credential, and never return a session cookie or token.",
     inputSchema: {
       action: z.enum(["start", "complete", "mint-from-session"]).optional(),
       email: z.string().optional(),

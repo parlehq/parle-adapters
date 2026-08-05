@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,7 +27,7 @@ function room(roomId, handle, relationship = "owner") {
   };
 }
 
-function fixture(catalog = `[default]\nroom_id = ${ROOM_A}\nagent_token = parle_agt_default\n\n[other]\nroom_id = ${ROOM_C}\nagent_token = parle_agt_other\n`) {
+function fixture(catalog = `[default]\nroom_id = ${ROOM_A}\nagent_token = parle_agt_default\napi_base = http://127.0.0.1:8787\n\n[other]\nroom_id = ${ROOM_C}\nagent_token = parle_agt_other\napi_base = http://127.0.0.1:8787\n`) {
   const home = mkdtempSync(join(tmpdir(), "parle-rooms-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-rooms-cwd-"));
   const state = join(home, ".parle");
@@ -69,14 +69,21 @@ test("composition is deterministic and compact presentation keeps source meaning
     { profile: "alpha", roomId: ROOM_A },
     { profile: "beta", roomId: ROOM_C },
   ] };
-  const account = { state: "truncated", rows: [parseAccountRoomPage({ rooms: [room(ROOM_A, "account", "future_role")], next: null }).rooms[0]], limit: 2000 };
+  const account = {
+    state: "truncated",
+    rows: [parseAccountRoomPage({ rooms: [room(ROOM_A, "account", "future_role")], next: null }).rooms[0]],
+    cause: "row_limit",
+    limit: 2000,
+    pagesFetched: 4,
+    rowsReturned: 2000,
+  };
   const merged = composeRoomInventory(active, configured, account);
   assert.deepEqual(merged.map((row) => row.roomId), [ROOM_A, ROOM_B, ROOM_C]);
   assert.deepEqual(merged[0].profiles, ["alpha"]);
   assert.deepEqual(merged[2].profiles, ["beta", "zeta"]);
   const text = formatRoomInventory(active, configured, account);
   assert.match(text, /future_role/);
-  assert.match(text, /enforced 2000-row limit/);
+  assert.match(text, /enforced 2000-row limit after 4 page/);
   assert.match(text, /active-only \(runtime, ready\)/);
   assert.match(text, /beta: .* \(unverified\)/);
 });
@@ -108,7 +115,90 @@ test("listRooms paginates account truth, redacts configured profiles, and preser
   } finally { f.cleanup(); }
 });
 
-test("profile failure stays path-free and does not erase account or active inventory", async () => {
+test("account inventory binds the human cookie to the selected profile origin", async () => {
+  const f = fixture(`[default]\nroom_id = ${ROOM_A}\nagent_token = parle_agt_default\napi_base = https://custom.parle.sh\n`);
+  const origins = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: { HOME: f.home },
+      fetch: async (url) => {
+        origins.push(new URL(url).origin);
+        return response({ rooms: [], next: null });
+      },
+    });
+    const result = await client.listRooms({ state: "unavailable", reason: "runtime_not_bootstrapped" });
+    assert.equal(result.account.state, "complete");
+    assert.deepEqual(origins, ["https://custom.parle.sh"]);
+  } finally { f.cleanup(); }
+});
+
+test("account inventory fails closed when direct and selected-profile API origins conflict", async () => {
+  const f = fixture(`[default]\nroom_id = ${ROOM_A}\nagent_token = parle_agt_default\napi_base = https://custom.parle.sh\n`);
+  let calls = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: { HOME: f.home, PARLE_API_BASE: "https://api.parle.sh" },
+      fetch: async () => { calls += 1; return response({ rooms: [], next: null }); },
+    });
+    const result = await client.listRooms({ state: "unavailable", reason: "runtime_not_bootstrapped" });
+    assert.deepEqual(result.account, { state: "error", reason: "account_request_failed" });
+    assert.equal(calls, 0);
+  } finally { f.cleanup(); }
+});
+
+test("account inventory rejects symlinked and malformed human-session files before fetch", async () => {
+  const f = fixture();
+  const sessionPath = join(f.state, "session");
+  const unrelatedPath = join(f.home, "unrelated-secret");
+  let calls = 0;
+  try {
+    unlinkSync(sessionPath);
+    writeFileSync(unrelatedPath, "unrelated_one_line_secret\n", { mode: 0o600 });
+    symlinkSync(unrelatedPath, sessionPath);
+    const symlinked = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { calls += 1; return response({ rooms: [], next: null }); } });
+    const symlinkedResult = await symlinked.listRooms({ state: "unavailable", reason: "runtime_not_bootstrapped" });
+    assert.deepEqual(symlinkedResult.account, { state: "error", reason: "account_request_failed" });
+    assert.equal(calls, 0);
+
+    unlinkSync(sessionPath);
+    writeFileSync(sessionPath, "not-a-canonical-cookie\n", { mode: 0o600 });
+    const malformed = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { calls += 1; return response({ rooms: [], next: null }); } });
+    const malformedResult = await malformed.listRooms({ state: "unavailable", reason: "runtime_not_bootstrapped" });
+    assert.deepEqual(malformedResult.account, { state: "error", reason: "account_request_failed" });
+    assert.equal(calls, 0);
+  } finally { f.cleanup(); }
+});
+
+test("active inventory includes only ready rooms and direct configuration remains visible before bootstrap", async () => {
+  const active = activeRoomSectionFromStatus({
+    runtime: { bootstrapped: true },
+    rooms: [
+      { roomId: ROOM_A, roomHandle: "ready", profile: "alpha", state: "ready" },
+      { roomId: ROOM_B, roomHandle: "failed", profile: "beta", state: "degraded" },
+    ],
+  });
+  assert.deepEqual(active.rows.map((row) => row.roomId), [ROOM_A]);
+
+  const home = mkdtempSync(join(tmpdir(), "parle-rooms-direct-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-rooms-direct-cwd-"));
+  try {
+    const client = new ParleAccountClient({
+      cwd,
+      env: { HOME: home, PARLE_ROOM_ID: ROOM_B, PARLE_SESSION_COOKIE: "__Host-parle_session=direct-cookie", PARLE_API_BASE: "http://127.0.0.1:8787", PARLE_ALLOW_INSECURE_LOCAL: "1" },
+      fetch: async () => response({ rooms: [], next: null }),
+    });
+    const result = await client.listRooms({ state: "unavailable", reason: "runtime_not_bootstrapped" });
+    assert.deepEqual(result.configured, { state: "complete", rows: [{ profile: "direct", roomId: ROOM_B }] });
+    assert.match(result.compactText, new RegExp(`direct: ${ROOM_B}`));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("profile failure stays path-free and prevents ambiguous account-origin fallback", async () => {
   const pathCanary = "catalog-path-canary";
   const f = fixture(`${pathCanary}\n`);
   const warnings = [];
@@ -120,7 +210,7 @@ test("profile failure stays path-free and does not erase account or active inven
     const active = { state: "complete", rows: [{ roomId: ROOM_C, roomHandle: null, profile: "runtime", state: "ready" }] };
     const result = await client.listRooms(active);
     assert.deepEqual(result.configured, { state: "error", reason: "profile_catalog_invalid" });
-    assert.equal(result.account.state, "complete");
+    assert.deepEqual(result.account, { state: "error", reason: "account_request_failed" });
     assert.equal(result.active.state, "complete");
     assert.equal(JSON.stringify(result).includes(pathCanary), false);
     assert.equal(JSON.stringify(warnings).includes(f.home), false);
@@ -160,8 +250,80 @@ test("account pagination stops at the documented finite ceiling", async () => {
     });
     const result = await client.listRooms({ state: "unavailable", reason: "runtime_not_bootstrapped" });
     assert.equal(calls, 10);
-    assert.deepEqual(result.account, { state: "truncated", rows: result.account.rows, limit: 2000 });
+    assert.deepEqual(result.account, {
+      state: "truncated",
+      rows: result.account.rows,
+      cause: "page_limit",
+      limit: 10,
+      pagesFetched: 10,
+      rowsReturned: 10,
+    });
     assert.equal(result.account.rows.length, 10);
+    assert.match(result.compactText, /10-page limit with 10 row/);
+  } finally { f.cleanup(); }
+});
+
+test("truncated login inventory disables handle selection and inference before mint", async () => {
+  const f = fixture();
+  let pageCalls = 0;
+  let mintCalls = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init = {}) => {
+        const parsed = new URL(url);
+        if (parsed.pathname === "/v/rooms") {
+          pageCalls += 1;
+          const suffix = String(pageCalls).padStart(12, "0");
+          return response({ rooms: [room(`019f7b46-178f-7a5a-9f7b-${suffix}`, `room-${pageCalls}`)], next: `cursor-${pageCalls}` });
+        }
+        if (parsed.pathname === "/v/agents") return response({ agents: [{ agent_id: PRINCIPAL, agent_handle: "agent-one" }] });
+        if (init.method === "POST") mintCalls += 1;
+        throw new Error(`unexpected ${init.method || "GET"} ${parsed.pathname}`);
+      },
+    });
+    const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "test truncation", profile: "new-profile", roomHandle: "room-1", agentId: PRINCIPAL });
+    assert.equal(result.status, "selection_required");
+    assert.deepEqual(result.room_inventory, { state: "truncated", cause: "page_limit", limit: 10, pages_fetched: 10, rows_returned: 10 });
+    assert.match(result.next, /exact roomId/);
+    assert.equal(pageCalls, 10);
+    assert.equal(mintCalls, 0);
+  } finally { f.cleanup(); }
+});
+
+test("row-limit overflow on the final page blocks handle-selected login before mint", async () => {
+  const f = fixture();
+  let pageCalls = 0;
+  let generated = 0;
+  let mintCalls = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init = {}) => {
+        const parsed = new URL(url);
+        if (parsed.pathname === "/v/rooms") {
+          pageCalls += 1;
+          const count = pageCalls === 10 ? 201 : 200;
+          const rooms = Array.from({ length: count }, () => {
+            generated += 1;
+            const suffix = generated.toString(16).padStart(12, "0");
+            return room(`019f7b46-178f-7a5a-9f7b-${suffix}`, generated === 2001 ? "room-1" : `room-${generated}`);
+          });
+          return response({ rooms, next: pageCalls === 10 ? null : `cursor-${pageCalls}` });
+        }
+        if (parsed.pathname === "/v/agents") return response({ agents: [{ agent_id: PRINCIPAL, agent_handle: "agent-one" }] });
+        if (init.method === "POST") mintCalls += 1;
+        throw new Error(`unexpected ${init.method || "GET"} ${parsed.pathname}`);
+      },
+    });
+    const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "test row overflow", profile: "new-profile", roomHandle: "room-1", agentId: PRINCIPAL });
+    assert.equal(result.status, "selection_required");
+    assert.deepEqual(result.room_inventory, { state: "truncated", cause: "row_limit", limit: 2000, pages_fetched: 10, rows_returned: 2000 });
+    assert.equal(pageCalls, 10);
+    assert.equal(generated, 2001);
+    assert.equal(mintCalls, 0);
   } finally { f.cleanup(); }
 });
 

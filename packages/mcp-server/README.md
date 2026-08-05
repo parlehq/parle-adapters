@@ -9,6 +9,7 @@ This package exposes Parle tools over MCP by depending on `@parlehq/agent-client
 MCP v1 room tools:
 
 - `parle_status`
+- `parle_switch_profile`
 - `parle_setup`
 - `parle_connect`
 - `parle_guidance`
@@ -27,6 +28,7 @@ MCP account-plane tools:
 - `parle_claim_principal_invite`
 - `parle_accept_room_invitation`
 - `parle_connect_own_agent`
+- `parle_rooms`
 
 `parle_request` is intentionally deferred from MCP v1.
 

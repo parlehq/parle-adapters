@@ -10,6 +10,7 @@ const jitiFactory = req("jiti");
 const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 const mod = jiti("../src/index.ts");
 const { __testing } = mod;
+const LOGIN_AGENT_ID = "019f2946-aef5-77ad-a41d-747ce0fd6a20";
 
 function installHarness(cwd) {
   __testing.resetRuntime();
@@ -745,7 +746,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.8" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.9" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1419,7 +1420,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.8");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.9");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1631,7 +1632,7 @@ test("parle_login starts email login without requiring raw request plumbing", as
   assert.match(result.details.next, /code/);
 });
 
-test("parle_login complete captures Set-Cookie, mints token, saves credentials, and redacts secrets", async () => {
+test("parle_login complete saves only the session, then mint-from-session saves a profile without exposing secrets", async () => {
   const cwd = tempProject();
   const seen = [];
   globalThis.fetch = async (url, init = {}) => {
@@ -1650,22 +1651,25 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
     }
     if (u.endsWith("/v/agents")) {
       assert.equal(init.headers.Cookie, "__Host-parle_session=parle_ses_cookie-secret");
-      return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
+      return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "pi" }] }), { status: 200 });
     }
-    if (u.endsWith("/v/agents/agent-1/tokens")) {
+    if (u.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)) {
       assert.equal(init.headers.Cookie, "__Host-parle_session=parle_ses_cookie-secret");
       assert.deepEqual(JSON.parse(init.body), { room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e" });
-      return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", agent_id: "agent-1", room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", token: "parle_agt_plain-secret" }), { status: 201 });
+      return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", agent_id: LOGIN_AGENT_ID, room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", token: "parle_agt_plain-secret-1234" }), { status: 201 });
     }
     throw new Error("unexpected " + u);
   };
   const harness = installHarness(cwd);
 
-  const result = await harness.call("parle_login", { action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
+  const completed = await harness.call("parle_login", { action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
+  assert.equal(completed.details.status, "session_saved");
+  assert.equal(existsSync(join(process.env.HOME, ".parle", "profiles")), false);
 
+  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test mint", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: LOGIN_AGENT_ID });
   assert.equal(result.details.status, "credentials_saved");
   assert.equal(JSON.stringify(result.details).includes("parle_ses_cookie-secret"), false);
-  assert.equal(JSON.stringify(result.details).includes("parle_agt_plain-secret"), false);
+  assert.equal(JSON.stringify(result.details).includes("parle_agt_plain-secret-1234"), false);
   // No project .parle/credentials file exists anymore; the session cookie
   // lives beside the resolved profile catalog.
   assert.equal(existsSync(join(cwd, ".parle", "credentials")), false);
@@ -1675,7 +1679,7 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
   const profiles = readFileSync(join(process.env.HOME, ".parle", "profiles"), "utf8");
   assert.match(profiles, /^\[default\]$/m);
   assert.match(profiles, /^room_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e$/m);
-  assert.match(profiles, /^agent_token = parle_agt_plain-secret$/m);
+  assert.match(profiles, /^agent_token = parle_agt_plain-secret-1234$/m);
   assert.match(profiles, /^agent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1f$/m);
   assert.equal(statSync(join(process.env.HOME, ".parle", "profiles")).mode & 0o777, 0o600);
   assert.equal(existsSync(join(cwd, ".gitignore")), false);
@@ -1683,7 +1687,7 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
   const status = await harness.call("parle_status");
   assert.equal(status.details.sessionCookie.value, "<redacted>");
   assert.equal(status.details.agentToken.value, "<redacted>");
-  assert.equal(seen.some((request) => request.url.endsWith("/v/agents/agent-1/tokens")), true);
+  assert.equal(seen.some((request) => request.url.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)), true);
 });
 
 test("parle_login validates labels and requires force before replacing a profile", async () => {
@@ -1697,8 +1701,8 @@ test("parle_login validates labels and requires force before replacing a profile
     called = true;
     const u = String(url);
     if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"]])), { status: 200 });
-    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
-    if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_new" }), { status: 201 });
+    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "pi" }] }), { status: 200 });
+    if (u.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", agent_id: LOGIN_AGENT_ID, room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", token: "parle_agt_new-credential-1234" }), { status: 201 });
     throw new Error("unexpected " + u + String(init.body || ""));
   };
   const harness = installHarness(cwd);
@@ -1707,7 +1711,7 @@ test("parle_login validates labels and requires force before replacing a profile
   await assert.rejects(harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "target", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" }), /force=true/);
   assert.equal(called, false);
 
-  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "target", force: true, roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1" });
+  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", profile: "target", force: true, roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: LOGIN_AGENT_ID });
   assert.equal(result.details.profile, "target");
   assert.equal(result.details.profileReplaced, true);
   assert.equal(result.details.prior_agent_token_id, "019f2946-aef5-77ad-a41d-747ce0fd6a23");
@@ -1716,7 +1720,7 @@ test("parle_login validates labels and requires force before replacing a profile
   const suffix = original.slice(original.indexOf("[tail]"));
   assert.equal(updated.slice(0, prefix.length), prefix);
   assert.equal(updated.slice(-suffix.length), suffix);
-  assert.match(updated, /\[target\]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_new\nagent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1f\n/);
+  assert.match(updated, /\[target\]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_new-credential-1234\nagent_token_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1f\n/);
 });
 
 test("parle_login refuses a symlinked profile directory before network or credential mint", async () => {
@@ -1777,7 +1781,7 @@ test("parle_login refuses a symlinked profile catalog before network or credenti
   assert.equal(readFileSync(target, "utf8"), original);
 });
 
-test("parle_login preserves session cookie when room or agent selection is ambiguous", async () => {
+test("parle_login complete preserves the session without inspecting room or agent selection", async () => {
   const cwd = tempProject();
   globalThis.fetch = async (url) => {
     const u = String(url);
@@ -1795,10 +1799,11 @@ test("parle_login preserves session cookie when room or agent selection is ambig
 
   const result = await harness.call("parle_login", { action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
 
-  assert.equal(result.details.status, "selection_required");
+  assert.equal(result.details.status, "session_saved");
   assert.equal(result.details.wroteSessionCookie, true);
-  assert.equal(result.details.rooms.length, 2);
-  assert.equal(result.details.agents.length, 2);
+  assert.equal(result.details.rooms, undefined);
+  assert.equal(result.details.agents, undefined);
+  assert.match(result.details.next, /mint-from-session/);
   assert.equal(existsSync(join(cwd, ".parle", "credentials")), false);
   assert.equal(readFileSync(join(process.env.HOME, ".parle", "session"), "utf8"), "__Host-parle_session=parle_ses_saved\n");
 });
@@ -1825,20 +1830,20 @@ test("parle_login routes persistence through PARLE_PROFILES_PATH", async () => {
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
     if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"]])), { status: 200 });
-    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "a" }] }), { status: 200 });
-    if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_override-secret" }), { status: 201 });
+    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "a" }] }), { status: 200 });
+    if (u.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", agent_id: LOGIN_AGENT_ID, room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", token: "parle_agt_override-secret-1234" }), { status: 201 });
     throw new Error("unexpected " + u);
   };
   const harness = installHarness(cwd);
 
-  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: "agent-1", profile: "team" });
+  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: LOGIN_AGENT_ID, profile: "team" });
 
   assert.equal(result.details.status, "credentials_saved");
   assert.equal(result.details.profilePath, join(cwd, "secrets", "parle-profiles"));
   assert.equal(result.details.sessionCookiePath, join(cwd, "secrets", "session"));
   const profiles = readFileSync(join(cwd, "secrets", "parle-profiles"), "utf8");
   assert.match(profiles, /^\[team\]$/m);
-  assert.match(profiles, /^agent_token = parle_agt_override-secret$/m);
+  assert.match(profiles, /^agent_token = parle_agt_override-secret-1234$/m);
   assert.equal(readFileSync(join(cwd, "secrets", "session"), "utf8"), "__Host-parle_session=parle_ses_existing\n");
   assert.equal(existsSync(join(process.env.HOME, ".parle", "profiles")), false);
 });

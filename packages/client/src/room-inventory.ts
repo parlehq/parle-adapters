@@ -11,7 +11,14 @@ export type RoomInventoryReason =
 
 export type RoomInventorySection<Row> =
   | { state: "complete"; rows: Row[] }
-  | { state: "truncated"; rows: Row[]; limit: number }
+  | {
+      state: "truncated";
+      rows: Row[];
+      cause: "row_limit" | "page_limit";
+      limit: number;
+      pagesFetched: number;
+      rowsReturned: number;
+    }
   | { state: "unavailable"; reason: RoomInventoryReason }
   | { state: "error"; reason: RoomInventoryReason };
 
@@ -128,9 +135,13 @@ export function parseAccountRoomPage(raw: unknown): AccountRoomPage {
   return { rooms, next };
 }
 
-export function readConfiguredRoomSection(catalogPath: string): RoomInventorySection<ConfiguredRoomInventoryRow> {
+export function readConfiguredRoomSection(catalogPath: string, directRoomId?: string): RoomInventorySection<ConfiguredRoomInventoryRow> {
   try {
-    if (!profileCatalogExists(catalogPath)) return { state: "unavailable", reason: "profile_catalog_missing" };
+    if (!profileCatalogExists(catalogPath)) {
+      return directRoomId
+        ? { state: "complete", rows: [{ profile: "direct", roomId: directRoomId }] }
+        : { state: "unavailable", reason: "profile_catalog_missing" };
+    }
     const profiles = readProfiles(catalogPath, { modeWarning: () => undefined });
     return {
       state: "complete",
@@ -149,12 +160,12 @@ export function activeRoomSectionFromStatus(status: unknown): RoomInventorySecti
   }
   const source = Array.isArray(view.rooms) ? view.rooms : Array.isArray(runtime.rooms) ? runtime.rooms : [];
   const rows = source.flatMap((raw: any) => {
-    if (!raw || typeof raw !== "object" || typeof raw.roomId !== "string" || !raw.roomId) return [];
+    if (!raw || typeof raw !== "object" || typeof raw.roomId !== "string" || !raw.roomId || raw.state !== "ready") return [];
     return [{
       roomId: raw.roomId,
       roomHandle: typeof raw.roomHandle === "string" ? raw.roomHandle : null,
       profile: typeof raw.profile === "string" && raw.profile ? raw.profile : "direct",
-      state: typeof raw.state === "string" && raw.state ? raw.state : "ready",
+      state: "ready",
     }];
   });
   return { state: "complete", rows };
@@ -233,7 +244,11 @@ export function formatRoomInventory(
       lines.push(`| ${cell(row.roomHandle || "Not set")} | ${row.roomId} | ${row.private ? "Private" : "Shared"} | ${cell(row.owner.principalHandle ? `@${row.owner.principalHandle}` : row.owner.principalId)} | ${cell(accountRelationship(row.relationship))} | ${row.createdAt} |`);
     }
     if (accountRows.length === 0) lines.push("| _None_ | | | | | |");
-    if (account.state === "truncated") lines.push(`Account inventory truncated at the enforced ${account.limit}-row limit.`);
+    if (account.state === "truncated") {
+      lines.push(account.cause === "row_limit"
+        ? `Account inventory truncated at the enforced ${account.limit}-row limit after ${account.pagesFetched} page(s).`
+        : `Account inventory truncated after the enforced ${account.limit}-page limit with ${account.rowsReturned} row(s) returned.`);
+    }
   } else {
     lines.push(`${account.state}: ${account.reason}`);
   }

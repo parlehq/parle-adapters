@@ -68,7 +68,7 @@ function accountRoomPage(roomId = ROOM_ID, roomHandle = "room-one") {
   };
 }
 
-test("login persists the shared session and profile path without returning secrets", async () => {
+test("login complete persists only the shared session without returning secrets or minting", async () => {
   const f = loginFixture();
   const calls = [];
   try {
@@ -81,20 +81,18 @@ test("login persists the shared session and profile path without returning secre
         if (path === "/v/auth/email/complete") return new Response(JSON.stringify({ status: "logged_in" }), { status: 201, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_shared-cookie; Path=/; HttpOnly; Secure" } });
         if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
-        if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+        if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
         throw new Error(`unexpected ${path}`);
       },
     });
     const result = await client.login({ action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" });
-    assert.equal(result.status, "credentials_saved");
+    assert.equal(result.status, "session_saved");
     assert.equal(JSON.stringify(result).includes("shared-cookie"), false);
     assert.equal(JSON.stringify(result).includes("parle_agt_"), false);
     assert.equal(readFileSync(join(f.home, ".parle", "session"), "utf8"), "__Host-parle_session=parle_ses_shared-cookie\n");
-    const profiles = readFileSync(join(f.home, ".parle", "profiles"), "utf8");
-    assert.match(profiles, /^\[default\]$/m);
-    assert.match(profiles, new RegExp(`room_id = ${ROOM_ID}`));
-    assert.deepEqual(calls.map((call) => call.path), ["/v/auth/email/complete", "/v/rooms", "/v/agents", `/v/agents/${AGENT_ID}/tokens`]);
-    assert.equal(calls.slice(1).every((call) => call.cookie === "__Host-parle_session=parle_ses_shared-cookie"), true);
+    assert.equal(existsSync(join(f.home, ".parle", "profiles")), false);
+    assert.deepEqual(calls.map((call) => call.path), ["/v/auth/email/complete"]);
+    assert.match(result.next, /mint-from-session/);
   } finally { f.cleanup(); }
 });
 
@@ -125,7 +123,7 @@ test("login can bootstrap a missing selected profile while other account operati
         const path = new URL(url).pathname;
         if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
-        if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+        if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
         throw new Error(`unexpected ${path}`);
       },
     });
@@ -142,32 +140,66 @@ test("login can bootstrap a missing selected profile while other account operati
   } finally { f.cleanup(); }
 });
 
-test("login profile publication refuses a concurrent catalog writer without deleting its lock", async () => {
+test("login profile publication reports a known token without automatic cleanup or deleting another writer's lock", async () => {
   const f = loginFixture();
-  const lockPath = join(f.home, ".parle", "profiles.lock");
+  const state = join(f.home, ".parle");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  writeFileSync(join(state, "session"), "__Host-parle_session=parle_ses_shared-cookie\n", { mode: 0o600 });
+  const lockPath = join(state, "profiles.lock");
+  let deleteCalls = 0;
   try {
     const client = new ParleAccountClient({
       cwd: f.cwd,
       env: f.env,
-      fetch: async (url) => {
+      fetch: async (url, init = {}) => {
         const path = new URL(url).pathname;
-        if (path === "/v/auth/email/complete") return new Response(JSON.stringify({ status: "logged_in" }), { status: 201, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_shared-cookie; Path=/; HttpOnly; Secure" } });
+        const method = init.method || "GET";
+        if (method === "DELETE") deleteCalls += 1;
         if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
-        if (path === `/v/agents/${AGENT_ID}/tokens`) {
+        if (path === `/v/agents/${AGENT_ID}/tokens` && method === "POST") {
           writeFileSync(lockPath, "other-writer\n", { mode: 0o600, flag: "wx" });
-          return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+          return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
         }
-        throw new Error(`unexpected ${path}`);
+        throw new Error(`unexpected ${method} ${path}`);
       },
     });
 
-    await assert.rejects(
-      client.login({ action: "complete", confirmMutation: true, reason: "test", email: "user@example.test", code: "123456" }),
-      /profile catalog is locked.*Retry after the active writer finishes.*stale lock manually/,
-    );
+    const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "test", profile: "default", roomId: ROOM_ID, agentId: AGENT_ID });
+    assert.equal(result.status, "credential_publication_failed");
+    assert.equal(result.agent_token_id, AGENT_TOKEN_ID);
+    assert.equal(result.credential_cleanup, "not_attempted");
+    assert.equal(deleteCalls, 0);
+    assert.match(result.publication_error, /Parle profile catalog is locked at .*profiles\.lock\. Retry after the active writer finishes\. If no writer is active, inspect and remove the stale lock manually\./);
+    assert.equal(JSON.stringify(result).includes("parle_agt_"), false);
     assert.equal(readFileSync(lockPath, "utf8"), "other-writer\n");
     assert.equal(existsSync(join(f.home, ".parle", "profiles")), false);
+  } finally { f.cleanup(); }
+});
+
+test("login treats token-mint transport loss as outcome unknown and never retries", async () => {
+  const f = fixture();
+  let mintCalls = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init = {}) => {
+        const path = new URL(url).pathname;
+        if (path === "/v/rooms") return response(accountRoomPage());
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/agents/${AGENT_ID}/tokens` && init.method === "POST") {
+          mintCalls += 1;
+          throw new TypeError("connection reset after request dispatch");
+        }
+        throw new Error(`unexpected ${init.method || "GET"} ${path}`);
+      },
+    });
+    const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "test unknown mint", profile: "new-profile", roomId: ROOM_ID, agentId: AGENT_ID });
+    assert.equal(result.status, "outcome_unknown");
+    assert.match(result.next, /Do not retry/);
+    assert.equal(JSON.stringify(result).includes("human-cookie"), false);
+    assert.equal(mintCalls, 1);
   } finally { f.cleanup(); }
 });
 
@@ -546,10 +578,10 @@ test("connect treats token-mint 5xx as outcome unknown and never retries", async
   } finally { f.cleanup(); }
 });
 
-test("connect revokes a known minted token when atomic profile publication fails", async () => {
+test("connect reports a known minted token without automatic cleanup when atomic profile publication fails", async () => {
   const f = fixture();
   const catalog = join(f.home, ".parle", "profiles");
-  let revoked = false;
+  let deleteCalls = 0;
   const token = `parle_agt_${"q".repeat(43)}`;
   try {
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async (url, init) => {
@@ -563,19 +595,16 @@ test("connect revokes a known minted token when atomic profile publication fails
         writeFileSync(catalog, readFileSync(catalog, "utf8") + "\n[raced]\nroom_id = 019f7c00-0000-7000-8000-000000000099\nagent_token = parle_agt_raced\n", { mode: 0o600 });
         return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token }, 201);
       }
-      if (path === `/v/agents/${AGENT_ID}/tokens/${AGENT_TOKEN_ID}` && method === "DELETE") {
-        revoked = true;
-        return new Response(null, { status: 204 });
-      }
+      if (method === "DELETE") deleteCalls += 1;
       throw new Error(`unexpected ${method} ${path}`);
     } });
-    await assert.rejects(client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" }), (error) => {
-      assert.match(error.message, /profile catalog changed after preflight/);
-      assert.match(error.message, /Credential cleanup succeeded/);
-      assert.equal(error.message.includes(token), false);
-      return true;
-    });
-    assert.equal(revoked, true);
+    const result = await client.connectOwnAgent({ action: "complete", confirmMutation: true, reason: "test", invitation: INVITE_ID, agentId: AGENT_ID, confirmMutation: true, reason: "connect" });
+    assert.equal(result.credential, "publication_failed");
+    assert.equal(result.agent_token_id, AGENT_TOKEN_ID);
+    assert.equal(result.credential_cleanup, "not_attempted");
+    assert.match(result.publication_error, /profile catalog changed after preflight/);
+    assert.equal(JSON.stringify(result).includes(token), false);
+    assert.equal(deleteCalls, 0);
     assert.equal(readFileSync(catalog, "utf8").includes(token), false);
   } finally { f.cleanup(); }
 });
