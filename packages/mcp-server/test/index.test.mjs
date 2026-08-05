@@ -24,6 +24,7 @@ const expectedTools = [
   "parle_login",
   "parle_mint_principal_invite",
   "parle_read",
+  "parle_rooms",
   "parle_send",
   "parle_setup",
   "parle_status",
@@ -386,6 +387,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", roomHandle: "target-room" }; },
   };
   const fakeAccount = {
+    listRooms: async (active) => { calls.push(["rooms", active]); return { active, configured: { state: "complete", rows: [] }, account: { state: "complete", rows: [] }, rooms: [], compactText: "Account rooms" }; },
     login: async (params) => { calls.push(["login", params]); return { status: "code_requested" }; },
     createRoom: async (params) => { calls.push(["create-room", params]); return { room_id: "room-1" }; },
     addOwnAgentSeat: async (params) => { calls.push(["add-own-agent-seat", params]); return { seat_id: "seat-1" }; },
@@ -405,6 +407,9 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.match(connect.content[0].text, /\"agentSessionId\": \"as-1\"/);
     const read = await client.callTool({ name: "parle_read", arguments: { waitSeconds: 1 } });
     assert.equal(read.structuredContent.cursorAfter, 3);
+    const rooms = await client.callTool({ name: "parle_rooms", arguments: {} });
+    assert.equal(rooms.structuredContent.compactText, "Account rooms");
+    assert.deepEqual(rooms.structuredContent.active, { state: "unavailable", reason: "runtime_not_bootstrapped" });
     const tools = await client.listTools();
     const sendTool = tools.tools.find((tool) => tool.name === "parle_send");
     assert.match(sendTool.description, /Successful sends return server-authored routing and attention/);
@@ -435,6 +440,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.deepEqual(calls, [
       ["connect"],
       ["read", { waitSeconds: 1 }],
+      ["rooms", { state: "unavailable", reason: "runtime_not_bootstrapped" }],
       ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
       ["switch", "target"],
       ["login", { action: "start", email: "user@example.test" }],
@@ -665,7 +671,7 @@ test("parle_status works against minimal fake clients without lifecycle methods"
   }
 });
 
-test("stdio server lists the seventeen tools and setup works without secrets", async () => {
+test("stdio server lists the eighteen tools and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],

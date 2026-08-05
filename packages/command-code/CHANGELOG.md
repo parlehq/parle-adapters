@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3 (2026-08-04)
+
+- Refresh the bundled MCP runtime with `parle_rooms` and teach the Command Code skill to keep room inventory sources distinct and principal-private (#685).
+
 ## 0.6.2 (2026-08-04)
 
 - Refresh the bundled MCP runtime with canonical routing and attention passthrough plus direct-only responsive guidance (#50).

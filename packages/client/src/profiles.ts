@@ -69,7 +69,7 @@ function inspectCatalog(path: string): Stats | undefined {
   }
 }
 
-function assertSafeCatalog(path: string, link: Stats): void {
+function assertSafeCatalog(path: string, link: Stats, modeWarning: (message: string) => void = console.warn): void {
   let stat: Stats;
   try {
     stat = link.isSymbolicLink() ? statSync(path) : link;
@@ -78,7 +78,7 @@ function assertSafeCatalog(path: string, link: Stats): void {
   }
   if (!stat.isFile()) throw new ProfileConfigError(`Parle profile catalog must be a regular file: ${path}`);
   if (process.platform !== "win32" && stat.uid !== process.getuid?.()) throw new ProfileConfigError(`Parle profile catalog must be owned by the current user: ${path}`);
-  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) console.warn(`Parle warning: profile catalog should be mode 0600: ${path}`);
+  if (process.platform !== "win32" && (stat.mode & 0o077) !== 0) modeWarning(`Parle warning: profile catalog should be mode 0600: ${path}`);
 }
 
 function readCatalog(path: string): string {
@@ -128,6 +128,13 @@ export function profileCatalogExists(path: string = PROFILE_CATALOG_PATH): boole
   return inspectCatalog(path) !== undefined;
 }
 
+export function readProfiles(path: string = PROFILE_CATALOG_PATH, options: { modeWarning?: (message: string) => void } = {}): Map<string, CredentialProfile> {
+  const link = inspectCatalog(path);
+  if (!link) throw new ProfileConfigError(`Parle profile catalog is missing: ${path}.`);
+  assertSafeCatalog(path, link, options.modeWarning);
+  return parseProfiles(readCatalog(path), path);
+}
+
 export function profileCatalogHasProfile(name: string, path: string = PROFILE_CATALOG_PATH): boolean {
   const link = inspectCatalog(path);
   if (!link) return false;
@@ -136,12 +143,15 @@ export function profileCatalogHasProfile(name: string, path: string = PROFILE_CA
 }
 
 export function loadProfile(name: string, path: string = PROFILE_CATALOG_PATH): CredentialProfile {
-  const link = inspectCatalog(path);
-  if (!link) {
-    throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create one with [${name}], room_id, and agent_token.`);
+  let profiles: Map<string, CredentialProfile>;
+  try {
+    profiles = readProfiles(path);
+  } catch (error) {
+    if (error instanceof ProfileConfigError && error.message.startsWith("Parle profile catalog is missing:")) {
+      throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create one with [${name}], room_id, and agent_token.`);
+    }
+    throw error;
   }
-  assertSafeCatalog(path, link);
-  const profiles = parseProfiles(readCatalog(path), path);
   const profile = profiles.get(name);
   if (profile) return profile;
   const available = [...profiles.keys()].join(", ") || "none";

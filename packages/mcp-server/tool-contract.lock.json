@@ -209,6 +209,17 @@
     ],
     "required": []
   },
+  "parle_rooms": {
+    "title": "List Parle Rooms",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": [],
+    "required": []
+  },
   "parle_send": {
     "title": "Parle Send",
     "annotations": {

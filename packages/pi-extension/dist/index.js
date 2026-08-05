@@ -296,7 +296,7 @@ function inspectCatalog(path) {
     throw catalogAccessError(path, "inspected", error);
   }
 }
-function assertSafeCatalog(path, link) {
+function assertSafeCatalog(path, link, modeWarning = console.warn) {
   let stat;
   try {
     stat = link.isSymbolicLink() ? statSync(path) : link;
@@ -308,7 +308,7 @@ function assertSafeCatalog(path, link) {
   if (process.platform !== "win32" && stat.uid !== process.getuid?.())
     throw new ProfileConfigError(`Parle profile catalog must be owned by the current user: ${path}`);
   if (process.platform !== "win32" && (stat.mode & 63) !== 0)
-    console.warn(`Parle warning: profile catalog should be mode 0600: ${path}`);
+    modeWarning(`Parle warning: profile catalog should be mode 0600: ${path}`);
 }
 function readCatalog(path) {
   try {
@@ -362,6 +362,16 @@ function parseProfiles(text, path = PROFILE_CATALOG_PATH) {
   }
   return profiles;
 }
+function profileCatalogExists(path = PROFILE_CATALOG_PATH) {
+  return inspectCatalog(path) !== void 0;
+}
+function readProfiles(path = PROFILE_CATALOG_PATH, options = {}) {
+  const link = inspectCatalog(path);
+  if (!link)
+    throw new ProfileConfigError(`Parle profile catalog is missing: ${path}.`);
+  assertSafeCatalog(path, link, options.modeWarning);
+  return parseProfiles(readCatalog(path), path);
+}
 function profileCatalogHasProfile(name, path = PROFILE_CATALOG_PATH) {
   const link = inspectCatalog(path);
   if (!link)
@@ -370,12 +380,15 @@ function profileCatalogHasProfile(name, path = PROFILE_CATALOG_PATH) {
   return parseProfiles(readCatalog(path), path).has(name);
 }
 function loadProfile(name, path = PROFILE_CATALOG_PATH) {
-  const link = inspectCatalog(path);
-  if (!link) {
-    throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create one with [${name}], room_id, and agent_token.`);
+  let profiles;
+  try {
+    profiles = readProfiles(path);
+  } catch (error) {
+    if (error instanceof ProfileConfigError && error.message.startsWith("Parle profile catalog is missing:")) {
+      throw new ProfileConfigError(`Parle profile catalog is missing: ${path}. Create one with [${name}], room_id, and agent_token.`);
+    }
+    throw error;
   }
-  assertSafeCatalog(path, link);
-  const profiles = parseProfiles(readCatalog(path), path);
   const profile = profiles.get(name);
   if (profile)
     return profile;
@@ -1373,11 +1386,213 @@ var ParleHardeningClient = class {
   }
 };
 
+// ../client/dist/room-inventory.js
+var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var RoomInventoryResponseError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RoomInventoryResponseError";
+  }
+};
+function record(raw, label) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    throw new RoomInventoryResponseError(`${label} must be an object.`);
+  return raw;
+}
+function uuid(raw, label) {
+  if (typeof raw !== "string" || !UUID_RE2.test(raw) || raw === "00000000-0000-0000-0000-000000000000") {
+    throw new RoomInventoryResponseError(`${label} must be a non-zero UUID.`);
+  }
+  return raw.toLowerCase();
+}
+function nullableString(raw, label) {
+  if (raw === null)
+    return null;
+  if (typeof raw !== "string")
+    throw new RoomInventoryResponseError(`${label} must be a string or null.`);
+  return raw;
+}
+function nonEmptyWireString(raw, label, max = 4096) {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > max || /[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new RoomInventoryResponseError(`${label} must be a bounded non-empty string without control characters.`);
+  }
+  return raw;
+}
+function timestamp(raw, label) {
+  const value = nonEmptyWireString(raw, label, 128);
+  if (Number.isNaN(Date.parse(value)))
+    throw new RoomInventoryResponseError(`${label} must be an ISO timestamp.`);
+  return value;
+}
+function parseAccountRoomPage(raw) {
+  const page = record(raw, "account room response");
+  if (!Array.isArray(page.rooms))
+    throw new RoomInventoryResponseError("account room response rooms must be an array.");
+  if (page.next !== null && typeof page.next !== "string")
+    throw new RoomInventoryResponseError("account room response next must be a string or null.");
+  const next = page.next === null ? null : nonEmptyWireString(page.next, "account room response next", 8192);
+  const rooms = page.rooms.map((item, index) => {
+    const row = record(item, `account room row ${index}`);
+    const owner = record(row.owner, `account room row ${index} owner`);
+    if (typeof row.private !== "boolean")
+      throw new RoomInventoryResponseError(`account room row ${index} private must be boolean.`);
+    return {
+      roomId: uuid(row.room_id, `account room row ${index} room_id`),
+      roomHandle: nullableString(row.room_handle, `account room row ${index} room_handle`),
+      private: row.private,
+      createdAt: timestamp(row.created_at, `account room row ${index} created_at`),
+      relationship: nonEmptyWireString(row.relationship, `account room row ${index} relationship`, 128),
+      owner: {
+        principalId: uuid(owner.principal_id, `account room row ${index} owner principal_id`),
+        principalHandle: nullableString(owner.principal_handle, `account room row ${index} owner principal_handle`)
+      }
+    };
+  });
+  return { rooms, next };
+}
+function readConfiguredRoomSection(catalogPath) {
+  try {
+    if (!profileCatalogExists(catalogPath))
+      return { state: "unavailable", reason: "profile_catalog_missing" };
+    const profiles = readProfiles(catalogPath, { modeWarning: () => void 0 });
+    return {
+      state: "complete",
+      rows: [...profiles.values()].map((profile) => ({ profile: profile.name, roomId: profile.roomId }))
+    };
+  } catch {
+    return { state: "error", reason: "profile_catalog_invalid" };
+  }
+}
+function activeRoomSectionFromStatus(status) {
+  const view = status && typeof status === "object" ? status : {};
+  const runtime2 = view.runtime && typeof view.runtime === "object" ? view.runtime : {};
+  if (runtime2.bootstrapped !== true && runtime2.bootstrapState !== "ready") {
+    return { state: "unavailable", reason: "runtime_not_bootstrapped" };
+  }
+  const source = Array.isArray(view.rooms) ? view.rooms : Array.isArray(runtime2.rooms) ? runtime2.rooms : [];
+  const rows = source.flatMap((raw) => {
+    if (!raw || typeof raw !== "object" || typeof raw.roomId !== "string" || !raw.roomId)
+      return [];
+    return [{
+      roomId: raw.roomId,
+      roomHandle: typeof raw.roomHandle === "string" ? raw.roomHandle : null,
+      profile: typeof raw.profile === "string" && raw.profile ? raw.profile : "direct",
+      state: typeof raw.state === "string" && raw.state ? raw.state : "ready"
+    }];
+  });
+  return { state: "complete", rows };
+}
+function rowsOf(section) {
+  return section.state === "complete" || section.state === "truncated" ? section.rows : [];
+}
+function composeRoomInventory(active, configured, account) {
+  const activeRows = rowsOf(active);
+  const configuredRows = rowsOf(configured);
+  const accountRows = rowsOf(account);
+  const activeByRoom = new Map(activeRows.map((row) => [row.roomId, row]));
+  const accountByRoom = new Map(accountRows.map((row) => [row.roomId, row]));
+  const profilesByRoom = /* @__PURE__ */ new Map();
+  for (const row of configuredRows) {
+    const profiles = profilesByRoom.get(row.roomId) || [];
+    profiles.push(row.profile);
+    profilesByRoom.set(row.roomId, profiles);
+  }
+  for (const profiles of profilesByRoom.values())
+    profiles.sort((left, right) => left.localeCompare(right));
+  const orderedIds = [];
+  const seen = /* @__PURE__ */ new Set();
+  const append = (roomId) => {
+    if (!seen.has(roomId)) {
+      seen.add(roomId);
+      orderedIds.push(roomId);
+    }
+  };
+  for (const row of accountRows)
+    append(row.roomId);
+  for (const row of activeRows)
+    if (!accountByRoom.has(row.roomId))
+      append(row.roomId);
+  for (const row of [...configuredRows].sort((left, right) => left.profile.localeCompare(right.profile) || left.roomId.localeCompare(right.roomId))) {
+    if (!accountByRoom.has(row.roomId) && !activeByRoom.has(row.roomId))
+      append(row.roomId);
+  }
+  return orderedIds.map((roomId) => {
+    const activeRow = activeByRoom.get(roomId);
+    const accountRow = accountByRoom.get(roomId);
+    const profiles = profilesByRoom.get(roomId) || [];
+    return {
+      roomId,
+      sources: { active: Boolean(activeRow), configured: profiles.length > 0, account: Boolean(accountRow) },
+      ...activeRow ? { active: activeRow } : {},
+      profiles,
+      ...accountRow ? { account: accountRow } : {}
+    };
+  });
+}
+function cell(raw) {
+  return raw.replace(/\|/g, "\\|");
+}
+function accountRelationship(raw) {
+  if (raw === "owner")
+    return "Owner";
+  if (raw === "member")
+    return "Joined";
+  return raw;
+}
+function formatRoomInventory(active, configured, account) {
+  const lines = ["Account rooms"];
+  const accountRows = rowsOf(account);
+  if (account.state === "complete" || account.state === "truncated") {
+    lines.push("| Handle | Room ID | Type | Owner | Relationship | Created |", "| --- | --- | --- | --- | --- | --- |");
+    for (const row of accountRows) {
+      lines.push(`| ${cell(row.roomHandle || "Not set")} | ${row.roomId} | ${row.private ? "Private" : "Shared"} | ${cell(row.owner.principalHandle ? `@${row.owner.principalHandle}` : row.owner.principalId)} | ${cell(accountRelationship(row.relationship))} | ${row.createdAt} |`);
+    }
+    if (accountRows.length === 0)
+      lines.push("| _None_ | | | | | |");
+    if (account.state === "truncated")
+      lines.push(`Account inventory truncated at the enforced ${account.limit}-row limit.`);
+  } else {
+    lines.push(`${account.state}: ${account.reason}`);
+  }
+  lines.push("", "Active now");
+  if (active.state === "complete" || active.state === "truncated") {
+    const rows = rowsOf(active);
+    if (rows.length === 0)
+      lines.push("None.");
+    else
+      for (const row of rows)
+        lines.push(`- ${row.roomHandle || row.roomId} (${row.profile}, ${row.state})`);
+  } else
+    lines.push(`${active.state}: ${active.reason}`);
+  lines.push("", "Configured locally");
+  if (configured.state === "complete" || configured.state === "truncated") {
+    const rows = rowsOf(configured);
+    if (rows.length === 0)
+      lines.push("None.");
+    else
+      for (const row of rows)
+        lines.push(`- ${row.profile}: ${row.roomId} (unverified)`);
+  } else
+    lines.push(`${configured.state}: ${configured.reason}`);
+  return lines.join("\n");
+}
+function roomInventoryResult(active, configured, account) {
+  return {
+    active,
+    configured,
+    account,
+    rooms: composeRoomInventory(active, configured, account),
+    compactText: formatRoomInventory(active, configured, account)
+  };
+}
+
 // ../client/dist/account.js
 var DEFAULT_API_BASE2 = "https://api.parle.sh";
 var MAX_RESPONSE_BYTES2 = 64 * 1024;
 var MAX_HANDOFF_BYTES = 32 * 1024;
-var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var MAX_ACCOUNT_ROOM_ROWS = 2e3;
+var MAX_ACCOUNT_ROOM_PAGES = 10;
+var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
 var RESERVED_HANDLES = /* @__PURE__ */ new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
@@ -1478,7 +1693,7 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     throw new Error("Parle human session cookie contains invalid control characters.");
   let configuredApiBase = firstValue2("PARLE_API_BASE", env, dotEnv);
   let selectedProfile;
-  if (existsSync3(catalogPath)) {
+  if (!options.skipProfileCatalog && existsSync3(catalogPath)) {
     const profileName = firstValue2("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
     if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath)))
       selectedProfile = loadProfile(profileName, catalogPath);
@@ -1502,6 +1717,11 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     wakeBase: selectedProfile?.wakeBase || firstValue2("PARLE_WAKE_BASE", env, dotEnv)
   };
 }
+function resolveInventoryCatalogPath(cwd, env) {
+  const dotEnvPath = join4(cwd, ".env");
+  const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
+  return resolveProfileCatalogPath(firstValue2("PARLE_PROFILES_PATH", env, dotEnv), cwd, env);
+}
 function resolveAccountConfig(cwd, env) {
   const config = resolveAccountBaseConfig(cwd, env);
   if (!config.sessionCookie)
@@ -1510,7 +1730,7 @@ function resolveAccountConfig(cwd, env) {
 }
 function validateUUID(raw, label) {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!UUID_RE2.test(value) || value === "00000000-0000-0000-0000-000000000000")
+  if (!UUID_RE3.test(value) || value === "00000000-0000-0000-0000-000000000000")
     throw new Error(`${label} must be a non-zero UUID.`);
   return value;
 }
@@ -1557,7 +1777,7 @@ function assertStringArray(raw, label) {
 var PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 function parseInvitationLocator(raw, config) {
   const value = raw.trim();
-  if (UUID_RE2.test(value))
+  if (UUID_RE3.test(value))
     return validateUUID(value, "invitation");
   let locator;
   try {
@@ -1909,6 +2129,57 @@ var ParleAccountClient = class {
       throw new Error("Parle API returned an invalid JSON response.");
     return json;
   }
+  async readAccountRooms(config, signal) {
+    const rows = [];
+    const roomIds = /* @__PURE__ */ new Set();
+    const cursors = /* @__PURE__ */ new Set();
+    let after = null;
+    for (let pageNumber = 0; pageNumber < MAX_ACCOUNT_ROOM_PAGES; pageNumber += 1) {
+      const path = after === null ? "/v/rooms" : `/v/rooms?after=${encodeURIComponent(after)}`;
+      const page = parseAccountRoomPage(await this.request(config, path, { signal }));
+      for (const row of page.rooms) {
+        if (roomIds.has(row.roomId))
+          throw new RoomInventoryResponseError("account room response repeated a room across pages.");
+        roomIds.add(row.roomId);
+        rows.push(row);
+        if (rows.length >= MAX_ACCOUNT_ROOM_ROWS) {
+          return page.next === null && rows.length === MAX_ACCOUNT_ROOM_ROWS ? { state: "complete", rows } : { state: "truncated", rows: rows.slice(0, MAX_ACCOUNT_ROOM_ROWS), limit: MAX_ACCOUNT_ROOM_ROWS };
+        }
+      }
+      if (page.next === null)
+        return { state: "complete", rows };
+      if (cursors.has(page.next))
+        throw new RoomInventoryResponseError("account room response repeated a continuation cursor.");
+      cursors.add(page.next);
+      after = page.next;
+    }
+    return { state: "truncated", rows, limit: MAX_ACCOUNT_ROOM_ROWS };
+  }
+  async listRooms(active, signal) {
+    let configured;
+    try {
+      configured = readConfiguredRoomSection(resolveInventoryCatalogPath(this.cwd, this.env));
+    } catch {
+      configured = { state: "error", reason: "profile_catalog_invalid" };
+    }
+    let account;
+    try {
+      const base = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true, skipProfileCatalog: true });
+      if (!base.sessionCookie) {
+        account = { state: "unavailable", reason: "human_session_not_configured" };
+      } else {
+        account = await this.readAccountRooms(base, signal);
+      }
+    } catch (error) {
+      if (error instanceof RoomInventoryResponseError)
+        account = { state: "error", reason: "account_response_invalid" };
+      else if (error?.status === 401)
+        account = { state: "unavailable", reason: "human_session_rejected" };
+      else
+        account = { state: "error", reason: "account_request_failed" };
+    }
+    return roomInventoryResult(active, configured, account);
+  }
   async emailRequest(config, path, body, signal) {
     const response = await this.fetchImpl(new URL(path, config.apiBase), {
       method: "POST",
@@ -1965,9 +2236,9 @@ var ParleAccountClient = class {
       throw new Error(`Unknown parle_login action: ${action}`);
     }
     const authenticated = { ...config, sessionCookie };
-    const roomsBody = await this.request(authenticated, "/v/rooms", { signal });
+    const roomInventory = await this.readAccountRooms(authenticated, signal);
     const agentsBody = await this.request(authenticated, "/v/agents", { signal });
-    const rooms = Array.isArray(roomsBody?.rooms) ? roomsBody.rooms : Array.isArray(roomsBody) ? roomsBody : [];
+    const rooms = roomInventory.rows.map((room2) => ({ room_id: room2.roomId, room_handle: room2.roomHandle }));
     const agents = Array.isArray(agentsBody?.agents) ? agentsBody.agents : Array.isArray(agentsBody) ? agentsBody : [];
     const roomId = params.roomId || (params.roomHandle ? void 0 : config.roomId);
     const roomHandle = params.roomHandle || (params.roomId ? void 0 : config.roomHandle);
@@ -2116,7 +2387,7 @@ var ParleAccountClient = class {
     safeFile(path, "Parle invite handoff", false);
     if (realpathSync(dirname3(path)) !== directory || dirname3(realpathSync(path)) !== directory)
       throw new Error("handoffPath must resolve directly inside the private Parle invite directory.");
-    if (!UUID_RE2.test(basename(path, ".json")) || !path.endsWith(".json"))
+    if (!UUID_RE3.test(basename(path, ".json")) || !path.endsWith(".json"))
       throw new Error("Parle invite handoff filename must be <invite-id>.json.");
     const parsed = parseJson2(readBounded(path, MAX_HANDOFF_BYTES, "Parle invite handoff"));
     if (!parsed || typeof parsed !== "object" || parsed.schemaVersion !== 1 || parsed.kind !== "parle-principal-invite")
@@ -5058,7 +5329,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.7";
+var PI_EXTENSION_VERSION = "0.7.8";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -6200,7 +6471,7 @@ function statusDetails(ctx) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue2(cfg.sessionAlias),
@@ -6562,7 +6833,7 @@ function parleExtension(pi) {
   pi.registerTool({
     name: "parle_status",
     label: "Parle Status",
-    description: "Show Parle Pi extension status, redacted config provenance, and lazy runtime state.",
+    description: "Show Parle Pi extension status, redacted config provenance, and lazy runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal, _update, ctx) {
       lastCtx = ctx;
@@ -6577,6 +6848,17 @@ function parleExtension(pi) {
       startWatcher(pi, ctx, cfg);
       setStatus(ctx, cfg);
       return formatResult(statusDetails(ctx));
+    }
+  });
+  pi.registerTool({
+    name: "parle_rooms",
+    label: "Parle Rooms",
+    description: "List Parle rooms through one read-only shared inventory. Returns active runtime rooms, redacted locally configured rooms, and the signed-in principal's account rooms as distinct sources plus a deterministic merged view. Render compactText verbatim. parle_status.runtime.rooms is active runtime state only and is not exhaustive. Configured rows are unverified and do not prove current server authorization. Account relationships are provenance and do not prove local connection readiness. This output is principal-private operator context and must not be reposted verbatim into rooms.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const active = activeRoomSectionFromStatus(client?.status());
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).listRooms(active, signal));
     }
   });
   pi.registerTool({

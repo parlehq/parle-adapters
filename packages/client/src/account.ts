@@ -5,10 +5,13 @@ import { DEFAULT_VERSION } from "./protocol.js";
 import { CredentialProfile, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
 import { ParleHardeningClient, type HardenAccountParams } from "./hardening.js";
 import { assertSafeBase, truncateText } from "./helpers.js";
+import { RoomInventoryResponseError, parseAccountRoomPage, readConfiguredRoomSection, roomInventoryResult, type AccountRoomInventoryRow, type ActiveRoomInventoryRow, type ParleRoomsInventory, type RoomInventorySection } from "./room-inventory.js";
 
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_HANDOFF_BYTES = 32 * 1024;
+const MAX_ACCOUNT_ROOM_ROWS = 2_000;
+const MAX_ACCOUNT_ROOM_PAGES = 10;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 const INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
@@ -196,7 +199,7 @@ function firstValue(key: string, env: Record<string, string | undefined>, dotEnv
   return env[key] || dotEnv[key] || undefined;
 }
 
-function resolveAccountBaseConfig(cwd: string, env: Record<string, string | undefined>, options: { allowMissingProfile?: boolean } = {}): AccountBaseConfig {
+function resolveAccountBaseConfig(cwd: string, env: Record<string, string | undefined>, options: { allowMissingProfile?: boolean; skipProfileCatalog?: boolean } = {}): AccountBaseConfig {
   const dotEnvPath = join(cwd, ".env");
   const dotEnv = existsSync(dotEnvPath) ? parseDotEnv(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue("PARLE_PROFILES_PATH", env, dotEnv);
@@ -210,7 +213,7 @@ function resolveAccountBaseConfig(cwd: string, env: Record<string, string | unde
   if (sessionCookie && /\r|\n/.test(sessionCookie)) throw new Error("Parle human session cookie contains invalid control characters.");
   let configuredApiBase = firstValue("PARLE_API_BASE", env, dotEnv);
   let selectedProfile: CredentialProfile | undefined;
-  if (existsSync(catalogPath)) {
+  if (!options.skipProfileCatalog && existsSync(catalogPath)) {
     const profileName = firstValue("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : undefined);
     if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath))) selectedProfile = loadProfile(profileName, catalogPath);
   }
@@ -231,6 +234,12 @@ function resolveAccountBaseConfig(cwd: string, env: Record<string, string | unde
     agentHandle: firstValue("PARLE_AGENT_HANDLE", env, dotEnv),
     wakeBase: selectedProfile?.wakeBase || firstValue("PARLE_WAKE_BASE", env, dotEnv),
   };
+}
+
+function resolveInventoryCatalogPath(cwd: string, env: Record<string, string | undefined>): string {
+  const dotEnvPath = join(cwd, ".env");
+  const dotEnv = existsSync(dotEnvPath) ? parseDotEnv(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
+  return resolveProfileCatalogPath(firstValue("PARLE_PROFILES_PATH", env, dotEnv), cwd, env);
 }
 
 function resolveAccountConfig(cwd: string, env: Record<string, string | undefined>): AccountConfig {
@@ -585,6 +594,56 @@ export class ParleAccountClient {
     return json;
   }
 
+  private async readAccountRooms(config: AccountConfig, signal?: AbortSignal): Promise<{ state: "complete"; rows: AccountRoomInventoryRow[] } | { state: "truncated"; rows: AccountRoomInventoryRow[]; limit: number }> {
+    const rows: AccountRoomInventoryRow[] = [];
+    const roomIds = new Set<string>();
+    const cursors = new Set<string>();
+    let after: string | null = null;
+    for (let pageNumber = 0; pageNumber < MAX_ACCOUNT_ROOM_PAGES; pageNumber += 1) {
+      const path = after === null ? "/v/rooms" : `/v/rooms?after=${encodeURIComponent(after)}`;
+      const page = parseAccountRoomPage(await this.request(config, path, { signal }));
+      for (const row of page.rooms) {
+        if (roomIds.has(row.roomId)) throw new RoomInventoryResponseError("account room response repeated a room across pages.");
+        roomIds.add(row.roomId);
+        rows.push(row);
+        if (rows.length >= MAX_ACCOUNT_ROOM_ROWS) {
+          return page.next === null && rows.length === MAX_ACCOUNT_ROOM_ROWS
+            ? { state: "complete", rows }
+            : { state: "truncated", rows: rows.slice(0, MAX_ACCOUNT_ROOM_ROWS), limit: MAX_ACCOUNT_ROOM_ROWS };
+        }
+      }
+      if (page.next === null) return { state: "complete", rows };
+      if (cursors.has(page.next)) throw new RoomInventoryResponseError("account room response repeated a continuation cursor.");
+      cursors.add(page.next);
+      after = page.next;
+    }
+    return { state: "truncated", rows, limit: MAX_ACCOUNT_ROOM_ROWS };
+  }
+
+  async listRooms(active: RoomInventorySection<ActiveRoomInventoryRow>, signal?: AbortSignal): Promise<ParleRoomsInventory> {
+    let configured: ReturnType<typeof readConfiguredRoomSection>;
+    try {
+      configured = readConfiguredRoomSection(resolveInventoryCatalogPath(this.cwd, this.env));
+    } catch {
+      configured = { state: "error", reason: "profile_catalog_invalid" };
+    }
+
+    let account: RoomInventorySection<AccountRoomInventoryRow>;
+    try {
+      const base = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true, skipProfileCatalog: true });
+      if (!base.sessionCookie) {
+        account = { state: "unavailable", reason: "human_session_not_configured" };
+      } else {
+        account = await this.readAccountRooms(base as AccountConfig, signal);
+      }
+    } catch (error: any) {
+      if (error instanceof RoomInventoryResponseError) account = { state: "error", reason: "account_response_invalid" };
+      else if (error?.status === 401) account = { state: "unavailable", reason: "human_session_rejected" };
+      else account = { state: "error", reason: "account_request_failed" };
+    }
+    return roomInventoryResult(active, configured, account);
+  }
+
   private async emailRequest(config: AccountBaseConfig, path: string, body: Record<string, string>, signal?: AbortSignal): Promise<{ json: any; headers: Headers }> {
     const response = await this.fetchImpl(new URL(path, config.apiBase), {
       method: "POST",
@@ -635,9 +694,9 @@ export class ParleAccountClient {
     }
 
     const authenticated = { ...config, sessionCookie } as AccountConfig;
-    const roomsBody = await this.request(authenticated, "/v/rooms", { signal });
+    const roomInventory = await this.readAccountRooms(authenticated, signal);
     const agentsBody = await this.request(authenticated, "/v/agents", { signal });
-    const rooms = Array.isArray(roomsBody?.rooms) ? roomsBody.rooms : Array.isArray(roomsBody) ? roomsBody : [];
+    const rooms = roomInventory.rows.map((room) => ({ room_id: room.roomId, room_handle: room.roomHandle }));
     const agents = Array.isArray(agentsBody?.agents) ? agentsBody.agents : Array.isArray(agentsBody) ? agentsBody : [];
     const roomId = params.roomId || (params.roomHandle ? undefined : config.roomId);
     const roomHandle = params.roomHandle || (params.roomId ? undefined : config.roomHandle);

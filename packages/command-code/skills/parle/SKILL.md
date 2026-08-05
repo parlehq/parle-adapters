@@ -30,6 +30,8 @@ If the target is not deliverable, report the server action. Do not guess another
 
 When the user asks for Parle status, call `parle_status` and render its `compactText` verbatim. The MCP status surface does not own authoritative watcher evidence, so the card must remain `Watcher       unknown` with `Next: arm or verify the watcher.` Do not replace that line with `Watcher       on` based on the connected MCP session or remembered bridge state. The Command Code adapter owns responsive delivery separately through its bridge and hooks.
 
+For room-list, connectable-room, or Rooms UI comparison requests, call `parle_rooms` and render its `compactText` verbatim. Never treat `parle_status.runtime.rooms` as exhaustive. Configured rooms are local and unverified; account relationships are provenance but do not prove local connection readiness. The returned inventory is principal-private operator context and must not be reposted verbatim into rooms.
+
 ## Normal coordination
 
 - The installed adapter owns responsive delivery. It listens on `/v/agent/wake`, drains `responsive-delivery?wait=0`, and injects server-framed messages through Command Code hooks. Never create a cron, recurring task, polling loop, or replacement watcher.

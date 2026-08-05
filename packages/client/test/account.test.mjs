@@ -54,6 +54,20 @@ function response(json, status = 200) {
   return new Response(JSON.stringify(json), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function accountRoomPage(roomId = ROOM_ID, roomHandle = "room-one") {
+  return {
+    rooms: [{
+      room_id: roomId,
+      room_handle: roomHandle,
+      private: false,
+      created_at: "2026-08-01T12:00:00Z",
+      relationship: "owner",
+      owner: { principal_id: PRINCIPAL_ID, principal_handle: "owner" },
+    }],
+    next: null,
+  };
+}
+
 test("login persists the shared session and profile path without returning secrets", async () => {
   const f = loginFixture();
   const calls = [];
@@ -65,7 +79,7 @@ test("login persists the shared session and profile path without returning secre
         const path = new URL(url).pathname;
         calls.push({ path, method: init.method, body: init.body && JSON.parse(init.body), cookie: init.headers.Cookie });
         if (path === "/v/auth/email/complete") return new Response(JSON.stringify({ status: "logged_in" }), { status: 201, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_shared-cookie; Path=/; HttpOnly; Secure" } });
-        if (path === "/v/rooms") return response({ rooms: [{ room_id: ROOM_ID, room_handle: "room-one" }] });
+        if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
         if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
         throw new Error(`unexpected ${path}`);
@@ -109,7 +123,7 @@ test("login can bootstrap a missing selected profile while other account operati
       fetch: async (url) => {
         calls += 1;
         const path = new URL(url).pathname;
-        if (path === "/v/rooms") return response({ rooms: [{ room_id: ROOM_ID, room_handle: "room-one" }] });
+        if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
         if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
         throw new Error(`unexpected ${path}`);
@@ -138,7 +152,7 @@ test("login profile publication refuses a concurrent catalog writer without dele
       fetch: async (url) => {
         const path = new URL(url).pathname;
         if (path === "/v/auth/email/complete") return new Response(JSON.stringify({ status: "logged_in" }), { status: 201, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_shared-cookie; Path=/; HttpOnly; Secure" } });
-        if (path === "/v/rooms") return response({ rooms: [{ room_id: ROOM_ID, room_handle: "room-one" }] });
+        if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
         if (path === `/v/agents/${AGENT_ID}/tokens`) {
           writeFileSync(lockPath, "other-writer\n", { mode: 0o600, flag: "wx" });
