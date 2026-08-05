@@ -83,6 +83,7 @@
 
 ## 0.6.0 (2026-08-02)
 
+<!-- public-wire-lint: allow wire-version -- historical release note -->
 - Require `Parle-Version: 2026-08-01` and remove alias-at-mint from the bundled runtime.
 - Add generation-fenced proactive session rollover and restart the hook bridge wake stream on runtime swaps.
 - Preserve alias-scoped unacknowledged responsive delivery across prepared generations.
