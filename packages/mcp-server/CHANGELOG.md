@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 (2026-08-04)
+
+- Add the read-only `parle_rooms` tool backed by the shared room inventory and label `parle_status.runtime.rooms` as active runtime state rather than exhaustive inventory (#685).
+
 ## 0.7.2 (2026-08-04)
 
 - Expose canonical send-attention guidance and refresh shared-client receipt handling (#50).

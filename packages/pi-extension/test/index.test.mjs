@@ -66,6 +66,20 @@ function tempProject(env = "") {
   return dir;
 }
 
+function accountRoomsBody(rows) {
+  return {
+    rooms: rows.map(([roomId, roomHandle]) => ({
+      room_id: roomId,
+      room_handle: roomHandle,
+      private: false,
+      created_at: "2026-08-01T12:00:00Z",
+      relationship: "owner",
+      owner: { principal_id: "019f3894-bb87-726a-8deb-17d367054426", principal_handle: "gilman" },
+    })),
+    next: null,
+  };
+}
+
 test("status reads room and token from project .env and redacts token", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async () => { throw new Error("offline test"); };
@@ -731,7 +745,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.7" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.8" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1405,7 +1419,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.7");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.8");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1567,6 +1581,27 @@ test("principal invite tools expose link-first mint and separate guided acceptan
   assert.match(harness.tools.parle_connect_own_agent.parameters.properties.createAgentHandle.description, /instead of selecting an existing agent/);
 });
 
+test("parle_rooms exposes typed account and configured inventory without bootstrapping", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const state = join(process.env.HOME, ".parle");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  writeFileSync(join(state, "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_secret-canary\n", { mode: 0o600 });
+  writeFileSync(join(state, "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(String(url), "https://api.parle.sh/v/rooms");
+    assert.equal(init.headers.Cookie, "__Host-parle_session=human-cookie");
+    return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "default-room"]])), { status: 200 });
+  };
+  const harness = installHarness(cwd);
+  const result = await harness.call("parle_rooms");
+  assert.deepEqual(result.details.active, { state: "unavailable", reason: "runtime_not_bootstrapped" });
+  assert.equal(result.details.configured.state, "complete");
+  assert.equal(result.details.account.state, "complete");
+  assert.match(result.details.compactText, /Account rooms/);
+  assert.match(harness.tools.parle_rooms.description, /principal-private operator context/);
+  assert.equal(JSON.stringify(result.details).includes("secret-canary"), false);
+});
+
 test("generic parle_request honestly excludes human-session auth", async () => {
   const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async () => new Response("{}", { status: 200 });
@@ -1576,7 +1611,7 @@ test("generic parle_request honestly excludes human-session auth", async () => {
 
   const status = await harness.call("parle_status");
   assert.equal(status.details.humanSession.genericRequest, "unsupported");
-  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
+  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
 });
 
 test("parle_login starts email login without requiring raw request plumbing", async () => {
@@ -1611,7 +1646,7 @@ test("parle_login complete captures Set-Cookie, mints token, saves credentials, 
     }
     if (u.endsWith("/v/rooms")) {
       assert.equal(init.headers.Cookie, "__Host-parle_session=parle_ses_cookie-secret");
-      return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "room-one" }] }), { status: 200 });
+      return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "room-one"]])), { status: 200 });
     }
     if (u.endsWith("/v/agents")) {
       assert.equal(init.headers.Cookie, "__Host-parle_session=parle_ses_cookie-secret");
@@ -1661,7 +1696,7 @@ test("parle_login validates labels and requires force before replacing a profile
   globalThis.fetch = async (url, init = {}) => {
     called = true;
     const u = String(url);
-    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "one" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"]])), { status: 200 });
     if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "pi" }] }), { status: 200 });
     if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_new" }), { status: 201 });
     throw new Error("unexpected " + u + String(init.body || ""));
@@ -1752,7 +1787,7 @@ test("parle_login preserves session cookie when room or agent selection is ambig
         headers: { "Set-Cookie": "__Host-parle_session=parle_ses_saved; Path=/; HttpOnly; Secure" },
       });
     }
-    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "room-1", room_handle: "one" }, { room_id: "room-2", room_handle: "two" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"], ["019f2946-aef5-77ad-a41d-747ce0fd6a20", "two"]])), { status: 200 });
     if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "a" }, { agent_id: "agent-2", agent_handle: "b" }] }), { status: 200 });
     throw new Error("unexpected " + u);
   };
@@ -1789,7 +1824,7 @@ test("parle_login routes persistence through PARLE_PROFILES_PATH", async () => {
   const cwd = tempProject("PARLE_PROFILES_PATH=./secrets/parle-profiles\nPARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\n");
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
-    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", room_handle: "one" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"]])), { status: 200 });
     if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "a" }] }), { status: 200 });
     if (u.endsWith("/v/agents/agent-1/tokens")) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", token: "parle_agt_override-secret" }), { status: 201 });
     throw new Error("unexpected " + u);
@@ -1809,17 +1844,17 @@ test("parle_login routes persistence through PARLE_PROFILES_PATH", async () => {
 });
 
 test("parle_login fails closed on conflicting or duplicate selection", async () => {
-  const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=room-1\nPARLE_AGENT_ID=agent-1\n");
+  const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\nPARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_AGENT_ID=agent-1\n");
   globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify({ rooms: [{ room_id: "room-1", room_handle: "one" }, { room_id: "room-2", room_handle: "two" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"], ["019f2946-aef5-77ad-a41d-747ce0fd6a20", "two"]])), { status: 200 });
     if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: "agent-1", agent_handle: "dup" }, { agent_id: "agent-2", agent_handle: "dup" }] }), { status: 200 });
     throw new Error("unexpected " + u);
   };
   const harness = installHarness(cwd);
 
   await assert.rejects(
-    harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomId: "room-1", roomHandle: "two", agentId: "agent-1" }),
+    harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", roomHandle: "two", agentId: "agent-1" }),
     /selection conflict/,
   );
   await assert.rejects(

@@ -13,6 +13,7 @@ export * from "./protocol.js";
 export * from "./account.js";
 export * from "./hardening.js";
 export * from "./format.js";
+export * from "./room-inventory.js";
 export * from "./runtime-file.js";
 export * from "./process-instance.js";
 export * from "./delivery.js";
@@ -20,7 +21,7 @@ export * from "./peer-context.js";
 export * from "./alias.js";
 export * from "./helpers.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
-export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
+export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, readProfiles, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";

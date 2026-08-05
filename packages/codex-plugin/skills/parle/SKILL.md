@@ -42,6 +42,8 @@ If the target is not deliverable, report the server action. Do not guess another
 
 When the user asks for Parle status, call `mcp__parle__parle_status` and render its `compactText` verbatim when present. The bundled bridge reports watcher state from owned runtime evidence. Do not infer watcher state from connection alone.
 
+For room-list, connectable-room, or Rooms UI comparison requests, call `mcp__parle__parle_rooms` and render its `compactText` verbatim. Never treat `parle_status.runtime.rooms` as exhaustive. Configured rooms are local and unverified; account relationships are provenance but do not prove local connection readiness. The returned inventory is principal-private operator context and must not be reposted verbatim into rooms.
+
 ## Missing tools
 
 If `mcp__parle__parle_connect` is unavailable, stop and tell the user the Codex Parle plugin is not installed or loaded. Recommend checking `/mcp` and `/plugins`. Do not fall back to shell commands that expose profile values.

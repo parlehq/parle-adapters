@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.7";
+const PI_EXTENSION_VERSION = "0.7.8";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1557,7 +1557,7 @@ function statusDetails(ctx: any) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -1948,7 +1948,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_status",
     label: "Parle Status",
-    description: "Show Parle Pi extension status, redacted config provenance, and lazy runtime state.",
+    description: "Show Parle Pi extension status, redacted config provenance, and lazy runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests.",
     parameters: Type.Object({}),
     async execute(_id, _params, signal, _update, ctx) {
       lastCtx = ctx;
@@ -1966,6 +1966,18 @@ export default function parleExtension(pi: any) {
       startWatcher(pi, ctx, cfg);
       setStatus(ctx, cfg);
       return formatResult(statusDetails(ctx));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_rooms",
+    label: "Parle Rooms",
+    description: "List Parle rooms through one read-only shared inventory. Returns active runtime rooms, redacted locally configured rooms, and the signed-in principal's account rooms as distinct sources plus a deterministic merged view. Render compactText verbatim. parle_status.runtime.rooms is active runtime state only and is not exhaustive. Configured rows are unverified and do not prove current server authorization. Account relationships are provenance and do not prove local connection readiness. This output is principal-private operator context and must not be reposted verbatim into rooms.",
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const active = activeRoomSectionFromStatus(client?.status());
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).listRooms(active, signal));
     },
   });
 

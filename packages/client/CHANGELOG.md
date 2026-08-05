@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.3 (2026-08-04)
+
+- Add one typed room-inventory path that composes active runtime rooms, redacted configured profiles, and paginated principal account rooms without conflating their authority; share deterministic formatting, bounded continuation, stable partial-failure states, and path-free diagnostics across hosts (#685).
+- Reuse the account-room paginator during login selection so inventories beyond the first page are not silently ignored.
+
 ## 0.8.2 (2026-08-04)
 
 - Surface server-authored routing and attention without local inference, warn conservatively from reported responsive scope, and give moderation.delivery_state precedence over legacy posture details (#50).

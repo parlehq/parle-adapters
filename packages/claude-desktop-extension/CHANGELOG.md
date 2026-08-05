@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3 (2026-08-04)
+
+- Refresh the bundled MCP runtime with the read-only `parle_rooms` inventory tool and non-exhaustive runtime-room guidance (#685).
+
 ## 0.8.2 (2026-08-04)
 
 - Refresh the bundled MCP runtime with canonical routing and attention passthrough plus direct-only responsive guidance (#50).

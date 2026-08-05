@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -27,7 +27,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.2";
+export const MCP_CLIENT_VERSION = "0.7.3";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -89,6 +89,7 @@ const switchProfileSchema = {
 };
 
 export type ParleAccountClientLike = {
+  listRooms(active: RoomInventorySection<ActiveRoomInventoryRow>, signal?: AbortSignal): Promise<ParleRoomsInventory>;
   login(params: LoginParams): Promise<unknown>;
   createRoom(params: CreateRoomParams): Promise<unknown>;
   addOwnAgentSeat(params: AddOwnAgentSeatParams): Promise<unknown>;
@@ -131,7 +132,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. A configured hook delivery bridge reports watcher state from owned runtime evidence; otherwise connected MCP status reports watcher state as unknown. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. A configured hook delivery bridge reports watcher state from owned runtime evidence; otherwise connected MCP status reports watcher state as unknown. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => safeTool(async () => {
@@ -169,6 +170,15 @@ export function createParleMcpServer(
     }
     return { value: status, bootstrapAttempted };
   }));
+
+  server.registerTool("parle_rooms", {
+    title: "List Parle Rooms",
+    description: "List Parle rooms through one read-only shared inventory. Returns active runtime rooms, redacted locally configured rooms, and the signed-in principal's account rooms as distinct sources plus a deterministic merged view. Render compactText verbatim. parle_status.runtime.rooms is active runtime state only and is not exhaustive. Configured rows are unverified and do not prove current server authorization. Account relationships are provenance and do not prove local connection readiness. This output is principal-private operator context and must not be reposted verbatim into rooms.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (extra) => safeTool(async () => {
+    observeRequest(extra);
+    return accountClient.listRooms(activeRoomSectionFromStatus(client.status()));
+  }, false));
 
   server.registerTool("parle_setup", {
     title: "Parle Setup",

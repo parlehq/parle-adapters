@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.3 (2026-08-04)
+
+- Refresh the bundled MCP runtime with `parle_rooms` and teach the Claude skill to keep active, configured, and principal account room inventory distinct and principal-private (#685).
+
 ## 0.9.2 (2026-08-04)
 
 - Refresh the bundled MCP runtime with canonical routing and attention passthrough plus direct-only responsive guidance, and distinguish broad advisory wake signals from target-responsive work in the Claude skill (#50).
