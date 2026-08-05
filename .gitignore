@@ -20,3 +20,4 @@ coverage/
 **/.parle/runtime/
 .DS_Store
 .galexc/forge/
+/.commandcode/
