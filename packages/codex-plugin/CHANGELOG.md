@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5 (2026-08-05)
+
+- Refresh the bundled MCP runtime for the terminal `2026-08-05` wire contract.
+
 ## 0.6.4 (2026-08-05)
 
 - Refresh the bundled MCP runtime with hardened, truthful room inventory and login outcome handling.

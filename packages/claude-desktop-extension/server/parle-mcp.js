@@ -31083,7 +31083,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-08-01";
+var DEFAULT_VERSION = "2026-08-05";
 var ParleApiError = class extends Error {
   status;
   code;
@@ -36724,7 +36724,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.4";
+var MCP_CLIENT_VERSION = "0.7.5";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

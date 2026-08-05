@@ -166,7 +166,7 @@ const watcherEnv = {
   PARLE_ROOM_AGENT_TOKEN: "parle_agt_watch_secret",
   PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
   PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
-  PARLE_VERSION: "2026-08-01",
+  PARLE_VERSION: "2026-08-05",
   PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
   PARLE_INTEGRATION_VERSION: "0.5.39",
 };

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.5 (2026-08-05)
+
+- Require the terminal `Parle-Version: 2026-08-05` wire contract with no negotiation or fallback.
+
 ## 0.8.4 (2026-08-05)
 
 - Bind account inventory to the selected deployment, reject unsafe human-session files and malformed cookies before fetch, report pagination ceilings truthfully, and fail closed on truncated login selection.

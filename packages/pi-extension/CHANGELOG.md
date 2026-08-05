@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.10 (2026-08-05)
+
+- Refresh the shared client and native bundle for the terminal `2026-08-05` wire contract.
+
 ## 0.7.9 (2026-08-05)
 
 - Refresh the shared room inventory with credential-origin, pagination, mutation-outcome, and ready-room truth safeguards.

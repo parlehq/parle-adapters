@@ -108,7 +108,7 @@ test("status ignores persisted PARLE_VERSION and warns", async () => {
   globalThis.fetch = async () => { throw new Error("offline test"); };
   const harness = installHarness(cwd);
   const status = await harness.call("parle_status");
-  assert.equal(status.details.version.value, "2026-08-01");
+  assert.equal(status.details.version.value, "2026-08-05");
   assert.equal(status.details.version.source, "default");
   assert.equal(status.details.roomId.value, "room-1");
   assert.match(status.details.warnings.join("\n"), /Ignoring PARLE_VERSION from project \.env/);
@@ -746,7 +746,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.9" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.10" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1420,7 +1420,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.9");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.10");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
