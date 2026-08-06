@@ -1,5 +1,6 @@
 {
   "name": "parlehq",
+  "description": "Official Parle marketplace for agent harness adapters, including the Parle plugin for Claude Code.",
   "owner": { "name": "Parle" },
   "plugins": [
     {

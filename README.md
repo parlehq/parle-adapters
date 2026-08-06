@@ -16,9 +16,11 @@ Use this library when an agent runtime benefits from an extension, plugin, adapt
 ## Install the Claude Code plugin
 
 ```bash
-claude plugin marketplace add parlehq/parle-adapters
+claude plugin marketplace add https://github.com/parlehq/parle-adapters.git
 claude plugin install parle-claude-plugin@parlehq
 ```
+
+The full HTTPS URL is the portable form and needs no SSH key. The `parlehq/parle-adapters` shorthand also works, but Claude Code clones GitHub `owner/repo` shorthand sources over SSH by default, so it requires a loaded `ssh-agent` key or `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`. See [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md#install).
 
 This adds native `parle_*` tools through a bundled MCP server plus a `parle` skill. Configure a `PARLE_PROFILE` backed by the profile catalog (`~/.parle/profiles` by default, `PARLE_PROFILES_PATH` to relocate it), or use direct `PARLE_*` values through process env or a `.env` in the working directory. The MCP server loads once at startup; the standalone watcher resolves through the same shared resolver on every arm. Permission rules use the plugin-qualified prefix `mcp__plugin_parle-claude-plugin_parle__<tool>`. See [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for details and [`docs/design/storage-layout.md`](./docs/design/storage-layout.md) for the accepted storage rationale.
 

@@ -98,9 +98,24 @@ Claude Code namespaces plugin MCP tools by plugin and server name. These tools a
 The repo root carries `.claude-plugin/marketplace.json`, so end users install straight from GitHub:
 
 ```bash
-claude plugin marketplace add parlehq/parle-adapters
+claude plugin marketplace add https://github.com/parlehq/parle-adapters.git
 claude plugin install parle-claude-plugin@parlehq
 ```
+
+The full HTTPS URL is the portable form: it clones over HTTPS and needs no SSH
+key or agent.
+
+The `parlehq/parle-adapters` shorthand works too, but Claude Code clones GitHub
+`owner/repo` shorthand sources over SSH by default, which requires `github.com`
+in `known_hosts` and a key loaded in `ssh-agent`. To keep the shorthand without
+SSH, set `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1`:
+
+```bash
+CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 claude plugin marketplace add parlehq/parle-adapters
+```
+
+Both forms register the marketplace as `parlehq` and resolve plugin versions the
+same way, so `claude plugin update` behaves identically across them.
 
 ## Install validation notes (issue #9, 2026-07-05)
 
@@ -113,6 +128,15 @@ Validated with Claude Code 2.1.201 on macOS:
 - `parle_setup` and `parle_status` both ran in a headless session. With `PARLE_*` set in the ambient environment, setup reported ok and status showed correct provenance with the agent token rendered as `<redacted>`. No secrets appeared in output or logs.
 - Tool naming caveat: plugin MCP tools are namespaced as `mcp__plugin_parle-claude-plugin_parle__<tool>`, for example `mcp__plugin_parle-claude-plugin_parle__parle_status`, not `mcp__parle__<tool>`. Permission allowlists and `--allowedTools` arguments must use the full plugin-qualified prefix.
 - Plugin version displays as `0.0.0` from `package.json` rather than `plugin.json`; align the two if version display matters.
+
+### Update (2026-08-05, Claude Code 2.1.223)
+
+- The `parlehq/parle-adapters` shorthand clones over SSH by default, so it fails
+  for users without a loaded `ssh-agent` key even though this repo is public.
+  The full HTTPS URL in [Install](#install) is the portable form; the documented
+  `CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1` escape hatch keeps the shorthand working.
+- `pnpm check:manifests` now keeps `plugin.json` and `package.json` versions in
+  step, so the plugin manager displays the packaged version rather than `0.0.0`.
 
 
 ## Stable peer routes (issue #53)
