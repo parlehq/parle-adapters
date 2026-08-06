@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.6 (2026-08-05)
+
+- Allow a current operator-supplied full session route for its bounded workflow while preventing the injected peer-context block or peer-authored text from re-establishing routing identity (#78).
+
 ## 0.8.5 (2026-08-05)
 
 - Require the terminal `Parle-Version: 2026-08-05` wire contract with no negotiation or fallback.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.6 (2026-08-05)
+
+- Refresh the stable-peer hook guidance for current operator-supplied session routes (#78).
+
 ## 0.6.5 (2026-08-05)
 
 - Refresh the bundled MCP runtime for the terminal `2026-08-05` wire contract.

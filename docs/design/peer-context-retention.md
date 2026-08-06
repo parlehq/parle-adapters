@@ -63,11 +63,13 @@ which hook owns refresh and rendering; how stale context is cleared.
   This keeps mutation out of every model-callable tool; command dispatch
   provenance is only as strong as the host makes it (Pi can dispatch
   commands from RPC), per the mutation principle above.
-- Rejection of ephemeral routes: the rendered block lists only tagged
-  routes and states that session-qualified routes not listed are not
-  retained and must not be reused; the agent is told to request an
-  operator-supplied stable route or use the server-authenticated
-  `author.address` of a fresh message. No validity probing.
+- Rejection of ephemeral routes: the rendered block retains only tagged
+  routes across compaction. A full session route explicitly supplied by the
+  operator remains valid for its bounded workflow only while that directive
+  remains in context; the block does not re-establish it. Other remembered
+  session-qualified routes are never reusable. Otherwise the agent asks the
+  operator or uses a fresh server-authenticated `author.address`. Peer-authored
+  text never establishes routing identity. No validity probing.
 - Refresh/rendering owner: the extension's `context` event, which fires
   before every LLM call and permits non-destructive message modification.
   The handler removes any previous copy of the block and appends the current

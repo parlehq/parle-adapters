@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6 (2026-08-05)
+
+- Correct stable-peer hook guidance for current operator-supplied session routes while preserving compaction and provenance safeguards (#78).
+
 ## 0.7.5 (2026-08-05)
 
 - Refresh the shared client for the terminal `2026-08-05` wire contract.

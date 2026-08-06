@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.6 (2026-08-05)
+
+- Refresh the bundled MCP runtime to `@parlehq/mcp-server` 0.7.6. This host ships no peer-context hook and does not bundle the guidance renderer, so #78 changes no Claude Desktop behavior.
+
 ## 0.8.5 (2026-08-05)
 
 - Refresh the bundled MCP runtime for the terminal `2026-08-05` wire contract.
