@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, SubmitReplyParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -18,6 +18,7 @@ export type ParleMcpClientLike = {
   readInbox(params?: ReadParams): Promise<unknown>;
   affordances(params?: { roomId?: string }): Promise<unknown>;
   send(params: SendParams): Promise<unknown>;
+  submitReply(params: SubmitReplyParams): Promise<unknown>;
   switchProfile?(profile: string, signal?: AbortSignal): Promise<unknown>;
   // Optional lifecycle surface (present on ParleAgentClient); guarded so
   // minimal fake clients keep working.
@@ -27,7 +28,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.6";
+export const MCP_CLIENT_VERSION = "0.7.7";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -71,6 +72,13 @@ const guidanceSchema = {
 const sendSchema = {
   body: z.string(),
   to: z.string().optional(),
+  idempotencyKey: z.string().optional(),
+  roomId: z.string().optional(),
+};
+
+const replySchema = {
+  body: z.string(),
+  replyRouteId: z.string(),
   idempotencyKey: z.string().optional(),
   roomId: z.string().optional(),
 };
@@ -418,6 +426,16 @@ export function createParleMcpServer(
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => client.send(params as SendParams));
+  });
+
+  server.registerTool("parle_reply", {
+    title: "Parle Reply",
+    description: `Redeem one server-authored opaque reply route. Pass replyRouteId exactly as delivered with the responsive message. Prefer this tool whenever a valid route is present, even if author.address is also disclosed. The route is single use; a byte-identical retry must reuse the same idempotencyKey. A privacy-flat route failure never authorizes selector, broadcast, or unaddressed fallback. ${ROOM_TEXT}`,
+    inputSchema: replySchema,
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.submitReply(params as SubmitReplyParams));
   });
 
   return server;

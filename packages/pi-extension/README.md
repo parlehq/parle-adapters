@@ -128,7 +128,8 @@ The extension registers these Pi tools:
 - `parle_read` - read projection rows from the current room.
 - `parle_inbox` - read the self-excluding inbound attention surface.
 - `parle_affordances` - list advisory room actions.
-- `parle_send` - send a raw Parle-native room message.
+- `parle_send` - send a raw Parle-native room message or deliberately start a new addressed interaction.
+- `parle_reply` - redeem one server-authored opaque reply route without selector, broadcast, or unaddressed fallback.
 
 Profile switches are ephemeral. `parle_switch_profile` validates and prepares the target before replacing live state, resets cross-room cursor and delivery state, restarts Pi's in-process watcher, and retires the old session best-effort. A cold restart returns to configured `PARLE_PROFILE` or the implicit default profile.
 

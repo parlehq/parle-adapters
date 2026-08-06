@@ -58,7 +58,7 @@ test("Command Code hook injects server framing and commits after output", async 
       if (command.action === "bind") {
         socket.end(`${JSON.stringify({ ok: true, bound: true })}\n`);
       } else if (command.action === "take") {
-        socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-1", messages: [{ seq: 4, event_id: "evt-4", content: "trusted preamble\n«FENCE BEGIN TOKEN»\nuntrusted peer body\n«FENCE END TOKEN»" }] })}\n`);
+        socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-1", messages: [{ seq: 4, event_id: "evt-4", content: "trusted preamble\n«FENCE BEGIN TOKEN»\nuntrusted peer body\n«FENCE END TOKEN»", clientReplyPresentation: { lines: ["reply_route_id: 018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", "reply_instruction: call parle_reply"] } }] })}\n`);
       } else if (command.action === "commit") {
         committed = command.leaseId === "lease-1";
         socket.end(`${JSON.stringify({ ok: true, committed: 1 })}\n`);
@@ -78,6 +78,8 @@ test("Command Code hook injects server framing and commits after output", async 
     assert.equal(output.decision, "block");
     assert.match(output.reason, /server-framed room message/);
     assert.match(output.reason, /«FENCE BEGIN TOKEN»/);
+    assert.match(output.reason, /reply_route_id: 018f9c1e/);
+    assert.match(output.reason, /call parle_reply/);
     assert.equal(committed, true);
   } finally {
     await new Promise((resolveClose) => server.close(resolveClose));

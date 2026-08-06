@@ -21,7 +21,9 @@ import {
   type DeliveryHandlerResult,
   type ParleAgentClient,
   type ResponsiveCursorScope,
+  responsiveReplyPresentation,
   type ResponsiveDeliveryMessage,
+  type ResponsiveReplyPresentation,
   type SessionCommitPlan,
 } from "@parlehq/agent-client";
 
@@ -45,6 +47,7 @@ export type HookDeliveryBridgeStatus = {
 };
 
 type PendingMessage = ResponsiveDeliveryMessage & {
+  clientReplyPresentation: ResponsiveReplyPresentation;
   key: string;
   sessionRevision: number;
   cursorScope?: ResponsiveCursorScope;
@@ -216,6 +219,7 @@ export class HookDeliveryBridge {
     const runtime = (this.client as any).runtime || {};
     this.pending.push({
       ...input.message,
+      clientReplyPresentation: responsiveReplyPresentation(input.message),
       key,
       sessionRevision: Number(runtime.sessionRevision || 0),
       cursorScope: input.cursorScope,

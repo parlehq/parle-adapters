@@ -209,6 +209,24 @@
     ],
     "required": []
   },
+  "parle_reply": {
+    "title": "Parle Reply",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "body",
+      "idempotencyKey",
+      "replyRouteId",
+      "roomId"
+    ],
+    "required": [
+      "body",
+      "replyRouteId"
+    ]
+  },
   "parle_rooms": {
     "title": "List Parle Rooms",
     "annotations": {

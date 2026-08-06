@@ -24,6 +24,7 @@ const expectedTools = [
   "parle_login",
   "parle_mint_principal_invite",
   "parle_read",
+  "parle_reply",
   "parle_rooms",
   "parle_send",
   "parle_setup",
@@ -384,6 +385,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     readInbox: async () => ({ messages: [] }),
     affordances: async () => ({ affordances: [] }),
     send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
+    submitReply: async (params) => { calls.push(["reply", params]); return { event_id: "evt-reply", idempotencyKey: params.idempotencyKey, interaction: { interaction_id: "interaction-1", reply_hop: 3 } }; },
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", roomHandle: "target-room" }; },
   };
   const fakeAccount = {
@@ -419,6 +421,13 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.deepEqual(send.structuredContent.routing, { mode: "direct", target_level: "session", continuity: "ephemeral" });
     assert.deepEqual(send.structuredContent.attention, { inbound_scope: "target", responsive_scope: "target" });
     assert.equal(send.structuredContent.deliveryStatus.state, "accepted_scan_skipped");
+    const replyTool = tools.tools.find((tool) => tool.name === "parle_reply");
+    assert.match(replyTool.description, /opaque reply route/);
+    assert.match(replyTool.description, /never authorizes selector, broadcast, or unaddressed fallback/);
+    const reply = await client.callTool({ name: "parle_reply", arguments: { body: "reply", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", idempotencyKey: "idem-reply" } });
+    assert.equal(reply.structuredContent.idempotencyKey, "idem-reply");
+    assert.equal(reply.structuredContent.interaction.reply_hop, 3);
+    assert.deepEqual(calls.find(([kind]) => kind === "reply"), ["reply", { body: "reply", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", idempotencyKey: "idem-reply" }]);
     const refused = await client.callTool({ name: "parle_switch_profile", arguments: { profile: "target", watcherStopped: false } });
     assert.equal(refused.isError, true);
     assert.match(refused.structuredContent.error, /watcherStopped=true/);
@@ -442,6 +451,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["read", { waitSeconds: 1 }],
       ["rooms", { state: "unavailable", reason: "runtime_not_bootstrapped" }],
       ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
+      ["reply", { body: "reply", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", idempotencyKey: "idem-reply" }],
       ["switch", "target"],
       ["login", { action: "start", email: "user@example.test" }],
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],

@@ -97,7 +97,19 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     drainResponsiveDelivery: async () => {
       drainCalls += 1;
       if (drainCalls === 1) return { messages: [] };
-      return { messages: [{ seq: 7, event_id: "evt-7", content: "server-framed content" }] };
+      return { messages: [{
+        seq: 7,
+        event_id: "evt-7",
+        content: "server-framed content",
+        author: { address: "@principal.agent.session" },
+        reply_route: {
+          reply_route_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+          interaction_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62",
+          reply_hop: 14,
+          remaining_reply_hops: 2,
+          expires_at: "2026-08-13T12:00:00Z",
+        },
+      }] };
     },
     ackResponsiveDelivery: async (message) => { acknowledgements.push([message.seq, message.event_id]); },
     openWakeStream: async (signal) => {
@@ -141,6 +153,9 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     const leased = await request(bridge.status().socketPath, { action: "take", sessionId: "command-code-session" });
     assert.equal(leased.messages.length, 1);
     assert.equal(leased.messages[0].content, "server-framed content");
+    assert.equal(leased.messages[0].reply_route.reply_route_id, "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61");
+    assert.match(leased.messages[0].clientReplyPresentation.lines.join("\n"), /call parle_reply/);
+    assert.equal(leased.messages[0].clientReplyPresentation.clientWarnings.length, 1);
     assert.deepEqual(acknowledgements, []);
 
     const committed = await request(bridge.status().socketPath, { action: "commit", sessionId: "command-code-session", leaseId: leased.leaseId });

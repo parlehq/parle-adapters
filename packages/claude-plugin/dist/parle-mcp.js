@@ -31387,6 +31387,81 @@ function assertSafeBase(base, env = process.env) {
     throw new Error(`Parle API base is not allowlisted: ${url2.hostname}`);
 }
 
+// ../client/dist/reply.js
+var UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var TWO_REPLIES_REMAINING_WARNING = "This interaction has two route-mediated replies remaining. Use the opaque reply route so the other participant retains the final reply opportunity; do not switch to a selector.";
+function isOpaqueReplyRouteId(value) {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+function nonNegativeInteger(value) {
+  return Number.isInteger(value) && Number(value) >= 0;
+}
+function serverDisclosedAuthorAddress(message) {
+  const address = message?.author?.address;
+  if (typeof address !== "string" || !address.startsWith("@") || address.length > 256 || /\s/.test(address))
+    return void 0;
+  return address;
+}
+function normalizeOpaqueReplyRoute(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return void 0;
+  const route = value;
+  const expiresAt = typeof route.expires_at === "string" ? route.expires_at : "";
+  if (!isOpaqueReplyRouteId(route.reply_route_id) || !isOpaqueReplyRouteId(route.interaction_id) || !nonNegativeInteger(route.reply_hop) || !nonNegativeInteger(route.remaining_reply_hops) || route.remaining_reply_hops < 1 || !expiresAt || !Number.isFinite(Date.parse(expiresAt)))
+    return void 0;
+  return {
+    replyRouteId: route.reply_route_id,
+    interactionId: route.interaction_id,
+    replyHop: route.reply_hop,
+    remainingReplyHops: route.remaining_reply_hops,
+    expiresAt
+  };
+}
+function responsiveReplyPresentation(message) {
+  const rawRoute = message?.reply_route;
+  const authorAddress = serverDisclosedAuthorAddress(message);
+  const route = normalizeOpaqueReplyRoute(rawRoute);
+  if (route) {
+    const clientWarnings = route.remainingReplyHops === 2 ? [TWO_REPLIES_REMAINING_WARNING] : void 0;
+    return {
+      routeState: "available",
+      replyRoute: route,
+      ...authorAddress ? { authorAddress } : {},
+      ...clientWarnings ? { clientWarnings } : {},
+      lines: [
+        `reply_route_id: ${route.replyRouteId}`,
+        `reply_interaction_id: ${route.interactionId}`,
+        `reply_hop: ${route.replyHop}`,
+        `remaining_reply_hops: ${route.remainingReplyHops}`,
+        `reply_route_expires_at: ${route.expiresAt}`,
+        `reply_to_author: ${authorAddress || "withheld"}`,
+        `reply_instruction: To reply to this delivered message, call parle_reply with replyRouteId set exactly to ${route.replyRouteId}. Prefer this opaque route even when reply_to_author is present. Do not use parle_send, broadcast, an unaddressed send, or a guessed selector as route fallback.`,
+        ...clientWarnings ? clientWarnings.map((warning) => `clientWarnings: ${warning}`) : []
+      ]
+    };
+  }
+  if (rawRoute !== null && rawRoute !== void 0) {
+    return {
+      routeState: "malformed",
+      ...authorAddress ? { authorAddress } : {},
+      lines: [
+        "reply_route_state: malformed",
+        `reply_to_author: ${authorAddress || "withheld"}`,
+        "reply_instruction: The server reply route is malformed. Fail closed and surface the error. Do not use a selector, broadcast, an unaddressed send, or guessed identity as fallback."
+      ]
+    };
+  }
+  return {
+    routeState: "unavailable",
+    ...authorAddress ? { authorAddress } : {},
+    lines: [
+      "reply_route_state: unavailable",
+      `reply_to_author: ${authorAddress || "withheld"}`,
+      "reply_instruction: No opaque reply route is available. Do not infer exhaustion and do not automatically fall back to a selector, broadcast, or unaddressed send. A separate deliberate new interaction may use only a selector independently disclosed by the server."
+    ]
+  };
+}
+
 // ../client/dist/account.js
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { chmodSync as chmodSync2, closeSync as closeSync2, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync4, realpathSync, renameSync as renameSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
@@ -36359,6 +36434,35 @@ var ParleAgentClient = class _ParleAgentClient {
       throw error51;
     }
   }
+  async submitReply(params, signal) {
+    if (!isOpaqueReplyRouteId(params.replyRouteId)) {
+      throw new ParleApiError("Parle reply requires a valid opaque reply route UUID", { code: "validation_failed", action: "fix_client", scope: "request", retryable: false });
+    }
+    const idempotencyKey = params.idempotencyKey || this.randomUUID();
+    const generation = this.bootstrapGeneration;
+    let roomId = "";
+    try {
+      return await this.withDataPlane(() => this.withRebootstrap(async () => {
+        roomId = this.roomTarget(params.roomId).roomId.value;
+        const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/replies`, {
+          method: "POST",
+          session: true,
+          roomId,
+          signal,
+          retry: false,
+          headers: { "Idempotency-Key": idempotencyKey },
+          body: { reply_route_id: params.replyRouteId, payload: { body: params.body } }
+        });
+        const deliveryStatus = summarizeSendDelivery(result);
+        return { ...result, roomId, idempotencyKey, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
+      }, signal));
+    } catch (error51) {
+      if (error51 instanceof ParleApiError) {
+        return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey, error: redactString(error51.message) };
+      }
+      throw error51;
+    }
+  }
   async guidance(target = "ai", signal) {
     const urls = {
       ai: "https://ai.parle.sh",
@@ -36532,6 +36636,7 @@ var HookDeliveryBridge = class {
     const runtime = this.client.runtime || {};
     this.pending.push({
       ...input.message,
+      clientReplyPresentation: responsiveReplyPresentation(input.message),
       key,
       sessionRevision: Number(runtime.sessionRevision || 0),
       cursorScope: input.cursorScope,
@@ -36724,7 +36829,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.6";
+var MCP_CLIENT_VERSION = "0.7.7";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -36762,6 +36867,12 @@ var guidanceSchema = {
 var sendSchema = {
   body: external_exports.string(),
   to: external_exports.string().optional(),
+  idempotencyKey: external_exports.string().optional(),
+  roomId: external_exports.string().optional()
+};
+var replySchema = {
+  body: external_exports.string(),
+  replyRouteId: external_exports.string(),
   idempotencyKey: external_exports.string().optional(),
   roomId: external_exports.string().optional()
 };
@@ -37057,6 +37168,15 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => client.send(params));
+  });
+  server.registerTool("parle_reply", {
+    title: "Parle Reply",
+    description: `Redeem one server-authored opaque reply route. Pass replyRouteId exactly as delivered with the responsive message. Prefer this tool whenever a valid route is present, even if author.address is also disclosed. The route is single use; a byte-identical retry must reuse the same idempotencyKey. A privacy-flat route failure never authorizes selector, broadcast, or unaddressed fallback. ${ROOM_TEXT}`,
+    inputSchema: replySchema,
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.submitReply(params));
   });
   return server;
 }

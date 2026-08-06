@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.7 (2026-08-06)
+
+- Add `parle_reply`, preserve opaque reply metadata through hook delivery, and render route-first instructions plus the server-reported two-replies-remaining warning (#74).
+
 ## 0.7.6 (2026-08-05)
 
 - Correct stable-peer hook guidance for current operator-supplied session routes while preserving compaction and provenance safeguards (#78).

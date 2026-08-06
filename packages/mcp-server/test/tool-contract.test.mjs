@@ -19,6 +19,7 @@ const stubClient = {
   readInbox: async () => ({}),
   affordances: async () => ({}),
   send: async () => ({}),
+  submitReply: async () => ({}),
 };
 
 function currentContract() {

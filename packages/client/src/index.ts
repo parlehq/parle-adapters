@@ -8,6 +8,7 @@ import { DEFAULT_VERSION, ParleApiError, isParleCredential, redactString } from 
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
+import { isOpaqueReplyRouteId } from "./reply.js";
 
 export * from "./protocol.js";
 export * from "./account.js";
@@ -20,6 +21,7 @@ export * from "./delivery.js";
 export * from "./peer-context.js";
 export * from "./alias.js";
 export * from "./helpers.js";
+export * from "./reply.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, readProfiles, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
@@ -182,6 +184,13 @@ export type ReadParams = {
 export type SendParams = {
   body: string;
   to?: string;
+  idempotencyKey?: string;
+  roomId?: string;
+};
+
+export type SubmitReplyParams = {
+  body: string;
+  replyRouteId: string;
   idempotencyKey?: string;
   roomId?: string;
 };
@@ -2436,6 +2445,36 @@ export class ParleAgentClient {
     } catch (error: any) {
       if (error instanceof ParleApiError) {
         return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
+      }
+      throw error;
+    }
+  }
+
+  async submitReply(params: SubmitReplyParams, signal?: AbortSignal) {
+    if (!isOpaqueReplyRouteId(params.replyRouteId)) {
+      throw new ParleApiError("Parle reply requires a valid opaque reply route UUID", { code: "validation_failed", action: "fix_client", scope: "request", retryable: false });
+    }
+    const idempotencyKey = params.idempotencyKey || this.randomUUID();
+    const generation = this.bootstrapGeneration;
+    let roomId = "";
+    try {
+      return await this.withDataPlane(() => this.withRebootstrap(async () => {
+        roomId = this.roomTarget(params.roomId).roomId!.value!;
+        const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/replies`, {
+          method: "POST",
+          session: true,
+          roomId,
+          signal,
+          retry: false,
+          headers: { "Idempotency-Key": idempotencyKey },
+          body: { reply_route_id: params.replyRouteId, payload: { body: params.body } },
+        });
+        const deliveryStatus = summarizeSendDelivery(result);
+        return { ...result, roomId, idempotencyKey, ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
+      }, signal));
+    } catch (error: any) {
+      if (error instanceof ParleApiError) {
+        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, error: redactString(error.message) };
       }
       throw error;
     }

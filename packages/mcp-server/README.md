@@ -17,6 +17,7 @@ MCP v1 room tools:
 - `parle_inbox`
 - `parle_affordances`
 - `parle_send`
+- `parle_reply`
 
 MCP account-plane tools:
 

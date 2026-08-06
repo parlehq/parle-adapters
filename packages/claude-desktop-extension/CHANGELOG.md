@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.7 (2026-08-06)
+
+- Refresh the bundled MCP runtime with the `parle_reply` opaque-route tool and conservative reply failure semantics (#74).
+
 ## 0.8.6 (2026-08-05)
 
 - Refresh the bundled MCP runtime to `@parlehq/mcp-server` 0.7.6. This host ships no peer-context hook and does not bundle the guidance renderer, so #78 changes no Claude Desktop behavior.

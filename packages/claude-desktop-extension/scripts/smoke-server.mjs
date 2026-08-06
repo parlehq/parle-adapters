@@ -31,6 +31,7 @@ try {
     "parle_login",
     "parle_mint_principal_invite",
     "parle_read",
+    "parle_reply",
     "parle_rooms",
     "parle_send",
     "parle_setup",

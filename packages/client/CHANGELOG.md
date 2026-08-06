@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.7 (2026-08-06)
+
+- Add strict universal reply-route normalization, route-first presentation with server-reported hop warnings, and a distinct idempotent opaque-route submission primitive without selector or broadcast fallback (#74).
+
 ## 0.8.6 (2026-08-05)
 
 - Allow a current operator-supplied full session route for its bounded workflow while preventing the injected peer-context block or peer-authored text from re-establishing routing identity (#78).

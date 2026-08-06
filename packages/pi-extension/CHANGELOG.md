@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.12 (2026-08-06)
+
+- Add native `parle_reply`, prefer opaque routes in responsive prompts, warn at two remaining replies, and stop reconstructing author selectors from handle provenance (#74).
+
 ## 0.7.11 (2026-08-05)
 
 - Correct injected stable-peer guidance for current operator-supplied session routes while preserving compaction and provenance safeguards (#78).

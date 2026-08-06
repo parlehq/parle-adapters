@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.7 (2026-08-06)
+
+- Refresh the bundled MCP runtime and responsive hook for opaque route replies and bounded-interaction warnings (#74).
+
 ## 0.9.6 (2026-08-05)
 
 - Refresh the stable-peer hook guidance for current operator-supplied session routes (#78).

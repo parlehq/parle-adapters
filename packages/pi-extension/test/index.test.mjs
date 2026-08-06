@@ -746,7 +746,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.11" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.12" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1420,7 +1420,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.11");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.12");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1917,6 +1917,39 @@ test("parle_send includes direct addressing when to is present", async () => {
   assert.match(result.details.retry, /identical to\/addressing/);
 });
 
+test("parle_reply redeems only the delivered opaque route", async () => {
+  let replyRequest;
+  let replyHeaders;
+  const harness = installSendHarness(async (url, init = {}) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-reply", session_credential: "parle_ses_reply-session", session_handle: "reply-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.reply-session" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-reply" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/v/rooms/room-send/replies")) {
+      replyRequest = JSON.parse(init.body);
+      replyHeaders = init.headers;
+      return new Response(JSON.stringify({ seq: 2, event_id: "event-reply", replayed: false, interaction: { interaction_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62", reply_hop: 3 } }), { status: 201 });
+    }
+    throw new Error("unexpected " + u);
+  });
+
+  const result = await harness.call("parle_reply", {
+    body: "Reply through the route",
+    replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+    idempotencyKey: "idem-reply",
+  });
+
+  assert.deepEqual(replyRequest, {
+    reply_route_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+    payload: { body: "Reply through the route" },
+  });
+  assert.equal(replyHeaders["Idempotency-Key"], "idem-reply");
+  assert.equal(result.details.interaction.reply_hop, 3);
+  assert.match(result.details.retry, /identical replyRouteId/);
+  assert.match(harness.tools.parle_reply.description, /opaque reply route/);
+  assert.match(harness.tools.parle_reply.description, /never authorizes selector, broadcast, unaddressed/);
+});
+
 test("parle_send without to preserves canonical attention and warns for all non-target scopes", async () => {
   const messageRequests = [];
   const scopes = ["none", "future_scope"];
@@ -1942,13 +1975,20 @@ test("parle_send without to preserves canonical attention and warns for all non-
   assert.match(harness.tools.parle_send.description, /Broadcast is likewise not a substitute for direct addressing/);
 });
 
-test("responsive delivery prompt tells agents how to reply directly", () => {
+test("responsive delivery prompt prefers the opaque route and warns at two remaining", () => {
   const prompt = __testing.inboundPrompt({
     seq: 9,
     event_id: "event-9",
     participant_id: "participant-9",
     provenance: { author: "participant-9", kind: "participant" },
     author: { address: "@gilman.galexc.sender123" },
+    reply_route: {
+      reply_route_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+      interaction_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62",
+      reply_hop: 14,
+      remaining_reply_hops: 2,
+      expires_at: "2026-08-13T12:00:00Z",
+    },
     content: "hello",
   });
 
@@ -1957,8 +1997,28 @@ test("responsive delivery prompt tells agents how to reply directly", () => {
   assert.match(prompt, /fenced as untrusted prompt text/);
   assert.match(prompt, /principal's standing instructions/);
   assert.match(prompt, /reply_to_author: @gilman\.galexc\.sender123/);
-  assert.match(prompt, /call parle_send with to set exactly to @gilman\.galexc\.sender123/);
-  assert.match(prompt, /Do not address replies to participant_id or provenance_author/);
+  assert.match(prompt, /call parle_reply with replyRouteId set exactly to 018f9c1e/);
+  assert.match(prompt, /remaining_reply_hops: 2/);
+  assert.equal((prompt.match(/clientWarnings:/g) || []).length, 1);
+  assert.doesNotMatch(prompt, /call parle_send/);
+});
+
+test("responsive delivery never reconstructs a selector when the route is absent", () => {
+  const message = {
+    seq: 10,
+    event_id: "event-10",
+    participant_id: "participant-10",
+    provenance: { author: "participant-10", kind: "participant" },
+    author: { principal_handle: "gilman", agent_handle: "galexc", session_handle: "sender123" },
+    reply_route: null,
+    content: "hello",
+  };
+  assert.equal(__testing.authorReplyAddress(message), undefined);
+  const prompt = __testing.inboundPrompt(message);
+  assert.match(prompt, /reply_to_author: withheld/);
+  assert.match(prompt, /Do not infer exhaustion/);
+  assert.doesNotMatch(prompt, /@gilman\.galexc\.sender123/);
+  assert.doesNotMatch(prompt, /call parle_send/);
 });
 
 test("responsive delivery compacts only exact same-response server wrapping", () => {

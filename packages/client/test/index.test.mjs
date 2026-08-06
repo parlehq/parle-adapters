@@ -476,6 +476,85 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
   assert.equal(JSON.parse(sendReq.init.body).payload.turn, undefined);
 });
 
+test("submitReply redeems only the opaque route with the exact wire body", async () => {
+  const requests = [];
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "parle_agt_secret" },
+    randomUUID: () => "idem-reply-1",
+    fetch: async (url, init = {}) => {
+      const u = String(url);
+      requests.push({ url: u, init });
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (u.endsWith("/replies")) return json({ event_id: "evt-reply", seq: 6, replayed: false, interaction: { interaction_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e62", reply_hop: 3 } }, 201);
+      return json({});
+    },
+  });
+  const result = await client.submitReply({
+    body: "reply body",
+    replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+  });
+  assert.equal(result.idempotencyKey, "idem-reply-1");
+  assert.equal(result.interaction.reply_hop, 3);
+  const request = requests.find((entry) => entry.url.endsWith("/replies"));
+  assert.equal(request.init.method, "POST");
+  assert.equal(request.init.headers["Idempotency-Key"], "idem-reply-1");
+  assert.deepEqual(JSON.parse(request.init.body), {
+    reply_route_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
+    payload: { body: "reply body" },
+  });
+  assert.equal(requests.some((entry) => entry.url.includes("/messages")), false);
+});
+
+test("privacy-flat reply failure returns no selector fallback and preserves the retry key", async () => {
+  const requests = [];
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "parle_agt_secret" },
+    randomUUID: () => "idem-reply-not-found",
+    fetch: async (url) => {
+      const u = String(url);
+      requests.push(u);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (u.endsWith("/replies")) return json({ error: { code: "not_found", message: "not found", action: "stop", retryable: false, scope: "request", retry_after_ms: null } }, 404);
+      return json({});
+    },
+  });
+  const result = await client.submitReply({ body: "reply body", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61" });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "not_found");
+  assert.equal(result.idempotencyKey, "idem-reply-not-found");
+  assert.equal(Object.hasOwn(result, "addressedTo"), false);
+  assert.equal(requests.some((url) => url.includes("/messages")), false);
+});
+
+test("submitReply never auto-retries a single-use route", async () => {
+  let replyAttempts = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "parle_agt_secret" },
+    randomUUID: () => "idem-reply-retryable",
+    sleep: async () => {},
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (u.endsWith("/replies")) {
+        replyAttempts += 1;
+        return json({ error: { code: "server_unavailable", message: "try later", action: "retry_with_backoff", retryable: true, scope: "server", retry_after_ms: 10 } }, 503);
+      }
+      return json({});
+    },
+  });
+  const result = await client.submitReply({ body: "reply body", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61" });
+  assert.equal(replyAttempts, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.retryable, true);
+  assert.equal(result.idempotencyKey, "idem-reply-retryable");
+});
+
 test("bootstrap keeps the parle_ses_ credential intact and presents it at room entry", async () => {
   const requests = [];
   const client = new ParleAgentClient({

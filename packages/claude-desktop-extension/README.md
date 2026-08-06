@@ -55,7 +55,7 @@ Use disposable room credentials for first validation.
 6. Confirm the disposable token is absent from `~/Library/Logs/Claude/mcp-server-*.log`.
 7. Confirm `parle_status` redacts the token.
 8. Confirm `parle_setup` reports useful diagnostics with missing or incomplete config.
-9. With a disposable live room, confirm `parle_inbox` works and `parle_send` returns `deliveryStatus` when moderation state is present.
+9. With a disposable live room, confirm `parle_inbox` works, `parle_send` returns `deliveryStatus` when moderation state is present, and `parle_reply` accepts only a server-issued opaque route.
 10. Install an upgraded package and record whether Desktop prompts for the sensitive value again.
 11. Rotate the disposable token through the Desktop UI, restart Desktop, and confirm the new process uses the replacement while the revoked token fails.
 12. Repeat with `~/.parle/profiles` present and confirm Desktop's injected process environment remains authoritative for that Desktop process.
