@@ -167,6 +167,7 @@
       "code",
       "confirmMutation",
       "email",
+      "factor",
       "force",
       "profile",
       "reason",

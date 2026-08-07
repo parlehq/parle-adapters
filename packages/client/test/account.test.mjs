@@ -96,6 +96,99 @@ test("login complete persists only the shared session without returning secrets 
   } finally { f.cleanup(); }
 });
 
+test("hardened email login persists pending state then promotes it with TOTP", async () => {
+  const f = loginFixture();
+  const calls = [];
+  const pending = "__Host-parle_login=parle_lgn_pending-cookie";
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, body: init.body && JSON.parse(init.body), cookie: init.headers.Cookie });
+        if (path === "/v/auth/email/complete") {
+          return new Response(JSON.stringify({ status: "factor_required", factors: ["totp"], expires_at: "2026-08-07T14:15:00Z" }), {
+            status: 202,
+            headers: { "Set-Cookie": `${pending}; Path=/; HttpOnly; Secure` },
+          });
+        }
+        if (path === "/v/auth/login/complete") {
+          assert.equal(init.headers.Cookie, pending);
+          return new Response(null, { status: 204, headers: { "Set-Cookie": "__Host-parle_session=parle_ses_hardened-cookie; Path=/; HttpOnly; Secure" } });
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+
+    const pendingResult = await client.login({ action: "complete", confirmMutation: true, reason: "test hardened", email: "user@example.test", code: "123456" });
+    assert.equal(pendingResult.status, "factor_required");
+    assert.deepEqual(pendingResult.factors, ["totp"]);
+    assert.equal(JSON.stringify(pendingResult).includes("pending-cookie"), false);
+    assert.equal(readFileSync(join(f.home, ".parle", "login"), "utf8"), `${pending}\n`);
+    assert.equal(existsSync(join(f.home, ".parle", "session")), false);
+
+    const completed = await client.login({ action: "complete-factor", factor: "totp", confirmMutation: true, reason: "finish hardened login", code: "654321" });
+    assert.equal(completed.status, "session_saved");
+    assert.equal(JSON.stringify(completed).includes("hardened-cookie"), false);
+    assert.equal(readFileSync(join(f.home, ".parle", "session"), "utf8"), "__Host-parle_session=parle_ses_hardened-cookie\n");
+    assert.equal(existsSync(join(f.home, ".parle", "login")), false);
+    assert.deepEqual(calls.map((call) => call.path), ["/v/auth/email/complete", "/v/auth/login/complete"]);
+  } finally { f.cleanup(); }
+});
+
+test("retryable TOTP refusal preserves pending login and terminal refusal removes it", async () => {
+  const f = loginFixture();
+  const pending = "__Host-parle_login=parle_lgn_pending-cookie";
+  const state = join(f.home, ".parle");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  writeFileSync(join(state, "login"), `${pending}\n`, { mode: 0o600 });
+  let attempts = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (_url, init) => {
+        attempts += 1;
+        assert.equal(init.headers.Cookie, pending);
+        if (attempts === 1) return response({ error: { code: "invalid_agent_token" } }, 401);
+        return new Response(JSON.stringify({ error: { code: "invalid_agent_token" } }), {
+          status: 401,
+          headers: { "Set-Cookie": "__Host-parle_login=; Path=/; Max-Age=-1; HttpOnly; Secure" },
+        });
+      },
+    });
+
+    const retryable = await client.login({ action: "complete-factor", factor: "totp", confirmMutation: true, reason: "retry proof", code: "111111" });
+    assert.equal(retryable.status, "factor_rejected");
+    assert.equal(retryable.retryable, true);
+    assert.equal(existsSync(join(state, "login")), true);
+
+    const terminal = await client.login({ action: "complete-factor", factor: "totp", confirmMutation: true, reason: "terminal proof", code: "222222" });
+    assert.equal(terminal.status, "factor_rejected");
+    assert.equal(terminal.retryable, false);
+    assert.equal(existsSync(join(state, "login")), false);
+  } finally { f.cleanup(); }
+});
+
+test("pending login rejects unsafe custody before TOTP or network access", async () => {
+  const f = loginFixture();
+  const state = join(f.home, ".parle");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  const pendingPath = join(state, "login");
+  writeFileSync(pendingPath, "__Host-parle_login=parle_lgn_pending-cookie\n", { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(pendingPath, 0o644);
+  let called = false;
+  try {
+    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { called = true; throw new Error("unexpected network access"); } });
+    await assert.rejects(
+      client.login({ action: "complete-factor", factor: "totp", confirmMutation: true, reason: "test unsafe custody", code: "test-proof" }),
+      process.platform === "win32" ? /unexpected network access/ : /mode 0600/,
+    );
+    if (process.platform !== "win32") assert.equal(called, false);
+  } finally { f.cleanup(); }
+});
+
 test("login credential mutations require explicit confirmation and reason before network access", async () => {
   const f = loginFixture();
   let called = false;

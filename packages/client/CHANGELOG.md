@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.9 (2026-08-07)
+
+- Continue hardened email-code login through protected pending state and explicit TOTP completion without exposing cookies or proofs (#84, parle#705).
+
 ## 0.8.8 (2026-08-06)
 
 - Reconcile durable responsive delivery after wake-stream establishment, recover total hint loss through the ADR-0059 fallback fetch, honor server timing and jitter, and route unexpected stream completion through bounded reconnect recovery (#80).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14 (2026-08-07)
+
+- Continue hardened email login through protected pending state and explicit TOTP completion (#84, parle#705).
+
 ## 0.7.13 (2026-08-06)
 
 - Refresh the native shared controller so Pi recovers responsive work after reconnect or total advisory hint loss without requiring later room activity (#80).

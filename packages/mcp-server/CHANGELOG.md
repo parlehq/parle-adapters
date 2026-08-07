@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.9 (2026-08-07)
+
+- Add the shared `complete-factor` login action so hardened accounts can finish credential bootstrap with TOTP (#84, parle#705).
+
 ## 0.7.8 (2026-08-06)
 
 - Refresh the embedded shared controller for post-open responsive reconciliation, ADR-0059 fallback fetch, and bounded reconnect recovery (#80).

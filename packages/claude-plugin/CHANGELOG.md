@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.9 (2026-08-07)
+
+- Refresh account bootstrap so hardened email login can continue through TOTP without exposing pending credentials (#84, parle#705).
+
 ## 0.9.8 (2026-08-06)
 
 - Refresh responsive delivery for post-open reconciliation, ADR-0059 fallback fetch, and bounded reconnect recovery (#80).
