@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.13 (2026-08-07)
+
+- Clarify that Claude's pre-channels projection watcher and manual inbox cannot expose opaque reply routes, and that withheld author identity never authorizes an unaddressed fallback.
+
 ## 0.9.12 (2026-08-07)
 
 - Prevent privacy-flat own room-wide sends from waking Claude, including across verified primary-session rollover (#87).

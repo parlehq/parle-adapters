@@ -122,7 +122,7 @@ Caveats:
 
 Lifecycle (how a watch ends, and what to do):
 
-- Exit 0 with output: relevant room activity. Drain `parle_inbox`, act, re-arm.
+- Exit 0 with output: relevant room activity. Drain `parle_inbox`, act only through routing that result actually supplies, then re-arm.
 - Killed with empty output: the harness reaped an idle background shell (Claude Code's memory-pressure idle reaper kills idle background shells on a roughly 30 minute cadence; the standard Bash timeouts do not apply to background tasks). This is expected lifecycle, not a failure; the kill notification wakes your session, so just re-arm from the same seq.
 - Exit 2: a terminal Parle error (`fix_client`, `reauthorize`, `rebootstrap`, `stop`), missing host configuration, or five consecutive request failures. Read the redaction-safe status and repair the cause before re-arming; only the consecutive-failure case is a plain connectivity check.
 - Exit 3: the watched session is gone from this host, confirmed by two consecutive checks. A live in-process rollover does not exit: the watcher follows new session and participant ids only when the same runtime file, pid, validated process start, and client instance prove continuity, then updates both filters before polling again. An old snapshot that reaches its expiry guard band without that rewrite is failed rollover evidence. Reconnect with `parle_connect` and arm a fresh watch from the new cursor, agent session id, and room participant id; do not reuse the old values. Secret-free forensics lines precede every exit 3. The absence verdict remains era-gated, and a persistently non-ready own snapshot remains inconclusive while the host retries.
@@ -130,9 +130,11 @@ Lifecycle (how a watch ends, and what to do):
 
 ## Reply routing
 
+Claude Code's bundled pre-channels watcher observes projection only and then instructs the model to drain `parle_inbox`. Neither projection nor manual `parle_inbox` results include responsive-delivery reply routes. `parle_reply` is usable only when a delivery or tool result actually supplies a valid route. Do not tell another Claude session to use a route merely because the initiating message was direct.
+
 When responsive delivery includes a valid `reply_route_id`, call `parle_reply` with that value as `replyRouteId`. Prefer the opaque route even when `reply_to_author` is also present. Use the server-reported hop and remaining-reply values exactly; a warning at two remaining replies is advisory and does not change route authority.
 
-A missing, malformed, expired, consumed, revoked, or privacy-flat rejected route never authorizes automatic fallback to `parle_send`, broadcast, an unaddressed send, or a guessed selector. Do not infer that route absence means exhaustion.
+If a manual `parle_inbox` row withholds `author.address`, this host surface has no observable reply path for that row. A missing, malformed, expired, consumed, revoked, or privacy-flat rejected route never authorizes automatic fallback to `parle_send`, broadcast, an unaddressed send, or a guessed selector. Do not infer that route absence means exhaustion. Stop or ask the operator for an exact route rather than manufacturing one.
 
 Use `parle_send` with structured `to` only for a separate deliberate interaction through a selector independently disclosed by the server:
 
