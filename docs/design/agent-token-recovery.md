@@ -181,12 +181,13 @@ A transport failure after dispatch returns a namespaced mutation-outcome-unknown
 Pi and MCP expose the same action contract:
 
 - `start`: request a returning-login email code
-- `complete`: exchange the code and atomically persist only the protected human session
+- `complete`: exchange the code and atomically persist either the protected human session or an opaque pending-login cookie when the account requires a strong factor
+- `complete-factor`: spend TOTP against protected pending state and persist the resulting human session
 - `mint-from-session`: select an existing room and agent, mint a token, and persist a profile
 
-`complete` must never continue into minting, even when room and agent selection is unambiguous. This corrects current Pi behavior.
+`complete` must never continue into factor completion or token minting. Each proof remains one explicit confirmed operation. Pending state lives in a protected transient `login` file beside the resolved profile catalog, is never rendered, and survives only retryable TOTP refusal or infrastructure failure. Success or terminal rejection removes it.
 
-`mint-from-session` requires `confirmMutation: true` and a non-empty `reason`. It never retries automatically. Until `parlehq/parle#451` lands, a lost or malformed post-dispatch mint response remains outcome-unknown and the adapter must say so without attempting compensation.
+`complete`, `complete-factor`, and `mint-from-session` require `confirmMutation: true` and a non-empty `reason`. They never retry automatically. Until `parlehq/parle#451` lands, a lost or malformed post-dispatch mint response remains outcome-unknown and the adapter must say so without attempting compensation.
 
 ## Shared account client
 

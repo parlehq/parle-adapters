@@ -32611,6 +32611,7 @@ var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
 var SESSION_COOKIE_RE = /^__Host-parle_session=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
+var LOGIN_CHALLENGE_COOKIE_RE = /^__Host-parle_login=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
 var RESERVED_HANDLES = /* @__PURE__ */ new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
 var MINT_DENIAL_NEXT_ACTION = {
   unhardened: "set a password, then enroll a second factor",
@@ -32834,6 +32835,9 @@ function validateProfileLabel(raw) {
 function sessionCookieFilePath(catalogPath) {
   return join4(dirname3(catalogPath), "session");
 }
+function pendingLoginCookieFilePath(catalogPath) {
+  return join4(dirname3(catalogPath), "login");
+}
 function assertNoSymlinkPathComponents(path) {
   const absolute = resolve(path);
   const root = parse3(absolute).root;
@@ -32887,18 +32891,18 @@ function safeProfileWritePath(path) {
     throw new Error(`Refusing to write Parle profiles because ${path} does not resolve to a file owned by the current user.`);
   return writePath;
 }
-function writeSessionCookieFile(catalogPath, cookie) {
+function writeCookieFile(catalogPath, filename, cookie) {
   const directory = ensureProfileDirectory(catalogPath);
-  const path = sessionCookieFilePath(catalogPath);
+  const path = join4(dirname3(catalogPath), filename);
   const writePath = safeProfileWritePath(join4(directory, basename(path)));
-  const tempPath = join4(dirname3(writePath), `.session.${process.pid}.${Date.now()}.tmp`);
+  const tempPath = join4(dirname3(writePath), `.${filename}.${process.pid}.${Date.now()}.tmp`);
   try {
     writeFileSync2(tempPath, `${cookie}
 `, { mode: 384, flag: "wx" });
     if (process.platform !== "win32")
       chmodSync2(tempPath, 384);
     if (ensureProfileDirectory(catalogPath) !== directory)
-      throw new Error("Parle credential directory changed during session persistence.");
+      throw new Error("Parle credential directory changed during cookie persistence.");
     safeProfileWritePath(writePath);
     renameSync3(tempPath, writePath);
     if (process.platform !== "win32")
@@ -32911,6 +32915,26 @@ function writeSessionCookieFile(catalogPath, cookie) {
     }
   }
   return path;
+}
+function writeSessionCookieFile(catalogPath, cookie) {
+  return writeCookieFile(catalogPath, "session", cookie);
+}
+function writePendingLoginCookieFile(catalogPath, cookie) {
+  return writeCookieFile(catalogPath, "login", cookie);
+}
+function readPendingLoginCookieFile(catalogPath) {
+  const path = safeFile(pendingLoginCookieFilePath(catalogPath), "Parle pending login credential", false);
+  const cookie = readFileSync4(path, "utf8").trim();
+  if (!LOGIN_CHALLENGE_COOKIE_RE.test(cookie))
+    throw new Error("Parle pending login credential is malformed. Remove it and restart email login.");
+  return cookie;
+}
+function removePendingLoginCookieFile(catalogPath) {
+  const path = pendingLoginCookieFilePath(catalogPath);
+  if (!existsSync3(path))
+    return;
+  safeFile(path, "Parle pending login credential", false);
+  unlinkSync2(path);
 }
 function profileSectionRange(text, label) {
   const headers = [];
@@ -33100,15 +33124,20 @@ function chooseInventoryItem(items, idKey, handleKey, label, requestedId, reques
   }
   return items.length === 1 ? items[0] : void 0;
 }
-function extractSessionCookie(headers) {
+function setCookieValues(headers) {
   const getSetCookie = headers.getSetCookie;
-  const values = typeof getSetCookie === "function" ? getSetCookie.call(headers) : [headers.get("set-cookie")].filter(Boolean);
-  for (const value of values) {
-    const match = value.match(/(?:^|,\s*)(__Host-parle_session=[^;,\s]+)/);
+  return typeof getSetCookie === "function" ? getSetCookie.call(headers) : [headers.get("set-cookie")].filter(Boolean);
+}
+function extractCookie(headers, name) {
+  for (const value of setCookieValues(headers)) {
+    const match = value.match(new RegExp(`(?:^|,\\s*)(${name}=[^;,\\s]+)`));
     if (match)
       return match[1];
   }
   return void 0;
+}
+function clearsCookie(headers, name) {
+  return setCookieValues(headers).some((value) => value.includes(`${name}=`) && /(?:Max-Age=0|Max-Age=-1|Expires=Thu, 01 Jan 1970)/i.test(value));
 }
 var ParleAccountClient = class {
   cwd;
@@ -33244,12 +33273,58 @@ var ParleAccountClient = class {
     const text = scrub(buffer.toString("utf8"), Object.values(body));
     if (!response.ok)
       throw new Error(`Parle email login ${path.endsWith("/start") ? "start" : "complete"} failed ${response.status}: ${truncateText(text, 4096).text}`);
-    return { json: parseJson2(text) || {}, headers: response.headers };
+    return { status: response.status, json: parseJson2(text) || {}, headers: response.headers };
+  }
+  async completeLoginFactor(config2, code, signal) {
+    const pendingCookie = readPendingLoginCookieFile(config2.catalogPath);
+    const response = await this.fetchImpl(new URL("/v/auth/login/complete", config2.apiBase), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "Parle-Version": config2.version,
+        Cookie: pendingCookie
+      },
+      body: JSON.stringify({ factor: "totp", code }),
+      signal
+    });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > MAX_RESPONSE_BYTES2)
+      throw new Error(`Parle API response exceeded ${MAX_RESPONSE_BYTES2} bytes.`);
+    const text = scrub(buffer.toString("utf8"), [code, pendingCookie]);
+    if (response.status === 401) {
+      const terminal = clearsCookie(response.headers, "__Host-parle_login");
+      if (terminal)
+        removePendingLoginCookieFile(config2.catalogPath);
+      return {
+        status: "factor_rejected",
+        retryable: !terminal,
+        pendingLoginPreserved: !terminal,
+        secrets: "redacted; login challenge and TOTP were not returned in tool output",
+        next: terminal ? "The pending login is no longer usable. Start a new email login." : "The pending login remains usable. Retry complete-factor with the current authenticator code; do not request another email code."
+      };
+    }
+    if (!response.ok)
+      throw new Error(`Parle login factor completion failed ${response.status}: ${truncateText(text, 4096).text}`);
+    if (response.status !== 204)
+      throw new Error(`Parle login factor completion returned unexpected status ${response.status}.`);
+    const sessionCookie = extractCookie(response.headers, "__Host-parle_session");
+    if (!sessionCookie || !SESSION_COOKIE_RE.test(sessionCookie))
+      throw new Error("Parle login factor completion succeeded without a valid human session cookie. Pending state was preserved.");
+    const sessionCookiePath = writeSessionCookieFile(config2.catalogPath, sessionCookie);
+    removePendingLoginCookieFile(config2.catalogPath);
+    return {
+      status: "session_saved",
+      wroteSessionCookie: true,
+      sessionCookiePath,
+      secrets: "redacted; login challenge, TOTP, and PARLE_SESSION_COOKIE were not returned in tool output",
+      next: "Call parle_login with action:'mint-from-session', an exact room selector, and an exact agent selector to mint and save one room-bound profile."
+    };
   }
   async login(params, signal) {
     const action = params.action || (params.code ? "complete" : "start");
     if (action !== "start" && (params.confirmMutation !== true || !params.reason?.trim()))
-      throw new Error(`parle_login ${action} requires confirmMutation=true and a reason before persisting credentials or minting a token.`);
+      throw new Error(`parle_login ${action} requires confirmMutation=true and a reason before persisting credentials, spending proof attempts, or minting a token.`);
     const config2 = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true });
     const writeCredentials = params.writeCredentials !== false;
     const profileName = params.profile || "default";
@@ -33260,8 +33335,21 @@ var ParleAccountClient = class {
       return {
         status: "code_requested",
         email: params.email,
-        next: "Call parle_login again with the same email and the code. The complete step will capture Set-Cookie and save local credentials without printing secrets."
+        next: "Call parle_login again with the same email and the code. Unhardened accounts save the human session immediately; hardened accounts continue with TOTP without requesting another email code."
       };
+    }
+    if (!writeCredentials) {
+      if (action === "complete")
+        throw new Error("parle_login complete refuses writeCredentials=false because it would consume a one-time code without durable credential recovery.");
+      if (action === "complete-factor")
+        throw new Error("parle_login complete-factor refuses writeCredentials=false because it would spend a TOTP attempt without durable pending-state recovery.");
+      if (action === "mint-from-session")
+        throw new Error("parle_login mint-from-session refuses writeCredentials=false because it would mint a plaintext token without durable credential recovery.");
+    }
+    if (action === "complete-factor") {
+      if (params.factor !== "totp" || !params.code?.trim())
+        throw new Error("parle_login complete-factor requires factor='totp' and the current authenticator code.");
+      return this.completeLoginFactor(config2, params.code.trim(), signal);
     }
     let sessionCookie = config2.sessionCookie;
     if (action === "complete") {
@@ -33269,23 +33357,35 @@ var ParleAccountClient = class {
         throw new Error("parle_login complete requires email.");
       if (!params.code)
         throw new Error("parle_login complete requires code.");
-      if (!writeCredentials)
-        throw new Error("parle_login complete refuses writeCredentials=false because it would consume a one-time code without durable credential recovery.");
       const completed = await this.emailRequest(config2, "/v/auth/email/complete", { email: params.email, code: params.code }, signal);
-      sessionCookie = extractSessionCookie(completed.headers);
-      if (!sessionCookie)
-        throw new Error("Parle email login completed but no __Host-parle_session Set-Cookie header was present. Credential persistence cannot continue safely.");
-      const sessionCookiePath = writeSessionCookieFile(config2.catalogPath, sessionCookie);
+      sessionCookie = extractCookie(completed.headers, "__Host-parle_session");
+      if (completed.status === 201 && sessionCookie && SESSION_COOKIE_RE.test(sessionCookie)) {
+        const sessionCookiePath = writeSessionCookieFile(config2.catalogPath, sessionCookie);
+        removePendingLoginCookieFile(config2.catalogPath);
+        return {
+          status: "session_saved",
+          wroteSessionCookie: true,
+          sessionCookiePath,
+          secrets: "redacted; PARLE_SESSION_COOKIE was not returned in tool output",
+          next: "Call parle_login with action:'mint-from-session', an exact room selector, and an exact agent selector to mint and save one room-bound profile."
+        };
+      }
+      const pendingCookie = extractCookie(completed.headers, "__Host-parle_login");
+      const factors = Array.isArray(completed.json?.factors) ? completed.json.factors.filter((factor) => typeof factor === "string") : [];
+      if (completed.status !== 202 || completed.json?.status !== "factor_required" || !pendingCookie || !LOGIN_CHALLENGE_COOKIE_RE.test(pendingCookie) || !factors.includes("totp") || typeof completed.json?.expires_at !== "string") {
+        throw new Error("Parle email login returned an invalid session-or-factor response. No credential was persisted.");
+      }
+      const pendingLoginCookiePath = writePendingLoginCookieFile(config2.catalogPath, pendingCookie);
       return {
-        status: "session_saved",
-        wroteSessionCookie: true,
-        sessionCookiePath,
-        secrets: "redacted; PARLE_SESSION_COOKIE was not returned in tool output",
-        next: "Call parle_login with action:'mint-from-session', an exact room selector, and an exact agent selector to mint and save one room-bound profile."
+        status: "factor_required",
+        factors,
+        expires_at: completed.json.expires_at,
+        wrotePendingLoginCookie: true,
+        pendingLoginCookiePath,
+        secrets: "redacted; login challenge and email code were not returned in tool output",
+        next: "Call parle_login with action:'complete-factor', factor:'totp', and the current authenticator code. Do not request another email code."
       };
     } else if (action === "mint-from-session") {
-      if (!writeCredentials)
-        throw new Error("parle_login mint-from-session refuses writeCredentials=false because it would mint a plaintext token without durable credential recovery.");
       preflightProfileWrite(profileName, params.force === true, config2.catalogPath);
       if (!sessionCookie)
         throw new Error(`parle_login mint-from-session requires PARLE_SESSION_COOKIE in env or .env, or a session file at ${sessionCookieFilePath(config2.catalogPath)} (written by parle_login complete).`);
@@ -36885,7 +36985,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.8";
+var MCP_CLIENT_VERSION = "0.7.9";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -37057,10 +37157,11 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   }));
   server.registerTool("parle_login", {
     title: "Parle Login",
-    description: "Request or complete an email-code login, then separately mint a room-bound agent profile from the saved human session. Complete persists only the human session cookie. mint-from-session performs the non-idempotent token mint and profile publication. Both require confirmMutation=true plus a reason, always persist their credential, and never return a session cookie or token.",
+    description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session performs the non-idempotent token mint and profile publication. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
     inputSchema: {
-      action: external_exports.enum(["start", "complete", "mint-from-session"]).optional(),
+      action: external_exports.enum(["start", "complete", "complete-factor", "mint-from-session"]).optional(),
       email: external_exports.string().optional(),
+      factor: external_exports.enum(["totp"]).optional(),
       code: external_exports.string().optional(),
       roomId: external_exports.string().optional(),
       roomHandle: external_exports.string().optional(),

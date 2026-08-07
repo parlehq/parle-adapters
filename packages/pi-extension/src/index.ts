@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.13";
+const PI_EXTENSION_VERSION = "0.7.14";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2019,20 +2019,21 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_login",
     label: "Parle Login",
-    description: "First-class Parle email login and local credential bootstrap. Complete persists only the human session cookie to a session file beside the resolved profile catalog. mint-from-session separately mints one room-bound agent token and atomically writes a named 0600 profile (~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate). Both require confirmMutation=true plus a reason. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Secrets are never returned in tool output.",
+    description: "First-class Parle email login and local credential bootstrap. Complete persists either the human session or an opaque pending-login cookie beside the resolved profile catalog. For a hardened account, complete-factor spends TOTP and promotes pending state to the human session. mint-from-session separately mints one room-bound agent token and atomically writes a named 0600 profile (~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate). Credential-consuming actions require confirmMutation=true plus a reason. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Cookies, proofs, and tokens are never returned in tool output.",
     parameters: Type.Object({
-      action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete", "mint-from-session"] })),
+      action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete", "complete-factor", "mint-from-session"] })),
       email: Type.Optional(Type.String()),
+      factor: Type.Optional(Type.Unsafe({ type: "string", enum: ["totp"] })),
       code: Type.Optional(Type.String()),
       roomId: Type.Optional(Type.String({ description: "Room selector. Overrides resolved PARLE_ROOM_ID." })),
       roomHandle: Type.Optional(Type.String({ description: "Room selector. Overrides resolved PARLE_ROOM_HANDLE." })),
       agentId: Type.Optional(Type.String({ description: "Agent selector. Overrides resolved PARLE_AGENT_ID." })),
       agentHandle: Type.Optional(Type.String({ description: "Agent selector. Overrides resolved PARLE_AGENT_HANDLE." })),
-      writeCredentials: Type.Optional(Type.Boolean({ description: "Must remain true so complete persists the session cookie and mint-from-session persists the profile beside the resolved catalog." })),
+      writeCredentials: Type.Optional(Type.Boolean({ description: "Must remain true so complete persists session or pending state, complete-factor persists the human session, and mint-from-session persists the profile beside the resolved catalog." })),
       profile: Type.Optional(Type.String({ description: "Safe local profile label.", default: "default" })),
       force: Type.Optional(Type.Boolean({ description: "Required to replace an existing profile section." })),
-      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true for complete before persisting the session and for mint-from-session before minting and persisting a token." })),
-      reason: Type.Optional(Type.String({ description: "Required explanation for complete and mint-from-session." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true for complete before consuming the email code, for complete-factor before spending a TOTP attempt, and for mint-from-session before minting and persisting a token." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for complete, complete-factor, and mint-from-session." })),
     }),
     async execute(_id, params: ParleLoginParams, signal, _update, ctx) {
       lastCtx = ctx;
