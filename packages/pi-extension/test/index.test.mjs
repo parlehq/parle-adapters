@@ -746,7 +746,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.14" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.15" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1420,7 +1420,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.14");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.15");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2062,6 +2062,8 @@ test("parle_inbox reads the inbound attention surface", async () => {
   assert.match(result.details.note, /parle_send with to set exactly to that message's author\.address/);
   assert.match(result.details.note, /no target-responsive work for that peer/);
   assert.match(result.details.note, /do not guess from participant_id or provenance fields/);
+  assert.match(harness.tools.parle_inbox.description, /Manual inbox reads and responsive delivery are distinct observation paths/);
+  assert.match(harness.tools.parle_inbox.description, /An empty messages array means no inbox rows were disclosed through the returned watermark/);
   assert.match(harness.tools.parle_inbox.description, /parle_send with to set exactly to that message's author\.address/);
 });
 

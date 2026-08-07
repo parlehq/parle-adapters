@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.10 (2026-08-07)
+
+- Refresh shared held-backlog diagnostics and expose bounded manual-inbox completeness guidance (#81).
+
 ## 0.7.9 (2026-08-07)
 
 - Add the shared `complete-factor` login action so hardened accounts can finish credential bootstrap with TOTP (#84, parle#705).

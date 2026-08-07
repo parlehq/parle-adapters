@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.10 (2026-08-07)
+
+- Refresh the embedded MCP runtime for current held-backlog status and bounded manual-inbox guidance (#81).
+
 ## 0.8.9 (2026-08-07)
 
 - Refresh account bootstrap so hardened email login can continue through TOTP without exposing pending credentials (#84, parle#705).

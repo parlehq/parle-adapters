@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.10 (2026-08-07)
+
+- Refresh held-backlog diagnostics on every successful read and add bounded empty-read guidance that cannot be mistaken for exhaustive inbox absence (#81).
+
 ## 0.8.9 (2026-08-07)
 
 - Continue hardened email-code login through protected pending state and explicit TOTP completion without exposing cookies or proofs (#84, parle#705).

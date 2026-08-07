@@ -30,6 +30,7 @@ export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
+export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
 export const SEND_ATTENTION_GUIDANCE = "Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
@@ -749,6 +750,24 @@ export function updateCursorFromMessages(cursor: number, messages: unknown[], wa
   return next;
 }
 
+function refreshHeldBacklogCount(room: RoomRuntime, response: any): boolean {
+  const count = response?.held_backlog?.held_count;
+  if (!Number.isSafeInteger(count) || count < 0 || room.heldBacklogCount === count) return false;
+  room.heldBacklogCount = count;
+  return true;
+}
+
+function readCompletenessNote(surface: "projection" | "inbound", response: any, rawMessages: unknown[]): string {
+  if (rawMessages.length > 0) return "";
+  const label = surface === "inbound" ? "inbox" : "projection";
+  const watermark = typeof response?.watermark === "number" ? ` through watermark ${response.watermark}` : " through the returned watermark";
+  const bounded = `No ${label} rows were disclosed${watermark}. This is a bounded snapshot.`;
+  if (Number.isSafeInteger(response?.held_backlog?.held_count) && response.held_backlog.held_count > 0) {
+    return `${bounded} Room-level held backlog remains in flight, so do not conclude that no inbound or responsive messages exist. The held marker does not prove any held row is inbound or responsive-eligible.`;
+  }
+  return bounded;
+}
+
 export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT_READ_MESSAGE_LIMIT, maxBytes = READ_LIMIT_BYTES) {
   const capped: unknown[] = [];
   let returnedBytes = 0;
@@ -1386,7 +1405,7 @@ export class ParleAgentClient {
               roomId, sessionCredential: candidate.sessionHandle, signal, retry: false,
             });
             room.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
-            if (typeof projection?.held_backlog?.held_count === "number") room.heldBacklogCount = projection.held_backlog.held_count;
+            refreshHeldBacklogCount(room, projection);
           }
           room.state = "ready";
         } catch (error) {
@@ -1607,7 +1626,7 @@ export class ParleAgentClient {
         roomId, session: true, signal, retry: false,
       });
       room.cursor = typeof projection.watermark === "number" ? projection.watermark : room.cursor;
-      if (typeof projection?.held_backlog?.held_count === "number") room.heldBacklogCount = projection.held_backlog.held_count;
+      refreshHeldBacklogCount(room, projection);
       room.state = "ready";
       room.lastError = undefined;
       this.publishRoomRuntimes();
@@ -2101,7 +2120,9 @@ export class ParleAgentClient {
         const sinceSeq = this.roomRuntime(roomId).cursor || 0;
         try {
           const response = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/inbound?since_seq=${encodeURIComponent(String(sinceSeq))}&wait=0`, { session: true, roomId, signal, timeoutMs: 10_000, retry: false });
-          if ((this.roomRuntime(roomId).cursor || 0) !== sinceSeq) continue;
+          const currentRoom = this.roomRuntime(roomId);
+          if ((currentRoom.cursor || 0) !== sinceSeq) continue;
+          refreshHeldBacklogCount(currentRoom, response);
           const rows = Array.isArray(response.messages) ? response.messages : [];
           this.setUnread(rows.filter((row: any) => typeof row?.seq === "number" && row.seq > sinceSeq).length, roomId);
         } catch {
@@ -2394,6 +2415,7 @@ export class ParleAgentClient {
       const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/${surface}?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, roomId, signal });
       const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
       const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), READ_LIMIT_BYTES);
+      const diagnosticsChanged = refreshHeldBacklogCount(room, projection);
       const cursorBefore = room.cursor;
       const shouldAdvanceCursor = params.advanceCursor === true || (params.advanceCursor === undefined && params.sinceSeq === undefined);
       if (shouldAdvanceCursor) {
@@ -2410,8 +2432,10 @@ export class ParleAgentClient {
           this.setUnread(remaining, roomId);
         }
       }
+      if (diagnosticsChanged && !shouldAdvanceCursor) this.publishRoomRuntimes();
       const baseNote = wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text.";
-      const note = surface === "inbound" ? `${baseNote} ${INBOX_REPLY_GUIDANCE}` : baseNote;
+      const completeness = readCompletenessNote(surface, projection, rawMessages);
+      const note = [baseNote, completeness, surface === "inbound" ? INBOX_REPLY_GUIDANCE : ""].filter(Boolean).join(" ");
       return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}), note };
     }, signal));
   }

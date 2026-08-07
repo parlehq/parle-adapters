@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.15 (2026-08-07)
+
+- Refresh shared held-backlog diagnostics and make empty manual-inbox results explicitly non-exhaustive (#81).
+
 ## 0.7.14 (2026-08-07)
 
 - Continue hardened email login through protected pending state and explicit TOTP completion (#84, parle#705).

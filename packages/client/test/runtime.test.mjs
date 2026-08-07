@@ -193,26 +193,26 @@ test("isLiveRuntimeSnapshot gates on schema, state, expiry, and pid liveness", (
   assert.equal(isLiveRuntimeSnapshot(snapshotFor(deadPid()), now), false);
 });
 
-function unreadFetch(counters = {}, rows = () => []) {
+function unreadFetch(counters = {}, rows = () => [], heldCount) {
   const happy = happyFetch(counters);
   return async (url, init) => {
     const u = String(url);
     if (u.includes("/inbound?")) {
       counters.inbound = (counters.inbound || 0) + 1;
       counters.lastInboundUrl = u;
-      return json({ watermark: 7, messages: rows() });
+      return json({ watermark: 7, messages: rows(), ...(typeof heldCount === "number" ? { held_backlog: { held_count: heldCount } } : {}) });
     }
     return happy(url, init);
   };
 }
 
-async function runCursorRead({ cursor = 7, messages = [], watermark = 20, params = {} }) {
+async function runCursorRead({ cursor = 7, messages = [], watermark = 20, params = {}, heldCount, initialHeldCount }) {
   const counters = {};
   const happy = happyFetch(counters);
   const client = new ParleAgentClient({
     env: ENV,
     fetch: async (url, init) => {
-      if (String(url).includes("/inbound?")) return json({ watermark, messages });
+      if (String(url).includes("/inbound?")) return json({ watermark, messages, ...(typeof heldCount === "number" ? { held_backlog: { held_count: heldCount } } : {}) });
       return happy(url, init);
     },
   });
@@ -221,6 +221,7 @@ async function runCursorRead({ cursor = 7, messages = [], watermark = 20, params
   const seed = client.roomRuntime(client.cfg.roomId.value);
   seed.cursor = cursor;
   seed.unreadCount = 5;
+  if (typeof initialHeldCount === "number") seed.heldBacklogCount = initialHeldCount;
   const result = await client.readInbox(params);
   return { client, result };
 }
@@ -256,11 +257,12 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
     }
   });
 
-  await t.test("explicit sinceSeq defaults to an audit read", async () => {
-    const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2 } });
+  await t.test("explicit sinceSeq defaults to an audit read and refreshes held diagnostics", async () => {
+    const { client, result } = await runCursorRead({ messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2 }, initialHeldCount: 1, heldCount: 0 });
     assert.equal(result.cursorAfter, 7);
     assert.equal(result.advancedCursor, false);
     assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 5);
+    assert.equal(client.status().runtime.rooms[0].heldBacklogCount, 0);
   });
 
   await t.test("explicit sinceSeq plus true commits only returned capped rows and recomputes unread", async () => {
@@ -290,13 +292,15 @@ test("read cursor precedence follows the seven-row contract", async (t) => {
   });
 });
 
-test("observeUnread counts without advancing the cursor and repeated polls are idempotent", async () => {
+test("observeUnread counts and refreshes held diagnostics without advancing the cursor", async () => {
   const counters = {};
-  const client = new ParleAgentClient({ env: ENV, fetch: unreadFetch(counters, () => [{ seq: 8 }, { seq: 9 }]) });
+  const client = new ParleAgentClient({ env: ENV, fetch: unreadFetch(counters, () => [{ seq: 8 }, { seq: 9 }], 0) });
   await client.connect();
+  client.roomRuntime(client.cfg.roomId.value).heldBacklogCount = 1;
   assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
   await client.observeUnread();
   assert.equal(client.roomRuntime(client.cfg.roomId.value).unreadCount, 2);
+  assert.equal(client.roomRuntime(client.cfg.roomId.value).heldBacklogCount, 0);
   assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
   assert.match(counters.lastInboundUrl, /since_seq=7&wait=0/);
   await client.observeUnread();
@@ -304,6 +308,17 @@ test("observeUnread counts without advancing the cursor and repeated polls are i
   assert.equal(client.roomRuntime(client.cfg.roomId.value).cursor, 7);
   assert.equal(counters.inbound, 2);
   assert.match(counters.lastInboundUrl, /since_seq=7&wait=0/);
+});
+
+test("empty read guidance is bounded and treats held backlog conservatively", async () => {
+  const held = await runCursorRead({ messages: [], watermark: 20, heldCount: 1, params: { sinceSeq: 7 } });
+  assert.match(held.result.note, /No inbox rows were disclosed through watermark 20\. This is a bounded snapshot\./);
+  assert.match(held.result.note, /do not conclude that no inbound or responsive messages exist/);
+  assert.match(held.result.note, /does not prove any held row is inbound or responsive-eligible/);
+
+  const clear = await runCursorRead({ messages: [], watermark: 20, heldCount: 0, params: { sinceSeq: 7 } });
+  assert.match(clear.result.note, /No inbox rows were disclosed through watermark 20\. This is a bounded snapshot\./);
+  assert.doesNotMatch(clear.result.note, /held backlog remains in flight/);
 });
 
 test("a drain during an in-flight observation discards the stale count", async () => {
