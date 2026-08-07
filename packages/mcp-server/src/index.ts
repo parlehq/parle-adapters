@@ -28,7 +28,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.11";
+export const MCP_CLIENT_VERSION = "0.7.12";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -223,7 +223,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_switch_profile", {
     title: "Switch Parle Profile",
-    description: "Switch this MCP process to another named Parle profile after the host has stopped its sibling responsive watcher. This is ephemeral and never edits environment or profile files. watcherStopped=true is a required host attestation because MCP cannot inspect Claude Code background Bash tasks. On success, restart the bundled watcher with the returned profile, cursor, and agentSessionId.",
+    description: "Switch this MCP process to another named Parle profile after the host has stopped its sibling responsive watcher. This is ephemeral and never edits environment or profile files. watcherStopped=true is a required host attestation because MCP cannot inspect Claude Code background Bash tasks. On success, restart the bundled watcher with the returned profile, cursor, agentSessionId, and participantId.",
     inputSchema: switchProfileSchema,
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => safeTool(async () => {
@@ -233,14 +233,19 @@ export function createParleMcpServer(
     const result = await client.switchProfile(params.profile);
     if (!result || typeof result !== "object") return result;
     const details = result as any;
+    const room = Array.isArray(details.rooms) ? details.rooms.find((candidate: any) => candidate?.roomId === details.roomId) : undefined;
+    const cursor = details.cursor ?? room?.cursor;
+    const participantId = details.participantId ?? room?.participantId;
+    const launcherArgs = ["--profile", details.profile, String(cursor), details.agentSessionId, ...(participantId ? [participantId] : [])];
     return {
       ...details,
       watcher: details.switched ? {
         restartRequired: true,
         profile: details.profile,
-        cursor: details.cursor,
+        cursor,
         agentSessionId: details.agentSessionId,
-        launcherArgs: ["--profile", details.profile, String(details.cursor), details.agentSessionId],
+        ...(participantId ? { participantId } : {}),
+        launcherArgs,
       } : { restartRequired: false },
     };
   }));
@@ -613,7 +618,7 @@ export function resolveWatcherEnvironment(cwd = process.cwd(), env: NodeJS.Proce
   };
 }
 
-export const WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+export const WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]";
 
 export class WatcherUsageError extends Error {
   constructor() {
@@ -626,7 +631,7 @@ export function watcherExitRequiresInternalRestart(spawnRevision: number, desire
   return requestedRevision !== undefined && requestedRevision > spawnRevision && requestedRevision <= desiredRevision;
 }
 
-export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs: [string] | [string, string] } {
+export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs: [string] | [string, string] | [string, string, string] } {
   let profile: string | undefined;
   let positional = args;
   if (args[0]?.startsWith("-")) {
@@ -635,9 +640,11 @@ export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs
     positional = args.slice(2);
   }
   // since_seq is decimal digits only. Leading zeroes are accepted and retain
-  // the shell worker's existing numeric semantics.
-  if (positional.length < 1 || positional.length > 2 || !/^[0-9]+$/.test(positional[0]) || positional[1]?.startsWith("-")) throw new WatcherUsageError();
-  return { ...(profile ? { profile } : {}), workerArgs: positional as [string] | [string, string] };
+  // the shell worker's existing numeric semantics. Participant identity is
+  // nested under session identity so no ambiguous participant-only form exists.
+  if (positional.length < 1 || positional.length > 3 || !/^[0-9]+$/.test(positional[0])
+    || positional.slice(1).some((value) => !value || value.startsWith("-"))) throw new WatcherUsageError();
+  return { ...(profile ? { profile } : {}), workerArgs: positional as [string] | [string, string] | [string, string, string] };
 }
 
 export async function runWatcher(metaUrl: string, args: string[], cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): Promise<number> {

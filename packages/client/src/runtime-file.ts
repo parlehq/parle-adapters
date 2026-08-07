@@ -19,6 +19,9 @@ export type RuntimeFileRoom = {
   roomId: string;
   roomHandle?: string;
   profile?: string;
+  // Room-visible operational identity used by colocated watcher filters.
+  // It is not a credential and carries no authority outside this room.
+  participantId?: string;
   state: "ready" | "degraded";
   // Count-only inbound attention observation. Never message content. Readers
   // gate display on unreadAsOf freshness.

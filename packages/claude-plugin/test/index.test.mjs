@@ -44,7 +44,8 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /0600/);
   assert.match(skill, /watcherStopped: true/);
   assert.match(skill, /--profile <profile>/);
-  const usage = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+  assert.match(skill, /room participant id/);
+  const usage = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]";
   assert.match(skill, new RegExp(usage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   const usagePattern = new RegExp(usage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   const launcher = readFileSync(resolve(root, "skills/parle/scripts/parle-watch.sh"), "utf8");

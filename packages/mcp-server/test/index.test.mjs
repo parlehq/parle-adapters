@@ -153,10 +153,12 @@ test("watcher arguments accept only documented positional and profile forms", ()
   assert.deepEqual(parseWatcherArgs(["007"]), { workerArgs: ["007"] });
   assert.deepEqual(parseWatcherArgs(["7"]), { workerArgs: ["7"] });
   assert.deepEqual(parseWatcherArgs(["7", "as-1"]), { workerArgs: ["7", "as-1"] });
+  assert.deepEqual(parseWatcherArgs(["7", "as-1", "participant-1"]), { workerArgs: ["7", "as-1", "participant-1"] });
   assert.deepEqual(parseWatcherArgs(["--profile", "target", "7"]), { profile: "target", workerArgs: ["7"] });
   assert.deepEqual(parseWatcherArgs(["--profile", "target", "7", "as-1"]), { profile: "target", workerArgs: ["7", "as-1"] });
+  assert.deepEqual(parseWatcherArgs(["--profile", "target", "7", "as-1", "participant-1"]), { profile: "target", workerArgs: ["7", "as-1", "participant-1"] });
 
-  for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", "as-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "extra"]]) {
+  for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", ""], ["7", "as-1", ""], ["7", "as-1", "participant-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "participant-1", "extra"]]) {
     assert.throws(() => parseWatcherArgs(args), (error) => error instanceof WatcherUsageError && error.message === WATCHER_USAGE);
   }
 });
@@ -386,7 +388,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     affordances: async () => ({ affordances: [] }),
     send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
     submitReply: async (params) => { calls.push(["reply", params]); return { event_id: "evt-reply", idempotencyKey: params.idempotencyKey, interaction: { interaction_id: "interaction-1", reply_hop: 3 } }; },
-    switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", roomHandle: "target-room" }; },
+    switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", participantId: "participant-target", roomHandle: "target-room" }; },
   };
   const fakeAccount = {
     listRooms: async (active) => { calls.push(["rooms", active]); return { active, configured: { state: "complete", rows: [] }, account: { state: "complete", rows: [] }, rooms: [], compactText: "Account rooms" }; },
@@ -433,7 +435,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.match(refused.structuredContent.error, /watcherStopped=true/);
     const switched = await client.callTool({ name: "parle_switch_profile", arguments: { profile: "target", watcherStopped: true } });
     assert.equal(switched.structuredContent.roomHandle, "target-room");
-    assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target"]);
+    assert.equal(switched.structuredContent.watcher.participantId, "participant-target");
+    assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target", "participant-target"]);
     const login = await client.callTool({ name: "parle_login", arguments: { action: "start", email: "user@example.test" } });
     assert.equal(login.structuredContent.status, "code_requested");
     const room = await client.callTool({ name: "parle_create_room", arguments: { kind: "shared", confirmMutation: true, reason: "create" } });

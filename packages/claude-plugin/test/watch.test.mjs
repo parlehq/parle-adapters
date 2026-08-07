@@ -187,10 +187,10 @@ test("invalid launcher forms fail with one usage line before network or worker a
   let requests = 0;
   const server = await stubServer({ messages: [], watermark: 1 }, () => { requests += 1; });
   const cwd = mkdtempSync(join(tmpdir(), "parle-watch-invalid-"));
-  const usage = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+  const usage = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]";
   writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=poison\nPARLE_ROOM_ID=conflict\n");
   try {
-    for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", "as-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "extra"]]) {
+    for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", ""], ["7", "as-1", ""], ["7", "as-1", "participant-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "participant-1", "extra"]]) {
       const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, args);
       assert.equal(await watch.exited, 2);
       assert.equal(watch.out(), "");
@@ -572,6 +572,61 @@ test("one-argument watch preserves direct config and wakes on the caller's own r
   }
 });
 
+test("privacy-flat own room-wide rows stay filtered by participant id", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-self-filter-"));
+  const session = "session-mine";
+  const participant = "participant-mine";
+  writeSnapshot(cwd, session, { rooms: [{ roomId: "room-1", participantId: participant, state: "ready" }] });
+  const server = await stubServer({
+    messages: [
+      { seq: 2, author: { agent_session_id: null, participant_id: participant }, addressing: { kind: "unaddressed" } },
+      { seq: 3, author: { agent_session_id: null, participant_id: participant }, addressing: { kind: "broadcast" } },
+    ],
+    watermark: 3,
+  });
+  try {
+    await assertStillWatching(runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", session, participant]));
+    await assertStillWatching(runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", session, participant], { PARLE_WATCH_SESSION_LIVENESS: "0" }));
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("privacy-flat peer unaddressed row remains relevant with participant filtering", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-peer-filter-"));
+  const server = await stubServer({
+    messages: [{ seq: 2, author: { agent_session_id: null, participant_id: "participant-other" }, addressing: { kind: "unaddressed" } }],
+    watermark: 2,
+  });
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", "session-mine", "participant-mine"], { PARLE_WATCH_SESSION_LIVENESS: "0" });
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.match(watch.out(), /relevant activity/);
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("two-argument watch fails open when participant identity is unavailable", { skip: !havePython && "python3/kill unavailable" }, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-self-filter-fallback-"));
+  const session = "session-mine";
+  writeSnapshot(cwd, session);
+  const server = await stubServer({
+    messages: [{ seq: 2, author: { agent_session_id: null, participant_id: "participant-mine" }, addressing: { kind: "unaddressed" } }],
+    watermark: 2,
+  });
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", session]);
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.match(watch.out(), /relevant activity/);
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("watch holds with a note when the watched session was never present (era gate)", { skip: !havePython && "python3/kill unavailable" }, async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-watch-"));
   writeSnapshot(cwd, "session-other");
@@ -611,26 +666,31 @@ test("watch exits 3 when its session was present and then removed", { skip: !hav
   }
 });
 
-test("watch follows the same live runtime through proactive rollover and updates its filter", { skip: !havePython && "python3/kill unavailable" }, async () => {
+test("watch follows the same live runtime through proactive rollover and updates its filters", { skip: !havePython && "python3/kill unavailable" }, async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-watch-rollover-"));
   const oldSession = "session-old";
   const newSession = "session-new";
+  const oldParticipant = "participant-old";
+  const newParticipant = "participant-new";
   let phase = "hold";
   let heldRequests = 0;
   let filteredResponses = 0;
-  writeSnapshot(cwd, oldSession);
+  writeSnapshot(cwd, oldSession, { rooms: [{ roomId: "room-1", participantId: oldParticipant, state: "ready" }] });
   const server = await stubServer((req) => {
     if (phase === "filtered") {
       filteredResponses += 1;
       return {
-        messages: [{ seq: 2, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: oldSession } }],
-        watermark: 2,
+        messages: [
+          { seq: 2, author: { agent_session_id: null, participant_id: newParticipant }, addressing: { kind: "unaddressed" } },
+          { seq: 3, author: { agent_session_id: null, participant_id: "participant-other" }, addressing: { kind: "direct", target_agent_session_id: oldSession } },
+        ],
+        watermark: 3,
       };
     }
     if (phase === "wake") {
       return {
-        messages: [{ seq: 3, author: { agent_session_id: "session-other" }, addressing: { kind: "direct", target_agent_session_id: newSession } }],
-        watermark: 3,
+        messages: [{ seq: 4, author: { agent_session_id: null, participant_id: "participant-other" }, addressing: { kind: "direct", target_agent_session_id: newSession } }],
+        watermark: 4,
       };
     }
     return { messages: [], watermark: 1 };
@@ -638,20 +698,20 @@ test("watch follows the same live runtime through proactive rollover and updates
     if (url.pathname.endsWith("/projection") && url.searchParams.get("wait") === "25") heldRequests += 1;
   });
   try {
-    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", oldSession]);
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", oldSession, oldParticipant]);
     await waitFor(() => heldRequests >= 2, "watch did not observe the old live runtime");
 
     // Production runtime publication uses the same atomic replacement: the
-    // path, pid, process start, and client instance stay fixed while the id
-    // changes after the candidate commits.
-    writeSnapshot(cwd, newSession);
+    // path, pid, process start, and client instance stay fixed while both room
+    // identities change after the candidate commits.
+    writeSnapshot(cwd, newSession, { rooms: [{ roomId: "room-1", participantId: newParticipant, state: "ready" }] });
     await waitFor(() => watch.err().includes(`followed primary runtime rollover from ${oldSession} to ${newSession}`), "watch did not follow the verified runtime transition");
     assert.equal(watch.child.exitCode, null, watch.err());
 
     phase = "filtered";
-    await waitFor(() => filteredResponses > 0, "watch did not receive the old-session direct after rollover");
+    await waitFor(() => filteredResponses > 0, "watch did not receive the post-rollover rows");
     await sleep(150);
-    assert.equal(watch.child.exitCode, null, "old-session direct should be filtered after rollover");
+    assert.equal(watch.child.exitCode, null, "new self row and old-session direct should both be filtered after rollover");
 
     phase = "wake";
     assert.equal(await watch.exited, 0, watch.err());

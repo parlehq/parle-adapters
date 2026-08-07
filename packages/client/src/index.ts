@@ -2055,6 +2055,7 @@ export class ParleAgentClient {
             roomId,
             ...(room?.roomHandle || cfg.roomHandle?.value ? { roomHandle: room?.roomHandle || cfg.roomHandle?.value } : {}),
             ...(cfg.profile?.value ? { profile: cfg.profile.value } : {}),
+            ...(room?.participantId ? { participantId: room.participantId } : {}),
             state: room?.state === "ready" ? "ready" as const : "degraded" as const,
             ...(typeof room?.unreadCount === "number" ? { unreadCount: room.unreadCount, unreadAsOf: room.unreadAsOf } : {}),
           };

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.12 (2026-08-07)
+
+- Publish room-local participant identity in credential-free runtime snapshots so colocated watcher filters can follow privacy-flat self identity across rollover (#87).
+
 ## 0.8.11 (2026-08-07)
 
 - Warn on any positive held backlog, including partial read results, and explain that in-order watermark parking can withhold more later rows than held_count reports (#81).

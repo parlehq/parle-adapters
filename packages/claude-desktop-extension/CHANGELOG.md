@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.12 (2026-08-07)
+
+- Refresh the shared MCP runtime with credential-free participant snapshot metadata and watcher launch support (#87).
+
 ## 0.8.11 (2026-08-07)
 
 - Refresh the embedded MCP runtime with non-exhaustive guidance for every positive held backlog (#81).

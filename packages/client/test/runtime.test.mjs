@@ -127,7 +127,7 @@ test("publishRuntime writes a credential-free 0600 snapshot and endSession remov
     const snapshot = JSON.parse(raw);
     assert.equal(snapshot.schemaVersion, 2);
     assert.equal(snapshot.state, "ready");
-    assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "test-room", state: "ready" }]);
+    assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "test-room", participantId: "part-1", state: "ready" }]);
     assert.equal(snapshot.pid, process.pid);
     assert.equal(snapshot.clientInstanceId, processClientInstanceId());
     assert.equal(snapshot.clientInstanceId, client.clientInstanceId);

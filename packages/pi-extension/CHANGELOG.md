@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.17 (2026-08-07)
+
+- Publish room-local participant identity in credential-free runtime snapshots for colocated watcher continuity (#87).
+
 ## 0.7.16 (2026-08-07)
 
 - Refresh shared inbox guidance so positive held backlog always marks results non-exhaustive (#81).

@@ -5,15 +5,15 @@
 # session, which then drains parle_inbox and restarts the watch. One held
 # long-poll connection, no tight loops.
 #
-# Public usage: Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]
-# Private worker argv: <since_seq> [my_agent_session_id]
+# Public usage: Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]
+# Private worker argv: <since_seq> [my_agent_session_id [my_participant_id]]
 #
-# With my_agent_session_id set, rows you authored and directs addressed to
-# other sessions are skipped instead of waking you, so busy multi-session
-# rooms stay quiet and the own-send restart caveat disappears. Your id is
-# the addressing.target_agent_session_id on any direct you received, or
-# author.agent_session_id on rows you authored in parle_read. Without it,
-# any new room row wakes you (v1 behavior).
+# With primary identity set, rows you authored and directs addressed to other
+# sessions are skipped instead of waking you, so busy multi-session rooms stay
+# quiet and the own-send restart caveat disappears. The room-local participant
+# id keeps self-filtering truthful when privacy-flat projection rows withhold
+# author.agent_session_id. Without primary identity, any new room row wakes you
+# (v1 behavior).
 #
 # Session liveness: the projection poll authenticates with the room agent
 # token plus a dedicated watcher-session credential owned by the Node launcher.
@@ -61,8 +61,9 @@
 # and profile semantics on every arm, then supplies the resolved binding only
 # through this child's environment. Do not invoke this worker directly.
 set -u
-since="${1:?usage: parle-watch.sh <since_seq> [my_agent_session_id]}"
+since="${1:?usage: parle-watch.sh <since_seq> [my_agent_session_id [my_participant_id]]}"
 me="${2:-}"
+me_participant="${3:-}"
 : "${PARLE_API_BASE:?resolved watcher configuration missing}"
 : "${PARLE_ROOM_ID:?resolved watcher configuration missing}"
 : "${PARLE_ROOM_AGENT_TOKEN:?resolved watcher configuration missing}"
@@ -86,7 +87,7 @@ session_liveness() {
   [ -n "$me" ] || { echo LIVE; return; }
   [ "${PARLE_WATCH_SESSION_LIVENESS:-1}" = "0" ] && { echo LIVE; return; }
   [ -d ./.parle/runtime ] || { echo UNKNOWN; return; }
-  python3 - "$me" "$bound_pid" "$bound_started" "$bound_client" "$bound_path" <<'PY' 2>/dev/null || echo UNKNOWN
+  python3 - "$me" "$bound_pid" "$bound_started" "$bound_client" "$bound_path" "$PARLE_ROOM_ID" <<'PY' 2>/dev/null || echo UNKNOWN
 import calendar, glob, json, os, re, subprocess, sys, time
 
 me = sys.argv[1]
@@ -94,6 +95,7 @@ bound_pid = sys.argv[2]
 bound_started = sys.argv[3]
 bound_client = sys.argv[4]
 bound_path = sys.argv[5]
+room_id = sys.argv[6]
 has_bound = bool(bound_pid and bound_started and bound_client and bound_path)
 now = time.time()
 sibling_live = 0
@@ -176,9 +178,19 @@ def same_bound_writer(path, snap):
         return False
     return True
 
+def room_participant(snap):
+    rooms = snap.get("rooms") or []
+    if not isinstance(rooms, list):
+        return ""
+    for room in rooms:
+        if isinstance(room, dict) and room.get("roomId") == room_id:
+            value = room.get("participantId")
+            return value if isinstance(value, str) else ""
+    return ""
+
 def live_wire(state, path, snap):
-    print("%s|%s|%s|%s|%s|%s" % (
-        state, snap.get("agentSessionId", ""), snap.get("pid", ""),
+    print("%s|%s|%s|%s|%s|%s|%s" % (
+        state, snap.get("agentSessionId", ""), room_participant(snap), snap.get("pid", ""),
         snap.get("processStartedAt", ""), snap.get("clientInstanceId", ""), path))
 
 for path in sorted(glob.glob("./.parle/runtime/*.json")):
@@ -384,6 +396,7 @@ while :; do
         *'|'*)
           live_fields=${liveness_result#*|}
           observed_me=${live_fields%%|*}; live_fields=${live_fields#*|}
+          observed_participant=${live_fields%%|*}; live_fields=${live_fields#*|}
           observed_pid=${live_fields%%|*}; live_fields=${live_fields#*|}
           observed_started=${live_fields%%|*}; live_fields=${live_fields#*|}
           observed_client=${live_fields%%|*}; observed_path=${live_fields#*|}
@@ -395,10 +408,14 @@ while :; do
           fi
           if [ "$liveness_state" = "ROLLED" ]; then
             old_me=$me
-            # One shell assignment changes the filter before any subsequent
-            # projection request or row classification.
+            # One shell step changes both filters before any subsequent
+            # projection request or row classification. Missing participant
+            # metadata clears that filter and falls back to prior behavior.
             me=$observed_me
+            me_participant=$observed_participant
             echo "Parle note: followed primary runtime rollover from $old_me to $me on verified live writer pid $bound_pid." >&2
+          elif [ -n "$observed_participant" ]; then
+            me_participant=$observed_participant
           fi
           ;;
       esac
@@ -529,6 +546,7 @@ while :; do
   if [ "$post_state" = "ROLLED" ]; then
     post_fields=${post_liveness#*|}
     post_me=${post_fields%%|*}; post_fields=${post_fields#*|}
+    post_participant=${post_fields%%|*}; post_fields=${post_fields#*|}
     post_pid=${post_fields%%|*}; post_fields=${post_fields#*|}
     post_started=${post_fields%%|*}; post_fields=${post_fields#*|}
     post_client=${post_fields%%|*}; post_path=${post_fields#*|}
@@ -539,6 +557,7 @@ while :; do
       bound_client=$post_client
       bound_path=$post_path
       me=$post_me
+      me_participant=$post_participant
       echo "Parle note: followed primary runtime rollover from $old_me to $me on verified live writer pid $bound_pid after an in-flight projection." >&2
     fi
   fi
@@ -550,16 +569,21 @@ me = sys.argv[1]
 d = json.load(sys.stdin)
 rows = d.get("messages") or []
 top = max([r.get("seq", 0) for r in rows] + [int(d.get("watermark") or 0)])
+participant = sys.argv[2]
 def relevant(r):
-    author = (r.get("author") or {}).get("agent_session_id") or ""
+    author = r.get("author") or {}
+    author_session = author.get("agent_session_id") or ""
+    author_participant = author.get("participant_id") or ""
     addr = r.get("addressing") or {}
-    if me and author == me:
+    if me and author_session == me:
+        return False
+    if participant and author_participant == participant:
         return False
     if me and addr.get("kind") == "direct" and addr.get("target_agent_session_id") != me:
         return False
     return True
 print("HIT" if any(relevant(r) for r in rows) else "PASS", top)
-' "$me") || out="PASS $since"
+' "$me" "$me_participant") || out="PASS $since"
   state=${out%% *}
   top=${out##* }
   if [ "$state" = "HIT" ]; then

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.12 (2026-08-07)
+
+- Extend Claude watcher launch arguments and profile-switch restart guidance with room-local participant identity (#87).
+
 ## 0.7.11 (2026-08-07)
 
 - Refresh shared inbox guidance so positive held backlog always marks results non-exhaustive (#81).

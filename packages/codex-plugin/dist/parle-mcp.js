@@ -36213,6 +36213,7 @@ var ParleAgentClient = class _ParleAgentClient {
             roomId,
             ...room?.roomHandle || cfg.roomHandle?.value ? { roomHandle: room?.roomHandle || cfg.roomHandle?.value } : {},
             ...cfg.profile?.value ? { profile: cfg.profile.value } : {},
+            ...room?.participantId ? { participantId: room.participantId } : {},
             state: room?.state === "ready" ? "ready" : "degraded",
             ...typeof room?.unreadCount === "number" ? { unreadCount: room.unreadCount, unreadAsOf: room.unreadAsOf } : {}
           };
@@ -37009,7 +37010,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.11";
+var MCP_CLIENT_VERSION = "0.7.12";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -37158,7 +37159,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   }));
   server.registerTool("parle_switch_profile", {
     title: "Switch Parle Profile",
-    description: "Switch this MCP process to another named Parle profile after the host has stopped its sibling responsive watcher. This is ephemeral and never edits environment or profile files. watcherStopped=true is a required host attestation because MCP cannot inspect Claude Code background Bash tasks. On success, restart the bundled watcher with the returned profile, cursor, and agentSessionId.",
+    description: "Switch this MCP process to another named Parle profile after the host has stopped its sibling responsive watcher. This is ephemeral and never edits environment or profile files. watcherStopped=true is a required host attestation because MCP cannot inspect Claude Code background Bash tasks. On success, restart the bundled watcher with the returned profile, cursor, agentSessionId, and participantId.",
     inputSchema: switchProfileSchema,
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => safeTool(async () => {
@@ -37168,14 +37169,19 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     const result = await client.switchProfile(params.profile);
     if (!result || typeof result !== "object") return result;
     const details = result;
+    const room = Array.isArray(details.rooms) ? details.rooms.find((candidate) => candidate?.roomId === details.roomId) : void 0;
+    const cursor = details.cursor ?? room?.cursor;
+    const participantId = details.participantId ?? room?.participantId;
+    const launcherArgs = ["--profile", details.profile, String(cursor), details.agentSessionId, ...participantId ? [participantId] : []];
     return {
       ...details,
       watcher: details.switched ? {
         restartRequired: true,
         profile: details.profile,
-        cursor: details.cursor,
+        cursor,
         agentSessionId: details.agentSessionId,
-        launcherArgs: ["--profile", details.profile, String(details.cursor), details.agentSessionId]
+        ...participantId ? { participantId } : {},
+        launcherArgs
       } : { restartRequired: false }
     };
   }));
@@ -37502,7 +37508,7 @@ function resolveWatcherEnvironment(cwd = process.cwd(), env = process.env, onWar
     PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID
   };
 }
-var WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id]";
+var WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]";
 var WatcherUsageError = class extends Error {
   constructor() {
     super(WATCHER_USAGE);
@@ -37520,7 +37526,7 @@ function parseWatcherArgs(args) {
     profile = args[1];
     positional = args.slice(2);
   }
-  if (positional.length < 1 || positional.length > 2 || !/^[0-9]+$/.test(positional[0]) || positional[1]?.startsWith("-")) throw new WatcherUsageError();
+  if (positional.length < 1 || positional.length > 3 || !/^[0-9]+$/.test(positional[0]) || positional.slice(1).some((value) => !value || value.startsWith("-"))) throw new WatcherUsageError();
   return { ...profile ? { profile } : {}, workerArgs: positional };
 }
 async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env) {

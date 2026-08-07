@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.12 (2026-08-07)
+
+- Prevent privacy-flat own room-wide sends from waking Claude, including across verified primary-session rollover (#87).
+
 ## 0.9.11 (2026-08-07)
 
 - Refresh the embedded MCP runtime with non-exhaustive guidance for every positive held backlog (#81).
