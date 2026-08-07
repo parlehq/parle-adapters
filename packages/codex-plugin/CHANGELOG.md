@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.11 (2026-08-07)
+
+- Refresh the embedded MCP runtime with non-exhaustive guidance for every positive held backlog (#81).
+
 ## 0.6.10 (2026-08-07)
 
 - Refresh the embedded MCP runtime for current held-backlog status and bounded manual-inbox guidance (#81).

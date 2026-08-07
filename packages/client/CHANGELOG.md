@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.11 (2026-08-07)
+
+- Warn on any positive held backlog, including partial read results, and explain that in-order watermark parking can withhold more later rows than held_count reports (#81).
+
 ## 0.8.10 (2026-08-07)
 
 - Refresh held-backlog diagnostics on every successful read and add bounded empty-read guidance that cannot be mistaken for exhaustive inbox absence (#81).

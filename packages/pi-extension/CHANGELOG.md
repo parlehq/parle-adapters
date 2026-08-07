@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.16 (2026-08-07)
+
+- Refresh shared inbox guidance so positive held backlog always marks results non-exhaustive (#81).
+
 ## 0.7.15 (2026-08-07)
 
 - Refresh shared held-backlog diagnostics and make empty manual-inbox results explicitly non-exhaustive (#81).

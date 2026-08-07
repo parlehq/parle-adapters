@@ -310,11 +310,16 @@ test("observeUnread counts and refreshes held diagnostics without advancing the 
   assert.match(counters.lastInboundUrl, /since_seq=7&wait=0/);
 });
 
-test("empty read guidance is bounded and treats held backlog conservatively", async () => {
+test("read guidance is bounded and treats held backlog conservatively", async () => {
   const held = await runCursorRead({ messages: [], watermark: 20, heldCount: 1, params: { sinceSeq: 7 } });
   assert.match(held.result.note, /No inbox rows were disclosed through watermark 20\. This is a bounded snapshot\./);
-  assert.match(held.result.note, /do not conclude that no inbound or responsive messages exist/);
+  assert.match(held.result.note, /held_count does not bound how many later rows remain undisclosed/);
+  assert.match(held.result.note, /Do not conclude that no inbound or responsive messages exist/);
   assert.match(held.result.note, /does not prove any held row is inbound or responsive-eligible/);
+
+  const partial = await runCursorRead({ messages: [{ seq: 8 }], watermark: 20, heldCount: 1, params: { sinceSeq: 7 } });
+  assert.match(partial.result.note, /Some inbox rows were disclosed through watermark 20, but this result is non-exhaustive/);
+  assert.match(partial.result.note, /held_count does not bound how many later rows remain undisclosed/);
 
   const clear = await runCursorRead({ messages: [], watermark: 20, heldCount: 0, params: { sinceSeq: 7 } });
   assert.match(clear.result.note, /No inbox rows were disclosed through watermark 20\. This is a bounded snapshot\./);

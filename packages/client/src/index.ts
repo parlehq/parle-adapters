@@ -30,7 +30,7 @@ export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
-export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
+export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
 export const SEND_ATTENTION_GUIDANCE = "Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
@@ -758,12 +758,15 @@ function refreshHeldBacklogCount(room: RoomRuntime, response: any): boolean {
 }
 
 function readCompletenessNote(surface: "projection" | "inbound", response: any, rawMessages: unknown[]): string {
-  if (rawMessages.length > 0) return "";
+  const held = Number.isSafeInteger(response?.held_backlog?.held_count) && response.held_backlog.held_count > 0;
+  if (rawMessages.length > 0 && !held) return "";
   const label = surface === "inbound" ? "inbox" : "projection";
   const watermark = typeof response?.watermark === "number" ? ` through watermark ${response.watermark}` : " through the returned watermark";
-  const bounded = `No ${label} rows were disclosed${watermark}. This is a bounded snapshot.`;
-  if (Number.isSafeInteger(response?.held_backlog?.held_count) && response.held_backlog.held_count > 0) {
-    return `${bounded} Room-level held backlog remains in flight, so do not conclude that no inbound or responsive messages exist. The held marker does not prove any held row is inbound or responsive-eligible.`;
+  const bounded = rawMessages.length === 0
+    ? `No ${label} rows were disclosed${watermark}. This is a bounded snapshot.`
+    : `Some ${label} rows were disclosed${watermark}, but this result is non-exhaustive while room-level held backlog remains in flight.`;
+  if (held) {
+    return `${bounded} A held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist. The held marker does not prove any held row is inbound or responsive-eligible.`;
   }
   return bounded;
 }
