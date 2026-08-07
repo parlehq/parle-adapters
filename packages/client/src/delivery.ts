@@ -39,6 +39,7 @@ export type DeliveryControllerOptions = {
   maxDrainBatches?: number;
   reconnectDelayMs?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  random?: () => number;
   now?: () => Date;
   // Host failure policy for wake-loop errors (rate-limit parking, terminal
   // latching, footer states). Returning "stop" settles the loop without a
@@ -75,11 +76,19 @@ export type DeliveryControllerStatus = {
 const DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 const DEFAULT_MAX_DRAIN_BATCHES = 100;
 const DEFAULT_RECONNECT_MS = 5000;
-// A healthy stream that closes without delivering a single event is reopened
-// on a short pause. Instant reopen against a server that answers and closes
-// immediately would spin the loop entirely on microtasks, starving timers.
-const EMPTY_STREAM_REOPEN_MS = 250;
+// ADR-0059 safe defaults apply until the wake stream supplies operator-tuned
+// timing. Wake hints are advisory, so fallback fetch is part of correctness.
+const DEFAULT_FALLBACK_MS = 120_000;
+const DEFAULT_FALLBACK_JITTER_MS = 30_000;
+const DEFAULT_RECONNECT_JITTER_MS = 30_000;
+const MAX_TIMER_MS = 2_147_483_647;
 const MAX_REMEMBERED_KEYS = 5000;
+
+type WakeTiming = {
+  fallbackMs: number;
+  fallbackJitterMs: number;
+  reconnectJitterMs: number;
+};
 
 function deliveryKey(roomId: string, message: ResponsiveDeliveryMessage): string {
   return `${roomId}:${message.event_id}`;
@@ -100,6 +109,7 @@ export class ResponsiveDeliveryController {
   private readonly maxDrainBatches: number;
   private readonly reconnectDelayMs: number;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly random: () => number;
   private readonly onWakeError?: (error: unknown) => "continue" | "stop" | void;
   private readonly onWakeOpen?: () => void;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
@@ -124,6 +134,11 @@ export class ResponsiveDeliveryController {
   private ignoredWakeHints = 0;
   private lastIgnoredWakeRoomId?: string;
   private lastError?: string;
+  private wakeTiming: WakeTiming = {
+    fallbackMs: DEFAULT_FALLBACK_MS,
+    fallbackJitterMs: DEFAULT_FALLBACK_JITTER_MS,
+    reconnectJitterMs: DEFAULT_RECONNECT_JITTER_MS,
+  };
 
   constructor(private readonly client: ParleAgentClient, options: DeliveryControllerOptions) {
     this.handler = options.handler;
@@ -131,6 +146,7 @@ export class ResponsiveDeliveryController {
     this.maxDrainBatches = options.maxDrainBatches ?? DEFAULT_MAX_DRAIN_BATCHES;
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
+    this.random = options.random ?? Math.random;
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
   }
@@ -160,12 +176,12 @@ export class ResponsiveDeliveryController {
   async start(): Promise<void> {
     if (this.loop) return;
     await this.client.ensureBootstrapped(this.abort.signal);
-    // A committed session replacement invalidates the open stream. Restart it
-    // and drain immediately: the replacement participant may already have rows.
+    // A committed session replacement invalidates the old stream. The next
+    // stream opens with current membership and performs the canonical recovery
+    // drain after its subscriptions exist.
     this.unsubscribeRevision?.();
     this.unsubscribeRevision = (this.client as any).onSessionRevision?.(() => {
       this.wakeAbort?.abort();
-      void this.drainAll().catch(() => undefined);
     });
     await this.drainAll();
     // A settled loop must not read as running forever: a terminal wake error
@@ -230,55 +246,103 @@ export class ResponsiveDeliveryController {
   }
 
   private async watchLoop(): Promise<void> {
-    while (!this.abort.signal.aborted) {
-      const wakeAbort = new AbortController();
-      this.wakeAbort = wakeAbort;
-      const onAbort = () => wakeAbort.abort();
-      this.abort.signal.addEventListener("abort", onAbort, { once: true });
-      try {
-        const response = await this.client.openWakeStream(wakeAbort.signal);
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("Parle wake stream has no body");
-        this.lastError = undefined;
-        this.onWakeOpen?.();
-        // A held stream does not observe an AbortSignal on its own, so the
-        // pending read is cancelled explicitly; otherwise stop() would wait
-        // forever on a stream that never produces another frame.
-        const cancelRead = () => void reader.cancel().catch(() => undefined);
-        wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let sawEvent = false;
-        while (!wakeAbort.signal.aborted) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const parsed = parseSSEBlocks(buffer);
-          buffer = parsed.rest;
-          for (const event of parsed.events) {
-            sawEvent = true;
-            if (event.event === "wake") await this.handleWake(event.data);
-          }
-        }
-        this.lastError = undefined;
-        if (!wakeAbort.signal.aborted && !sawEvent) await this.sleep(EMPTY_STREAM_REOPEN_MS, this.abort.signal);
-      } catch (error: any) {
-        if (this.abort.signal.aborted) break;
-        // A revision-driven restart is expected, not a failure.
-        if (wakeAbort.signal.aborted) continue;
-        this.lastError = redactString(error instanceof Error ? error.message : String(error));
-        if (this.onWakeError?.(error) === "stop") return;
-        if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || "")) throw error;
-        const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
+    const fallbackAbort = new AbortController();
+    const abortFallback = () => fallbackAbort.abort();
+    this.abort.signal.addEventListener("abort", abortFallback, { once: true });
+    const fallback = this.fallbackLoop(fallbackAbort.signal);
+    try {
+      while (!this.abort.signal.aborted) {
+        const wakeAbort = new AbortController();
+        this.wakeAbort = wakeAbort;
+        const onAbort = () => wakeAbort.abort();
+        this.abort.signal.addEventListener("abort", onAbort, { once: true });
         try {
-          await this.sleep(Math.max(retryAfter, this.reconnectDelayMs), this.abort.signal);
-        } catch {
-          break;
+          const response = await this.client.openWakeStream(wakeAbort.signal);
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error("Parle wake stream has no body");
+          // A held stream does not observe an AbortSignal on its own, so the
+          // pending read is cancelled explicitly; otherwise stop() would wait
+          // forever on a stream that never produces another frame.
+          const cancelRead = () => void reader.cancel().catch(() => undefined);
+          wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
+          // The live stream buffers hints while durable state is reconciled. This
+          // closes both the startup drain-to-subscribe race and reconnect gaps.
+          await this.drainAll();
+          if (wakeAbort.signal.aborted) continue;
+          this.lastError = undefined;
+          this.onWakeOpen?.();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!wakeAbort.signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parsed = parseSSEBlocks(buffer);
+            buffer = parsed.rest;
+            for (const event of parsed.events) {
+              if (event.event === "config") this.applyWakeConfig(event.data);
+              else if (event.event === "wake") await this.handleWake(event.data);
+            }
+          }
+          if (!wakeAbort.signal.aborted) throw new Error("Parle wake stream ended unexpectedly");
+        } catch (error: any) {
+          if (this.abort.signal.aborted) break;
+          // A revision-driven restart is expected, not a failure.
+          if (wakeAbort.signal.aborted) continue;
+          this.lastError = redactString(error instanceof Error ? error.message : String(error));
+          if (this.onWakeError?.(error) === "stop") return;
+          if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || "")) throw error;
+          const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
+          try {
+            await this.sleep(this.withJitter(Math.max(retryAfter, this.reconnectDelayMs), this.wakeTiming.reconnectJitterMs), this.abort.signal);
+          } catch {
+            break;
+          }
+        } finally {
+          this.abort.signal.removeEventListener("abort", onAbort);
         }
-      } finally {
-        this.abort.signal.removeEventListener("abort", onAbort);
       }
+    } finally {
+      fallbackAbort.abort();
+      await fallback;
+      this.abort.signal.removeEventListener("abort", abortFallback);
     }
+  }
+
+  private async fallbackLoop(signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      const timing = this.wakeTiming;
+      try {
+        await this.sleep(this.withJitter(timing.fallbackMs, timing.fallbackJitterMs), signal);
+      } catch {
+        return;
+      }
+      if (signal.aborted) return;
+      await this.drainAll();
+    }
+  }
+
+  private applyWakeConfig(data: string): void {
+    let config: any;
+    try {
+      config = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (!config || typeof config !== "object") return;
+    const positive = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= MAX_TIMER_MS;
+    const nonNegative = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= MAX_TIMER_MS;
+    this.wakeTiming = {
+      fallbackMs: positive(config.fallback_ms) ? config.fallback_ms : this.wakeTiming.fallbackMs,
+      fallbackJitterMs: nonNegative(config.fallback_jitter_ms) ? config.fallback_jitter_ms : this.wakeTiming.fallbackJitterMs,
+      reconnectJitterMs: nonNegative(config.reconnect_jitter_ms) ? config.reconnect_jitter_ms : this.wakeTiming.reconnectJitterMs,
+    };
+  }
+
+  private withJitter(baseMs: number, jitterMs: number): number {
+    const random = this.random();
+    const sample = Number.isFinite(random) ? Math.min(Math.max(random, 0), 1 - Number.EPSILON) : 0;
+    return Math.min(baseMs + Math.floor(sample * (Math.max(jitterMs, 0) + 1)), MAX_TIMER_MS);
   }
 
   // A hint names the room with traffic. An unknown room is counted and ignored;
@@ -326,9 +390,9 @@ export class ResponsiveDeliveryController {
   }
 
   // Coalescing must not swallow a requested drain. Joining an in-flight drain
-  // would lose the immediate post-replacement pass a session revision promises,
-  // because the in-flight drain may already have read past the new rows. One
-  // rerun is queued per room instead.
+  // would lose a wake, reconnect, revision, or fallback pass because the
+  // in-flight drain may already have read past the new rows. One rerun is queued
+  // per room instead.
   private drainRoom(room: RoomRuntime): Promise<void> {
     const existing = this.drainInFlight.get(room.roomId);
     if (existing) {

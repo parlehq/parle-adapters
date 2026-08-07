@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.8 (2026-08-06)
+
+- Refresh the embedded shared controller for post-open responsive reconciliation, ADR-0059 fallback fetch, and bounded reconnect recovery (#80).
+
 ## 0.7.7 (2026-08-06)
 
 - Add `parle_reply`, preserve opaque reply metadata through hook delivery, and render route-first instructions plus the server-reported two-replies-remaining warning (#74).

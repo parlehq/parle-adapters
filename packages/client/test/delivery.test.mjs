@@ -14,10 +14,15 @@ function json(body, status = 200) {
 
 // A held stream the test can push wake frames into, mirroring the real
 // server: the stream stays open and frames arrive after start() returns.
-function heldWakeStream(sink) {
+function heldWakeStream(sink, config) {
   return new Response(new ReadableStream({
     start(controller) {
-      sink.push = (event) => controller.enqueue(new TextEncoder().encode(`event: wake\ndata: ${JSON.stringify(event)}\n\n`));
+      const send = (event, data) => controller.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      sink.push = (event) => send("wake", event);
+      sink.config = (value) => send("config", value);
+      sink.close = () => controller.close();
+      sink.error = (error = new Error("wake stream failed")) => controller.error(error);
+      if (config) send("config", config);
     },
   }), { status: 200 });
 }
@@ -31,10 +36,37 @@ async function eventually(condition, timeoutMs = 2000) {
   assert.fail("condition did not become true in time");
 }
 
+function controlledSleeper() {
+  const calls = [];
+  const sleep = (ms, signal) => new Promise((resolve, reject) => {
+    const entry = { ms, settled: false, release: () => {} };
+    const onAbort = () => {
+      if (entry.settled) return;
+      entry.settled = true;
+      reject(new Error("aborted"));
+    };
+    entry.release = () => {
+      if (entry.settled) return;
+      entry.settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    calls.push(entry);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const release = (predicate) => {
+    const entry = calls.find((candidate) => !candidate.settled && predicate(candidate.ms));
+    assert.ok(entry, `no pending sleep matched; saw ${JSON.stringify(calls.map(({ ms, settled }) => ({ ms, settled })))}`);
+    entry.release();
+  };
+  return { calls, sleep, release };
+}
+
 // Two configured rooms, each with its own queue of responsive rows. Rows are
 // only removed from a queue by an acknowledgement, which is what makes the
 // no-ack-on-failure and redelivery assertions meaningful.
-function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0, retryFirstWakes = 0, instantWakes = false } = {}) {
+function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta", failFirstWakes = 0, retryFirstWakes = 0, emptyFirstWakes = 0, wakeConfig, onWakeOpen } = {}) {
   const wakeSink = { push: () => {} };
   const home = mkdtempSync(join(tmpdir(), "parle-delivery-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-delivery-project-"));
@@ -55,14 +87,15 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta",
     if (path.includes("/projection")) return json({ watermark: 0, messages: [] });
     if (path === "/v/agent/wake") {
       wakeOpens += 1;
+      onWakeOpen?.({ wakeOpens, queues });
       if (wakeOpens <= failFirstWakes) {
         return json({ error: { message: "wake refused terminally", action: "fix_client", scope: "request" } }, 401);
       }
       if (wakeOpens <= failFirstWakes + retryFirstWakes) {
         return json({ error: { message: "wake temporarily unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 502);
       }
-      if (instantWakes) return new Response("", { status: 200 });
-      return heldWakeStream(wakeSink);
+      if (wakeOpens <= failFirstWakes + retryFirstWakes + emptyFirstWakes) return new Response("", { status: 200 });
+      return heldWakeStream(wakeSink, wakeConfig);
     }
     if (path.endsWith("/responsive-delivery/ack")) {
       const roomId = path.split("/")[3];
@@ -86,22 +119,55 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta",
     calls,
     queues,
     wake: (event) => wakeSink.push(event),
+    config: (value) => wakeSink.config(value),
+    closeWake: () => wakeSink.close(),
+    failWake: (error) => wakeSink.error(error),
     wakeOpens: () => wakeOpens,
     cleanup: () => { rmSync(home, { recursive: true, force: true }); rmSync(cwd, { recursive: true, force: true }); },
   };
 }
 
+test("the post-open drain closes the startup drain-to-subscribe race", async () => {
+  const handled = [];
+  const opens = [];
+  const h = harness({
+    rooms: { [ALPHA]: [] },
+    profiles: "alpha",
+    onWakeOpen: ({ wakeOpens, queues }) => {
+      if (wakeOpens === 1) queues.set(ALPHA, [{ seq: 1, event_id: "during-open" }]);
+    },
+  });
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+    onWakeOpen: () => { opens.push([...handled]); },
+  });
+  try {
+    await h.client.connect();
+    await controller.start();
+    await eventually(() => opens.length === 1);
+    assert.deepEqual(handled, ["during-open"], "the live subscription precedes the correctness drain");
+    assert.deepEqual(opens, [["during-open"]], "the host reports watching only after reconciliation");
+    assert.deepEqual(h.acks.map(([, eventId]) => eventId), ["during-open"]);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
 test("a wake hint drains only the named room and acknowledges after handling", async () => {
   const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "a1" }], [BETA]: [{ seq: 1, event_id: "b1" }] } });
   const handled = [];
+  let opened = false;
   const controller = new ResponsiveDeliveryController(h.client, {
     handler: async ({ roomId, roomHandle, profile, message }) => { handled.push([roomId, roomHandle, profile, message.event_id]); return "handled"; },
     reconnectDelayMs: 5,
+    onWakeOpen: () => { opened = true; },
   });
   try {
     await h.client.connect();
     // The startup drain reaches every ready room.
     await controller.start();
+    await eventually(() => opened);
     assert.deepEqual(handled.map(([, , , id]) => id).sort(), ["a1", "b1"]);
     assert.deepEqual(handled.find(([room]) => room === BETA), [BETA, "beta-room", "beta", "b1"]);
     // A later hint drains only the room it names.
@@ -239,6 +305,7 @@ test("a replacement session supersedes a prior alias owner without replay or wed
   writeFileSync(join(home, ".parle", "profiles"), `[alpha]\nroom_id = ${ALPHA}\nagent_token = parle_agt_alpha\n`, { mode: 0o600 });
   let generation = 4;
   let sessions = 0;
+  let wakeOpens = 0;
   const claims = [];
   let queue = [{ seq: 7, event_id: "carried" }];
   const acks = [];
@@ -258,7 +325,10 @@ test("a replacement session supersedes a prior alias owner without replay or wed
         return json({ agent_session_id: `as-${sessions}`, alias: "main", generation, address: "@p.a.main", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
       }
       if (path.endsWith("/participants")) return json({ participant_id: `p-${sessions}`, room_handle: "alpha-room" }, 201);
-      if (path === "/v/agent/wake") return new Response(new ReadableStream({ start() {} }), { status: 200 });
+      if (path === "/v/agent/wake") {
+        wakeOpens += 1;
+        return new Response(new ReadableStream({ start() {} }), { status: 200 });
+      }
       if (path.includes("/projection")) return json({ watermark: 6, messages: [] });
       if (path.endsWith("/responsive-delivery/ack")) {
         const body = JSON.parse(init.body);
@@ -272,25 +342,29 @@ test("a replacement session supersedes a prior alias owner without replay or wed
     },
   });
   const handled = [];
+  const opens = [];
   const controller = new ResponsiveDeliveryController(client, {
     handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
     reconnectDelayMs: 5,
+    onWakeOpen: () => { opens.push(wakeOpens); },
   });
   try {
     await client.connect();
     assert.deepEqual(claims, [{ session: "as-1", expected: 4 }], "the replacement claims from the authoritative generation");
     assert.equal(client.runtime.sessionAlias, "main");
     await controller.start();
+    await eventually(() => opens.length === 1);
     assert.deepEqual(handled, ["carried"]);
     assert.equal(client.runtime.responsiveCursorScope, "alias", "alias-scoped continuity is preserved");
-    // Roll the session: the same alias is reclaimed and the server may replay
-    // the row to the new participant. It must not be handled twice.
-    queue = [{ seq: 7, event_id: "carried" }];
+    // Roll the session: the same alias is reclaimed, the server may replay the
+    // prior row, and new durable work is reconciled only after the successor's
+    // wake stream has opened.
+    queue = [{ seq: 7, event_id: "carried" }, { seq: 8, event_id: "after-revision" }];
     await client.performProactiveRollover();
     assert.equal(claims.length, 2);
     assert.equal(claims[1].expected, 5, "the replacement fences on the advanced generation");
-    await client.drainResponsiveDelivery(undefined, ALPHA);
-    assert.deepEqual(handled, ["carried"], "one effective action across the generation boundary");
+    await eventually(() => opens.length === 2 && handled.includes("after-revision"));
+    assert.deepEqual(handled, ["carried", "after-revision"], "one effective action per row across the generation boundary");
     assert.equal(client.runtime.sessionAlias, "main", "the route survives replacement");
   } finally {
     await controller.stop();
@@ -338,7 +412,7 @@ test("an acknowledgement failure retries the ack without re-running the handler"
   }
 });
 
-test("a session revision queues a drain instead of joining an in-flight one", async () => {
+test("a concurrent recovery request queues a drain instead of joining an in-flight one", async () => {
   const h = harness({ rooms: { [ALPHA]: [] } });
   let gate;
   let gateOpen;
@@ -366,8 +440,7 @@ test("a session revision queues a drain instead of joining an in-flight one", as
     await controller.start();
     const drainsBefore = drains;
     // Hold one drain open. It has already read an empty queue when the
-    // replacement lands, so joining it would lose the post-replacement pass
-    // a session revision promises.
+    // next recovery request lands, so joining it would lose the requested pass.
     gate = new Promise((resolve) => { gateOpen = resolve; });
     const inFlight = controller.drainForTest(ALPHA);
     await eventually(() => drains > drainsBefore);
@@ -478,20 +551,24 @@ test("a terminal wake failure settles the loop and a later start resumes deliver
 
 test("a successful internal reconnect reports the live wake stream to the host", async () => {
   const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", retryFirstWakes: 1 });
+  const sleeper = controlledSleeper();
   const opens = [];
   const failures = [];
   const controller = new ResponsiveDeliveryController(h.client, {
     handler: () => "handled",
     reconnectDelayMs: 5,
-    sleep: async () => {},
+    random: () => 0,
+    sleep: sleeper.sleep,
     onWakeError: (error) => { failures.push(error); return "continue"; },
     onWakeOpen: () => { opens.push(h.wakeOpens()); },
   });
   try {
     await controller.start();
-    await eventually(() => h.wakeOpens() === 2);
+    await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 5 && !settled));
+    sleeper.release((ms) => ms === 5);
+    await eventually(() => h.wakeOpens() === 2 && opens.length === 1);
     assert.equal(failures.length, 1, "the retryable failure reaches host policy");
-    assert.deepEqual(opens, [2], "only the subsequently opened live stream reports success");
+    assert.deepEqual(opens, [2], "only the subsequently opened reconciled stream reports success");
     assert.equal(controller.status().lastError, undefined, "a live stream supersedes the retryable error");
   } finally {
     await controller.stop();
@@ -499,21 +576,86 @@ test("a successful internal reconnect reports the live wake stream to the host",
   }
 });
 
-test("an event-less wake stream reopen is paced instead of spinning on microtasks", async () => {
-  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", instantWakes: true });
-  const sleeps = [];
+test("a reconnect drains work queued while the stream was disconnected", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha" });
+  const sleeper = controlledSleeper();
+  const handled = [];
+  const failures = [];
   const controller = new ResponsiveDeliveryController(h.client, {
-    handler: () => "handled",
-    sleep: async (ms) => { sleeps.push(ms); await new Promise((resolve) => setTimeout(resolve, 1)); },
+    handler: ({ message }) => { handled.push(message.event_id); return "handled"; },
+    reconnectDelayMs: 5,
+    random: () => 0,
+    sleep: sleeper.sleep,
+    onWakeError: (error) => { failures.push(error); return "continue"; },
   });
   try {
     await controller.start();
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    // Without pacing the loop reopens on resolved microtasks alone: timers
-    // starve (this settling timeout would never fire) and opens are unbounded.
-    // With pacing every reopen passes through the injected sleep first.
-    assert.ok(sleeps.length >= 1 && sleeps.every((ms) => ms === 250), `each event-less stream end sleeps before reopening, saw ${JSON.stringify(sleeps.slice(0, 3))}`);
-    assert.ok(h.wakeOpens() <= sleeps.length + 2, `wake reopen is paced, saw ${h.wakeOpens()} opens for ${sleeps.length} sleeps`);
+    await eventually(() => h.wakeOpens() === 1);
+    h.queues.set(ALPHA, [{ seq: 2, event_id: "during-disconnect" }]);
+    h.closeWake();
+    await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 5 && !settled));
+    assert.match(String(failures[0]), /ended unexpectedly/, "clean EOF is a reconnectable failure");
+    sleeper.release((ms) => ms === 5);
+    await eventually(() => handled.includes("during-disconnect"));
+    assert.equal(h.wakeOpens(), 2);
+    assert.deepEqual(h.acks.map(([, eventId]) => eventId), ["during-disconnect"]);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("fallback timing recovers all rooms after total wake-hint loss", async () => {
+  const h = harness({
+    rooms: { [ALPHA]: [], [BETA]: [] },
+    wakeConfig: { fallback_ms: 1234, fallback_jitter_ms: 100, reconnect_jitter_ms: 7 },
+  });
+  const sleeper = controlledSleeper();
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: ({ roomId, message }) => { handled.push([roomId, message.event_id]); return "handled"; },
+    random: () => 0.5,
+    sleep: sleeper.sleep,
+  });
+  try {
+    await controller.start();
+    await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 135000 && !settled));
+    await eventually(() => controller.status().running && h.wakeOpens() === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    h.queues.set(ALPHA, [{ seq: 3, event_id: "alpha-lost-hint" }]);
+    h.queues.set(BETA, [{ seq: 4, event_id: "beta-lost-hint" }]);
+    sleeper.release((ms) => ms === 135000);
+    await eventually(() => handled.length === 2);
+    assert.deepEqual(handled.sort(), [[ALPHA, "alpha-lost-hint"], [BETA, "beta-lost-hint"]].sort());
+    assert.deepEqual(h.acks.map(([roomId, eventId]) => [roomId, eventId]).sort(), handled.sort());
+    await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 1284 && !settled));
+    h.config({ fallback_ms: 0, fallback_jitter_ms: -1, reconnect_jitter_ms: "bad" });
+    sleeper.release((ms) => ms === 1284);
+    await eventually(() => sleeper.calls.filter(({ ms }) => ms === 1284).length === 2);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("an empty wake response uses the bounded reconnect path", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", emptyFirstWakes: 1 });
+  const sleeper = controlledSleeper();
+  const failures = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: () => "handled",
+    reconnectDelayMs: 5,
+    random: () => 0,
+    sleep: sleeper.sleep,
+    onWakeError: (error) => { failures.push(error); return "continue"; },
+  });
+  try {
+    await controller.start();
+    await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 5 && !settled));
+    assert.equal(h.wakeOpens(), 1, "EOF never spins reopen on microtasks");
+    assert.match(String(failures[0]), /ended unexpectedly/);
+    sleeper.release((ms) => ms === 5);
+    await eventually(() => h.wakeOpens() === 2);
   } finally {
     await controller.stop();
     h.cleanup();

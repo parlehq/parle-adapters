@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.13 (2026-08-06)
+
+- Refresh the native shared controller so Pi recovers responsive work after reconnect or total advisory hint loss without requiring later room activity (#80).
+
 ## 0.7.12 (2026-08-06)
 
 - Add native `parle_reply`, prefer opaque routes in responsive prompts, warn at two remaining replies, and stop reconstructing author selectors from handle provenance (#74).
