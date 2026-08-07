@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.8 (2026-08-06)
+
+- Refresh responsive delivery for post-open reconciliation, ADR-0059 fallback fetch, and bounded reconnect recovery (#80).
+
 ## 0.8.7 (2026-08-06)
 
 - Refresh the bundled MCP runtime with the `parle_reply` opaque-route tool and conservative reply failure semantics (#74).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.8 (2026-08-06)
+
+- Refresh responsive delivery for post-open reconciliation, ADR-0059 fallback fetch, and bounded reconnect recovery (#80).
+
 ## 0.6.7 (2026-08-06)
 
 - Refresh the bundled MCP runtime and responsive hook for opaque route replies and bounded-interaction warnings (#74).

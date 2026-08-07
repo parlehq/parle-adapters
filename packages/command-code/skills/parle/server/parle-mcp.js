@@ -33990,7 +33990,10 @@ function compactStatusCardFromStatus(status) {
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 var DEFAULT_MAX_DRAIN_BATCHES = 100;
 var DEFAULT_RECONNECT_MS = 5e3;
-var EMPTY_STREAM_REOPEN_MS = 250;
+var DEFAULT_FALLBACK_MS = 12e4;
+var DEFAULT_FALLBACK_JITTER_MS = 3e4;
+var DEFAULT_RECONNECT_JITTER_MS = 3e4;
+var MAX_TIMER_MS = 2147483647;
 var MAX_REMEMBERED_KEYS = 5e3;
 function deliveryKey(roomId, message) {
   return `${roomId}:${message.event_id}`;
@@ -34014,6 +34017,7 @@ var ResponsiveDeliveryController = class {
   maxDrainBatches;
   reconnectDelayMs;
   sleep;
+  random;
   onWakeError;
   onWakeOpen;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
@@ -34038,6 +34042,11 @@ var ResponsiveDeliveryController = class {
   ignoredWakeHints = 0;
   lastIgnoredWakeRoomId;
   lastError;
+  wakeTiming = {
+    fallbackMs: DEFAULT_FALLBACK_MS,
+    fallbackJitterMs: DEFAULT_FALLBACK_JITTER_MS,
+    reconnectJitterMs: DEFAULT_RECONNECT_JITTER_MS
+  };
   constructor(client, options) {
     this.client = client;
     this.handler = options.handler;
@@ -34045,6 +34054,7 @@ var ResponsiveDeliveryController = class {
     this.maxDrainBatches = options.maxDrainBatches ?? DEFAULT_MAX_DRAIN_BATCHES;
     this.reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_MS;
     this.sleep = options.sleep ?? defaultSleep;
+    this.random = options.random ?? Math.random;
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
   }
@@ -34076,7 +34086,6 @@ var ResponsiveDeliveryController = class {
     this.unsubscribeRevision?.();
     this.unsubscribeRevision = this.client.onSessionRevision?.(() => {
       this.wakeAbort?.abort();
-      void this.drainAll().catch(() => void 0);
     });
     await this.drainAll();
     const loop = this.watchLoop();
@@ -34135,59 +34144,106 @@ var ResponsiveDeliveryController = class {
     return this.configuredRooms().filter((room) => room.state === "ready");
   }
   async watchLoop() {
-    while (!this.abort.signal.aborted) {
-      const wakeAbort = new AbortController();
-      this.wakeAbort = wakeAbort;
-      const onAbort = () => wakeAbort.abort();
-      this.abort.signal.addEventListener("abort", onAbort, { once: true });
-      try {
-        const response = await this.client.openWakeStream(wakeAbort.signal);
-        const reader = response.body?.getReader();
-        if (!reader)
-          throw new Error("Parle wake stream has no body");
-        this.lastError = void 0;
-        this.onWakeOpen?.();
-        const cancelRead = () => void reader.cancel().catch(() => void 0);
-        wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let sawEvent = false;
-        while (!wakeAbort.signal.aborted) {
-          const { value, done } = await reader.read();
-          if (done)
-            break;
-          buffer += decoder.decode(value, { stream: true });
-          const parsed = parseSSEBlocks(buffer);
-          buffer = parsed.rest;
-          for (const event of parsed.events) {
-            sawEvent = true;
-            if (event.event === "wake")
-              await this.handleWake(event.data);
-          }
-        }
-        this.lastError = void 0;
-        if (!wakeAbort.signal.aborted && !sawEvent)
-          await this.sleep(EMPTY_STREAM_REOPEN_MS, this.abort.signal);
-      } catch (error51) {
-        if (this.abort.signal.aborted)
-          break;
-        if (wakeAbort.signal.aborted)
-          continue;
-        this.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
-        if (this.onWakeError?.(error51) === "stop")
-          return;
-        if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || ""))
-          throw error51;
-        const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
+    const fallbackAbort = new AbortController();
+    const abortFallback = () => fallbackAbort.abort();
+    this.abort.signal.addEventListener("abort", abortFallback, { once: true });
+    const fallback = this.fallbackLoop(fallbackAbort.signal);
+    try {
+      while (!this.abort.signal.aborted) {
+        const wakeAbort = new AbortController();
+        this.wakeAbort = wakeAbort;
+        const onAbort = () => wakeAbort.abort();
+        this.abort.signal.addEventListener("abort", onAbort, { once: true });
         try {
-          await this.sleep(Math.max(retryAfter, this.reconnectDelayMs), this.abort.signal);
-        } catch {
-          break;
+          const response = await this.client.openWakeStream(wakeAbort.signal);
+          const reader = response.body?.getReader();
+          if (!reader)
+            throw new Error("Parle wake stream has no body");
+          const cancelRead = () => void reader.cancel().catch(() => void 0);
+          wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
+          await this.drainAll();
+          if (wakeAbort.signal.aborted)
+            continue;
+          this.lastError = void 0;
+          this.onWakeOpen?.();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!wakeAbort.signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done)
+              break;
+            buffer += decoder.decode(value, { stream: true });
+            const parsed = parseSSEBlocks(buffer);
+            buffer = parsed.rest;
+            for (const event of parsed.events) {
+              if (event.event === "config")
+                this.applyWakeConfig(event.data);
+              else if (event.event === "wake")
+                await this.handleWake(event.data);
+            }
+          }
+          if (!wakeAbort.signal.aborted)
+            throw new Error("Parle wake stream ended unexpectedly");
+        } catch (error51) {
+          if (this.abort.signal.aborted)
+            break;
+          if (wakeAbort.signal.aborted)
+            continue;
+          this.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+          if (this.onWakeError?.(error51) === "stop")
+            return;
+          if (error51 instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error51.action || ""))
+            throw error51;
+          const retryAfter = error51 instanceof ParleApiError && typeof error51.retryAfterMs === "number" ? error51.retryAfterMs : 0;
+          try {
+            await this.sleep(this.withJitter(Math.max(retryAfter, this.reconnectDelayMs), this.wakeTiming.reconnectJitterMs), this.abort.signal);
+          } catch {
+            break;
+          }
+        } finally {
+          this.abort.signal.removeEventListener("abort", onAbort);
         }
-      } finally {
-        this.abort.signal.removeEventListener("abort", onAbort);
       }
+    } finally {
+      fallbackAbort.abort();
+      await fallback;
+      this.abort.signal.removeEventListener("abort", abortFallback);
     }
+  }
+  async fallbackLoop(signal) {
+    while (!signal.aborted) {
+      const timing = this.wakeTiming;
+      try {
+        await this.sleep(this.withJitter(timing.fallbackMs, timing.fallbackJitterMs), signal);
+      } catch {
+        return;
+      }
+      if (signal.aborted)
+        return;
+      await this.drainAll();
+    }
+  }
+  applyWakeConfig(data) {
+    let config2;
+    try {
+      config2 = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (!config2 || typeof config2 !== "object")
+      return;
+    const positive = (value) => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= MAX_TIMER_MS;
+    const nonNegative = (value) => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= MAX_TIMER_MS;
+    this.wakeTiming = {
+      fallbackMs: positive(config2.fallback_ms) ? config2.fallback_ms : this.wakeTiming.fallbackMs,
+      fallbackJitterMs: nonNegative(config2.fallback_jitter_ms) ? config2.fallback_jitter_ms : this.wakeTiming.fallbackJitterMs,
+      reconnectJitterMs: nonNegative(config2.reconnect_jitter_ms) ? config2.reconnect_jitter_ms : this.wakeTiming.reconnectJitterMs
+    };
+  }
+  withJitter(baseMs, jitterMs) {
+    const random = this.random();
+    const sample = Number.isFinite(random) ? Math.min(Math.max(random, 0), 1 - Number.EPSILON) : 0;
+    return Math.min(baseMs + Math.floor(sample * (Math.max(jitterMs, 0) + 1)), MAX_TIMER_MS);
   }
   // A hint names the room with traffic. An unknown room is counted and ignored;
   // a hintless wake falls back to draining every ready room.
@@ -34228,9 +34284,9 @@ var ResponsiveDeliveryController = class {
     await this.drainRoom(current);
   }
   // Coalescing must not swallow a requested drain. Joining an in-flight drain
-  // would lose the immediate post-replacement pass a session revision promises,
-  // because the in-flight drain may already have read past the new rows. One
-  // rerun is queued per room instead.
+  // would lose a wake, reconnect, revision, or fallback pass because the
+  // in-flight drain may already have read past the new rows. One rerun is queued
+  // per room instead.
   drainRoom(room) {
     const existing = this.drainInFlight.get(room.roomId);
     if (existing) {
@@ -36829,7 +36885,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.7";
+var MCP_CLIENT_VERSION = "0.7.8";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

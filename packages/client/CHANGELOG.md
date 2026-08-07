@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.8 (2026-08-06)
+
+- Reconcile durable responsive delivery after wake-stream establishment, recover total hint loss through the ADR-0059 fallback fetch, honor server timing and jitter, and route unexpected stream completion through bounded reconnect recovery (#80).
+
 ## 0.8.7 (2026-08-06)
 
 - Add strict universal reply-route normalization, route-first presentation with server-reported hop warnings, and a distinct idempotent opaque-route submission primitive without selector or broadcast fallback (#74).
