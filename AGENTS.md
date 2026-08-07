@@ -30,4 +30,8 @@ After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` to r
 - Package manager: pnpm.
 - Language: TypeScript.
 
+### Test isolation
+
+Adapter tests routinely run inside Parle-enabled harnesses. Child-process fixtures must not inherit ambient `PARLE_*` configuration unless a test explicitly exercises that configuration. Copy the ambient environment, strip every `PARLE_*` key, then apply the fixture's explicit overrides. Do not mutate the parent test process environment globally. Package and root test commands must pass without requiring operators to unset their live Parle configuration first.
+
 Run `pnpm typecheck` before committing TypeScript changes.

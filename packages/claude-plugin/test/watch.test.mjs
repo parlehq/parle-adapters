@@ -27,6 +27,15 @@ function canVerifyStart() {
 }
 const haveStartVerify = canVerifyStart();
 
+function isolatedTestEnv(overrides = {}, ambient = process.env) {
+  const env = Object.fromEntries(Object.entries(ambient).filter(([key, value]) => !key.startsWith("PARLE_") && value !== undefined));
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  return env;
+}
+
 function stubServer(body, onRequest) {
   return new Promise((resolveServer) => {
     const server = createServer((req, res) => {
@@ -86,15 +95,13 @@ function writeSnapshot(cwd, agentSessionId, overrides = {}) {
 }
 
 function runWatch(cwd, apiBase, args, extraEnv = {}) {
-  const env = {
-    ...process.env,
+  const env = isolatedTestEnv({
     PARLE_API_BASE: apiBase,
     PARLE_ROOM_ID: "room-1",
     PARLE_ROOM_AGENT_TOKEN: "parle_agt_test",
     PARLE_ALLOW_INSECURE_LOCAL: "1",
     ...extraEnv,
-  };
-  for (const [key, value] of Object.entries(env)) if (value === undefined) delete env[key];
+  });
   const child = spawn("sh", [script, ...args], {
     cwd,
     env,
@@ -143,8 +150,7 @@ process.stdout.write(outputs[Math.min(index, outputs.length - 1)]);
   chmodSync(join(bin, "sleep"), 0o755);
   const child = spawn("sh", [workerScript, "1"], {
     cwd,
-    env: {
-      ...process.env,
+    env: isolatedTestEnv({
       PATH: `${bin}:${process.env.PATH}`,
       PARLE_API_BASE: "https://api.example",
       PARLE_ROOM_ID: "room-1",
@@ -159,7 +165,7 @@ process.stdout.write(outputs[Math.min(index, outputs.length - 1)]);
       WATCH_STATE: statePath,
       WATCH_REQUEST_LOG: requestLog,
       WATCH_SLEEP_LOG: sleepLog,
-    },
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -182,6 +188,14 @@ async function assertStillWatching(watch) {
   watch.child.kill("SIGKILL");
   await watch.exited;
 }
+
+test("watch fixtures strip ambient Parle config before applying explicit overrides", () => {
+  const env = isolatedTestEnv(
+    { PARLE_ROOM_ID: "fixture-room", PARLE_PROFILE: "explicit-profile" },
+    { PATH: "/test/bin", PARLE_PROFILE: "ambient-profile", PARLE_SESSION_ALIAS: "ambient-route" },
+  );
+  assert.deepEqual(env, { PATH: "/test/bin", PARLE_ROOM_ID: "fixture-room", PARLE_PROFILE: "explicit-profile" });
+});
 
 test("invalid launcher forms fail with one usage line before network or worker activity", async () => {
   let requests = 0;

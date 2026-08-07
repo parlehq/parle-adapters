@@ -63,7 +63,10 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
+      - name: Test with ambient Parle configuration
+        env:
+          PARLE_PROFILE: ci-ambient-profile
+          PARLE_SESSION_ALIAS: ci-ambient-route
         run: pnpm test
 
       - name: Upload Claude Desktop MCPB
