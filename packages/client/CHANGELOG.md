@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.16 (2026-08-08)
+
+- Add typed `profile_not_found` configuration diagnostics with the offending selector and redaction-safe available-profile list, and classify startup profile and multi-room selector conflicts as recoverable configuration errors (#92).
+
 ## 0.8.15 (2026-08-08)
 
 - Pin `Parle-Version: 2026-08-08` and accept only bare invitation UUIDs or canonical `/room-invitations/<uuid>` URLs while keeping API transport configured locally.

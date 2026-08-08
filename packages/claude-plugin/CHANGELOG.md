@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.17 (2026-08-08)
+
+- Refresh the bundled MCP runtime with diagnostics-only degraded boot and in-process recovery after profile repair (#92).
+
 ## 0.9.16 (2026-08-08)
 
 - Refresh the bundled MCP runtime for the `2026-08-08` invitation locator hard cut.

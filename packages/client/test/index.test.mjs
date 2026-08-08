@@ -10,6 +10,7 @@ import {
   DEFAULT_VERSION,
   DEFAULT_WAKE_BASE,
   ParleAgentClient,
+  ProfileNotFoundError,
   processClientInstanceId,
   formatVersionErrorHint,
   assertSafeBase,
@@ -1445,7 +1446,13 @@ test("PARLE_PROFILES_PATH is exclusive: the default catalog is never layered in"
     writeFileSync(join(home, ".parle", "profiles"), "[shared]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_personal_token\n", { mode: 0o600 });
     writeFileSync(join(cwd, ".parle", "team-profiles"), "[other]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_override_token\n", { mode: 0o600 });
     writeFileSync(join(cwd, ".env"), "PARLE_PROFILES_PATH=./.parle/team-profiles\nPARLE_PROFILE=shared\n");
-    assert.throws(() => resolveConfig(cwd, { HOME: home }), /Parle profile shared was not found in .*team-profiles/);
+    assert.throws(
+      () => resolveConfig(cwd, { HOME: home }),
+      (error) => error instanceof ProfileNotFoundError
+        && error.code === "profile_not_found"
+        && error.selector === "shared"
+        && error.availableProfiles.join(",") === "other",
+    );
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

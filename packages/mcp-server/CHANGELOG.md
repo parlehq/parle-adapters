@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.16 (2026-08-08)
+
+- Keep MCP alive in a diagnostics-only degraded state after profile resolution fails, then re-resolve on `parle_setup`, promote the full tool surface, and emit `notifications/tools/list_changed` without a host restart (#92).
+
 ## 0.7.15 (2026-08-08)
 
 - Refresh the shared client for the `2026-08-08` invitation locator hard cut.

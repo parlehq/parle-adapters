@@ -321,9 +321,22 @@ function catalogGitExposureWarning(path) {
   }
 }
 var ProfileConfigError = class extends Error {
-  constructor(message) {
+  code;
+  constructor(message, code = "profile_config_error") {
     super(message);
     this.name = "ProfileConfigError";
+    this.code = code;
+  }
+};
+var ProfileNotFoundError = class extends ProfileConfigError {
+  selector;
+  availableProfiles;
+  constructor(selector, availableProfiles, path) {
+    const available = availableProfiles.join(", ") || "none";
+    super(`Parle profile ${selector} was not found in ${path}. Available profiles: ${available}`, "profile_not_found");
+    this.name = "ProfileNotFoundError";
+    this.selector = selector;
+    this.availableProfiles = availableProfiles;
   }
 };
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -437,8 +450,7 @@ function loadProfile(name, path = PROFILE_CATALOG_PATH) {
   const profile = profiles.get(name);
   if (profile)
     return profile;
-  const available = [...profiles.keys()].join(", ") || "none";
-  throw new ProfileConfigError(`Parle profile ${name} was not found in ${path}. Available profiles: ${available}`);
+  throw new ProfileNotFoundError(name, [...profiles.keys()], path);
 }
 
 // ../client/dist/helpers.js
@@ -3959,7 +3971,7 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
   if (profileSelector.value) {
     if (directValues.length) {
       const conflicts = directValues.map((value) => `${value.source}`);
-      throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
+      throw new ProfileConfigError(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
     }
     profile = loadProfile(profileSelector.value, catalogPath);
   }
@@ -4010,36 +4022,36 @@ function resolveRoomSet(cwd = process.cwd(), env = process.env) {
     return { mode: "single", rooms: [resolveConfig(cwd, env)], warnings: [] };
   const explicitProfile = firstConfigValue("PARLE_PROFILE", sources);
   if (explicitProfile.value) {
-    throw new Error(`PARLE_PROFILES from ${selector.source} conflicts with PARLE_PROFILE from ${explicitProfile.source}. Multi-room mode is an explicit startup selector; choose one.`);
+    throw new ProfileConfigError(`PARLE_PROFILES from ${selector.source} conflicts with PARLE_PROFILE from ${explicitProfile.source}. Multi-room mode is an explicit startup selector; choose one.`);
   }
   const directBindingKeys = ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN", "PARLE_AGENT_TOKEN_ID", "PARLE_ROOM_HANDLE"];
   const direct = directBindingKeys.map((key) => ({ key, value: firstConfigValue(key, sources) })).filter((item) => item.value.value);
   if (direct.length) {
-    throw new Error(`PARLE_PROFILES from ${selector.source} conflicts with direct room configuration (${direct.map((item) => `${item.key} from ${item.value.source}`).join(", ")}). Remove the direct variables or unset PARLE_PROFILES.`);
+    throw new ProfileConfigError(`PARLE_PROFILES from ${selector.source} conflicts with direct room configuration (${direct.map((item) => `${item.key} from ${item.value.source}`).join(", ")}). Remove the direct variables or unset PARLE_PROFILES.`);
   }
   const names = selector.value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
   if (names.length === 0)
-    throw new Error(`PARLE_PROFILES from ${selector.source} names no profiles. Name each profile explicitly; the catalog is never selected implicitly.`);
+    throw new ProfileConfigError(`PARLE_PROFILES from ${selector.source} names no profiles. Name each profile explicitly; the catalog is never selected implicitly.`);
   const duplicateName = names.find((name, index) => names.indexOf(name) !== index);
   if (duplicateName)
-    throw new Error(`PARLE_PROFILES lists ${duplicateName} more than once. Each profile may appear only once.`);
+    throw new ProfileConfigError(`PARLE_PROFILES lists ${duplicateName} more than once. Each profile may appear only once.`);
   const rooms = names.map((name) => resolveConfig(cwd, { ...env, PARLE_PROFILE: name, PARLE_PROFILES: void 0 }));
   const warnings = [];
   const seenRooms = /* @__PURE__ */ new Map();
   for (const [index, room] of rooms.entries()) {
     const roomId = room.roomId?.value;
     if (!roomId || !room.agentToken?.value)
-      throw new Error(`Parle profile ${names[index]} does not provide a complete room binding.`);
+      throw new ProfileConfigError(`Parle profile ${names[index]} does not provide a complete room binding.`);
     const previous = seenRooms.get(roomId);
     if (previous)
-      throw new Error(`PARLE_PROFILES maps ${previous} and ${names[index]} to the same room. Each room may be configured once.`);
+      throw new ProfileConfigError(`PARLE_PROFILES maps ${previous} and ${names[index]} to the same room. Each room may be configured once.`);
     seenRooms.set(roomId, names[index]);
     warnings.push(...room.warnings);
   }
   const apiOrigins = new Set(rooms.map((room) => requestOrigin(room.apiBase.value)));
   const wakeOrigins = new Set(rooms.map((room) => requestOrigin(room.wakeBase.value)));
   if (apiOrigins.size > 1 || wakeOrigins.size > 1) {
-    throw new Error(`PARLE_PROFILES mixes Parle origins (api: ${[...apiOrigins].join(", ")}; wake: ${[...wakeOrigins].join(", ")}). One session cannot span deployments.`);
+    throw new ProfileConfigError(`PARLE_PROFILES mixes Parle origins (api: ${[...apiOrigins].join(", ")}; wake: ${[...wakeOrigins].join(", ")}). One session cannot span deployments.`);
   }
   return { mode: "multi", rooms, warnings: [...new Set(warnings)] };
 }
@@ -5868,7 +5880,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.20";
+var PI_EXTENSION_VERSION = "0.7.21";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

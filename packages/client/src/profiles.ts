@@ -46,9 +46,25 @@ export type CredentialProfile = {
 };
 
 export class ProfileConfigError extends Error {
-  constructor(message: string) {
+  readonly code: string;
+
+  constructor(message: string, code = "profile_config_error") {
     super(message);
     this.name = "ProfileConfigError";
+    this.code = code;
+  }
+}
+
+export class ProfileNotFoundError extends ProfileConfigError {
+  readonly selector: string;
+  readonly availableProfiles: string[];
+
+  constructor(selector: string, availableProfiles: string[], path: string) {
+    const available = availableProfiles.join(", ") || "none";
+    super(`Parle profile ${selector} was not found in ${path}. Available profiles: ${available}`, "profile_not_found");
+    this.name = "ProfileNotFoundError";
+    this.selector = selector;
+    this.availableProfiles = availableProfiles;
   }
 }
 
@@ -154,6 +170,5 @@ export function loadProfile(name: string, path: string = PROFILE_CATALOG_PATH): 
   }
   const profile = profiles.get(name);
   if (profile) return profile;
-  const available = [...profiles.keys()].join(", ") || "none";
-  throw new ProfileConfigError(`Parle profile ${name} was not found in ${path}. Available profiles: ${available}`);
+  throw new ProfileNotFoundError(name, [...profiles.keys()], path);
 }

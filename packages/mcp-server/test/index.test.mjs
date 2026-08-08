@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ParleAgentClient } from "@parlehq/agent-client";
+import { ParleAgentClient, ProfileNotFoundError } from "@parlehq/agent-client";
 import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, scheduleEagerBootstrap, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
@@ -376,6 +377,103 @@ test("parle_setup preserves unexpected failures as MCP tool errors", async () =>
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("MCP degraded boot exposes diagnostics and promotes after profile repair", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-mcp-degraded-home-"));
+  const catalog = join(home, ".parle", "profiles");
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(catalog, "[other]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_other_secret\n", { mode: 0o600 });
+  const env = { HOME: home, PARLE_PROFILE: "missing", PARLE_WATCH_ENABLED: "0" };
+  let initialError;
+  try {
+    createMcpAgentClient({ cwd: home, env });
+  } catch (error) {
+    initialError = error;
+  }
+  assert.ok(initialError instanceof ProfileNotFoundError);
+
+  const server = createParleMcpServer({}, {}, undefined, {
+    error: initialError,
+    recover: () => ({ client: createMcpAgentClient({ cwd: home, env }) }),
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-degraded", version: "0.0.0" }, { capabilities: {} });
+  let toolListChanges = 0;
+  client.setNotificationHandler(ToolListChangedNotificationSchema, () => { toolListChanges += 1; });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const initialTools = await client.listTools();
+    assert.deepEqual(initialTools.tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
+    assert.match(initialTools.tools.find((tool) => tool.name === "parle_setup").description, /profile_not_found/);
+
+    const status = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.equal(status.isError, true);
+    assert.deepEqual(status.structuredContent, {
+      ok: false,
+      degraded: true,
+      code: "profile_not_found",
+      error: initialError.message,
+      selector: "missing",
+      availableProfiles: ["other"],
+      bootstrapAttempted: false,
+    });
+
+    const stillMissing = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(stillMissing.isError, undefined);
+    assert.equal(stillMissing.structuredContent.code, "profile_not_found");
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
+
+    writeFileSync(catalog, "[missing]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_missing_secret\n", { mode: 0o600 });
+    const recovered = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(recovered.isError, undefined);
+    assert.equal(recovered.structuredContent.recovered, true);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), expectedTools);
+    assert.ok(toolListChanges > 0, "promotion emits notifications/tools/list_changed");
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("stdio server handshakes in degraded mode and recovers after profile repair", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-mcp-degraded-stdio-home-"));
+  const catalogDir = join(home, ".parle");
+  const catalog = join(catalogDir, "profiles");
+  mkdirSync(catalogDir, { mode: 0o700 });
+  writeFileSync(catalog, "[other]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_other_secret\napi_base = http://127.0.0.1:9\n", { mode: 0o600 });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
+    env: {
+      PATH: process.env.PATH || "",
+      HOME: home,
+      PARLE_PROFILE: "missing",
+      PARLE_WATCH_ENABLED: "0",
+      PARLE_ALLOW_UNSAFE_BASE: "1",
+    },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "parle-mcp-degraded-stdio", version: "0.0.0" }, { capabilities: {} });
+  try {
+    await client.connect(transport);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
+    const degraded = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(degraded.isError, undefined);
+    assert.equal(degraded.structuredContent.code, "profile_not_found");
+    assert.equal(degraded.structuredContent.selector, "missing");
+    assert.deepEqual(degraded.structuredContent.availableProfiles, ["other"]);
+
+    writeFileSync(catalog, "[missing]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_missing_secret\napi_base = http://127.0.0.1:9\n", { mode: 0o600 });
+    const recovered = await client.callTool({ name: "parle_setup", arguments: {} });
+    assert.equal(recovered.isError, undefined);
+    assert.equal(recovered.structuredContent.recovered, true);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), expectedTools);
+  } finally {
+    await client.close().catch(() => {});
+    rmSync(home, { recursive: true, force: true });
   }
 });
 

@@ -6,7 +6,7 @@ import { assertClientInstanceId, assertClientName, assertClientVersion, processC
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
 import { DEFAULT_VERSION, ParleApiError, isParleCredential, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
-import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
+import { ProfileConfigError, catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
 
@@ -23,7 +23,7 @@ export * from "./alias.js";
 export * from "./helpers.js";
 export * from "./reply.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
-export { PROFILE_CATALOG_PATH, ProfileConfigError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, readProfiles, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
+export { PROFILE_CATALOG_PATH, ProfileConfigError, ProfileNotFoundError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, readProfiles, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
@@ -518,7 +518,7 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
   if (profileSelector.value) {
     if (directValues.length) {
       const conflicts = directValues.map((value) => `${value.source}`);
-      throw new Error(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
+      throw new ProfileConfigError(`PARLE_PROFILE from ${profileSelector.source} conflicts with direct configuration (${conflicts.join(", ")}). Remove the direct variables or unset PARLE_PROFILE.`);
     }
     profile = loadProfile(profileSelector.value, catalogPath);
   }
@@ -589,18 +589,18 @@ export function resolveRoomSet(cwd = process.cwd(), env: Record<string, string |
 
   const explicitProfile = firstConfigValue("PARLE_PROFILE", sources);
   if (explicitProfile.value) {
-    throw new Error(`PARLE_PROFILES from ${selector.source} conflicts with PARLE_PROFILE from ${explicitProfile.source}. Multi-room mode is an explicit startup selector; choose one.`);
+    throw new ProfileConfigError(`PARLE_PROFILES from ${selector.source} conflicts with PARLE_PROFILE from ${explicitProfile.source}. Multi-room mode is an explicit startup selector; choose one.`);
   }
   const directBindingKeys = ["PARLE_ROOM_ID", "PARLE_ROOM_AGENT_TOKEN", "PARLE_AGENT_TOKEN_ID", "PARLE_ROOM_HANDLE"];
   const direct = directBindingKeys.map((key) => ({ key, value: firstConfigValue(key, sources) })).filter((item) => item.value.value);
   if (direct.length) {
-    throw new Error(`PARLE_PROFILES from ${selector.source} conflicts with direct room configuration (${direct.map((item) => `${item.key} from ${item.value.source}`).join(", ")}). Remove the direct variables or unset PARLE_PROFILES.`);
+    throw new ProfileConfigError(`PARLE_PROFILES from ${selector.source} conflicts with direct room configuration (${direct.map((item) => `${item.key} from ${item.value.source}`).join(", ")}). Remove the direct variables or unset PARLE_PROFILES.`);
   }
 
   const names = selector.value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
-  if (names.length === 0) throw new Error(`PARLE_PROFILES from ${selector.source} names no profiles. Name each profile explicitly; the catalog is never selected implicitly.`);
+  if (names.length === 0) throw new ProfileConfigError(`PARLE_PROFILES from ${selector.source} names no profiles. Name each profile explicitly; the catalog is never selected implicitly.`);
   const duplicateName = names.find((name, index) => names.indexOf(name) !== index);
-  if (duplicateName) throw new Error(`PARLE_PROFILES lists ${duplicateName} more than once. Each profile may appear only once.`);
+  if (duplicateName) throw new ProfileConfigError(`PARLE_PROFILES lists ${duplicateName} more than once. Each profile may appear only once.`);
 
   // Order is preserved only so bearer selection is deterministic.
   const rooms = names.map((name) => resolveConfig(cwd, { ...env, PARLE_PROFILE: name, PARLE_PROFILES: undefined }));
@@ -608,16 +608,16 @@ export function resolveRoomSet(cwd = process.cwd(), env: Record<string, string |
   const seenRooms = new Map<string, string>();
   for (const [index, room] of rooms.entries()) {
     const roomId = room.roomId?.value;
-    if (!roomId || !room.agentToken?.value) throw new Error(`Parle profile ${names[index]} does not provide a complete room binding.`);
+    if (!roomId || !room.agentToken?.value) throw new ProfileConfigError(`Parle profile ${names[index]} does not provide a complete room binding.`);
     const previous = seenRooms.get(roomId);
-    if (previous) throw new Error(`PARLE_PROFILES maps ${previous} and ${names[index]} to the same room. Each room may be configured once.`);
+    if (previous) throw new ProfileConfigError(`PARLE_PROFILES maps ${previous} and ${names[index]} to the same room. Each room may be configured once.`);
     seenRooms.set(roomId, names[index]);
     warnings.push(...room.warnings);
   }
   const apiOrigins = new Set(rooms.map((room) => requestOrigin(room.apiBase.value)));
   const wakeOrigins = new Set(rooms.map((room) => requestOrigin(room.wakeBase.value)));
   if (apiOrigins.size > 1 || wakeOrigins.size > 1) {
-    throw new Error(`PARLE_PROFILES mixes Parle origins (api: ${[...apiOrigins].join(", ")}; wake: ${[...wakeOrigins].join(", ")}). One session cannot span deployments.`);
+    throw new ProfileConfigError(`PARLE_PROFILES mixes Parle origins (api: ${[...apiOrigins].join(", ")}; wake: ${[...wakeOrigins].join(", ")}). One session cannot span deployments.`);
   }
   return { mode: "multi", rooms, warnings: [...new Set(warnings)] };
 }

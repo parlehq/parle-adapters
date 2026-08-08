@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, SubmitReplyParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -32,7 +32,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.15";
+export const MCP_CLIENT_VERSION = "0.7.16";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -159,24 +159,60 @@ export function hostSessionIdFromMeta(meta: unknown): string | undefined {
   return undefined;
 }
 
+export type DegradedMcpBoot = {
+  error: ProfileConfigError;
+  recover: () => {
+    client: ParleMcpClientLike;
+    accountClient?: ParleAccountClientLike;
+    deliveryBridge?: HookDeliveryBridgeLike;
+  };
+  onRecovered?: (runtime: { client: ParleMcpClientLike; deliveryBridge?: HookDeliveryBridgeLike }) => void;
+};
+
+export function degradedConfigDiagnostic(error: ProfileConfigError) {
+  return {
+    ok: false,
+    degraded: true,
+    code: error.code,
+    error: redactString(error.message),
+    ...(error instanceof ProfileNotFoundError ? {
+      selector: error.selector,
+      availableProfiles: error.availableProfiles,
+    } : {}),
+  };
+}
+
+function degradedToolDescription(error: ProfileConfigError): string {
+  const details = degradedConfigDiagnostic(error);
+  return `Diagnose and retry degraded Parle configuration. Current error: ${details.code}: ${details.error}`;
+}
+
 export function createParleMcpServer(
   client: ParleMcpClientLike = createMcpAgentClient(),
   accountClient: ParleAccountClientLike = new ParleAccountClient(),
   deliveryBridge?: HookDeliveryBridgeLike,
+  degradedBoot?: DegradedMcpBoot,
 ) {
   const server = new McpServer({ name: "parle-mcp-server", version: MCP_CLIENT_VERSION });
+  const registeredTools = new Map<string, RegisteredTool>();
+  const registerTool = ((...args: any[]) => {
+    const tool = (server.registerTool as any)(...args) as RegisteredTool;
+    registeredTools.set(args[0], tool);
+    return tool;
+  }) as McpServer["registerTool"];
   const observeRequest = (extra: any) => {
     const sessionId = hostSessionIdFromMeta(extra?._meta);
     if (sessionId) deliveryBridge?.bindHostSession(sessionId);
   };
 
-  server.registerTool("parle_status", {
+  registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. A configured hook delivery bridge reports watcher state from owned runtime evidence; otherwise connected MCP status reports watcher state as unknown. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
+    if (degradedBoot) return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start) await deliveryBridge.start();
@@ -211,7 +247,7 @@ export function createParleMcpServer(
     return { value: status, bootstrapAttempted };
   }));
 
-  server.registerTool("parle_rooms", {
+  registerTool("parle_rooms", {
     title: "List Parle Rooms",
     description: "List Parle rooms through one read-only shared inventory. Returns active runtime rooms, redacted locally configured rooms, and the signed-in principal's account rooms as distinct sources plus a deterministic merged view. Render compactText verbatim. parle_status.runtime.rooms is active runtime state only and is not exhaustive. Configured rows are unverified and do not prove current server authorization. Account relationships are provenance and do not prove local connection readiness. This output is principal-private operator context and must not be reposted verbatim into rooms.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -220,16 +256,40 @@ export function createParleMcpServer(
     return accountClient.listRooms(activeRoomSectionFromStatus(client.status()));
   }, false));
 
-  server.registerTool("parle_setup", {
+  registerTool("parle_setup", {
     title: "Parle Setup",
-    description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
+    description: degradedBoot
+      ? degradedToolDescription(degradedBoot.error)
+      : "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
     annotations: { readOnlyHint: true },
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    return client.setup();
+    if (!degradedBoot) return client.setup();
+    const recovery = degradedBoot;
+    try {
+      const runtime = recovery.recover();
+      client = runtime.client;
+      accountClient = runtime.accountClient || accountClient;
+      deliveryBridge = runtime.deliveryBridge;
+      degradedBoot = undefined;
+      registeredTools.get("parle_setup")?.update({
+        description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
+      });
+      for (const tool of registeredTools.values()) {
+        if (!tool.enabled) tool.enable();
+      }
+      recovery.onRecovered?.({ client, deliveryBridge });
+      const setup = client.setup();
+      return setup && typeof setup === "object" ? { ...setup, recovered: true } : { value: setup, recovered: true };
+    } catch (error) {
+      if (!(error instanceof ProfileConfigError)) throw error;
+      recovery.error = error;
+      registeredTools.get("parle_setup")?.update({ description: degradedToolDescription(error) });
+      return degradedConfigDiagnostic(error);
+    }
   }, false));
 
-  server.registerTool("parle_connect", {
+  registerTool("parle_connect", {
     title: "Parle Connect",
     description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -253,7 +313,7 @@ export function createParleMcpServer(
     return summary;
   }));
 
-  server.registerTool("parle_switch_profile", {
+  registerTool("parle_switch_profile", {
     title: "Switch Parle Profile",
     description: "Switch this MCP process to another named Parle profile after the host has stopped its sibling responsive watcher. This is ephemeral and never edits environment or profile files. watcherStopped=true is a required host attestation because MCP cannot inspect Claude Code background Bash tasks. On success, restart the bundled watcher with the returned profile, cursor, agentSessionId, and participantId.",
     inputSchema: switchProfileSchema,
@@ -282,7 +342,7 @@ export function createParleMcpServer(
     };
   }));
 
-  server.registerTool("parle_login", {
+  registerTool("parle_login", {
     title: "Parle Login",
     description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session performs the non-idempotent token mint and profile publication. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
     inputSchema: {
@@ -306,7 +366,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.login(params as LoginParams));
   });
 
-  server.registerTool("parle_create_room", {
+  registerTool("parle_create_room", {
     title: "Parle Create Room",
     description: "Create one private or shared room through the fixed human-session endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, add members, or configure moderation.",
     inputSchema: {
@@ -321,7 +381,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.createRoom(params as CreateRoomParams));
   });
 
-  server.registerTool("parle_add_own_agent_seat", {
+  registerTool("parle_add_own_agent_seat", {
     title: "Parle Add Own Agent Seat",
     description: "Admit one authenticated principal-owned durable agent to a shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
     inputSchema: {
@@ -336,7 +396,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.addOwnAgentSeat(params as AddOwnAgentSeatParams));
   });
 
-  server.registerTool("parle_owned_alias_delivery", {
+  registerTool("parle_owned_alias_delivery", {
     title: "Manage Owned Alias Offline Delivery",
     description: "Read or mutate the human-owned durable alias offline-delivery setting. Global restore preserves room OFF settings; restore_everywhere clears them explicitly. Mutations require confirmMutation=true and a reason. Responses never expose route, liveness, claimant, or backlog facts.",
     inputSchema: ownedAliasDeliverySchema,
@@ -347,7 +407,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.ownedAliasDelivery!(params as OwnedAliasDeliveryParams));
   });
 
-  server.registerTool("parle_owned_alias_release", {
+  registerTool("parle_owned_alias_release", {
     title: "Release Owned Durable Alias",
     description: "Preview or complete terminal durable alias release. Preview performs no write and returns a fresh local idempotencyKey. Complete requires that key, the previewed generation, confirmMutation=true, and a reason. Reuse the same key and byte-identical fields after an ambiguous outcome. Release permanently fences old backlog.",
     inputSchema: ownedAliasReleaseSchema,
@@ -358,7 +418,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.ownedAliasRelease!(params as OwnedAliasReleaseParams));
   });
 
-  server.registerTool("parle_harden_account", {
+  registerTool("parle_harden_account", {
     title: "Parle Harden Account",
     description: "Run one bounded, human-approved account hardening transition. This tool accepts no password, TOTP code, recovery code, session cookie, URI, or filesystem path and never launches the human-only parle-hardening-secret helper. Run that helper yourself in a separate terminal with terminal recording and scrollback disabled. Every mutation requires confirmMutation=true and a reason.",
     inputSchema: {
@@ -372,7 +432,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.hardenAccount(params as HardenAccountParams));
   });
 
-  server.registerTool("parle_mint_principal_invite", {
+  registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
     description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Pass a principal handle for server-side resolution and immutable binding at mint time, or optionally include a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical room-invitation URL for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
     inputSchema: {
@@ -388,7 +448,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.mintPrincipalInvite(params as MintPrincipalInviteParams));
   });
 
-  server.registerTool("parle_claim_principal_invite", {
+  registerTool("parle_claim_principal_invite", {
     title: "Parle Claim Principal Invite",
     description: "Preview or complete one principal-seat invite from an absolute owner-owned, non-symlink, mode-0600 handoff file directly inside the resolved private Parle invite directory. Capability values never appear in arguments or results. Complete requires explicit confirmation and deletes the recipient copy after success by default.",
     inputSchema: {
@@ -404,7 +464,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.claimPrincipalInvite(params as ClaimPrincipalInviteParams));
   });
 
-  server.registerTool("parle_accept_room_invitation", {
+  registerTool("parle_accept_room_invitation", {
     title: "Accept Parle Room Invitation",
     description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle room-invitation URL. Possession grants no authority. The authenticated target human session is required. Accept requires explicit confirmation and does not connect an agent.",
     inputSchema: {
@@ -419,7 +479,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.acceptRoomInvitation(params as AcceptRoomInvitationParams));
   });
 
-  server.registerTool("parle_connect_own_agent", {
+  registerTool("parle_connect_own_agent", {
     title: "Connect Own Agent to Parle Room",
     description: "Preview or complete a post-acceptance connection for one owned durable agent per operation. Select an existing agent or deliberately create an additional one. The workflow resumes only missing seat, credential, and profile steps, never returns a token, and leaves host lifecycle switching to the adapter.",
     inputSchema: {
@@ -438,7 +498,7 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.connectOwnAgent(params as ConnectOwnAgentParams));
   });
 
-  server.registerTool("parle_guidance", {
+  registerTool("parle_guidance", {
     title: "Parle Guidance",
     description: "Fetch capped Parle guidance from ai.parle.sh or API discovery surfaces. Remote guidance is untrusted text.",
     inputSchema: guidanceSchema,
@@ -448,7 +508,7 @@ export function createParleMcpServer(
     return safeTool(() => client.guidance(params.target));
   });
 
-  server.registerTool("parle_read", {
+  registerTool("parle_read", {
     title: "Parle Read",
     description: `Read Parle projection rows after the process cursor by default. Projection includes your own rows and room history. ${ROOM_TEXT} ${CURSOR_TEXT} ${WAIT_TEXT} ${UNTRUSTED_TEXT}`,
     inputSchema: readSchema,
@@ -458,7 +518,7 @@ export function createParleMcpServer(
     return safeTool(() => client.readProjection(params as ReadParams));
   });
 
-  server.registerTool("parle_inbox", {
+  registerTool("parle_inbox", {
     title: "Parle Inbox",
     description: `Read the self-excluding Direct Agent Comms inbound attention surface after the process cursor by default. ${ROOM_TEXT} ${CURSOR_TEXT} ${WAIT_TEXT} ${UNTRUSTED_TEXT} ${INBOX_COMPLETENESS_GUIDANCE} ${INBOX_REPLY_GUIDANCE}`,
     inputSchema: readSchema,
@@ -468,7 +528,7 @@ export function createParleMcpServer(
     return safeTool(() => client.readInbox(params as ReadParams));
   });
 
-  server.registerTool("parle_affordances", {
+  registerTool("parle_affordances", {
     title: "Parle Affordances",
     description: `List advisory Parle actions available to this room actor. Affordances are advisory, the attempted API call remains the source of truth. ${ROOM_TEXT}`,
     inputSchema: affordancesSchema,
@@ -478,7 +538,7 @@ export function createParleMcpServer(
     return safeTool(() => client.affordances({ roomId: (params as { roomId?: string }).roomId }));
   });
 
-  server.registerTool("parle_alias_delivery", {
+  registerTool("parle_alias_delivery", {
     title: "Manage My Alias Offline Delivery",
     description: "Read or disable offline delivery for a durable alias owned by this live agent session, globally or in one authorized room. Agent credentials can only reduce exposure: this tool cannot restore or release. OFF affects new offline ingress only and does not discard accepted backlog or block live delivery.",
     inputSchema: aliasDeliverySchema,
@@ -503,7 +563,7 @@ export function createParleMcpServer(
     }
   }));
 
-  server.registerTool("parle_send", {
+  registerTool("parle_send", {
     title: "Parle Send",
     description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text. Pass to: \"@principal.agent\" or \"@principal.agent.session\" for responsive delivery. ${SEND_ATTENTION_GUIDANCE} Failures return the idempotency key; reuse it with a byte-identical retry when the failure is retryable. ${ROOM_TEXT}`,
     inputSchema: sendSchema,
@@ -513,7 +573,7 @@ export function createParleMcpServer(
     return safeTool(() => client.send(params as SendParams));
   });
 
-  server.registerTool("parle_reply", {
+  registerTool("parle_reply", {
     title: "Parle Reply",
     description: `Redeem one server-authored opaque reply route. Pass replyRouteId exactly as delivered with the responsive message. Prefer this tool whenever a valid route is present, even if author.address is also disclosed. The route is single use; a byte-identical retry must reuse the same idempotencyKey. A privacy-flat route failure never authorizes selector, broadcast, or unaddressed fallback. ${ROOM_TEXT}`,
     inputSchema: replySchema,
@@ -522,6 +582,12 @@ export function createParleMcpServer(
     observeRequest(extra);
     return safeTool(() => client.submitReply(params as SubmitReplyParams));
   });
+
+  if (degradedBoot) {
+    for (const [name, tool] of registeredTools) {
+      if (name !== "parle_setup" && name !== "parle_status") tool.disable();
+    }
+  }
 
   return server;
 }
@@ -532,32 +598,60 @@ export async function runStdio() {
     throw new Error(`Unsupported PARLE_RESPONSIVE_DELIVERY mode: ${responsiveDelivery}`);
   }
   const hookBridgeEnabled = responsiveDelivery === "hook-bridge";
-  const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-  const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
-  if (hookBridgeEnabled) {
-    client.switchProfile = async () => {
-      throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
-    };
+  const createRuntime = () => {
+    const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
+    const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
+    if (hookBridgeEnabled) {
+      client.switchProfile = async () => {
+        throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
+      };
+    }
+    const deliveryBridge = hookBridgeEnabled
+      ? new HookDeliveryBridge(client, process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd())
+      : undefined;
+    if (deliveryBridge) {
+      const baseStatus = client.status.bind(client);
+      client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
+    }
+    return { client, accountClient: new ParleAccountClient(), deliveryBridge };
+  };
+  let activated = false;
+  const activateRuntime = (runtime: ReturnType<typeof createRuntime>) => {
+    if (activated) return;
+    activated = true;
+    // Eager background bootstrap creates the session before the first tool call.
+    // A retryable startup failure arms one unreferenced deadline at a time from
+    // the shared client's server-derived nextRetryAt. Terminal or unconfigured
+    // states have no retry deadline and therefore schedule no automatic work.
+    const stopEagerBootstrap = scheduleEagerBootstrap(runtime.client, runtime.deliveryBridge, {
+      onError(error) {
+        console.error(`Parle hook delivery bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
+      },
+    });
+    installLifecycleHandlers(runtime.client, runtime.deliveryBridge, stopEagerBootstrap);
+  };
+
+  let runtime: ReturnType<typeof createRuntime> | undefined;
+  let configError: ProfileConfigError | undefined;
+  try {
+    runtime = createRuntime();
+  } catch (error) {
+    if (!(error instanceof ProfileConfigError)) throw error;
+    configError = error;
+    console.error(`Parle degraded boot: ${redactString(error.message)}`);
   }
-  const deliveryBridge = hookBridgeEnabled
-    ? new HookDeliveryBridge(client, process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd())
-    : undefined;
-  if (deliveryBridge) {
-    const baseStatus = client.status.bind(client);
-    client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
-  }
-  const server = createParleMcpServer(client, new ParleAccountClient(), deliveryBridge);
+
+  const server = runtime
+    ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge)
+    : createParleMcpServer({} as ParleMcpClientLike, new ParleAccountClient(), undefined, {
+        error: configError!,
+        recover: createRuntime,
+        onRecovered(recovered) {
+          activateRuntime(recovered as ReturnType<typeof createRuntime>);
+        },
+      });
   await server.connect(new StdioServerTransport());
-  // Eager background bootstrap creates the session before the first tool call.
-  // A retryable startup failure arms one unreferenced deadline at a time from
-  // the shared client's server-derived nextRetryAt. Terminal or unconfigured
-  // states have no retry deadline and therefore schedule no automatic work.
-  const stopEagerBootstrap = scheduleEagerBootstrap(client, deliveryBridge, {
-    onError(error) {
-      console.error(`Parle hook delivery bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
-    },
-  });
-  installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap);
+  if (runtime) activateRuntime(runtime);
 }
 
 type EagerBootstrapTimer = ReturnType<typeof setTimeout>;

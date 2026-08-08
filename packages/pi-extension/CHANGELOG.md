@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.21 (2026-08-08)
+
+- Refresh the shared client with typed profile-resolution diagnostics used by recoverable MCP boot (#92).
+
 ## 0.7.20 (2026-08-08)
 
 - Refresh the shared client and native bundle for the `2026-08-08` invitation locator hard cut.
