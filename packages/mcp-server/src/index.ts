@@ -32,7 +32,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.14";
+export const MCP_CLIENT_VERSION = "0.7.15";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -374,7 +374,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Pass a principal handle for server-side resolution and immutable binding at mint time, or optionally include a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical locator for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Pass a principal handle for server-side resolution and immutable binding at mint time, or optionally include a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical room-invitation URL for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
     inputSchema: {
       roomId: z.string(),
       principalId: z.string().optional(),
@@ -406,7 +406,7 @@ export function createParleMcpServer(
 
   server.registerTool("parle_accept_room_invitation", {
     title: "Accept Parle Room Invitation",
-    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle locator. Possession grants no authority. The authenticated target human session is required. Accept requires explicit confirmation and does not connect an agent.",
+    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle room-invitation URL. Possession grants no authority. The authenticated target human session is required. Accept requires explicit confirmation and does not connect an agent.",
     inputSchema: {
       action: z.enum(["preview", "accept"]),
       invitation: z.string(),

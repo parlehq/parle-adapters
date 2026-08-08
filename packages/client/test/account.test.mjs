@@ -335,7 +335,7 @@ test("principal invite mint resolves a handle and returns a non-secret target-se
           invite_id: INVITE_ID,
           room_id: ROOM_ID,
           claim_mode: "target_session",
-          claim_url: `http://127.0.0.1:8787/join/${INVITE_ID}`,
+          invitation_url: `https://app.parle.sh/room-invitations/${INVITE_ID}`,
           seat_type: "principal",
           target_principal_id: PRINCIPAL_ID,
           target_display: { handle: "kljensen" },
@@ -347,7 +347,7 @@ test("principal invite mint resolves a handle and returns a non-secret target-se
     const result = await client.mintPrincipalInvite({ roomId: ROOM_ID, principalHandle: "KLJENSEN", confirmMutation: true, reason: "Invite Kyle" });
     assert.equal(result.targetPrincipalId, PRINCIPAL_ID);
     assert.equal(result.targetHandle, "kljensen");
-    assert.equal(result.claimUrl, `http://127.0.0.1:8787/join/${INVITE_ID}`);
+    assert.equal(result.invitationUrl, `https://app.parle.sh/room-invitations/${INVITE_ID}`);
     assert.equal(result.sensitive, false);
     assert.equal(JSON.stringify(result).includes("secret"), false);
     assert.deepEqual(calls[0].body, { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen" } });
@@ -424,7 +424,7 @@ test("principal invite mint ignores unrecognized denial hints", async () => {
 test("target-session mint rejects authority material and immutable target drift", async () => {
   const f = fixture();
   try {
-    const base = { invite_id: INVITE_ID, room_id: ROOM_ID, claim_mode: "target_session", claim_url: `http://127.0.0.1:8787/join/${INVITE_ID}`, seat_type: "principal", target_principal_id: PRINCIPAL_ID, target_display: { handle: "kljensen" }, offered_rights: [], expires_at: "2026-07-26T20:00:00Z" };
+    const base = { invite_id: INVITE_ID, room_id: ROOM_ID, claim_mode: "target_session", invitation_url: `https://app.parle.sh/room-invitations/${INVITE_ID}`, seat_type: "principal", target_principal_id: PRINCIPAL_ID, target_display: { handle: "kljensen" }, offered_rights: [], expires_at: "2026-07-26T20:00:00Z" };
     const secret = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ ...base, secret: SECRET }, 201) });
     await assert.rejects(secret.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "invite" }), /authority material/);
     const mismatch = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ ...base, target_principal_id: "019f3894-bb87-726a-8deb-17d367054427" }, 201) });
@@ -442,7 +442,7 @@ test("principal invite preview and complete use the private bundle and delete it
     writeFileSync(handoffPath, JSON.stringify({
       schemaVersion: 1,
       kind: "parle-principal-invite",
-      apiVersion: "2026-08-05",
+      apiVersion: "2026-08-08",
       inviteId: INVITE_ID,
       roomId: ROOM_ID,
       secret: SECRET,
@@ -487,7 +487,7 @@ test("a successful claim consumes the handoff even when advisory response fields
     const inviteDir = join(f.home, ".parle", "invites");
     mkdirSync(inviteDir, { mode: 0o700 });
     const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-05", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
+    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-08", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ accepted: true }, 201) });
     const result = await client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "claim" });
     assert.equal(result.state, "completed");
@@ -506,7 +506,7 @@ test("claim failures redact the capability and preserve the handoff", async () =
     const inviteDir = join(f.home, ".parle", "invites");
     mkdirSync(inviteDir, { mode: 0o700 });
     const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-05", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
+    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-08", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ error: { code: "unauthenticated", message: `bad ${SECRET} ${CODE}` } }, 401) });
     await assert.rejects(client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "claim" }), (error) => {
       assert.equal(error.message.includes(SECRET), false);
@@ -547,7 +547,7 @@ test("claim rejects symlinked and permissive handoff files before network access
   }
 });
 
-test("target-session invitation preview and acceptance use only the configured canonical origin", async () => {
+test("target-session invitation preview and acceptance extract the canonical locator but use configured API transport", async () => {
   const f = fixture();
   const calls = [];
   try {
@@ -557,7 +557,7 @@ test("target-session invitation preview and acceptance use only the configured c
       if (String(url).endsWith("/accept")) return response({ room_id: ROOM_ID, seat_id: SEAT_ID, participant_id: PARTICIPANT_ID, state: "seated" }, 201);
       return response(status);
     } });
-    const preview = await client.acceptRoomInvitation({ action: "preview", invitation: `http://127.0.0.1:8787/join/${INVITE_ID}` });
+    const preview = await client.acceptRoomInvitation({ action: "preview", invitation: `https://app.parle.sh/room-invitations/${INVITE_ID}` });
     assert.equal(preview.state, "pending");
     const accepted = await client.acceptRoomInvitation({ action: "accept", invitation: INVITE_ID, confirmMutation: true, reason: "accept" });
     assert.equal(accepted.principal, "accepted");
@@ -569,7 +569,20 @@ test("target-session invitation preview and acceptance use only the configured c
       `http://127.0.0.1:8787/v/room-invitations/${INVITE_ID}`,
       `http://127.0.0.1:8787/v/room-invitations/${INVITE_ID}/accept`,
     ]);
-    await assert.rejects(client.acceptRoomInvitation({ action: "preview", invitation: `https://evil.example/join/${INVITE_ID}` }), /configured canonical Parle API origin/);
+    for (const retired of [
+      `https://app.parle.sh/join/${INVITE_ID}`,
+      `https://api.parle.sh/v/room-invitations/${INVITE_ID}`,
+      `https://app.parle.sh/room-invitations/${INVITE_ID}/accept`,
+      `https://app.parle.sh/room-invitations/${INVITE_ID}/`,
+      `https://app.parle.sh/room-invitations/${INVITE_ID}?x=1`,
+      `https://app.parle.sh/room-invitations/${INVITE_ID}#x`,
+      `https://user@app.parle.sh/room-invitations/${INVITE_ID}`,
+      `http://app.parle.sh/room-invitations/${INVITE_ID}`,
+    ]) {
+      await assert.rejects(client.acceptRoomInvitation({ action: "preview", invitation: retired }), /Invitation URL/);
+    }
+    const foreignOrigin = await client.acceptRoomInvitation({ action: "preview", invitation: `https://example.test/room-invitations/${INVITE_ID}` });
+    assert.equal(foreignOrigin.state, "pending");
   } finally { f.cleanup(); }
 });
 

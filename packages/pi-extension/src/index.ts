@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.19";
+const PI_EXTENSION_VERSION = "0.7.20";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2142,7 +2142,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_mint_principal_invite",
     label: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. Pass the principal handle for server-side resolution and immutable binding at mint time; optionally pass a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical locator for out-of-band sharing; possession grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
+    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. Pass the principal handle for server-side resolution and immutable binding at mint time; optionally pass a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical room-invitation URL for out-of-band sharing; possession grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
     parameters: Type.Object({
       roomId: Type.String({ description: "Shared room UUID." }),
       principalId: Type.Optional(Type.String({ description: "Optional immutable UUID for a previously resolved high-assurance target. Omit for server-side handle resolution." })),
@@ -2176,10 +2176,10 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_accept_room_invitation",
     label: "Accept Parle Room Invitation",
-    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle locator. Possession grants no authority. The authenticated target human session is required. Accept does not connect an agent.",
+    description: "Preview or accept a registered-principal room invitation using a non-secret UUID or canonical Parle room-invitation URL. Possession grants no authority. The authenticated target human session is required. Accept does not connect an agent.",
     parameters: Type.Object({
       action: Type.Unsafe({ type: "string", enum: ["preview", "accept"] }),
-      invitation: Type.String({ description: "Invitation UUID or canonical Parle locator URL." }),
+      invitation: Type.String({ description: "Invitation UUID or canonical Parle room-invitation URL." }),
       confirmMutation: Type.Optional(Type.Boolean({ description: "Required true only for accept." })),
       reason: Type.Optional(Type.String({ description: "Required explanation only for accept." })),
     }),
@@ -2195,7 +2195,7 @@ export default function parleExtension(pi: any) {
     description: "Preview or complete a post-acceptance connection for one owned durable agent per operation. Select an existing agent or deliberately create an additional one. The workflow resumes only missing seat, credential, and profile steps, never returns a token, and leaves profile switching to the host lifecycle.",
     parameters: Type.Object({
       action: Type.Unsafe({ type: "string", enum: ["preview", "complete"] }),
-      invitation: Type.String({ description: "Accepted invitation UUID or canonical Parle locator URL." }),
+      invitation: Type.String({ description: "Accepted invitation UUID or canonical Parle room-invitation URL." }),
       agentId: Type.Optional(Type.String({ description: "Exact owned durable-agent UUID." })),
       agentHandle: Type.Optional(Type.String({ description: "Exact owned durable-agent handle." })),
       createAgentHandle: Type.Optional(Type.String({ description: "Deliberate handle for a new durable agent to create and connect instead of selecting an existing agent." })),

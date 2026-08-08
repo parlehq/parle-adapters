@@ -347,16 +347,17 @@ function assertStringArray(raw: any, label: string): string[] {
 
 const PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-function parseInvitationLocator(raw: string, config: AccountConfig): string {
+function parseInvitationReference(raw: string): string {
   const value = raw.trim();
   if (UUID_RE.test(value)) return validateUUID(value, "invitation");
   let locator: URL;
   try { locator = new URL(value); } catch { throw new Error("invitation must be an invite UUID or canonical Parle invitation URL."); }
-  if (locator.origin !== config.apiBase || locator.username || locator.password || locator.search || locator.hash) {
-    throw new Error("Invitation URL must use the configured canonical Parle API origin and contain no credentials, query, or fragment.");
+  const loopback = locator.hostname === "localhost" || locator.hostname === "127.0.0.1" || locator.hostname === "[::1]";
+  if ((locator.protocol !== "https:" && !(locator.protocol === "http:" && loopback)) || locator.username || locator.password || locator.search || locator.hash) {
+    throw new Error("Invitation URL must use HTTPS or loopback HTTP and contain no credentials, query, or fragment.");
   }
-  const match = locator.pathname.match(/^\/(?:join|v\/room-invitations)\/([0-9a-f-]+)\/?$/i);
-  if (!match) throw new Error("Invitation URL path is not a canonical Parle invitation locator.");
+  const match = locator.pathname.match(/^\/room-invitations\/([0-9a-f-]+)$/i);
+  if (!match) throw new Error("Invitation URL path is not the canonical Parle room-invitation locator.");
   return validateUUID(match[1], "invitation locator");
 }
 
@@ -1126,13 +1127,13 @@ export class ParleAccountClient {
     const display = normalizeTargetDisplay(response.target_display);
     const resolvedHandle = validateHandle(display.handle);
     if (resolvedHandle !== principalHandle) throw new Error("Parle invite response target handle did not match the requested confirmation label.");
-    const claimUrl = String(response.claim_url || "");
-    if (parseInvitationLocator(claimUrl, config) !== inviteId) throw new Error("Parle invite response did not contain a canonical locator URL.");
+    const invitationUrl = String(response.invitation_url || "");
+    if (parseInvitationReference(invitationUrl) !== inviteId) throw new Error("Parle invite response did not contain a canonical invitation URL.");
     return {
       inviteId,
       roomId,
       claimMode: "target_session",
-      claimUrl,
+      invitationUrl,
       seatType: "principal",
       targetPrincipalId,
       targetHandle: resolvedHandle,
@@ -1245,7 +1246,7 @@ export class ParleAccountClient {
   }
 
   private async invitationStatus(config: AccountConfig, invitation: string, signal?: AbortSignal): Promise<any> {
-    const inviteId = parseInvitationLocator(invitation, config);
+    const inviteId = parseInvitationReference(invitation);
     const response = await this.request(config, `/v/room-invitations/${encodeURIComponent(inviteId)}`, { signal });
     if (validateUUID(String(response.invite_id || ""), "response invite_id") !== inviteId) throw new Error("Parle invitation response did not match the requested locator.");
     const roomId = validateUUID(String(response.room_id || ""), "response room_id");

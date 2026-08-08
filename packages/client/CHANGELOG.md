@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.15 (2026-08-08)
+
+- Pin `Parle-Version: 2026-08-08` and accept only bare invitation UUIDs or canonical `/room-invitations/<uuid>` URLs while keeping API transport configured locally.
+
 ## 0.8.14 (2026-08-08)
 
 - Treat HTTP 408 from terminal alias release completion as an ambiguous outcome that requires byte-identical idempotent replay.

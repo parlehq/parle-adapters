@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.20 (2026-08-08)
+
+- Refresh the shared client and native bundle for the `2026-08-08` invitation locator hard cut.
+
 ## 0.7.19 (2026-08-08)
 
 - Carry the shared client HTTP 408 terminal alias release ambiguity correction into the native Pi runtime.

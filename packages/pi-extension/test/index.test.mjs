@@ -108,7 +108,7 @@ test("status ignores persisted PARLE_VERSION and warns", async () => {
   globalThis.fetch = async () => { throw new Error("offline test"); };
   const harness = installHarness(cwd);
   const status = await harness.call("parle_status");
-  assert.equal(status.details.version.value, "2026-08-05");
+  assert.equal(status.details.version.value, "2026-08-08");
   assert.equal(status.details.version.source, "default");
   assert.equal(status.details.roomId.value, "room-1");
   assert.match(status.details.warnings.join("\n"), /Ignoring PARLE_VERSION from project \.env/);
@@ -746,7 +746,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.19" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.20" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1420,7 +1420,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.19");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.20");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1564,12 +1564,12 @@ test("principal invite tools expose link-first mint and separate guided acceptan
   globalThis.fetch = async (url, init) => {
     assert.equal(String(url), "https://api.parle.sh/v/rooms/019f7b46-178f-7a5a-9f7b-b4af2e045261/invites");
     assert.deepEqual(JSON.parse(init.body), { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen" } });
-    return new Response(JSON.stringify({ invite_id: "019f7c00-0000-7000-8000-000000000010", room_id: "019f7b46-178f-7a5a-9f7b-b4af2e045261", claim_mode: "target_session", claim_url: "https://api.parle.sh/join/019f7c00-0000-7000-8000-000000000010", seat_type: "principal", target_principal_id: "019f3894-bb87-726a-8deb-17d367054426", target_display: { handle: "kljensen" }, offered_rights: [], expires_at: "2026-07-26T20:00:00Z" }), { status: 201 });
+    return new Response(JSON.stringify({ invite_id: "019f7c00-0000-7000-8000-000000000010", room_id: "019f7b46-178f-7a5a-9f7b-b4af2e045261", claim_mode: "target_session", invitation_url: "https://app.parle.sh/room-invitations/019f7c00-0000-7000-8000-000000000010", seat_type: "principal", target_principal_id: "019f3894-bb87-726a-8deb-17d367054426", target_display: { handle: "kljensen" }, offered_rights: [], expires_at: "2026-07-26T20:00:00Z" }), { status: 201 });
   };
   const harness = installHarness(cwd);
   const result = await harness.call("parle_mint_principal_invite", { roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261", principalHandle: "kljensen", confirmMutation: true, reason: "Invite Kyle" });
   assert.equal(result.details.targetHandle, "kljensen");
-  assert.equal(result.details.claimUrl, "https://api.parle.sh/join/019f7c00-0000-7000-8000-000000000010");
+  assert.equal(result.details.invitationUrl, "https://app.parle.sh/room-invitations/019f7c00-0000-7000-8000-000000000010");
   assert.equal(result.details.sensitive, false);
   assert.deepEqual(Object.keys(harness.tools.parle_harden_account.parameters.properties).sort(), ["action", "confirmMutation", "reason"]);
   assert.doesNotMatch(JSON.stringify(harness.tools.parle_harden_account.parameters), /password|recovery|provisioning|path/i);

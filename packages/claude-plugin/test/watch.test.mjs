@@ -157,7 +157,7 @@ process.stdout.write(outputs[Math.min(index, outputs.length - 1)]);
       PARLE_ROOM_AGENT_TOKEN: "parle_agt_test",
       PARLE_WATCH_AGENT_SESSION: "parle_ses_test",
       PARLE_WATCH_CLIENT_INSTANCE_ID: "019f2946-aef5-47ad-a41d-747ce0fd6a13",
-      PARLE_VERSION: "2026-08-05",
+      PARLE_VERSION: "2026-08-08",
       PARLE_WATCH_REQUEST_HELPER: helper,
       PARLE_WATCH_PARENT_PID: String(process.pid),
       PARLE_WATCH_SESSION_LIVENESS: "0",

@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/command-code-parle-mod",
-  "version": "0.6.14",
+  "version": "0.6.15",
   "private": true,
   "type": "module",
   "commandcode": {

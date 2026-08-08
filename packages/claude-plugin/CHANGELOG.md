@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.16 (2026-08-08)
+
+- Refresh the bundled MCP runtime for the `2026-08-08` invitation locator hard cut.
+
 ## 0.9.15 (2026-08-08)
 
 - Refresh the bundled MCP runtime with HTTP 408 terminal alias release ambiguity handling.
