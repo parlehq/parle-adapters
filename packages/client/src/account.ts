@@ -1,16 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { DEFAULT_VERSION } from "./protocol.js";
 import { CredentialProfile, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
 import { ParleHardeningClient, type HardenAccountParams } from "./hardening.js";
+import { atomicReplaceOwnerOnlyFile, readOwnerOnlyTextFile, withOwnerOnlyFileLock } from "./safe-file.js";
 import { assertSafeBase, truncateText } from "./helpers.js";
 import { RoomInventoryResponseError, parseAccountRoomPage, readConfiguredRoomSection, roomInventoryResult, type AccountRoomInventoryRow, type ActiveRoomInventoryRow, type ParleRoomsInventory, type RoomInventorySection } from "./room-inventory.js";
 
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_HANDOFF_BYTES = 32 * 1024;
+const MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
 const MAX_ACCOUNT_ROOM_ROWS = 2_000;
 const MAX_ACCOUNT_ROOM_PAGES = 10;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -423,15 +425,12 @@ function writeCookieFile(catalogPath: string, filename: "session" | "login", coo
   const directory = ensureProfileDirectory(catalogPath);
   const path = join(dirname(catalogPath), filename);
   const writePath = safeProfileWritePath(join(directory, basename(path)));
-  const tempPath = join(dirname(writePath), `.${filename}.${process.pid}.${Date.now()}.tmp`);
-  try {
-    writeFileSync(tempPath, `${cookie}\n`, { mode: 0o600, flag: "wx" });
-    if (process.platform !== "win32") chmodSync(tempPath, 0o600);
-    if (ensureProfileDirectory(catalogPath) !== directory) throw new Error("Parle credential directory changed during cookie persistence.");
-    safeProfileWritePath(writePath);
-    renameSync(tempPath, writePath);
-    if (process.platform !== "win32") chmodSync(writePath, 0o600);
-  } finally { try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {} }
+  atomicReplaceOwnerOnlyFile(writePath, `${cookie}\n`, {
+    label: `Parle ${filename} credential`,
+    maxBytes: 8192,
+    durability: "best-effort",
+    existingMode: "replace",
+  });
   return path;
 }
 
@@ -445,7 +444,7 @@ function writePendingLoginCookieFile(catalogPath: string, cookie: string): strin
 
 function readPendingLoginCookieFile(catalogPath: string): string {
   const path = safeFile(pendingLoginCookieFilePath(catalogPath), "Parle pending login credential", false);
-  const cookie = readFileSync(path, "utf8").trim();
+  const cookie = readOwnerOnlyTextFile(path, { label: "Parle pending login credential", maxBytes: 8192 }).trim();
   if (!LOGIN_CHALLENGE_COOKIE_RE.test(cookie)) throw new Error("Parle pending login credential is malformed. Remove it and restart email login.");
   return cookie;
 }
@@ -495,16 +494,8 @@ function writeProfile(profile: CredentialProfile, force: boolean, catalogPath: s
   if (!PROFILE_LABEL_RE.test(profile.name)) throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
   const writePath = safeProfileWritePath(join(directory, basename(catalogPath)));
-  const lockPath = `${writePath}.lock`;
-  let lock: number | undefined;
-  try {
-    try {
-      lock = openSync(lockPath, "wx", 0o600);
-    } catch (error: any) {
-      if (error?.code === "EEXIST") throw new Error(`Parle profile catalog is locked at ${lockPath}. Retry after the active writer finishes. If no writer is active, inspect and remove the stale lock manually.`);
-      throw error;
-    }
-    const original = existsSync(writePath) ? readFileSync(writePath, "utf8") : "";
+  return withOwnerOnlyFileLock(writePath, { label: "Parle profile catalog", durability: "none" }, () => {
+    const original = existsSync(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" }) : "";
     const profiles = original ? parseProfiles(original, catalogPath) : new Map<string, CredentialProfile>();
     const range = profileSectionRange(original, profile.name);
     if (range && !force) throw new Error(`Parle profile ${profile.name} already exists in ${catalogPath}. Pass force=true to replace only that profile.`);
@@ -513,22 +504,11 @@ function writeProfile(profile: CredentialProfile, force: boolean, catalogPath: s
       ? original.slice(0, range.start) + section + original.slice(range.end)
       : original + (original.length === 0 || original.endsWith("\n") ? "" : "\n") + section;
     parseProfiles(updated, catalogPath);
-    const tempPath = join(dirname(writePath), `.profiles.${process.pid}.${Date.now()}.tmp`);
-    try {
-      writeFileSync(tempPath, updated, { mode: 0o600, flag: "wx" });
-      if (process.platform !== "win32") chmodSync(tempPath, 0o600);
-      if (ensureProfileDirectory(catalogPath) !== directory) throw new Error("Parle credential directory changed during profile persistence.");
-      safeProfileWritePath(writePath);
-      renameSync(tempPath, writePath);
-      if (process.platform !== "win32") chmodSync(writePath, 0o600);
-    } finally { try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {} }
+    if (ensureProfileDirectory(catalogPath) !== directory) throw new Error("Parle credential directory changed during profile persistence.");
+    safeProfileWritePath(writePath);
+    atomicReplaceOwnerOnlyFile(writePath, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, durability: "best-effort", existingMode: "replace" });
     return { path: catalogPath, replaced: Boolean(range), priorAgentTokenId: profiles.get(profile.name)?.agentTokenId };
-  } finally {
-    if (lock !== undefined) {
-      closeSync(lock);
-      try { if (existsSync(lockPath)) unlinkSync(lockPath); } catch {}
-    }
-  }
+  });
 }
 
 function preflightNewProfile(path: string, profileName: string): { writePath: string; original: string } {
@@ -541,36 +521,17 @@ function preflightNewProfile(path: string, profileName: string): { writePath: st
 }
 
 function publishNewProfile(path: string, original: string, profile: CredentialProfile): void {
-  const lockPath = `${path}.lock`;
-  let lock: number | undefined;
-  try {
-    try {
-      lock = openSync(lockPath, "wx", 0o600);
-    } catch (error: any) {
-      if (error?.code === "EEXIST") throw new Error(`Parle profile catalog is locked at ${lockPath}. Retry after the active writer finishes. If no writer is active, inspect and remove the stale lock manually.`);
-      throw error;
-    }
-    const current = existsSync(path) ? readFileSync(path, "utf8") : "";
+  withOwnerOnlyFileLock(path, { label: "Parle profile catalog", durability: "none" }, () => {
+    const current = existsSync(path) ? readOwnerOnlyTextFile(path, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" }) : "";
     if (current !== original) throw new Error("Parle profile catalog changed after preflight. No credential was published.");
     const profiles = current ? parseProfiles(current, path) : new Map<string, CredentialProfile>();
     if (profiles.has(profile.name)) throw new Error(`Parle profile ${profile.name} already exists. No existing profile is replaced by this workflow.`);
     const updated = current + (current.length === 0 || current.endsWith("\n") ? "" : "\n") + renderProfile(profile);
     parseProfiles(updated, path);
-    const tempPath = join(dirname(path), `.profiles.${process.pid}.${Date.now()}.tmp`);
-    try {
-      writeFileSync(tempPath, updated, { mode: 0o600, flag: "wx" });
-      if (process.platform !== "win32") chmodSync(tempPath, 0o600);
-      ensureProfileDirectory(path);
-      safeProfileWritePath(path);
-      renameSync(tempPath, path);
-      if (process.platform !== "win32") chmodSync(path, 0o600);
-    } finally { try { if (existsSync(tempPath)) unlinkSync(tempPath); } catch {} }
-  } finally {
-    if (lock !== undefined) {
-      closeSync(lock);
-      try { if (existsSync(lockPath)) unlinkSync(lockPath); } catch {}
-    }
-  }
+    ensureProfileDirectory(path);
+    safeProfileWritePath(path);
+    atomicReplaceOwnerOnlyFile(path, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, durability: "best-effort", existingMode: "replace" });
+  });
 }
 
 function publicAgents(raw: any): Array<{ agentId: string; agentHandle: string; displayName?: string }> {

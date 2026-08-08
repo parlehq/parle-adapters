@@ -410,11 +410,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants3) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants2);
+          this.rhs = optimizeExpr(this.rhs, names, constants3);
         return this;
       }
       get names() {
@@ -431,10 +431,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants3) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants2);
+        this.rhs = optimizeExpr(this.rhs, names, constants3);
         return this;
       }
       get names() {
@@ -495,8 +495,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants2) {
-        this.code = optimizeExpr(this.code, names, constants2);
+      optimizeNames(names, constants3) {
+        this.code = optimizeExpr(this.code, names, constants3);
         return this;
       }
       get names() {
@@ -525,12 +525,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants3) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants2))
+          if (n.optimizeNames(names, constants3))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -583,12 +583,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants3) {
         var _a3;
-        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
-        if (!(super.optimizeNames(names, constants2) || this.else))
+        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants3);
+        if (!(super.optimizeNames(names, constants3) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants2);
+        this.condition = optimizeExpr(this.condition, names, constants3);
         return this;
       }
       get names() {
@@ -611,10 +611,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants2) {
-        if (!super.optimizeNames(names, constants2))
+      optimizeNames(names, constants3) {
+        if (!super.optimizeNames(names, constants3))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants2);
+        this.iteration = optimizeExpr(this.iteration, names, constants3);
         return this;
       }
       get names() {
@@ -650,10 +650,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants2) {
-        if (!super.optimizeNames(names, constants2))
+      optimizeNames(names, constants3) {
+        if (!super.optimizeNames(names, constants3))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants2);
+        this.iterable = optimizeExpr(this.iterable, names, constants3);
         return this;
       }
       get names() {
@@ -695,11 +695,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants2) {
+      optimizeNames(names, constants3) {
         var _a3, _b;
-        super.optimizeNames(names, constants2);
-        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants2);
+        super.optimizeNames(names, constants3);
+        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants3);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants3);
         return this;
       }
       get names() {
@@ -1000,7 +1000,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants2) {
+    function optimizeExpr(expr, names, constants3) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1015,14 +1015,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants2[n.str];
+        const c = constants3[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -30954,36 +30954,451 @@ var StdioServerTransport = class {
 
 // src/index.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync6, readFileSync as readFileSync8 } from "node:fs";
-import { dirname as dirname6, join as join9 } from "node:path";
+import { existsSync as existsSync7, readFileSync as readFileSync7 } from "node:fs";
+import { dirname as dirname7, join as join10 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
-import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
-import { join as join7 } from "node:path";
-import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
+import { readFileSync as readFileSync6, existsSync as existsSync6 } from "node:fs";
+import { join as join8 } from "node:path";
+import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, rmSync } from "node:fs";
+import { join as join2 } from "node:path";
+
+// ../client/dist/safe-file.js
+import { randomUUID } from "node:crypto";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+var DEFAULT_FILE_MODE = 384;
+var DEFAULT_DIRECTORY_MODE = 448;
+var MAX_LOCK_BYTES = 4096;
+var DEFAULT_MALFORMED_LOCK_STALE_MS = 5 * 6e4;
+var NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+var SafeFileError = class extends Error {
+  code;
+  constructor(code, message, options) {
+    super(message, options);
+    this.name = "SafeFileError";
+    this.code = code;
+  }
+};
+function systemCode(error51) {
+  return typeof error51?.code === "string" ? error51.code : void 0;
+}
+function ownerAndMode(stat, expectedMode, label, kind) {
+  if (kind === "file") {
+    if (!stat.isFile())
+      throw new SafeFileError("unsafe_type", `${label} must be a regular file.`);
+  } else if (!stat.isDirectory()) {
+    throw new SafeFileError("unsafe_type", `${label} must be a real directory.`);
+  }
+  if (process.platform === "win32")
+    return;
+  if (stat.uid !== process.getuid?.())
+    throw new SafeFileError("unsafe_owner", `${label} must be owned by the current user.`);
+  if ((stat.mode & 511) !== expectedMode)
+    throw new SafeFileError("unsafe_mode", `${label} must have mode ${expectedMode.toString(8)}.`);
+}
+function assertSingleLink(stat, label) {
+  if (stat.nlink !== 1)
+    throw new SafeFileError("unsafe_links", `${label} must have exactly one filesystem link.`);
+}
+function inspectRealDirectory(path, label, mode = DEFAULT_DIRECTORY_MODE) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error51) {
+    throw new SafeFileError("directory_unavailable", `${label} cannot be inspected: ${path}.`, { cause: error51 });
+  }
+  if (stat.isSymbolicLink())
+    throw new SafeFileError("symlink_refused", `${label} must not be a symbolic link: ${path}.`);
+  ownerAndMode(stat, mode, label, "directory");
+  return stat;
+}
+function ensureOwnerOnlyDirectory(path, options = { label: "Owner-only directory" }) {
+  const mode = options.mode ?? DEFAULT_DIRECTORY_MODE;
+  if (!existsSync(path)) {
+    if (options.create === false)
+      throw new SafeFileError("directory_missing", `${options.label} is missing: ${path}.`);
+    try {
+      mkdirSync(path, { recursive: true, mode });
+    } catch (error51) {
+      throw new SafeFileError("directory_create_failed", `${options.label} could not be created: ${path}.`, { cause: error51 });
+    }
+  }
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error51) {
+    throw new SafeFileError("directory_unavailable", `${options.label} cannot be inspected: ${path}.`, { cause: error51 });
+  }
+  if (stat.isSymbolicLink())
+    throw new SafeFileError("symlink_refused", `${options.label} must not be a symbolic link: ${path}.`);
+  if (!stat.isDirectory())
+    throw new SafeFileError("unsafe_type", `${options.label} must be a real directory.`);
+  if (process.platform !== "win32" && stat.uid !== process.getuid?.())
+    throw new SafeFileError("unsafe_owner", `${options.label} must be owned by the current user.`);
+  if (options.repairMode && process.platform !== "win32" && (stat.mode & 511) !== mode)
+    chmodSync(path, mode);
+  inspectRealDirectory(path, options.label, mode);
+  return path;
+}
+function inspectOwnerFileShape(path, label, requireSingleLink) {
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error51) {
+    throw new SafeFileError("file_unavailable", `${label} cannot be inspected: ${path}.`, { cause: error51 });
+  }
+  if (stat.isSymbolicLink())
+    throw new SafeFileError("symlink_refused", `${label} must not be a symbolic link: ${path}.`);
+  if (!stat.isFile())
+    throw new SafeFileError("unsafe_type", `${label} must be a regular file.`);
+  if (process.platform !== "win32" && stat.uid !== process.getuid?.())
+    throw new SafeFileError("unsafe_owner", `${label} must be owned by the current user.`);
+  if (requireSingleLink)
+    assertSingleLink(stat, label);
+  return stat;
+}
+function inspectOwnerOnlyPath(path, label, mode, requireSingleLink) {
+  const stat = inspectOwnerFileShape(path, label, requireSingleLink);
+  ownerAndMode(stat, mode, label, "file");
+  return stat;
+}
+function openOwnerOnlyRead(path, options) {
+  const mode = options.mode ?? DEFAULT_FILE_MODE;
+  const requireSingleLink = options.requireSingleLink ?? true;
+  if (options.modePolicy === "ignore")
+    inspectOwnerFileShape(path, options.label, requireSingleLink);
+  else
+    inspectOwnerOnlyPath(path, options.label, mode, requireSingleLink);
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY | NO_FOLLOW);
+  } catch (error51) {
+    if (systemCode(error51) === "ELOOP")
+      throw new SafeFileError("symlink_refused", `${options.label} must not be a symbolic link: ${path}.`, { cause: error51 });
+    throw new SafeFileError("file_open_failed", `${options.label} could not be opened: ${path}.`, { cause: error51 });
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (options.modePolicy === "ignore") {
+      if (!stat.isFile())
+        throw new SafeFileError("unsafe_type", `${options.label} must be a regular file.`);
+      if (process.platform !== "win32" && stat.uid !== process.getuid?.())
+        throw new SafeFileError("unsafe_owner", `${options.label} must be owned by the current user.`);
+    } else
+      ownerAndMode(stat, mode, options.label, "file");
+    if (requireSingleLink)
+      assertSingleLink(stat, options.label);
+    if (stat.size > options.maxBytes)
+      throw new SafeFileError("size_limit", `${options.label} exceeds ${options.maxBytes} bytes.`);
+    return { fd, stat };
+  } catch (error51) {
+    try {
+      closeSync(fd);
+    } catch {
+    }
+    throw error51;
+  }
+}
+function readOwnerOnlyFile(path, options) {
+  if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0)
+    throw new SafeFileError("invalid_limit", `${options.label} requires a non-negative byte limit.`);
+  const { fd } = openOwnerOnlyRead(path, options);
+  try {
+    const output = Buffer.allocUnsafe(options.maxBytes + 1);
+    let offset = 0;
+    while (offset < output.length) {
+      const count = readSync(fd, output, offset, output.length - offset, null);
+      if (count === 0)
+        break;
+      offset += count;
+    }
+    if (offset > options.maxBytes)
+      throw new SafeFileError("size_limit", `${options.label} exceeds ${options.maxBytes} bytes.`);
+    return Buffer.from(output.subarray(0, offset));
+  } catch (error51) {
+    if (error51 instanceof SafeFileError)
+      throw error51;
+    throw new SafeFileError("file_read_failed", `${options.label} could not be read: ${path}.`, { cause: error51 });
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+    }
+  }
+}
+function readOwnerOnlyTextFile(path, options) {
+  return readOwnerOnlyFile(path, options).toString("utf8");
+}
+var UNSUPPORTED_SYNC_CODES = /* @__PURE__ */ new Set(["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR"]);
+function syncFile(fd, label, durability) {
+  if (durability === "none")
+    return;
+  try {
+    fsyncSync(fd);
+  } catch (error51) {
+    if (durability === "best-effort" && UNSUPPORTED_SYNC_CODES.has(systemCode(error51) || ""))
+      return;
+    throw new SafeFileError("file_sync_unsupported", `${label} cannot provide required file durability.`, { cause: error51 });
+  }
+}
+function syncDirectory(path, label, durability) {
+  if (durability === "none")
+    return;
+  let fd;
+  try {
+    fd = openSync(path, constants.O_RDONLY);
+    fsyncSync(fd);
+  } catch (error51) {
+    if (durability === "best-effort" && UNSUPPORTED_SYNC_CODES.has(systemCode(error51) || ""))
+      return;
+    throw new SafeFileError("directory_sync_unsupported", `${label} cannot provide required directory durability.`, { cause: error51 });
+  } finally {
+    if (fd !== void 0)
+      try {
+        closeSync(fd);
+      } catch {
+      }
+  }
+}
+function writeAll(fd, value) {
+  let offset = 0;
+  while (offset < value.length)
+    offset += writeSync(fd, value, offset, value.length - offset);
+}
+function atomicReplaceOwnerOnlyFile(path, value, options) {
+  const mode = options.mode ?? DEFAULT_FILE_MODE;
+  const durability = options.durability;
+  const body = typeof value === "string" ? Buffer.from(value, "utf8") : Buffer.from(value);
+  if (options.maxBytes !== void 0 && body.byteLength > options.maxBytes) {
+    throw new SafeFileError("size_limit", `${options.label} exceeds ${options.maxBytes} bytes.`);
+  }
+  const directory = dirname(path);
+  const directoryStat = inspectRealDirectory(directory, `${options.label} parent directory`);
+  const inspectExisting = () => options.existingMode === "replace" ? inspectOwnerFileShape(path, options.label, true) : inspectOwnerOnlyPath(path, options.label, mode, true);
+  if (existsSync(path))
+    inspectExisting();
+  const temp = join(directory, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  let fd;
+  try {
+    fd = openSync(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NO_FOLLOW, mode);
+    if (process.platform !== "win32")
+      fchmodSync(fd, mode);
+    const tempStat = fstatSync(fd);
+    ownerAndMode(tempStat, mode, `${options.label} temporary file`, "file");
+    assertSingleLink(tempStat, `${options.label} temporary file`);
+    writeAll(fd, body);
+    syncFile(fd, `${options.label} temporary file`, durability);
+    closeSync(fd);
+    fd = void 0;
+    inspectOwnerOnlyPath(temp, `${options.label} temporary file`, mode, true);
+    const currentDirectory = inspectRealDirectory(directory, `${options.label} parent directory`);
+    if (currentDirectory.dev !== directoryStat.dev || currentDirectory.ino !== directoryStat.ino)
+      throw new SafeFileError("directory_changed", `${options.label} parent directory changed during atomic replacement.`);
+    if (existsSync(path))
+      inspectExisting();
+    try {
+      renameSync(temp, path);
+    } catch (error51) {
+      const code = systemCode(error51);
+      if (["EXDEV", "ENOTSUP", "EOPNOTSUPP"].includes(code || "")) {
+        throw new SafeFileError("atomic_replace_unsupported", `${options.label} cannot be replaced atomically on this filesystem.`, { cause: error51 });
+      }
+      throw error51;
+    }
+    inspectOwnerOnlyPath(path, options.label, mode, true);
+    syncDirectory(directory, `${options.label} parent directory`, durability);
+  } catch (error51) {
+    if (error51 instanceof SafeFileError)
+      throw error51;
+    throw new SafeFileError("atomic_replace_failed", `${options.label} could not be replaced atomically: ${path}.`, { cause: error51 });
+  } finally {
+    if (fd !== void 0)
+      try {
+        closeSync(fd);
+      } catch {
+      }
+    try {
+      if (existsSync(temp))
+        unlinkSync(temp);
+    } catch {
+    }
+    body.fill(0);
+  }
+}
+function defaultPidIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error51) {
+    return systemCode(error51) !== "ESRCH";
+  }
+}
+function parseLockRecord(raw) {
+  try {
+    const value = JSON.parse(raw);
+    if (value.version !== 1 || typeof value.token !== "string" || !/^[0-9a-f-]{36}$/i.test(value.token) || !Number.isSafeInteger(value.pid) || value.pid <= 0 || typeof value.createdAt !== "string" || !Number.isFinite(Date.parse(value.createdAt)))
+      return void 0;
+    return value;
+  } catch {
+    return void 0;
+  }
+}
+function readLockObservation(path, options) {
+  const stat = inspectOwnerFileShape(path, `${options.label} lock`, true);
+  let fd;
+  let raw = Buffer.alloc(0);
+  try {
+    fd = openSync(path, constants.O_RDONLY | NO_FOLLOW);
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.nlink !== 1 || opened.dev !== stat.dev || opened.ino !== stat.ino)
+      throw new SafeFileError("lock_changed", `${options.label} lock changed during inspection.`);
+    raw = Buffer.allocUnsafe(MAX_LOCK_BYTES + 1);
+    let offset = 0;
+    while (offset < raw.length) {
+      const count = readSync(fd, raw, offset, raw.length - offset, null);
+      if (count === 0)
+        break;
+      offset += count;
+    }
+    const record3 = offset <= MAX_LOCK_BYTES ? parseLockRecord(raw.subarray(0, offset).toString("utf8")) : void 0;
+    const stale = record3 ? !(options.pidIsAlive ?? defaultPidIsAlive)(record3.pid) : (options.now ?? (() => /* @__PURE__ */ new Date()))().getTime() - stat.mtimeMs >= (options.malformedStaleAfterMs ?? DEFAULT_MALFORMED_LOCK_STALE_MS);
+    return { stat: { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs }, record: record3, stale };
+  } finally {
+    if (fd !== void 0)
+      try {
+        closeSync(fd);
+      } catch {
+      }
+    raw.fill(0);
+  }
+}
+function removeStaleLock(path, observed, options) {
+  const quarantine = `${path}.stale.${process.pid}.${randomUUID()}`;
+  try {
+    renameSync(path, quarantine);
+  } catch (error51) {
+    if (systemCode(error51) === "ENOENT")
+      return;
+    throw new SafeFileError("stale_lock_recovery_failed", `${options.label} stale lock could not be quarantined.`, { cause: error51 });
+  }
+  try {
+    const quarantined = readLockObservation(quarantine, options);
+    const sameIdentity = quarantined.stat.dev === observed.stat.dev && quarantined.stat.ino === observed.stat.ino;
+    const sameRecord = observed.record ? quarantined.record?.token === observed.record.token : quarantined.record === void 0;
+    if (!sameIdentity || !sameRecord) {
+      if (!existsSync(path))
+        renameSync(quarantine, path);
+      throw new SafeFileError("lock_contended", `${options.label} lock changed during stale recovery.`);
+    }
+    unlinkSync(quarantine);
+    syncDirectory(dirname(path), `${options.label} lock directory`, options.durability ?? "none");
+  } catch (error51) {
+    if (error51 instanceof SafeFileError)
+      throw error51;
+    throw new SafeFileError("stale_lock_recovery_failed", `${options.label} stale lock could not be removed safely.`, { cause: error51 });
+  }
+}
+function acquireLock(path, record3, options) {
+  const body = Buffer.from(`${JSON.stringify(record3)}
+`, "utf8");
+  let fd;
+  try {
+    fd = openSync(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | NO_FOLLOW, DEFAULT_FILE_MODE);
+    if (process.platform !== "win32")
+      fchmodSync(fd, DEFAULT_FILE_MODE);
+    const stat = fstatSync(fd);
+    ownerAndMode(stat, DEFAULT_FILE_MODE, `${options.label} lock`, "file");
+    assertSingleLink(stat, `${options.label} lock`);
+    writeAll(fd, body);
+    syncFile(fd, `${options.label} lock`, options.durability ?? "none");
+    closeSync(fd);
+    fd = void 0;
+    syncDirectory(dirname(path), `${options.label} lock directory`, options.durability ?? "none");
+  } catch (error51) {
+    if (fd !== void 0)
+      try {
+        closeSync(fd);
+      } catch {
+      }
+    if (systemCode(error51) === "EEXIST")
+      throw new SafeFileError("lock_contended", `${options.label} is locked by another writer: ${path}.`, { cause: error51 });
+    if (error51 instanceof SafeFileError)
+      throw error51;
+    throw new SafeFileError("lock_failed", `${options.label} lock could not be acquired: ${path}.`, { cause: error51 });
+  } finally {
+    body.fill(0);
+  }
+}
+function withOwnerOnlyFileLock(targetPath, options, operation) {
+  const lockPath = options.lockPath ?? `${targetPath}.lock`;
+  inspectRealDirectory(dirname(lockPath), `${options.label} lock directory`);
+  const record3 = { version: 1, token: randomUUID(), pid: process.pid, createdAt: (options.now ?? (() => /* @__PURE__ */ new Date()))().toISOString() };
+  try {
+    acquireLock(lockPath, record3, options);
+  } catch (error51) {
+    if (!(error51 instanceof SafeFileError) || error51.code !== "lock_contended")
+      throw error51;
+    const observed = readLockObservation(lockPath, options);
+    if (!observed.stale)
+      throw error51;
+    removeStaleLock(lockPath, observed, options);
+    acquireLock(lockPath, record3, options);
+  }
+  let result2;
+  let operationError;
+  let operationFailed = false;
+  try {
+    result2 = operation();
+  } catch (error51) {
+    operationFailed = true;
+    operationError = error51;
+  }
+  let releaseError;
+  try {
+    const current = parseLockRecord(readOwnerOnlyTextFile(lockPath, { label: `${options.label} lock`, maxBytes: MAX_LOCK_BYTES }));
+    if (!current || current.token !== record3.token)
+      throw new SafeFileError("lock_ownership_lost", `${options.label} lock ownership changed before release.`);
+    unlinkSync(lockPath);
+    syncDirectory(dirname(lockPath), `${options.label} lock directory`, options.durability ?? "none");
+  } catch (error51) {
+    releaseError = error51 instanceof SafeFileError ? error51 : new SafeFileError("lock_release_failed", `${options.label} lock could not be released safely.`, { cause: error51 });
+  }
+  if (operationFailed) {
+    if (releaseError !== void 0 && operationError instanceof Error)
+      Object.defineProperty(operationError, "lockReleaseError", { value: releaseError, enumerable: false });
+    throw operationError;
+  }
+  if (releaseError !== void 0)
+    throw releaseError;
+  return result2;
+}
+
+// ../client/dist/runtime-file.js
 var RUNTIME_SCHEMA_VERSION = 2;
 var RUNTIME_DIR_SEGMENTS = [".parle", "runtime"];
+var MAX_RUNTIME_FILE_BYTES = 64 * 1024;
 function runtimeDirPath(cwd) {
-  return join(cwd, ...RUNTIME_DIR_SEGMENTS);
+  return join2(cwd, ...RUNTIME_DIR_SEGMENTS);
 }
 function runtimeFilePath(cwd, pid) {
-  return join(runtimeDirPath(cwd), `${pid}.json`);
+  return join2(runtimeDirPath(cwd), `${pid}.json`);
 }
 function processStartedAtIso(now = /* @__PURE__ */ new Date()) {
   return new Date(now.getTime() - process.uptime() * 1e3).toISOString();
 }
 function writeRuntimeFile(cwd, snapshot) {
   const dir = runtimeDirPath(cwd);
-  mkdirSync(dir, { recursive: true, mode: 448 });
-  const tmp = join(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
-  writeFileSync(tmp, JSON.stringify(snapshot, null, 2) + "\n", { mode: 384 });
-  chmodSync(tmp, 384);
-  renameSync(tmp, runtimeFilePath(cwd, snapshot.pid));
+  ensureOwnerOnlyDirectory(dir, { label: "Parle runtime directory", repairMode: true });
+  atomicReplaceOwnerOnlyFile(runtimeFilePath(cwd, snapshot.pid), JSON.stringify(snapshot, null, 2) + "\n", {
+    label: "Parle runtime snapshot",
+    maxBytes: MAX_RUNTIME_FILE_BYTES,
+    durability: "none"
+  });
 }
 function removeRuntimeFile(cwd, pid) {
   rmSync(runtimeFilePath(cwd, pid), { force: true });
@@ -31000,9 +31415,9 @@ function readRuntimeFiles(cwd) {
   for (const name of names) {
     if (name.startsWith(".") || !name.endsWith(".json"))
       continue;
-    const path = join(dir, name);
+    const path = join2(dir, name);
     try {
-      const snapshot = JSON.parse(readFileSync(path, "utf8"));
+      const snapshot = JSON.parse(readOwnerOnlyTextFile(path, { label: "Parle runtime snapshot", maxBytes: MAX_RUNTIME_FILE_BYTES }));
       if (snapshot && typeof snapshot === "object")
         out.push({ path, snapshot });
     } catch {
@@ -31030,10 +31445,10 @@ function pruneRuntimeFiles(cwd, now = /* @__PURE__ */ new Date()) {
 }
 
 // ../client/dist/process-instance.js
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 var processClientInstance;
 function processClientInstanceId() {
-  processClientInstance ||= randomUUID();
+  processClientInstance ||= randomUUID2();
   return processClientInstance;
 }
 var REPORTED_METADATA_LIMIT = 96;
@@ -31250,24 +31665,24 @@ async function claimAliasWithRecovery(transport, candidate, alias, expectedGener
 
 // ../client/dist/profiles.js
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync as readFileSync2, statSync } from "node:fs";
+import { existsSync as existsSync2, lstatSync as lstatSync2, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join as join2 } from "node:path";
-var PROFILE_CATALOG_PATH = join2(homedir(), ".parle", "profiles");
+import { dirname as dirname2, isAbsolute, join as join3 } from "node:path";
+var PROFILE_CATALOG_PATH = join3(homedir(), ".parle", "profiles");
 function profileCatalogPath(env = process.env) {
   const home = env.HOME || env.USERPROFILE || homedir();
-  return join2(home, ".parle", "profiles");
+  return join3(home, ".parle", "profiles");
 }
 function resolveProfileCatalogPath(override, cwd = process.cwd(), env = process.env) {
   if (override)
-    return isAbsolute(override) ? override : join2(cwd, override);
+    return isAbsolute(override) ? override : join3(cwd, override);
   return profileCatalogPath(env);
 }
 function catalogGitExposureWarning(path) {
-  if (!existsSync(path))
+  if (!existsSync2(path))
     return void 0;
   try {
-    execFileSync("git", ["check-ignore", "-q", "--", path], { cwd: dirname(path), stdio: "ignore" });
+    execFileSync("git", ["check-ignore", "-q", "--", path], { cwd: dirname2(path), stdio: "ignore" });
     return void 0;
   } catch (error51) {
     if (error51?.status === 1) {
@@ -31303,7 +31718,7 @@ function catalogAccessError(path, operation, error51) {
 }
 function inspectCatalog(path) {
   try {
-    return lstatSync(path);
+    return lstatSync2(path);
   } catch (error51) {
     if (error51?.code === "ENOENT" || error51?.code === "ENOTDIR")
       return void 0;
@@ -31326,7 +31741,7 @@ function assertSafeCatalog(path, link, modeWarning = console.warn) {
 }
 function readCatalog(path) {
   try {
-    return readFileSync2(path, "utf8");
+    return readFileSync(path, "utf8");
   } catch (error51) {
     throw catalogAccessError(path, "read", error51);
   }
@@ -31521,14 +31936,14 @@ function responsiveReplyPresentation(message) {
 
 // ../client/dist/account.js
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { chmodSync as chmodSync2, closeSync as closeSync2, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync4, realpathSync, renameSync as renameSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename, dirname as dirname3, isAbsolute as isAbsolute2, join as join4, parse as parse3, relative, resolve, sep } from "node:path";
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { chmodSync as chmodSync2, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, realpathSync, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync } from "node:fs";
+import { basename as basename2, dirname as dirname4, isAbsolute as isAbsolute2, join as join5, parse as parse3, relative, resolve, sep } from "node:path";
 
 // ../client/dist/hardening.js
 import { createHash } from "node:crypto";
-import { closeSync, existsSync as existsSync2, fsyncSync, fstatSync, ftruncateSync, lstatSync as lstatSync2, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync3, renameSync as renameSync2, unlinkSync, writeSync } from "node:fs";
-import { dirname as dirname2, join as join3 } from "node:path";
+import { closeSync as closeSync2, existsSync as existsSync3, fsyncSync as fsyncSync2, fstatSync as fstatSync2, ftruncateSync, lstatSync as lstatSync3, mkdirSync as mkdirSync2, openSync as openSync2, readFileSync as readFileSync2, unlinkSync as unlinkSync2, writeSync as writeSync2 } from "node:fs";
+import { dirname as dirname3, join as join4 } from "node:path";
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var MAX_SECRET_BYTES = 8 * 1024;
 var MAX_RESPONSE_BYTES = 64 * 1024;
@@ -31587,7 +32002,7 @@ function assertSafeApiBase(base, env) {
     throw new HardeningError("Parle hardening requires an approved HTTPS API base.");
   return url2.origin;
 }
-function ownerAndMode(stat, mode, label) {
+function ownerAndMode2(stat, mode, label) {
   if (process.platform === "win32")
     return;
   if (stat.uid !== process.getuid?.())
@@ -31598,30 +32013,30 @@ function ownerAndMode(stat, mode, label) {
 function assertSecureDirectory(path, label) {
   let entry;
   try {
-    entry = lstatSync2(path);
+    entry = lstatSync3(path);
   } catch {
     throw new HardeningError(`${label} is missing.`);
   }
   if (entry.isSymbolicLink() || !entry.isDirectory())
     throw new HardeningError(`${label} must be a real directory.`);
-  ownerAndMode(entry, 448, label);
+  ownerAndMode2(entry, 448, label);
 }
 function assertSecureFile(path, label, maxBytes = MAX_SECRET_BYTES) {
   let entry;
   try {
-    entry = lstatSync2(path);
+    entry = lstatSync3(path);
   } catch {
     throw new HardeningError(`${label} is missing.`);
   }
   if (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1)
     throw new HardeningError(`${label} must be an unlinked regular file.`);
-  ownerAndMode(entry, 384, label);
+  ownerAndMode2(entry, 384, label);
   if (entry.size > maxBytes)
     throw new HardeningError(`${label} exceeds its bounded size.`);
   return entry;
 }
 function createSecureDirectory(path, label) {
-  if (!existsSync2(path)) {
+  if (!existsSync3(path)) {
     try {
       mkdirSync2(path, { mode: 448 });
     } catch {
@@ -31630,18 +32045,18 @@ function createSecureDirectory(path, label) {
   }
   assertSecureDirectory(path, label);
 }
-function syncDirectory(path) {
+function syncDirectory2(path) {
   let fd;
   try {
-    fd = openSync(path, "r");
-    fsyncSync(fd);
+    fd = openSync2(path, "r");
+    fsyncSync2(fd);
   } catch (error51) {
     if (!["EINVAL", "ENOTSUP", "EPERM"].includes(error51?.code))
       throw new HardeningError("Could not sync protected hardening storage.");
   } finally {
     if (fd !== void 0)
       try {
-        closeSync(fd);
+        closeSync2(fd);
       } catch {
       }
   }
@@ -31651,11 +32066,11 @@ function clearBuffer(value) {
     value.fill(0);
 }
 function secureUnlink(path, label) {
-  if (!existsSync2(path))
+  if (!existsSync3(path))
     return;
   assertSecureFile(path, label);
   try {
-    unlinkSync(path);
+    unlinkSync2(path);
   } catch {
     throw new HardeningError(`Could not remove ${label}.`);
   }
@@ -31714,31 +32129,31 @@ function isAmbiguous(error51) {
   return error51 instanceof HardeningTransportError || error51 instanceof HardeningHttpError && error51.ambiguous;
 }
 function ceremonyPath(config2) {
-  return join3(config2.stateDir, "hardening", CEREMONY_DIR);
+  return join4(config2.stateDir, "hardening", CEREMONY_DIR);
 }
 function rootPath(config2) {
-  return join3(config2.stateDir, "hardening");
+  return join4(config2.stateDir, "hardening");
 }
 function outputPath(config2, file2) {
-  return join3(ceremonyPath(config2), file2);
+  return join4(ceremonyPath(config2), file2);
 }
 function resolveHardeningConfig(cwd, env) {
-  const dotEnvPath = join3(cwd, ".env");
-  const dotEnv = existsSync2(dotEnvPath) ? parseDotEnv(readFileSync3(dotEnvPath, "utf8")) : {};
+  const dotEnvPath = join4(cwd, ".env");
+  const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv(readFileSync2(dotEnvPath, "utf8")) : {};
   const catalogPath = resolveProfileCatalogPath(firstValue("PARLE_PROFILES_PATH", env, dotEnv), cwd, env);
-  const stateDir = dirname2(catalogPath);
-  const parent = lstatSync2(stateDir);
+  const stateDir = dirname3(catalogPath);
+  const parent = lstatSync3(stateDir);
   if (parent.isSymbolicLink() || !parent.isDirectory())
     throw new HardeningError("Parle state directory must be a real directory.");
   if (process.platform !== "win32" && parent.uid !== process.getuid?.())
     throw new HardeningError("Parle state directory must be owned by the current user.");
-  const sessionPath = join3(stateDir, "session");
+  const sessionPath = join4(stateDir, "session");
   assertSecureFile(sessionPath, "Parle human session file", 8192);
-  const sessionCookie = readFileSync3(sessionPath, "utf8").trim();
+  const sessionCookie = readFileSync2(sessionPath, "utf8").trim();
   if (!sessionCookie || /[\r\n]/.test(sessionCookie))
     throw new HardeningError("Parle human session file is invalid.");
   let configuredApiBase = firstValue("PARLE_API_BASE", env, dotEnv);
-  if (!configuredApiBase && existsSync2(catalogPath)) {
+  if (!configuredApiBase && existsSync3(catalogPath)) {
     const selected = firstValue("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
     if (selected)
       configuredApiBase = loadProfile(selected, catalogPath).apiBase;
@@ -31772,22 +32187,22 @@ var ParleHardeningClient = class {
   }
   readState(config2, required2 = true) {
     const root = rootPath(config2);
-    if (!existsSync2(root)) {
+    if (!existsSync3(root)) {
       if (required2)
         throw new HardeningError("No active Parle hardening ceremony exists. Run parle_harden_account status first.");
       return void 0;
     }
     assertSecureDirectory(root, "Parle hardening root");
     const dir = ceremonyPath(config2);
-    if (!existsSync2(dir)) {
+    if (!existsSync3(dir)) {
       if (required2)
         throw new HardeningError("No active Parle hardening ceremony exists. Run parle_harden_account status first.");
       return void 0;
     }
     assertSecureDirectory(dir, "Parle hardening ceremony directory");
-    const path = join3(dir, STATE_FILE);
+    const path = join4(dir, STATE_FILE);
     assertSecureFile(path, "Parle hardening state", MAX_SECRET_BYTES);
-    const raw = parseJson(readFileSync3(path, "utf8"));
+    const raw = parseJson(readFileSync2(path, "utf8"));
     const state = raw && typeof raw === "object" ? raw : void 0;
     const phases = ["needs_password", "sudo_ready", "provisioning_captured", "awaiting_confirmation", "hardened_recovery_captured", "finalized", "password_outcome_unknown", "enroll_outcome_unknown", "confirm_outcome_unknown", "hardened_recovery_missing", "recovery_regeneration_outcome_unknown"];
     if (!state || state.schemaVersion !== 1 || !Number.isInteger(state.generation) || state.generation < 0 || !phases.includes(state.phase) || typeof state.sessionFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(state.sessionFingerprint) || typeof state.createdAt !== "string" || typeof state.updatedAt !== "string") {
@@ -31805,42 +32220,21 @@ var ParleHardeningClient = class {
     const dir = ceremonyPath(config2);
     assertSecureDirectory(rootPath(config2), "Parle hardening root");
     assertSecureDirectory(dir, "Parle hardening ceremony directory");
-    const statePath = join3(dir, STATE_FILE);
-    if (expectedGeneration !== void 0 && existsSync2(statePath)) {
+    const statePath = join4(dir, STATE_FILE);
+    if (expectedGeneration !== void 0 && existsSync3(statePath)) {
       const current = this.readState(config2);
       if (current.generation !== expectedGeneration)
         throw new HardeningError("Parle hardening state changed concurrently.");
     }
-    const temp = join3(dir, `.state-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
-    let fd;
     try {
-      fd = openSync(temp, "wx", 384);
-      const body = Buffer.from(JSON.stringify(next) + "\n", "utf8");
-      try {
-        writeSync(fd, body);
-        fsyncSync(fd);
-      } finally {
-        clearBuffer(body);
-      }
-      closeSync(fd);
-      fd = void 0;
-      assertSecureFile(temp, "Parle hardening state", MAX_SECRET_BYTES);
-      renameSync2(temp, statePath);
-      assertSecureFile(statePath, "Parle hardening state", MAX_SECRET_BYTES);
-      syncDirectory(dir);
+      atomicReplaceOwnerOnlyFile(statePath, JSON.stringify(next) + "\n", {
+        label: "Parle hardening state",
+        maxBytes: MAX_SECRET_BYTES,
+        durability: "best-effort",
+        existingMode: "replace"
+      });
     } catch {
       throw new HardeningError("Could not publish protected hardening state.");
-    } finally {
-      if (fd !== void 0)
-        try {
-          closeSync(fd);
-        } catch {
-        }
-      try {
-        if (existsSync2(temp))
-          unlinkSync(temp);
-      } catch {
-      }
     }
   }
   begin(config2) {
@@ -31873,7 +32267,7 @@ var ParleHardeningClient = class {
   readSecret(config2, file2) {
     const path = outputPath(config2, file2);
     assertSecureFile(path, `Parle hardening ${file2}`);
-    const value = readFileSync3(path);
+    const value = readFileSync2(path);
     if (value.length === 0 || value.length > MAX_SECRET_BYTES) {
       clearBuffer(value);
       throw new HardeningError("Protected hardening input is invalid.");
@@ -31889,29 +32283,29 @@ var ParleHardeningClient = class {
     let fd;
     let created = false;
     try {
-      fd = openSync(path, "wx", 384);
+      fd = openSync2(path, "wx", 384);
       created = true;
-      const stat = fstatSync(fd);
+      const stat = fstatSync2(fd);
       if (!stat.isFile() || stat.nlink !== 1)
         throw new HardeningError("Protected hardening input is unsafe.");
-      ownerAndMode(stat, 384, "Protected hardening input");
+      ownerAndMode2(stat, 384, "Protected hardening input");
       let written = 0;
       while (written < value.length)
-        written += writeSync(fd, value, written, value.length - written);
-      fsyncSync(fd);
-      closeSync(fd);
+        written += writeSync2(fd, value, written, value.length - written);
+      fsyncSync2(fd);
+      closeSync2(fd);
       fd = void 0;
       assertSecureFile(path, `Parle hardening ${file2}`);
-      syncDirectory(dir);
+      syncDirectory2(dir);
     } catch (error51) {
       try {
         if (fd !== void 0)
-          closeSync(fd);
+          closeSync2(fd);
       } catch {
       }
       try {
-        if (created && existsSync2(path))
-          unlinkSync(path);
+        if (created && existsSync3(path))
+          unlinkSync2(path);
       } catch {
       }
       if (error51 instanceof HardeningError)
@@ -31925,16 +32319,16 @@ var ParleHardeningClient = class {
     const path = outputPath(config2, file2);
     let fd;
     try {
-      fd = openSync(path, "wx", 384);
-      const stat = fstatSync(fd);
+      fd = openSync2(path, "wx", 384);
+      const stat = fstatSync2(fd);
       if (!stat.isFile() || stat.nlink !== 1)
         throw new HardeningError("Protected hardening output is unsafe.");
-      ownerAndMode(stat, 384, "Protected hardening output");
+      ownerAndMode2(stat, 384, "Protected hardening output");
       return { fd, path };
     } catch (error51) {
       try {
         if (fd !== void 0)
-          closeSync(fd);
+          closeSync2(fd);
       } catch {
       }
       if (error51 instanceof HardeningError)
@@ -31944,41 +32338,41 @@ var ParleHardeningClient = class {
   }
   discardSink(config2, sink) {
     try {
-      closeSync(sink.fd);
+      closeSync2(sink.fd);
     } catch {
     }
     try {
-      if (existsSync2(sink.path))
+      if (existsSync3(sink.path))
         secureUnlink(sink.path, "protected hardening output");
     } catch {
       throw new HardeningError("Could not discard protected hardening output.");
     }
-    syncDirectory(ceremonyPath(config2));
+    syncDirectory2(ceremonyPath(config2));
   }
   writeSink(config2, sink, value) {
     let closed = false;
     try {
       let written = 0;
       while (written < value.length)
-        written += writeSync(sink.fd, value, written, value.length - written);
-      fsyncSync(sink.fd);
-      closeSync(sink.fd);
+        written += writeSync2(sink.fd, value, written, value.length - written);
+      fsyncSync2(sink.fd);
+      closeSync2(sink.fd);
       closed = true;
       assertSecureFile(sink.path, "protected hardening output");
-      syncDirectory(ceremonyPath(config2));
+      syncDirectory2(ceremonyPath(config2));
     } catch {
       if (!closed) {
         try {
           ftruncateSync(sink.fd, 0);
-          fsyncSync(sink.fd);
+          fsyncSync2(sink.fd);
         } catch {
         }
         try {
-          closeSync(sink.fd);
+          closeSync2(sink.fd);
         } catch {
         }
         try {
-          if (existsSync2(sink.path))
+          if (existsSync3(sink.path))
             secureUnlink(sink.path, "protected hardening output");
         } catch {
         }
@@ -32149,7 +32543,7 @@ var ParleHardeningClient = class {
     if (state.phase !== "hardened_recovery_captured" || !state.recoveryCaptured)
       throw new HardeningError("Recovery storage acknowledgement is not expected yet.");
     assertSecureFile(outputPath(config2, "recovery-codes.txt"), "protected recovery codes");
-    const path = join3(ceremonyPath(config2), ACK_FILE);
+    const path = join4(ceremonyPath(config2), ACK_FILE);
     const value = Buffer.from(JSON.stringify({ schemaVersion: 1, acknowledgedAt: this.now().toISOString() }) + "\n", "utf8");
     try {
       this.createSecret(config2, ACK_FILE, value);
@@ -32198,7 +32592,7 @@ var ParleHardeningClient = class {
       return { action: "status", assurance: "hardened", state: "finalized", complete: true, next: "Hardening ceremony complete." };
     }
     if (whoami.assurance === "hardened") {
-      if (state.phase === "hardened_recovery_captured" && state.recoveryCaptured && state.assuranceVerified && existsSync2(outputPath(config2, "recovery-codes.txt"))) {
+      if (state.phase === "hardened_recovery_captured" && state.recoveryCaptured && state.assuranceVerified && existsSync3(outputPath(config2, "recovery-codes.txt"))) {
         try {
           assertSecureFile(outputPath(config2, "recovery-codes.txt"), "protected recovery codes");
           return { action: "status", assurance: "hardened", state: state.phase, complete: true, recoveryPath: outputPath(config2, "recovery-codes.txt"), next: "Move recovery codes to protected storage, acknowledge that step with parle-hardening-secret ack-recovery-stored, then finalize." };
@@ -32397,7 +32791,7 @@ var ParleHardeningClient = class {
       return { action: "recover_confirm", state: state.phase, hardened: false, next: "Keep the captured provisioning URI. Stage a fresh human-only TOTP code with parle-hardening-secret totp-code, then run parle_harden_account confirm_totp with explicit confirmation." };
     }
     const existing = outputPath(config2, "recovery-codes.txt");
-    if (state.recoveryCaptured && existsSync2(existing)) {
+    if (state.recoveryCaptured && existsSync3(existing)) {
       assertSecureFile(existing, "protected recovery codes");
       state = this.transition(config2, state, [state.phase], { phase: "hardened_recovery_captured", assuranceVerified: true });
       return { action: "recover_confirm", state: state.phase, hardened: true, recoveryPath: existing, next: "Move recovery codes to protected storage, acknowledge with parle-hardening-secret ack-recovery-stored, then finalize." };
@@ -32444,9 +32838,9 @@ var ParleHardeningClient = class {
     this.assertBound(config2, state);
     if (state.phase !== "hardened_recovery_captured" || !state.recoveryCaptured || !state.assuranceVerified)
       throw new HardeningError("Hardening cannot finalize until hardened assurance and durable recovery capture are verified.");
-    const ack = join3(ceremonyPath(config2), ACK_FILE);
+    const ack = join4(ceremonyPath(config2), ACK_FILE);
     assertSecureFile(ack, "recovery storage acknowledgement");
-    const parsed = parseJson(readFileSync3(ack, "utf8"));
+    const parsed = parseJson(readFileSync2(ack, "utf8"));
     if (!parsed || typeof parsed !== "object" || parsed.schemaVersion !== 1 || typeof parsed.acknowledgedAt !== "string")
       throw new HardeningError("Recovery storage acknowledgement is invalid.");
     for (const file2 of SECRET_FILES)
@@ -32663,6 +33057,7 @@ function roomInventoryResult(active, configured, account) {
 var DEFAULT_API_BASE2 = "https://api.parle.sh";
 var MAX_RESPONSE_BYTES2 = 64 * 1024;
 var MAX_HANDOFF_BYTES = 32 * 1024;
+var MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
 var MAX_ACCOUNT_ROOM_ROWS = 2e3;
 var MAX_ACCOUNT_ROOM_PAGES = 10;
 var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -32694,7 +33089,7 @@ function parseDotEnv2(text) {
   return values;
 }
 function safeFile(path, label, allowSymlink) {
-  const link = lstatSync3(path);
+  const link = lstatSync4(path);
   if (!allowSymlink && link.isSymbolicLink())
     throw new Error(`${label} must not be a symbolic link: ${path}`);
   const stat = link.isSymbolicLink() ? statSync2(path) : link;
@@ -32720,7 +33115,7 @@ function assertGitSafeDirectory(path) {
   }
 }
 function safeDirectory(path, label) {
-  const link = lstatSync3(path);
+  const link = lstatSync4(path);
   if (link.isSymbolicLink() || !link.isDirectory())
     throw new Error(`${label} must be a real directory: ${path}`);
   if (process.platform !== "win32") {
@@ -32732,12 +33127,12 @@ function safeDirectory(path, label) {
   return realpathSync(path);
 }
 function inviteDirectory(config2, create) {
-  const directory = join4(config2.stateDir, "invites");
+  const directory = join5(config2.stateDir, "invites");
   if (create) {
     mkdirSync3(directory, { recursive: true, mode: 448 });
     if (process.platform !== "win32")
       chmodSync2(directory, 448);
-  } else if (!existsSync3(directory)) {
+  } else if (!existsSync4(directory)) {
     throw new Error(`Private Parle invite directory does not exist: ${directory}`);
   }
   safeDirectory(directory, "Parle invite directory");
@@ -32748,7 +33143,7 @@ function readBounded(path, maxBytes, label) {
   const stat = statSync2(path);
   if (stat.size > maxBytes)
     throw new Error(`${label} exceeds ${maxBytes} bytes: ${path}`);
-  return readFileSync4(path, "utf8");
+  return readFileSync3(path, "utf8");
 }
 function firstValue2(key, env, dotEnv) {
   return env[key] || dotEnv[key] || void 0;
@@ -32760,13 +33155,13 @@ function validateSessionCookie(raw) {
   return value;
 }
 function resolveAccountBaseConfig(cwd, env, options = {}) {
-  const dotEnvPath = join4(cwd, ".env");
-  const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
+  const dotEnvPath = join5(cwd, ".env");
+  const dotEnv = existsSync4(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue2("PARLE_PROFILES_PATH", env, dotEnv);
   const catalogPath = resolveProfileCatalogPath(profilesOverride, cwd, env);
-  const sessionPath = join4(dirname3(catalogPath), "session");
+  const sessionPath = join5(dirname4(catalogPath), "session");
   let sessionCookie = firstValue2("PARLE_SESSION_COOKIE", env, dotEnv);
-  if (!sessionCookie && existsSync3(sessionPath)) {
+  if (!sessionCookie && existsSync4(sessionPath)) {
     assertNoSymlinkPathComponents(sessionPath);
     safeFile(sessionPath, "Parle human session file", false);
     sessionCookie = readBounded(sessionPath, 8192, "Parle human session file");
@@ -32775,7 +33170,7 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     sessionCookie = validateSessionCookie(sessionCookie);
   let configuredApiBase = firstValue2("PARLE_API_BASE", env, dotEnv);
   let selectedProfile;
-  if (existsSync3(catalogPath)) {
+  if (existsSync4(catalogPath)) {
     const profileName = firstValue2("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
     if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath)))
       selectedProfile = loadProfile(profileName, catalogPath);
@@ -32795,7 +33190,7 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     apiBase,
     version: version2,
     sessionCookie,
-    stateDir: dirname3(catalogPath),
+    stateDir: dirname4(catalogPath),
     catalogPath,
     roomId: selectedProfile?.roomId || firstValue2("PARLE_ROOM_ID", env, dotEnv),
     roomHandle: firstValue2("PARLE_ROOM_HANDLE", env, dotEnv),
@@ -32805,8 +33200,8 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
   };
 }
 function resolveInventoryLocalConfig(cwd, env) {
-  const dotEnvPath = join4(cwd, ".env");
-  const dotEnv = existsSync3(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
+  const dotEnvPath = join5(cwd, ".env");
+  const dotEnv = existsSync4(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const directRoomId = firstValue2("PARLE_ROOM_ID", env, dotEnv);
   return {
     catalogPath: resolveProfileCatalogPath(firstValue2("PARLE_PROFILES_PATH", env, dotEnv), cwd, env),
@@ -32816,7 +33211,7 @@ function resolveInventoryLocalConfig(cwd, env) {
 function resolveAccountConfig(cwd, env) {
   const config2 = resolveAccountBaseConfig(cwd, env);
   if (!config2.sessionCookie)
-    throw new Error(`Parle human session is not configured. Run parle_login complete or mint-from-session so ${join4(dirname3(config2.catalogPath), "session")} exists.`);
+    throw new Error(`Parle human session is not configured. Run parle_login complete or mint-from-session so ${join5(dirname4(config2.catalogPath), "session")} exists.`);
   return config2;
 }
 function validateUUID(raw, label) {
@@ -32899,19 +33294,19 @@ function validateProfileLabel(raw) {
   return value;
 }
 function sessionCookieFilePath(catalogPath) {
-  return join4(dirname3(catalogPath), "session");
+  return join5(dirname4(catalogPath), "session");
 }
 function pendingLoginCookieFilePath(catalogPath) {
-  return join4(dirname3(catalogPath), "login");
+  return join5(dirname4(catalogPath), "login");
 }
 function assertNoSymlinkPathComponents(path) {
   const absolute = resolve(path);
   const root = parse3(absolute).root;
   let current = root;
   for (const component of relative(root, absolute).split(sep).filter(Boolean)) {
-    current = join4(current, component);
-    if (existsSync3(current)) {
-      const componentStat = lstatSync3(current);
+    current = join5(current, component);
+    if (existsSync4(current)) {
+      const componentStat = lstatSync4(current);
       if (componentStat.isSymbolicLink() && (process.platform === "win32" || componentStat.uid === process.getuid?.())) {
         throw new Error(`Refusing to write Parle credentials through a user-owned symlinked path component: ${current}`);
       }
@@ -32920,11 +33315,11 @@ function assertNoSymlinkPathComponents(path) {
   return absolute;
 }
 function ensureProfileDirectory(path) {
-  const directory = assertNoSymlinkPathComponents(dirname3(path));
-  if (!existsSync3(directory))
+  const directory = assertNoSymlinkPathComponents(dirname4(path));
+  if (!existsSync4(directory))
     mkdirSync3(directory, { recursive: true, mode: 448 });
   assertNoSymlinkPathComponents(directory);
-  const link = lstatSync3(directory);
+  const link = lstatSync4(directory);
   if (link.isSymbolicLink())
     throw new Error(`Refusing to write Parle profiles through a symlinked directory: ${directory}`);
   if (!link.isDirectory())
@@ -32940,9 +33335,9 @@ function ensureProfileDirectory(path) {
   return writeDirectory;
 }
 function safeProfileWritePath(path) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return path;
-  const link = lstatSync3(path);
+  const link = lstatSync4(path);
   if (process.platform !== "win32" && link.uid !== process.getuid?.())
     throw new Error(`Refusing to write Parle profiles because ${path} is not owned by the current user.`);
   if (link.isSymbolicLink())
@@ -32959,27 +33354,15 @@ function safeProfileWritePath(path) {
 }
 function writeCookieFile(catalogPath, filename, cookie) {
   const directory = ensureProfileDirectory(catalogPath);
-  const path = join4(dirname3(catalogPath), filename);
-  const writePath = safeProfileWritePath(join4(directory, basename(path)));
-  const tempPath = join4(dirname3(writePath), `.${filename}.${process.pid}.${Date.now()}.tmp`);
-  try {
-    writeFileSync2(tempPath, `${cookie}
-`, { mode: 384, flag: "wx" });
-    if (process.platform !== "win32")
-      chmodSync2(tempPath, 384);
-    if (ensureProfileDirectory(catalogPath) !== directory)
-      throw new Error("Parle credential directory changed during cookie persistence.");
-    safeProfileWritePath(writePath);
-    renameSync3(tempPath, writePath);
-    if (process.platform !== "win32")
-      chmodSync2(writePath, 384);
-  } finally {
-    try {
-      if (existsSync3(tempPath))
-        unlinkSync2(tempPath);
-    } catch {
-    }
-  }
+  const path = join5(dirname4(catalogPath), filename);
+  const writePath = safeProfileWritePath(join5(directory, basename2(path)));
+  atomicReplaceOwnerOnlyFile(writePath, `${cookie}
+`, {
+    label: `Parle ${filename} credential`,
+    maxBytes: 8192,
+    durability: "best-effort",
+    existingMode: "replace"
+  });
   return path;
 }
 function writeSessionCookieFile(catalogPath, cookie) {
@@ -32990,17 +33373,17 @@ function writePendingLoginCookieFile(catalogPath, cookie) {
 }
 function readPendingLoginCookieFile(catalogPath) {
   const path = safeFile(pendingLoginCookieFilePath(catalogPath), "Parle pending login credential", false);
-  const cookie = readFileSync4(path, "utf8").trim();
+  const cookie = readOwnerOnlyTextFile(path, { label: "Parle pending login credential", maxBytes: 8192 }).trim();
   if (!LOGIN_CHALLENGE_COOKIE_RE.test(cookie))
     throw new Error("Parle pending login credential is malformed. Remove it and restart email login.");
   return cookie;
 }
 function removePendingLoginCookieFile(catalogPath) {
   const path = pendingLoginCookieFilePath(catalogPath);
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return;
   safeFile(path, "Parle pending login credential", false);
-  unlinkSync2(path);
+  unlinkSync3(path);
 }
 function profileSectionRange(text, label) {
   const headers = [];
@@ -33028,18 +33411,18 @@ function preflightProfileWrite(profileName, force, catalogPath) {
   if (!PROFILE_LABEL_RE.test(profileName))
     throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
-  const writePath = safeProfileWritePath(join4(directory, basename(catalogPath)));
-  const original = existsSync3(writePath) ? readFileSync4(writePath, "utf8") : "";
+  const writePath = safeProfileWritePath(join5(directory, basename2(catalogPath)));
+  const original = existsSync4(writePath) ? readFileSync3(writePath, "utf8") : "";
   if (original)
     parseProfiles(original, catalogPath);
   if (profileSectionRange(original, profileName) && !force)
     throw new Error(`Parle profile ${profileName} already exists in ${catalogPath}. Pass force=true to replace only that profile.`);
-  const probe = join4(dirname3(writePath), `.profiles-write-test-${process.pid}`);
+  const probe = join5(dirname4(writePath), `.profiles-write-test-${process.pid}`);
   try {
-    writeFileSync2(probe, "ok\n", { mode: 384, flag: "wx" });
+    writeFileSync(probe, "ok\n", { mode: 384, flag: "wx" });
   } finally {
     try {
-      unlinkSync2(probe);
+      unlinkSync3(probe);
     } catch {
     }
   }
@@ -33048,18 +33431,9 @@ function writeProfile(profile, force, catalogPath) {
   if (!PROFILE_LABEL_RE.test(profile.name))
     throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
-  const writePath = safeProfileWritePath(join4(directory, basename(catalogPath)));
-  const lockPath = `${writePath}.lock`;
-  let lock;
-  try {
-    try {
-      lock = openSync2(lockPath, "wx", 384);
-    } catch (error51) {
-      if (error51?.code === "EEXIST")
-        throw new Error(`Parle profile catalog is locked at ${lockPath}. Retry after the active writer finishes. If no writer is active, inspect and remove the stale lock manually.`);
-      throw error51;
-    }
-    const original = existsSync3(writePath) ? readFileSync4(writePath, "utf8") : "";
+  const writePath = safeProfileWritePath(join5(directory, basename2(catalogPath)));
+  return withOwnerOnlyFileLock(writePath, { label: "Parle profile catalog", durability: "none" }, () => {
+    const original = existsSync4(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" }) : "";
     const profiles = original ? parseProfiles(original, catalogPath) : /* @__PURE__ */ new Map();
     const range = profileSectionRange(original, profile.name);
     if (range && !force)
@@ -33067,57 +33441,25 @@ function writeProfile(profile, force, catalogPath) {
     const section = renderProfile(profile);
     const updated = range ? original.slice(0, range.start) + section + original.slice(range.end) : original + (original.length === 0 || original.endsWith("\n") ? "" : "\n") + section;
     parseProfiles(updated, catalogPath);
-    const tempPath = join4(dirname3(writePath), `.profiles.${process.pid}.${Date.now()}.tmp`);
-    try {
-      writeFileSync2(tempPath, updated, { mode: 384, flag: "wx" });
-      if (process.platform !== "win32")
-        chmodSync2(tempPath, 384);
-      if (ensureProfileDirectory(catalogPath) !== directory)
-        throw new Error("Parle credential directory changed during profile persistence.");
-      safeProfileWritePath(writePath);
-      renameSync3(tempPath, writePath);
-      if (process.platform !== "win32")
-        chmodSync2(writePath, 384);
-    } finally {
-      try {
-        if (existsSync3(tempPath))
-          unlinkSync2(tempPath);
-      } catch {
-      }
-    }
+    if (ensureProfileDirectory(catalogPath) !== directory)
+      throw new Error("Parle credential directory changed during profile persistence.");
+    safeProfileWritePath(writePath);
+    atomicReplaceOwnerOnlyFile(writePath, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, durability: "best-effort", existingMode: "replace" });
     return { path: catalogPath, replaced: Boolean(range), priorAgentTokenId: profiles.get(profile.name)?.agentTokenId };
-  } finally {
-    if (lock !== void 0) {
-      closeSync2(lock);
-      try {
-        if (existsSync3(lockPath))
-          unlinkSync2(lockPath);
-      } catch {
-      }
-    }
-  }
+  });
 }
 function preflightNewProfile(path, profileName) {
   const directory = ensureProfileDirectory(path);
-  const writePath = safeProfileWritePath(join4(directory, basename(path)));
-  const original = existsSync3(writePath) ? readFileSync4(writePath, "utf8") : "";
+  const writePath = safeProfileWritePath(join5(directory, basename2(path)));
+  const original = existsSync4(writePath) ? readFileSync3(writePath, "utf8") : "";
   const profiles = original ? parseProfiles(original, path) : /* @__PURE__ */ new Map();
   if (profiles.has(profileName))
     throw new Error(`Parle profile ${profileName} already exists. No existing profile is replaced by this workflow.`);
   return { writePath, original };
 }
 function publishNewProfile(path, original, profile) {
-  const lockPath = `${path}.lock`;
-  let lock;
-  try {
-    try {
-      lock = openSync2(lockPath, "wx", 384);
-    } catch (error51) {
-      if (error51?.code === "EEXIST")
-        throw new Error(`Parle profile catalog is locked at ${lockPath}. Retry after the active writer finishes. If no writer is active, inspect and remove the stale lock manually.`);
-      throw error51;
-    }
-    const current = existsSync3(path) ? readFileSync4(path, "utf8") : "";
+  withOwnerOnlyFileLock(path, { label: "Parle profile catalog", durability: "none" }, () => {
+    const current = existsSync4(path) ? readOwnerOnlyTextFile(path, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" }) : "";
     if (current !== original)
       throw new Error("Parle profile catalog changed after preflight. No credential was published.");
     const profiles = current ? parseProfiles(current, path) : /* @__PURE__ */ new Map();
@@ -33125,33 +33467,10 @@ function publishNewProfile(path, original, profile) {
       throw new Error(`Parle profile ${profile.name} already exists. No existing profile is replaced by this workflow.`);
     const updated = current + (current.length === 0 || current.endsWith("\n") ? "" : "\n") + renderProfile(profile);
     parseProfiles(updated, path);
-    const tempPath = join4(dirname3(path), `.profiles.${process.pid}.${Date.now()}.tmp`);
-    try {
-      writeFileSync2(tempPath, updated, { mode: 384, flag: "wx" });
-      if (process.platform !== "win32")
-        chmodSync2(tempPath, 384);
-      ensureProfileDirectory(path);
-      safeProfileWritePath(path);
-      renameSync3(tempPath, path);
-      if (process.platform !== "win32")
-        chmodSync2(path, 384);
-    } finally {
-      try {
-        if (existsSync3(tempPath))
-          unlinkSync2(tempPath);
-      } catch {
-      }
-    }
-  } finally {
-    if (lock !== void 0) {
-      closeSync2(lock);
-      try {
-        if (existsSync3(lockPath))
-          unlinkSync2(lockPath);
-      } catch {
-      }
-    }
-  }
+    ensureProfileDirectory(path);
+    safeProfileWritePath(path);
+    atomicReplaceOwnerOnlyFile(path, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, durability: "best-effort", existingMode: "replace" });
+  });
 }
 function publicAgents(raw) {
   if (!Array.isArray(raw))
@@ -33621,7 +33940,7 @@ var ParleAccountClient = class {
     const base = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/release`;
     if (params.action === "preview") {
       const preview = await this.request(config2, `${base}/preview`, { method: "POST", body: {}, signal });
-      return { ...preview, idempotencyKey: randomUUID2() };
+      return { ...preview, idempotencyKey: randomUUID3() };
     }
     if (params.action !== "complete")
       throw new Error('parle_owned_alias_release action must be "preview" or "complete".');
@@ -33744,12 +34063,12 @@ var ParleAccountClient = class {
     if (!isAbsolute2(path))
       throw new Error("handoffPath must be an absolute path.");
     const directory = inviteDirectory(config2, false);
-    if (!existsSync3(path))
+    if (!existsSync4(path))
       throw new Error(`Parle invite handoff does not exist in the private invite directory: ${path}`);
     safeFile(path, "Parle invite handoff", false);
-    if (realpathSync(dirname3(path)) !== directory || dirname3(realpathSync(path)) !== directory)
+    if (realpathSync(dirname4(path)) !== directory || dirname4(realpathSync(path)) !== directory)
       throw new Error("handoffPath must resolve directly inside the private Parle invite directory.");
-    if (!UUID_RE3.test(basename(path, ".json")) || !path.endsWith(".json"))
+    if (!UUID_RE3.test(basename2(path, ".json")) || !path.endsWith(".json"))
       throw new Error("Parle invite handoff filename must be <invite-id>.json.");
     const parsed = parseJson2(readBounded(path, MAX_HANDOFF_BYTES, "Parle invite handoff"));
     if (!parsed || typeof parsed !== "object" || parsed.schemaVersion !== 1 || parsed.kind !== "parle-principal-invite")
@@ -33769,7 +34088,7 @@ var ParleAccountClient = class {
       createdAt: String(parsed.createdAt || ""),
       expiresAt: String(parsed.expiresAt || "")
     };
-    if (handoff.apiVersion !== config2.version || handoff.seatType !== "principal" || handoff.offeredRights.length !== 0 || !INVITE_SECRET_RE.test(handoff.secret) || !INVITE_CODE_RE.test(handoff.code) || basename(path) !== `${handoff.inviteId}.json`) {
+    if (handoff.apiVersion !== config2.version || handoff.seatType !== "principal" || handoff.offeredRights.length !== 0 || !INVITE_SECRET_RE.test(handoff.secret) || !INVITE_CODE_RE.test(handoff.code) || basename2(path) !== `${handoff.inviteId}.json`) {
       throw new Error("Parle invite handoff terms are invalid or incompatible with this adapter.");
     }
     if (!Number.isFinite(Date.parse(handoff.createdAt)) || !Number.isFinite(Date.parse(handoff.expiresAt)))
@@ -33827,7 +34146,7 @@ var ParleAccountClient = class {
     let cleanupWarning;
     if (deleteHandoff) {
       try {
-        unlinkSync2(params.handoffPath);
+        unlinkSync3(params.handoffPath);
         handoffDeleted = true;
       } catch {
         cleanupWarning = `Claim succeeded, but the private handoff could not be deleted. Remove it manually: ${params.handoffPath}`;
@@ -33986,7 +34305,7 @@ var ParleAccountClient = class {
       const activeSeat = agentSeats2.find((item) => item?.agent_id === selected.agentId);
       const tokensResponse2 = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { signal });
       const tokens2 = Array.isArray(tokensResponse2.tokens) ? tokensResponse2.tokens : [];
-      const profiles2 = existsSync3(config2.catalogPath) ? parseProfiles(readFileSync4(config2.catalogPath, "utf8"), config2.catalogPath) : /* @__PURE__ */ new Map();
+      const profiles2 = existsSync4(config2.catalogPath) ? parseProfiles(readFileSync3(config2.catalogPath, "utf8"), config2.catalogPath) : /* @__PURE__ */ new Map();
       const activeTokenIds2 = new Set(tokens2.filter((token) => token?.agent_id === selected.agentId && token?.room_id === invitation.roomId && token?.revoked_at == null && Array.isArray(token?.scopes) && token.scopes.includes("participate")).map((token) => token.agent_token_id));
       const compatible2 = [...profiles2.values()].find((profile) => profile.roomId === invitation.roomId && profile.agentTokenId && activeTokenIds2.has(profile.agentTokenId));
       return {
@@ -34026,7 +34345,7 @@ var ParleAccountClient = class {
     const tokensResponse = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { signal });
     const tokens = Array.isArray(tokensResponse.tokens) ? tokensResponse.tokens : [];
     const catalogPath = config2.catalogPath;
-    const profiles = existsSync3(catalogPath) ? parseProfiles(readFileSync4(catalogPath, "utf8"), catalogPath) : /* @__PURE__ */ new Map();
+    const profiles = existsSync4(catalogPath) ? parseProfiles(readFileSync3(catalogPath, "utf8"), catalogPath) : /* @__PURE__ */ new Map();
     const activeTokenIds = new Set(tokens.filter((token) => token?.agent_id === selected.agentId && token?.room_id === invitation.roomId && token?.revoked_at == null && Array.isArray(token?.scopes) && token.scopes.includes("participate")).map((token) => token.agent_token_id));
     const compatible = [...profiles.values()].find((profile) => profile.roomId === invitation.roomId && profile.agentTokenId && activeTokenIds.has(profile.agentTokenId));
     if (compatible) {
@@ -34223,8 +34542,8 @@ function compactStatusCardFromStatus(status) {
 }
 
 // ../client/dist/responsive-delivery.js
-import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync2, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join5 } from "node:path";
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join6 } from "node:path";
 var RESPONSIVE_DELIVERY_SKEW_MS = 3e4;
 var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
 var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
@@ -34270,19 +34589,19 @@ function buildResponsiveDeliverySnapshot(base, state, event = {}, now = /* @__PU
   });
 }
 function responsiveDeliveryRuntimeDirPath(cwd) {
-  return join5(cwd, ".parle", "runtime", "responsive");
+  return join6(cwd, ".parle", "runtime", "responsive");
 }
 function responsiveDeliveryRuntimeFilePath(cwd, pid) {
-  return join5(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
+  return join6(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
 }
 function writeResponsiveDeliverySnapshot(cwd, snapshot) {
   const dir = responsiveDeliveryRuntimeDirPath(cwd);
   mkdirSync4(dir, { recursive: true, mode: 448 });
   chmodSync3(dir, 448);
-  const tmp = join5(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
-  writeFileSync3(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
+  const tmp = join6(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
+  writeFileSync2(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
   chmodSync3(tmp, 384);
-  renameSync4(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
+  renameSync2(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
 }
 function parseResponsiveDeliverySnapshot(value) {
   if (!value || typeof value !== "object")
@@ -34327,7 +34646,7 @@ function readResponsiveDeliverySnapshots(cwd) {
     if (!/^\d+\.json$/.test(name))
       continue;
     try {
-      const raw = readFileSync5(join5(responsiveDeliveryRuntimeDirPath(cwd), name), "utf8");
+      const raw = readFileSync4(join6(responsiveDeliveryRuntimeDirPath(cwd), name), "utf8");
       if (Buffer.byteLength(raw) > RESPONSIVE_DELIVERY_MAX_FILE_BYTES)
         continue;
       const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
@@ -34865,8 +35184,8 @@ var ResponsiveDeliveryController = class {
 };
 
 // ../client/dist/peer-context.js
-import { chmodSync as chmodSync4, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync6, realpathSync as realpathSync2, renameSync as renameSync5, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { chmodSync as chmodSync4, existsSync as existsSync5, lstatSync as lstatSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync3, statSync as statSync3, unlinkSync as unlinkSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname5, join as join7 } from "node:path";
 var MAX_PEERS = 64;
 var MAX_FIELD = 200;
 var MAX_STORE_BYTES = 64 * 1024;
@@ -34877,10 +35196,10 @@ function validAddress(address) {
   return address.length <= MAX_FIELD && PEER_ADDRESS_RE.test(address);
 }
 function peerContextFilePath(catalogPath) {
-  return join6(dirname4(catalogPath), "peers");
+  return join7(dirname5(catalogPath), "peers");
 }
 function ownerOnlyFile(path) {
-  const link = lstatSync4(path);
+  const link = lstatSync5(path);
   const stat = link.isSymbolicLink() ? statSync3(path) : link;
   if (!stat.isFile())
     return false;
@@ -34905,13 +35224,13 @@ function sanitizePeer(raw) {
 function readPeerContext(catalogPath) {
   const path = peerContextFilePath(catalogPath);
   try {
-    if (!existsSync4(path) || !ownerOnlyFile(path))
+    if (!existsSync5(path) || !ownerOnlyFile(path))
       return { version: 1, peers: [] };
-    const link = lstatSync4(path);
+    const link = lstatSync5(path);
     const size = (link.isSymbolicLink() ? statSync3(path) : link).size;
     if (size > MAX_STORE_BYTES)
       return { version: 1, peers: [] };
-    const parsed = JSON.parse(readFileSync6(path, "utf8"));
+    const parsed = JSON.parse(readFileSync5(path, "utf8"));
     const peers = Array.isArray(parsed?.peers) ? parsed.peers : [];
     return {
       version: 1,
@@ -35068,9 +35387,9 @@ function parseKeyValueFile(text) {
   return out;
 }
 function readKeyValueFile(path) {
-  if (!existsSync5(path))
+  if (!existsSync6(path))
     return {};
-  return parseKeyValueFile(readFileSync7(path, "utf8"));
+  return parseKeyValueFile(readFileSync6(path, "utf8"));
 }
 function firstConfigValue(name, sources, fallback) {
   for (const source of sources) {
@@ -35099,7 +35418,7 @@ function versionConfig(env, dotEnv, warnings) {
   return { value: DEFAULT_VERSION, source: "default" };
 }
 function resolveConfig(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join7(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join8(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -35159,7 +35478,7 @@ function requestOrigin(value) {
   }
 }
 function resolveRoomSet(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join7(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join8(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -35501,7 +35820,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => /* @__PURE__ */ new Date());
     this.sleepImpl = options.sleep || defaultSleep2;
-    this.randomUUID = options.randomUUID || randomUUID3;
+    this.randomUUID = options.randomUUID || randomUUID4;
     this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
@@ -35572,7 +35891,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!current)
       return void 0;
     try {
-      const onDisk = readKeyValueFile(join7(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
+      const onDisk = readKeyValueFile(join8(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
       if (onDisk === void 0 || onDisk === "")
         return void 0;
       if (onDisk === current)
@@ -37024,23 +37343,22 @@ var ParleAgentClient = class _ParleAgentClient {
 };
 
 // src/hook-delivery-bridge.ts
-import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID5 } from "node:crypto";
 import {
   accessSync,
   chmodSync as chmodSync5,
-  constants,
-  lstatSync as lstatSync5,
+  constants as constants2,
+  lstatSync as lstatSync6,
   mkdirSync as mkdirSync6,
   readdirSync as readdirSync3,
-  renameSync as renameSync6,
+  renameSync as renameSync4,
   rmSync as rmSync3,
   statSync as statSync4,
-  symlinkSync,
-  writeFileSync as writeFileSync5
+  symlinkSync
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname5, isAbsolute as isAbsolute3, join as join8 } from "node:path";
+import { dirname as dirname6, isAbsolute as isAbsolute3, join as join9 } from "node:path";
 var MAX_PENDING = 100;
 var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
@@ -37051,16 +37369,16 @@ function deliveryKey2(roomId, message) {
 }
 function hookBridgeStateDir(scope) {
   const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
-  return join8(homedir2(), ".local", "state", "parle", "hook-bridge", key);
+  return join9(homedir2(), ".local", "state", "parle", "hook-bridge", key);
 }
 function hookBridgeSocketPath(scope, pid = process.pid) {
-  return join8(hookBridgeStateDir(scope), `${pid}.sock`);
+  return join9(hookBridgeStateDir(scope), `${pid}.sock`);
 }
 function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid) {
-  return join8(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+  return join9(hookBridgeStateDir(scope), `${pid}.runtime.json`);
 }
 function hookBridgeRuntimeHandlePath(scope, pid = process.pid) {
-  return join8(hookBridgeStateDir(scope), `${pid}.node`);
+  return join9(hookBridgeStateDir(scope), `${pid}.node`);
 }
 function processIsAlive(pid) {
   try {
@@ -37228,14 +37546,14 @@ var HookDeliveryBridge = class {
   }
   async listen() {
     const path = hookBridgeSocketPath(this.scope);
-    const dir = dirname5(path);
+    const dir = dirname6(path);
     mkdirSync6(dir, { recursive: true, mode: 448 });
-    const before = lstatSync5(dir);
+    const before = lstatSync6(dir);
     if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
       throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
     }
     chmodSync5(dir, 448);
-    const after = lstatSync5(dir);
+    const after = lstatSync6(dir);
     if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
     this.removeDeadRuntimeArtifacts(dir);
     this.removeOwnRuntimeArtifacts();
@@ -37259,27 +37577,21 @@ var HookDeliveryBridge = class {
   publishRuntimeArtifacts() {
     const execPath = this.runtimeExecPath;
     if (!isAbsolute3(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
-    accessSync(execPath, constants.X_OK);
+    accessSync(execPath, constants2.X_OK);
     if (!statSync4(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
     const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
-    const descriptorTemporary = `${descriptorPath}.tmp`;
-    const handleTemporary = `${handlePath}.tmp`;
-    rmSync3(descriptorTemporary, { force: true });
-    rmSync3(handleTemporary, { force: true });
+    const handleTemporary = `${handlePath}.tmp-${randomUUID5()}`;
     try {
-      writeFileSync5(descriptorTemporary, `${JSON.stringify({
+      atomicReplaceOwnerOnlyFile(descriptorPath, `${JSON.stringify({
         execPath,
         pid: process.pid,
         startedAt: (/* @__PURE__ */ new Date()).toISOString()
       })}
-`, { encoding: "utf8", mode: 384, flag: "wx" });
-      chmodSync5(descriptorTemporary, 384);
-      renameSync6(descriptorTemporary, descriptorPath);
+`, { label: "Parle hook bridge runtime descriptor", maxBytes: 16 * 1024, durability: "none" });
       symlinkSync(execPath, handleTemporary, "file");
-      renameSync6(handleTemporary, handlePath);
+      renameSync4(handleTemporary, handlePath);
     } catch (error51) {
-      rmSync3(descriptorTemporary, { force: true });
       rmSync3(handleTemporary, { force: true });
       rmSync3(descriptorPath, { force: true });
       rmSync3(handlePath, { force: true });
@@ -37300,7 +37612,7 @@ var HookDeliveryBridge = class {
     for (const name of readdirSync3(dir)) {
       const match = name.match(stalePattern);
       if (!match || processIsAlive(Number(match[1]))) continue;
-      rmSync3(join8(dir, name), { force: true });
+      rmSync3(join9(dir, name), { force: true });
     }
   }
   handleSocket(socket) {
@@ -37344,7 +37656,7 @@ var HookDeliveryBridge = class {
       messages.push(message);
     }
     if (messages.length === 0) return { ok: true, messages: [] };
-    this.lease = { id: randomUUID4(), messages, expiresAt: Date.now() + LEASE_MS };
+    this.lease = { id: randomUUID5(), messages, expiresAt: Date.now() + LEASE_MS };
     return {
       ok: true,
       leaseId: this.lease.id,
@@ -37409,7 +37721,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.17";
+var MCP_CLIENT_VERSION = "0.7.18";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -37558,7 +37870,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
       let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
       if (!profilesPathOverride) {
         try {
-          profilesPathOverride = parseKeyValueFile(readFileSync8(join9(process.cwd(), ".env"), "utf8")).PARLE_PROFILES_PATH;
+          profilesPathOverride = parseKeyValueFile(readFileSync7(join10(process.cwd(), ".env"), "utf8")).PARLE_PROFILES_PATH;
         } catch {
         }
       }
@@ -38101,12 +38413,12 @@ function applyWatcherStateLine(line2, evidence, nowMs = Date.now()) {
 }
 async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env) {
   const { profile, workerArgs } = parseWatcherArgs(args);
-  const worker = join9(dirname6(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
-  if (!existsSync6(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
+  const worker = join10(dirname7(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
+  if (!existsSync7(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
   const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
-  const watcherClient = createMcpAgentClient({ cwd: dirname6(fileURLToPath(metaUrl)), env: childEnv });
+  const watcherClient = createMcpAgentClient({ cwd: dirname7(fileURLToPath(metaUrl)), env: childEnv });
   const watchedAgentSessionId = workerArgs[1];
   const evidence = watchedAgentSessionId ? new ResponsiveDeliveryRecorder({
     cwd,

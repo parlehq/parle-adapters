@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { atomicReplaceOwnerOnlyFile, ensureOwnerOnlyDirectory, readOwnerOnlyTextFile } from "./safe-file.js";
 
 // Local per-process runtime snapshot files: display-safe session state published
 // for host UX surfaces (statuslines, footers). Never contains a credential.
@@ -12,6 +13,7 @@ import { join } from "node:path";
 export const RUNTIME_SCHEMA_VERSION = 2;
 export const RUNTIME_DIR_SEGMENTS = [".parle", "runtime"] as const;
 export const RUNTIME_EXPIRY_SKEW_MS = 30_000;
+const MAX_RUNTIME_FILE_BYTES = 64 * 1024;
 
 export type RuntimeFileState = "starting" | "ready" | "failed";
 
@@ -58,11 +60,12 @@ export function processStartedAtIso(now: Date = new Date()): string {
 
 export function writeRuntimeFile(cwd: string, snapshot: RuntimeFileSnapshot): void {
   const dir = runtimeDirPath(cwd);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tmp = join(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
-  writeFileSync(tmp, JSON.stringify(snapshot, null, 2) + "\n", { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, runtimeFilePath(cwd, snapshot.pid));
+  ensureOwnerOnlyDirectory(dir, { label: "Parle runtime directory", repairMode: true });
+  atomicReplaceOwnerOnlyFile(runtimeFilePath(cwd, snapshot.pid), JSON.stringify(snapshot, null, 2) + "\n", {
+    label: "Parle runtime snapshot",
+    maxBytes: MAX_RUNTIME_FILE_BYTES,
+    durability: "none",
+  });
 }
 
 export function removeRuntimeFile(cwd: string, pid: number): void {
@@ -82,7 +85,7 @@ export function readRuntimeFiles(cwd: string): Array<{ path: string; snapshot: R
     if (name.startsWith(".") || !name.endsWith(".json")) continue;
     const path = join(dir, name);
     try {
-      const snapshot = JSON.parse(readFileSync(path, "utf8"));
+      const snapshot = JSON.parse(readOwnerOnlyTextFile(path, { label: "Parle runtime snapshot", maxBytes: MAX_RUNTIME_FILE_BYTES }));
       if (snapshot && typeof snapshot === "object") out.push({ path, snapshot });
     } catch {
       // Malformed or mid-write files are reader noise, never an error.

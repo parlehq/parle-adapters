@@ -204,7 +204,7 @@ test("login can bootstrap a missing selected profile while other account operati
   const f = loginFixture();
   const state = join(f.home, ".parle");
   mkdirSync(state, { recursive: true, mode: 0o700 });
-  writeFileSync(join(state, "profiles"), `[other]\nroom_id = ${ROOM_ID}\nagent_token = parle_agt_other\n`, { mode: 0o600 });
+  writeFileSync(join(state, "profiles"), `[other]\nroom_id = ${ROOM_ID}\nagent_token = parle_agt_other\n`, { mode: process.platform === "win32" ? 0o600 : 0o644 });
   writeFileSync(join(state, "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
   let calls = 0;
   try {
@@ -230,6 +230,7 @@ test("login can bootstrap a missing selected profile while other account operati
     const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "bootstrap work profile", profile: "work", roomId: ROOM_ID, agentId: AGENT_ID });
     assert.equal(result.profile, "work");
     assert.match(readFileSync(join(state, "profiles"), "utf8"), /^\[work\]$/m);
+    if (process.platform !== "win32") assert.equal(lstatSync(join(state, "profiles")).mode & 0o777, 0o600);
   } finally { f.cleanup(); }
 });
 
@@ -263,7 +264,7 @@ test("login profile publication reports a known token without automatic cleanup 
     assert.equal(result.agent_token_id, AGENT_TOKEN_ID);
     assert.equal(result.credential_cleanup, "not_attempted");
     assert.equal(deleteCalls, 0);
-    assert.match(result.publication_error, /Parle profile catalog is locked at .*profiles\.lock\. Retry after the active writer finishes\. If no writer is active, inspect and remove the stale lock manually\./);
+    assert.match(result.publication_error, /Parle profile catalog is locked by another writer: .*profiles\.lock\./);
     assert.equal(JSON.stringify(result).includes("parle_agt_"), false);
     assert.equal(readFileSync(lockPath, "utf8"), "other-writer\n");
     assert.equal(existsSync(join(f.home, ".parle", "profiles")), false);
@@ -588,6 +589,8 @@ test("target-session invitation preview and acceptance extract the canonical loc
 
 test("connect workflow previews immutable selection and publishes a credential without returning it", async () => {
   const f = fixture();
+  const catalogPath = join(f.home, ".parle", "profiles");
+  if (process.platform !== "win32") chmodSync(catalogPath, 0o644);
   try {
     const paths = [];
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async (url, init) => {
@@ -610,9 +613,10 @@ test("connect workflow previews immutable selection and publishes a credential w
     assert.equal(complete.profile, "galexc-kyleops");
     assert.equal(complete.credential, "profile_ready");
     assert.equal(JSON.stringify(complete).includes("parle_agt_"), false);
-    const catalog = readFileSync(join(f.home, ".parle", "profiles"), "utf8");
+    const catalog = readFileSync(catalogPath, "utf8");
     assert.match(catalog, /\[galexc-kyleops\]/);
     assert.match(catalog, /agent_token_id = 019f7c00-0000-7000-8000-000000000005/);
+    if (process.platform !== "win32") assert.equal(lstatSync(catalogPath).mode & 0o777, 0o600);
     assert.equal(paths.includes(`POST /v/rooms/${ROOM_ID}/seats`), true);
   } finally { f.cleanup(); }
 });

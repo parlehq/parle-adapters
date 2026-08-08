@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_VERSION } from "./protocol.js";
 import { loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
+import { atomicReplaceOwnerOnlyFile } from "./safe-file.js";
 
 const DEFAULT_API_BASE = "https://api.parle.sh";
 const MAX_SECRET_BYTES = 8 * 1024;
@@ -308,26 +309,15 @@ export class ParleHardeningClient {
       const current = this.readState(config)!;
       if (current.generation !== expectedGeneration) throw new HardeningError("Parle hardening state changed concurrently.");
     }
-    const temp = join(dir, `.state-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
-    let fd: number | undefined;
     try {
-      fd = openSync(temp, "wx", 0o600);
-      const body = Buffer.from(JSON.stringify(next) + "\n", "utf8");
-      try {
-        writeSync(fd, body);
-        fsyncSync(fd);
-      } finally { clearBuffer(body); }
-      closeSync(fd);
-      fd = undefined;
-      assertSecureFile(temp, "Parle hardening state", MAX_SECRET_BYTES);
-      renameSync(temp, statePath);
-      assertSecureFile(statePath, "Parle hardening state", MAX_SECRET_BYTES);
-      syncDirectory(dir);
+      atomicReplaceOwnerOnlyFile(statePath, JSON.stringify(next) + "\n", {
+        label: "Parle hardening state",
+        maxBytes: MAX_SECRET_BYTES,
+        durability: "best-effort",
+        existingMode: "replace",
+      });
     } catch {
       throw new HardeningError("Could not publish protected hardening state.");
-    } finally {
-      if (fd !== undefined) try { closeSync(fd); } catch {}
-      try { if (existsSync(temp)) unlinkSync(temp); } catch {}
     }
   }
 

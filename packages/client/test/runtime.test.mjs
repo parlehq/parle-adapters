@@ -165,11 +165,11 @@ test("construction prunes provably stale sibling files and keeps uncertain ones"
   const cwd = tempCwd();
   try {
     const dir = runtimeDirPath(cwd);
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const gone = deadPid();
-    writeFileSync(join(dir, "expired.json"), JSON.stringify(snapshotFor(process.pid + 1, { expiresAt: new Date(Date.now() - 1000).toISOString() })));
-    writeFileSync(join(dir, "dead.json"), JSON.stringify(snapshotFor(gone)));
-    writeFileSync(join(dir, "uncertain.json"), JSON.stringify(snapshotFor(1)));
+    writeFileSync(join(dir, "expired.json"), JSON.stringify(snapshotFor(process.pid + 1, { expiresAt: new Date(Date.now() - 1000).toISOString() })), { mode: 0o600 });
+    writeFileSync(join(dir, "dead.json"), JSON.stringify(snapshotFor(gone)), { mode: 0o600 });
+    writeFileSync(join(dir, "uncertain.json"), JSON.stringify(snapshotFor(1)), { mode: 0o600 });
     writeFileSync(join(dir, ".tmp-ignored"), "not json");
     new ParleAgentClient({ cwd, env: ENV, publishRuntime: { adapterName: "test" } });
     assert.equal(existsSync(join(dir, "expired.json")), false);

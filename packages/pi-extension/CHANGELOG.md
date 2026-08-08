@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.23 (2026-08-08)
+
+- Refresh the native shared-client bundle with the canonical safe-file foundation (#95).
+
 ## 0.7.22 (2026-08-08)
 
 - Publish one central responsive-delivery lifecycle model with credential-free evidence, truthful stale and conflict detection, and shared host status semantics (#47).

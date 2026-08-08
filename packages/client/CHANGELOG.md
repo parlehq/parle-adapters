@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.18 (2026-08-08)
+
+- Add canonical typed safe-file primitives with bounded owner-only reads, symlink refusal, atomic durable replacement, token-owned stale-recovering locks, and matching profile, login, hardening, and runtime adoption (#95).
+
 ## 0.8.17 (2026-08-08)
 
 - Publish one central responsive-delivery lifecycle model with credential-free evidence, truthful stale and conflict detection, and shared host status semantics (#47).

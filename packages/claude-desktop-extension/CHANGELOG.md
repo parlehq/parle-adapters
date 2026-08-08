@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.18 (2026-08-08)
+
+- Refresh the bundled MCP runtime with the canonical safe-file foundation (#95).
+
 ## 0.8.17 (2026-08-08)
 
 - Publish one central responsive-delivery lifecycle model with credential-free evidence, truthful stale and conflict detection, and shared host status semantics (#47).

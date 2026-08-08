@@ -10,13 +10,13 @@ import {
   rmSync,
   statSync,
   symlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import {
   ResponsiveDeliveryController,
+  atomicReplaceOwnerOnlyFile,
   type DeliveryHandlerInput,
   type DeliveryHandlerResult,
   type ParleAgentClient,
@@ -307,22 +307,16 @@ export class HookDeliveryBridge {
 
     const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
-    const descriptorTemporary = `${descriptorPath}.tmp`;
-    const handleTemporary = `${handlePath}.tmp`;
-    rmSync(descriptorTemporary, { force: true });
-    rmSync(handleTemporary, { force: true });
+    const handleTemporary = `${handlePath}.tmp-${randomUUID()}`;
     try {
-      writeFileSync(descriptorTemporary, `${JSON.stringify({
+      atomicReplaceOwnerOnlyFile(descriptorPath, `${JSON.stringify({
         execPath,
         pid: process.pid,
         startedAt: new Date().toISOString(),
-      })}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      chmodSync(descriptorTemporary, 0o600);
-      renameSync(descriptorTemporary, descriptorPath);
+      })}\n`, { label: "Parle hook bridge runtime descriptor", maxBytes: 16 * 1024, durability: "none" });
       symlinkSync(execPath, handleTemporary, "file");
       renameSync(handleTemporary, handlePath);
     } catch (error) {
-      rmSync(descriptorTemporary, { force: true });
       rmSync(handleTemporary, { force: true });
       rmSync(descriptorPath, { force: true });
       rmSync(handlePath, { force: true });
