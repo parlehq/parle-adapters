@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.14 (2026-08-08)
+
+- Refresh the bundled MCP runtime with HTTP 408 terminal alias release ambiguity handling.
+
 ## 0.6.13 (2026-08-07)
 
 - Refresh the bundled MCP runtime with durable alias delivery controls and guarded terminal release that reports ambiguous completion as unknown (#86).

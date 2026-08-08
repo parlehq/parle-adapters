@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14 (2026-08-08)
+
+- Carry the shared client HTTP 408 terminal alias release ambiguity correction into the MCP runtime.
+
 ## 0.7.13 (2026-08-07)
 
 - Add equivalent agent and human durable alias delivery tools, including guarded two-step terminal release with explicit unknown outcomes for ambiguous completion, and refresh known-alias send guidance (#86).

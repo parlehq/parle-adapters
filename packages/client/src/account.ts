@@ -1050,7 +1050,7 @@ export class ParleAccountClient {
       });
     } catch (error: any) {
       const status = typeof error?.status === "number" ? error.status : undefined;
-      const ambiguous = status === undefined || status >= 500 || (error?.retryable === true && !(status >= 400 && status < 500));
+      const ambiguous = status === undefined || status === 408 || status >= 500 || (error?.retryable === true && !(status >= 400 && status < 500));
       if (!ambiguous) throw error;
       return {
         outcome: "unknown",

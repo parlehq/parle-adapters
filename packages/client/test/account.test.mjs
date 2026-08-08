@@ -764,6 +764,7 @@ test("owned alias release reports ambiguous complete outcomes as unknown and pre
   try {
     for (const fetchImpl of [
       async () => { throw new TypeError("connection reset"); },
+      async () => response({ error: { code: "request_timeout", retryable: false } }, 408),
       async () => response({ error: { code: "server_error", retryable: false } }, 503),
     ]) {
       const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: fetchImpl });
@@ -781,5 +782,12 @@ test("owned alias release reports ambiguous complete outcomes as unknown and pre
       fetch: async () => response({ error: { code: "idempotency_conflict", retryable: false } }, 409),
     });
     await assert.rejects(definite.ownedAliasRelease(complete), (error) => error.status === 409 && error.code === "idempotency_conflict");
+
+    const rateLimited = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => response({ error: { code: "rate_limited", retryable: true } }, 429),
+    });
+    await assert.rejects(rateLimited.ownedAliasRelease(complete), (error) => error.status === 429 && error.code === "rate_limited" && error.retryable === true);
   } finally { f.cleanup(); }
 });

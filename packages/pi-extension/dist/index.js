@@ -2689,7 +2689,7 @@ var ParleAccountClient = class {
       });
     } catch (error) {
       const status = typeof error?.status === "number" ? error.status : void 0;
-      const ambiguous = status === void 0 || status >= 500 || error?.retryable === true && !(status >= 400 && status < 500);
+      const ambiguous = status === void 0 || status === 408 || status >= 500 || error?.retryable === true && !(status >= 400 && status < 500);
       if (!ambiguous)
         throw error;
       return {
@@ -5867,7 +5867,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.18";
+var PI_EXTENSION_VERSION = "0.7.19";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

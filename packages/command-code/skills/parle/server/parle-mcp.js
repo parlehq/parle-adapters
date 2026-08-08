@@ -33627,7 +33627,7 @@ var ParleAccountClient = class {
       });
     } catch (error51) {
       const status = typeof error51?.status === "number" ? error51.status : void 0;
-      const ambiguous = status === void 0 || status >= 500 || error51?.retryable === true && !(status >= 400 && status < 500);
+      const ambiguous = status === void 0 || status === 408 || status >= 500 || error51?.retryable === true && !(status >= 400 && status < 500);
       if (!ambiguous)
         throw error51;
       return {
@@ -37151,7 +37151,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.13";
+var MCP_CLIENT_VERSION = "0.7.14";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.14 (2026-08-08)
+
+- Treat HTTP 408 from terminal alias release completion as an ambiguous outcome that requires byte-identical idempotent replay.
+
 ## 0.8.13 (2026-08-07)
 
 - Add default-on durable alias offline-delivery controls for agent and human owners, guarded terminal release with explicit unknown outcomes for ambiguous completion, and server-authoritative known-alias sending without peer-context gating (#86).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.19 (2026-08-08)
+
+- Carry the shared client HTTP 408 terminal alias release ambiguity correction into the native Pi runtime.
+
 ## 0.7.18 (2026-08-07)
 
 - Add native agent and human durable alias delivery tools, guarded two-step terminal release with explicit unknown outcomes for ambiguous completion, and server-authoritative known-alias send guidance (#86).
