@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.17";
+const PI_EXTENSION_VERSION = "0.7.18";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -148,6 +148,9 @@ type RuntimeState = PiWatchRuntime & {
 type ParleLoginParams = LoginParams;
 type ParleCreateRoomParams = CreateRoomParams;
 type ParleAddOwnAgentSeatParams = AddOwnAgentSeatParams;
+type ParleOwnedAliasDeliveryParams = OwnedAliasDeliveryParams;
+type ParleOwnedAliasReleaseParams = OwnedAliasReleaseParams;
+type ParleAliasDeliveryParams = { action: "get_global" | "disable_global" | "get_room" | "disable_room"; alias: string; roomId?: string };
 
 type ParleMintPrincipalInviteParams = MintPrincipalInviteParams;
 type ParleClaimPrincipalInviteParams = ClaimPrincipalInviteParams;
@@ -2084,6 +2087,44 @@ export default function parleExtension(pi: any) {
   });
 
   pi.registerTool({
+    name: "parle_owned_alias_delivery",
+    label: "Manage Owned Alias Offline Delivery",
+    description: "Read or mutate the human-owned durable alias offline-delivery setting. Global restore preserves room OFF settings; restore_everywhere clears them explicitly. Mutations require confirmMutation=true and a reason. Responses never expose route, liveness, claimant, or backlog facts.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["get_global", "set_global", "get_room", "set_room", "restore_everywhere"] }),
+      agentId: Type.String({ description: "Exact owned durable-agent UUID." }),
+      alias: Type.String({ description: "Exact durable session alias." }),
+      roomId: Type.Optional(Type.String({ description: "Required for room-scoped actions." })),
+      offlineDelivery: Type.Optional(Type.Boolean({ description: "Required for set_global and set_room." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true for set and restore actions." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for each mutation." })),
+    }),
+    async execute(_id, params: ParleOwnedAliasDeliveryParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).ownedAliasDelivery(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_owned_alias_release",
+    label: "Release Owned Durable Alias",
+    description: "Preview or complete terminal durable alias release. Preview performs no write and returns a fresh local idempotencyKey. Complete requires that key, the previewed generation, confirmMutation=true, and a reason. Reuse the same key and byte-identical fields after an ambiguous outcome. Release permanently fences old backlog.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["preview", "complete"] }),
+      agentId: Type.String({ description: "Exact owned durable-agent UUID." }),
+      alias: Type.String({ description: "Exact durable session alias." }),
+      expectedAliasGeneration: Type.Optional(Type.Number({ description: "Positive alias generation returned by preview." })),
+      idempotencyKey: Type.Optional(Type.String({ description: "Key returned by preview; reuse unchanged after an ambiguous complete outcome." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true only for complete." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation only for complete." })),
+    }),
+    async execute(_id, params: ParleOwnedAliasReleaseParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).ownedAliasRelease(params, signal));
+    },
+  });
+
+  pi.registerTool({
     name: "parle_harden_account",
     label: "Parle Harden Account",
     description: "Run exactly one bounded human account-hardening transition. This typed tool accepts no password, OTP, recovery code, cookie, provisioning URI, or filesystem path and never starts the human-only helper. The person must run parle-hardening-secret themselves in a separate terminal with scrollback and recording disabled. Mutations require confirmMutation=true and a reason.",
@@ -2264,6 +2305,32 @@ export default function parleExtension(pi: any) {
   });
 
   pi.registerTool({
+    name: "parle_alias_delivery",
+    label: "Manage My Alias Offline Delivery",
+    description: "Read or disable offline delivery for a durable alias owned by this live agent session, globally or in one authorized room. Agent credentials can only reduce exposure: this tool cannot restore or release. OFF affects new offline ingress only and does not discard accepted backlog or block live delivery.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["get_global", "disable_global", "get_room", "disable_room"] }),
+      alias: Type.String({ description: "Exact durable session alias." }),
+      roomId: Type.Optional(Type.String({ description: "Required for room-scoped actions." })),
+    }),
+    async execute(_id, params: ParleAliasDeliveryParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      const live = agentClient(ctx, cfg);
+      if ((params.action === "get_room" || params.action === "disable_room") && !params.roomId) throw new Error(`parle_alias_delivery ${params.action} requires roomId.`);
+      let details: unknown;
+      switch (params.action) {
+        case "get_global": details = await live.getOwnAliasOfflineDelivery(params.alias, signal); break;
+        case "disable_global": details = await live.disableOwnAliasOfflineDelivery(params.alias, signal); break;
+        case "get_room": details = await live.getOwnAliasRoomOfflineDelivery(params.alias, params.roomId, signal); break;
+        case "disable_room": details = await live.disableOwnAliasRoomOfflineDelivery(params.alias, params.roomId, signal); break;
+      }
+      liveConfig = cfg;
+      return formatResult(details);
+    },
+  });
+
+  pi.registerTool({
     name: "parle_send",
     label: "Parle Send",
     description: `Send a raw Parle-native room message. Pass to to send structured direct addressing for responsive delivery. Body @mentions are inert text. Prefer to: "@principal.agent" for any live session of an agent, or to: "@principal.agent.session" to pin one session. Avoid self-addressing: responsive delivery excludes own-authored rows. ${SEND_ATTENTION_GUIDANCE} V1 does not auto-retry; failures include the idempotency key; reuse it with byte-identical body and addressing when the failure is retryable.`,
@@ -2286,7 +2353,7 @@ export default function parleExtension(pi: any) {
         runtime.lastError = typeof details.error === "string" ? details.error : "Parle send failed";
         const hint = details.retryable
           ? undefined
-          : "Direct addressing errors are not retryable. Check that to is a valid @principal.agent or @principal.agent.session address and that the target is a live room participant. Discover peer addresses from message author blocks via parle_read or parle_inbox, or ask the operator.";
+          : "Direct addressing errors are not retryable. An explicitly known exact @principal.agent or @principal.agent.alias address may be attempted without local peer tagging; the server is the sole deliverability authority. Unknown, stale, unauthorized, and retired targets remain privacy-flat. Learn addresses only from operator input or server-authenticated author metadata.";
         return formatResult({ ...details, addressedTo: to, ...(hint ? { hint } : {}) });
       }
       return formatResult({ ...details, idempotencyKey: "<redacted>", addressedTo: to, retry });

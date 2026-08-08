@@ -45,6 +45,23 @@
     ],
     "required": []
   },
+  "parle_alias_delivery": {
+    "title": "Manage My Alias Offline Delivery",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "alias",
+      "roomId"
+    ],
+    "required": [
+      "action",
+      "alias"
+    ]
+  },
   "parle_claim_principal_invite": {
     "title": "Parle Claim Principal Invite",
     "annotations": {
@@ -194,6 +211,50 @@
     "required": [
       "principalHandle",
       "roomId"
+    ]
+  },
+  "parle_owned_alias_delivery": {
+    "title": "Manage Owned Alias Offline Delivery",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "agentId",
+      "alias",
+      "confirmMutation",
+      "offlineDelivery",
+      "reason",
+      "roomId"
+    ],
+    "required": [
+      "action",
+      "agentId",
+      "alias"
+    ]
+  },
+  "parle_owned_alias_release": {
+    "title": "Release Owned Durable Alias",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "agentId",
+      "alias",
+      "confirmMutation",
+      "expectedAliasGeneration",
+      "idempotencyKey",
+      "reason"
+    ],
+    "required": [
+      "action",
+      "agentId",
+      "alias"
     ]
   },
   "parle_read": {

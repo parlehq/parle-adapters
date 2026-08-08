@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.14 (2026-08-07)
+
+- Refresh the bundled MCP runtime with durable alias delivery controls and guarded terminal release (#86).
+
 ## 0.9.13 (2026-08-07)
 
 - Clarify that Claude's pre-channels projection watcher and manual inbox cannot expose opaque reply routes, and that withheld author identity never authorizes an unaddressed fallback.

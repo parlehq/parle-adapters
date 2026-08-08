@@ -5,6 +5,12 @@ host APIs before implementation
 
 ## Problem recap
 
+This store is host-local compaction memory only. It is never an alias claim,
+delivery qualification, sender registration, authorization check, or prerequisite
+to sending an explicitly known exact address. Durable alias delivery is owned by
+the Parle server; `/parle-peers` only curates which operator-approved addresses a
+host re-injects after compaction.
+
 An operator can hand an agent a stable peer route ("reach me at
 @gilman.galexc.lead") and a collaborator role. Harness compaction can drop
 that from model context, after which the agent may silently reuse an expired

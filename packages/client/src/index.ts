@@ -5,7 +5,7 @@ import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeR
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
 import { DEFAULT_VERSION, ParleApiError, isParleCredential, redactString } from "./protocol.js";
-import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
+import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
@@ -31,7 +31,7 @@ export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
-export const SEND_ATTENTION_GUIDANCE = "Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
+export const SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted without local peer tagging or a /parle-peers step; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
   "authorization",
@@ -2454,6 +2454,24 @@ export class ParleAgentClient {
       return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/affordances`, { session: true, roomId, signal });
     }, signal));
     return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, roomId, session: this.sessionEstablishedBlock() } : result;
+  }
+
+  async getOwnAliasOfflineDelivery(alias: string, signal?: AbortSignal) {
+    return this.withRebootstrap(() => getOwnAliasOfflineDeliveryShared(this.aliasTransport(), alias, signal), signal);
+  }
+
+  async disableOwnAliasOfflineDelivery(alias: string, signal?: AbortSignal) {
+    return this.withRebootstrap(() => disableOwnAliasOfflineDeliveryShared(this.aliasTransport(), alias, signal), signal);
+  }
+
+  async getOwnAliasRoomOfflineDelivery(alias: string, roomIdParam?: string, signal?: AbortSignal) {
+    const roomId = this.roomTarget(roomIdParam).roomId!.value!;
+    return this.withRebootstrap(() => getOwnAliasRoomOfflineDeliveryShared(this.aliasTransport(), roomId, alias, signal), signal);
+  }
+
+  async disableOwnAliasRoomOfflineDelivery(alias: string, roomIdParam?: string, signal?: AbortSignal) {
+    const roomId = this.roomTarget(roomIdParam).roomId!.value!;
+    return this.withRebootstrap(() => disableOwnAliasRoomOfflineDeliveryShared(this.aliasTransport(), roomId, alias, signal), signal);
   }
 
   async send(params: SendParams, signal?: AbortSignal) {

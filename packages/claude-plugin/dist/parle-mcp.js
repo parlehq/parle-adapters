@@ -30961,7 +30961,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 // ../client/dist/index.js
 import { readFileSync as readFileSync6, existsSync as existsSync5 } from "node:fs";
 import { join as join6 } from "node:path";
-import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -31118,6 +31118,51 @@ function redactString(input) {
 // ../client/dist/alias.js
 var SESSION_INVENTORY_MAX_PAGES = 100;
 var CLAIM_RECOVERY_ATTEMPTS = 3;
+function validAlias(alias) {
+  const value = alias.trim().toLowerCase();
+  if (value.length < 2 || value.length > 40 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+    throw new ParleApiError("Parle durable session alias is invalid", { code: "validation_failed", action: "fix_client", scope: "request" });
+  }
+  return value;
+}
+function aliasOfflineDelivery(value, alias, mutation) {
+  if (value?.alias !== alias || !Number.isInteger(value?.alias_generation) || value.alias_generation < 1 || typeof value?.offline_delivery !== "boolean" || mutation && typeof value?.changed !== "boolean") {
+    throw new ParleApiError("Parle alias offline-delivery response was invalid", { code: "invalid_response", action: "fix_client", scope: "server" });
+  }
+  return {
+    alias,
+    aliasGeneration: value.alias_generation,
+    offlineDelivery: value.offline_delivery,
+    ...mutation ? { changed: value.changed } : {}
+  };
+}
+function aliasRoomOfflineDelivery(value, alias, roomId, mutation) {
+  const global = aliasOfflineDelivery(value, alias, mutation);
+  if (value?.room_id !== roomId || typeof value?.room_offline_delivery !== "boolean" || typeof value?.effective_offline_delivery !== "boolean") {
+    throw new ParleApiError("Parle alias room offline-delivery response was invalid", { code: "invalid_response", action: "fix_client", scope: "server" });
+  }
+  return { ...global, roomId, roomOfflineDelivery: value.room_offline_delivery, effectiveOfflineDelivery: value.effective_offline_delivery };
+}
+async function getOwnAliasOfflineDelivery(transport, alias, signal) {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}/offline-delivery`, { session: true, signal, retry: true });
+  return aliasOfflineDelivery(value, alias, false);
+}
+async function disableOwnAliasOfflineDelivery(transport, alias, signal) {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}/offline-delivery/disable`, { method: "POST", body: {}, session: true, signal, retry: false });
+  return aliasOfflineDelivery(value, alias, true);
+}
+async function getOwnAliasRoomOfflineDelivery(transport, roomId, alias, signal) {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/rooms/${encodeURIComponent(roomId)}/my-session-aliases/${encodeURIComponent(alias)}/offline-delivery`, { session: true, roomId, signal, retry: true });
+  return aliasRoomOfflineDelivery(value, alias, roomId, false);
+}
+async function disableOwnAliasRoomOfflineDelivery(transport, roomId, alias, signal) {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/rooms/${encodeURIComponent(roomId)}/my-session-aliases/${encodeURIComponent(alias)}/offline-delivery/disable`, { method: "POST", body: {}, session: true, roomId, signal, retry: false });
+  return aliasRoomOfflineDelivery(value, alias, roomId, true);
+}
 var AliasClaimOutcomeUnknownError = class extends ParleApiError {
   // Hosts that predate the typed error still branch on this flag.
   aliasClaimOutcomeUnknown = true;
@@ -31464,6 +31509,7 @@ function responsiveReplyPresentation(message) {
 
 // ../client/dist/account.js
 import { execFileSync as execFileSync2 } from "node:child_process";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { chmodSync as chmodSync2, closeSync as closeSync2, existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync3, openSync as openSync2, readFileSync as readFileSync4, realpathSync, renameSync as renameSync3, statSync as statSync2, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename, dirname as dirname3, isAbsolute as isAbsolute2, join as join4, parse as parse3, relative, resolve, sep } from "node:path";
 
@@ -32767,6 +32813,13 @@ function validateUUID(raw, label) {
     throw new Error(`${label} must be a non-zero UUID.`);
   return value;
 }
+function validateAlias(raw) {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || value.length < 2 || value.length > 40) {
+    throw new Error("alias must normalize to 2-40 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
+  }
+  return value;
+}
 function validateHandle(raw, label = "principalHandle") {
   const value = raw.trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9-]{0,18}[a-z0-9]$/.test(value) || /-{2}/.test(value) || RESERVED_HANDLES.has(value)) {
@@ -33155,6 +33208,7 @@ var ParleAccountClient = class {
   }
   async request(config2, path, options = {}) {
     const headers = {
+      ...options.headers || {},
       Accept: "application/json",
       "Parle-Version": config2.version,
       Cookie: config2.sessionCookie
@@ -33180,6 +33234,11 @@ var ParleAccountClient = class {
       const raised = new Error(`Parle API ${response.status}: ${message}`);
       raised.status = response.status;
       raised.code = typeof error51.code === "string" ? error51.code : void 0;
+      raised.action = typeof error51.action === "string" ? error51.action : void 0;
+      raised.scope = typeof error51.scope === "string" ? error51.scope : void 0;
+      raised.retryable = typeof error51.retryable === "boolean" ? error51.retryable : void 0;
+      raised.retryAfterMs = typeof error51.retry_after_ms === "number" ? error51.retry_after_ms : void 0;
+      raised.details = error51.details && typeof error51.details === "object" ? error51.details : void 0;
       if (denialIsRecognized) {
         raised.reason = rawReason;
         raised.nextAction = expectedNextAction;
@@ -33509,6 +33568,62 @@ var ParleAccountClient = class {
       secrets: "redacted; PARLE_SESSION_COOKIE and PARLE_ROOM_AGENT_TOKEN were not returned in tool output",
       next: `Set PARLE_PROFILE=${profileName} for this project, remove any direct room-binding configuration, restart the host, and run parle_status.`
     };
+  }
+  async ownedAliasDelivery(params, signal) {
+    const config2 = this.config();
+    const agentId = validateUUID(params.agentId, "agentId");
+    const alias = validateAlias(params.alias);
+    const globalPath = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/offline-delivery`;
+    const roomPath = params.roomId ? `/v/rooms/${encodeURIComponent(validateUUID(params.roomId, "roomId"))}/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/offline-delivery` : void 0;
+    switch (params.action) {
+      case "get_global":
+        return this.request(config2, globalPath, { signal });
+      case "get_room":
+        if (!roomPath)
+          throw new Error("parle_owned_alias_delivery get_room requires roomId.");
+        return this.request(config2, roomPath, { signal });
+      case "set_global":
+      case "set_room": {
+        if (params.confirmMutation !== true || !params.reason?.trim())
+          throw new Error(`parle_owned_alias_delivery ${params.action} requires confirmMutation=true and a reason.`);
+        if (typeof params.offlineDelivery !== "boolean")
+          throw new Error(`parle_owned_alias_delivery ${params.action} requires offlineDelivery.`);
+        const path = params.action === "set_global" ? globalPath : roomPath;
+        if (!path)
+          throw new Error("parle_owned_alias_delivery set_room requires roomId.");
+        return this.request(config2, path, { method: "PUT", body: { offline_delivery: params.offlineDelivery }, signal });
+      }
+      case "restore_everywhere":
+        if (params.confirmMutation !== true || !params.reason?.trim())
+          throw new Error("parle_owned_alias_delivery restore_everywhere requires confirmMutation=true and a reason.");
+        return this.request(config2, `${globalPath}/restore-everywhere`, { method: "POST", body: {}, signal });
+      default:
+        throw new Error("parle_owned_alias_delivery action is invalid.");
+    }
+  }
+  async ownedAliasRelease(params, signal) {
+    const config2 = this.config();
+    const agentId = validateUUID(params.agentId, "agentId");
+    const alias = validateAlias(params.alias);
+    const base = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/release`;
+    if (params.action === "preview") {
+      const preview = await this.request(config2, `${base}/preview`, { method: "POST", body: {}, signal });
+      return { ...preview, idempotencyKey: randomUUID2() };
+    }
+    if (params.action !== "complete")
+      throw new Error('parle_owned_alias_release action must be "preview" or "complete".');
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_owned_alias_release complete requires confirmMutation=true and a reason.");
+    if (!Number.isInteger(params.expectedAliasGeneration) || (params.expectedAliasGeneration || 0) < 1)
+      throw new Error("parle_owned_alias_release complete requires a positive expectedAliasGeneration from preview.");
+    if (!params.idempotencyKey?.trim())
+      throw new Error("parle_owned_alias_release complete requires the idempotencyKey returned by preview; reuse it unchanged after an ambiguous outcome.");
+    return this.request(config2, `${base}/complete`, {
+      method: "POST",
+      headers: { "Idempotency-Key": params.idempotencyKey },
+      body: { expected_alias_generation: params.expectedAliasGeneration },
+      signal
+    });
   }
   async createRoom(params, signal) {
     if (params.confirmMutation !== true || !params.reason?.trim())
@@ -34579,7 +34694,7 @@ var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
 var INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 var INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
-var SEND_ATTENTION_GUIDANCE = "Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
+var SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted without local peer tagging or a /parle-peers step; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 var RESERVED_PROTOCOL_HEADERS = /* @__PURE__ */ new Set([
   "authorization",
   "parle-agent-session",
@@ -35151,7 +35266,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.fetchImpl = options.fetch || fetch;
     this.now = options.now || (() => /* @__PURE__ */ new Date());
     this.sleepImpl = options.sleep || defaultSleep2;
-    this.randomUUID = options.randomUUID || randomUUID2;
+    this.randomUUID = options.randomUUID || randomUUID3;
     this.setTimer = options.setTimer || ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
@@ -36593,6 +36708,20 @@ var ParleAgentClient = class _ParleAgentClient {
     }, signal));
     return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, roomId, session: this.sessionEstablishedBlock() } : result;
   }
+  async getOwnAliasOfflineDelivery(alias, signal) {
+    return this.withRebootstrap(() => getOwnAliasOfflineDelivery(this.aliasTransport(), alias, signal), signal);
+  }
+  async disableOwnAliasOfflineDelivery(alias, signal) {
+    return this.withRebootstrap(() => disableOwnAliasOfflineDelivery(this.aliasTransport(), alias, signal), signal);
+  }
+  async getOwnAliasRoomOfflineDelivery(alias, roomIdParam, signal) {
+    const roomId = this.roomTarget(roomIdParam).roomId.value;
+    return this.withRebootstrap(() => getOwnAliasRoomOfflineDelivery(this.aliasTransport(), roomId, alias, signal), signal);
+  }
+  async disableOwnAliasRoomOfflineDelivery(alias, roomIdParam, signal) {
+    const roomId = this.roomTarget(roomIdParam).roomId.value;
+    return this.withRebootstrap(() => disableOwnAliasRoomOfflineDelivery(this.aliasTransport(), roomId, alias, signal), signal);
+  }
   async send(params, signal) {
     const idempotencyKey = params.idempotencyKey || this.randomUUID();
     const generation = this.bootstrapGeneration;
@@ -36660,7 +36789,7 @@ var ParleAgentClient = class _ParleAgentClient {
 };
 
 // src/hook-delivery-bridge.ts
-import { createHash as createHash3, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
 import {
   accessSync,
   chmodSync as chmodSync4,
@@ -36945,7 +37074,7 @@ var HookDeliveryBridge = class {
       messages.push(message);
     }
     if (messages.length === 0) return { ok: true, messages: [] };
-    this.lease = { id: randomUUID3(), messages, expiresAt: Date.now() + LEASE_MS };
+    this.lease = { id: randomUUID4(), messages, expiresAt: Date.now() + LEASE_MS };
     return {
       ok: true,
       leaseId: this.lease.id,
@@ -37010,7 +37139,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.12";
+var MCP_CLIENT_VERSION = "0.7.13";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -37059,6 +37188,29 @@ var replySchema = {
 };
 var affordancesSchema = {
   roomId: external_exports.string().optional()
+};
+var aliasDeliverySchema = {
+  action: external_exports.enum(["get_global", "disable_global", "get_room", "disable_room"]),
+  alias: external_exports.string(),
+  roomId: external_exports.string().optional()
+};
+var ownedAliasDeliverySchema = {
+  action: external_exports.enum(["get_global", "set_global", "get_room", "set_room", "restore_everywhere"]),
+  agentId: external_exports.string(),
+  alias: external_exports.string(),
+  roomId: external_exports.string().optional(),
+  offlineDelivery: external_exports.boolean().optional(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
+var ownedAliasReleaseSchema = {
+  action: external_exports.enum(["preview", "complete"]),
+  agentId: external_exports.string(),
+  alias: external_exports.string(),
+  expectedAliasGeneration: external_exports.number().int().positive().optional(),
+  idempotencyKey: external_exports.string().optional(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
 };
 var statusSchema = {
   inspect: external_exports.boolean().optional()
@@ -37236,6 +37388,26 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     observeRequest(extra);
     return safeTool(() => accountClient.addOwnAgentSeat(params));
   });
+  server.registerTool("parle_owned_alias_delivery", {
+    title: "Manage Owned Alias Offline Delivery",
+    description: "Read or mutate the human-owned durable alias offline-delivery setting. Global restore preserves room OFF settings; restore_everywhere clears them explicitly. Mutations require confirmMutation=true and a reason. Responses never expose route, liveness, claimant, or backlog facts.",
+    inputSchema: ownedAliasDeliverySchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    if (typeof accountClient.ownedAliasDelivery !== "function") throw new Error("This Parle account client does not support durable alias delivery controls.");
+    return safeTool(() => accountClient.ownedAliasDelivery(params));
+  });
+  server.registerTool("parle_owned_alias_release", {
+    title: "Release Owned Durable Alias",
+    description: "Preview or complete terminal durable alias release. Preview performs no write and returns a fresh local idempotencyKey. Complete requires that key, the previewed generation, confirmMutation=true, and a reason. Reuse the same key and byte-identical fields after an ambiguous outcome. Release permanently fences old backlog.",
+    inputSchema: ownedAliasReleaseSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    if (typeof accountClient.ownedAliasRelease !== "function") throw new Error("This Parle account client does not support durable alias release.");
+    return safeTool(() => accountClient.ownedAliasRelease(params));
+  });
   server.registerTool("parle_harden_account", {
     title: "Parle Harden Account",
     description: "Run one bounded, human-approved account hardening transition. This tool accepts no password, TOTP code, recovery code, session cookie, URI, or filesystem path and never launches the human-only parle-hardening-secret helper. Run that helper yourself in a separate terminal with terminal recording and scrollback disabled. Every mutation requires confirmMutation=true and a reason.",
@@ -37347,6 +37519,30 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     observeRequest(extra);
     return safeTool(() => client.affordances({ roomId: params.roomId }));
   });
+  server.registerTool("parle_alias_delivery", {
+    title: "Manage My Alias Offline Delivery",
+    description: "Read or disable offline delivery for a durable alias owned by this live agent session, globally or in one authorized room. Agent credentials can only reduce exposure: this tool cannot restore or release. OFF affects new offline ingress only and does not discard accepted backlog or block live delivery.",
+    inputSchema: aliasDeliverySchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true }
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
+    const action = params.action;
+    if ((action === "get_room" || action === "disable_room") && !params.roomId) throw new Error(`parle_alias_delivery ${action} requires roomId.`);
+    switch (action) {
+      case "get_global":
+        if (typeof client.getOwnAliasOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.getOwnAliasOfflineDelivery(params.alias);
+      case "disable_global":
+        if (typeof client.disableOwnAliasOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.disableOwnAliasOfflineDelivery(params.alias);
+      case "get_room":
+        if (typeof client.getOwnAliasRoomOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.getOwnAliasRoomOfflineDelivery(params.alias, params.roomId);
+      case "disable_room":
+        if (typeof client.disableOwnAliasRoomOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.disableOwnAliasRoomOfflineDelivery(params.alias, params.roomId);
+    }
+  }));
   server.registerTool("parle_send", {
     title: "Parle Send",
     description: `Send a Parle room message with optional structured direct addressing. Body @mentions are inert text. Pass to: "@principal.agent" or "@principal.agent.session" for responsive delivery. ${SEND_ATTENTION_GUIDANCE} Failures return the idempotency key; reuse it with a byte-identical retry when the failure is retryable. ${ROOM_TEXT}`,
@@ -37477,7 +37673,12 @@ async function safeTool(fn, inferError = true) {
       ...typeof error51.code === "string" ? { code: error51.code } : {},
       ...typeof error51.status === "number" ? { status: error51.status } : {},
       ...typeof error51.reason === "string" ? { reason: error51.reason } : {},
-      ...typeof error51.nextAction === "string" ? { nextAction: error51.nextAction } : {}
+      ...typeof error51.nextAction === "string" ? { nextAction: error51.nextAction } : {},
+      ...typeof error51.action === "string" ? { action: error51.action } : {},
+      ...typeof error51.scope === "string" ? { scope: error51.scope } : {},
+      ...typeof error51.retryable === "boolean" ? { retryable: error51.retryable } : {},
+      ...typeof error51.retryAfterMs === "number" ? { retryAfterMs: error51.retryAfterMs } : {},
+      ...error51.details && typeof error51.details === "object" ? { details: error51.details } : {}
     } : {};
     const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, code: error51.code, status: error51.status, action: error51.action, scope: error51.scope, retryable: error51.retryable, retryAfterMs: error51.retryAfterMs } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51), ...accountFields };
     return { ...toolResult(payload), isError: true };

@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, SubmitReplyParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ReadParams, SendParams, SubmitReplyParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -19,6 +19,10 @@ export type ParleMcpClientLike = {
   affordances(params?: { roomId?: string }): Promise<unknown>;
   send(params: SendParams): Promise<unknown>;
   submitReply(params: SubmitReplyParams): Promise<unknown>;
+  getOwnAliasOfflineDelivery?(alias: string, signal?: AbortSignal): Promise<unknown>;
+  disableOwnAliasOfflineDelivery?(alias: string, signal?: AbortSignal): Promise<unknown>;
+  getOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
+  disableOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
   switchProfile?(profile: string, signal?: AbortSignal): Promise<unknown>;
   // Optional lifecycle surface (present on ParleAgentClient); guarded so
   // minimal fake clients keep working.
@@ -28,7 +32,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.12";
+export const MCP_CLIENT_VERSION = "0.7.13";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -87,6 +91,32 @@ const affordancesSchema = {
   roomId: z.string().optional(),
 };
 
+const aliasDeliverySchema = {
+  action: z.enum(["get_global", "disable_global", "get_room", "disable_room"]),
+  alias: z.string(),
+  roomId: z.string().optional(),
+};
+
+const ownedAliasDeliverySchema = {
+  action: z.enum(["get_global", "set_global", "get_room", "set_room", "restore_everywhere"]),
+  agentId: z.string(),
+  alias: z.string(),
+  roomId: z.string().optional(),
+  offlineDelivery: z.boolean().optional(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
+const ownedAliasReleaseSchema = {
+  action: z.enum(["preview", "complete"]),
+  agentId: z.string(),
+  alias: z.string(),
+  expectedAliasGeneration: z.number().int().positive().optional(),
+  idempotencyKey: z.string().optional(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
 const statusSchema = {
   inspect: z.boolean().optional(),
 };
@@ -106,6 +136,8 @@ export type ParleAccountClientLike = {
   acceptRoomInvitation(params: AcceptRoomInvitationParams): Promise<unknown>;
   connectOwnAgent(params: ConnectOwnAgentParams): Promise<unknown>;
   hardenAccount(params: HardenAccountParams): Promise<unknown>;
+  ownedAliasDelivery?(params: OwnedAliasDeliveryParams): Promise<unknown>;
+  ownedAliasRelease?(params: OwnedAliasReleaseParams): Promise<unknown>;
 };
 
 export type HookDeliveryBridgeLike = {
@@ -304,6 +336,28 @@ export function createParleMcpServer(
     return safeTool(() => accountClient.addOwnAgentSeat(params as AddOwnAgentSeatParams));
   });
 
+  server.registerTool("parle_owned_alias_delivery", {
+    title: "Manage Owned Alias Offline Delivery",
+    description: "Read or mutate the human-owned durable alias offline-delivery setting. Global restore preserves room OFF settings; restore_everywhere clears them explicitly. Mutations require confirmMutation=true and a reason. Responses never expose route, liveness, claimant, or backlog facts.",
+    inputSchema: ownedAliasDeliverySchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    if (typeof accountClient.ownedAliasDelivery !== "function") throw new Error("This Parle account client does not support durable alias delivery controls.");
+    return safeTool(() => accountClient.ownedAliasDelivery!(params as OwnedAliasDeliveryParams));
+  });
+
+  server.registerTool("parle_owned_alias_release", {
+    title: "Release Owned Durable Alias",
+    description: "Preview or complete terminal durable alias release. Preview performs no write and returns a fresh local idempotencyKey. Complete requires that key, the previewed generation, confirmMutation=true, and a reason. Reuse the same key and byte-identical fields after an ambiguous outcome. Release permanently fences old backlog.",
+    inputSchema: ownedAliasReleaseSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    if (typeof accountClient.ownedAliasRelease !== "function") throw new Error("This Parle account client does not support durable alias release.");
+    return safeTool(() => accountClient.ownedAliasRelease!(params as OwnedAliasReleaseParams));
+  });
+
   server.registerTool("parle_harden_account", {
     title: "Parle Harden Account",
     description: "Run one bounded, human-approved account hardening transition. This tool accepts no password, TOTP code, recovery code, session cookie, URI, or filesystem path and never launches the human-only parle-hardening-secret helper. Run that helper yourself in a separate terminal with terminal recording and scrollback disabled. Every mutation requires confirmMutation=true and a reason.",
@@ -423,6 +477,31 @@ export function createParleMcpServer(
     observeRequest(extra);
     return safeTool(() => client.affordances({ roomId: (params as { roomId?: string }).roomId }));
   });
+
+  server.registerTool("parle_alias_delivery", {
+    title: "Manage My Alias Offline Delivery",
+    description: "Read or disable offline delivery for a durable alias owned by this live agent session, globally or in one authorized room. Agent credentials can only reduce exposure: this tool cannot restore or release. OFF affects new offline ingress only and does not discard accepted backlog or block live delivery.",
+    inputSchema: aliasDeliverySchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
+    const action = params.action;
+    if ((action === "get_room" || action === "disable_room") && !params.roomId) throw new Error(`parle_alias_delivery ${action} requires roomId.`);
+    switch (action) {
+      case "get_global":
+        if (typeof client.getOwnAliasOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.getOwnAliasOfflineDelivery(params.alias);
+      case "disable_global":
+        if (typeof client.disableOwnAliasOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.disableOwnAliasOfflineDelivery(params.alias);
+      case "get_room":
+        if (typeof client.getOwnAliasRoomOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.getOwnAliasRoomOfflineDelivery(params.alias, params.roomId);
+      case "disable_room":
+        if (typeof client.disableOwnAliasRoomOfflineDelivery !== "function") throw new Error("This Parle client does not support durable alias delivery controls.");
+        return client.disableOwnAliasRoomOfflineDelivery(params.alias, params.roomId);
+    }
+  }));
 
   server.registerTool("parle_send", {
     title: "Parle Send",
@@ -580,6 +659,11 @@ async function safeTool(fn: () => Promise<unknown>, inferError = true): Promise<
           ...(typeof error.status === "number" ? { status: error.status } : {}),
           ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
           ...(typeof error.nextAction === "string" ? { nextAction: error.nextAction } : {}),
+          ...(typeof error.action === "string" ? { action: error.action } : {}),
+          ...(typeof error.scope === "string" ? { scope: error.scope } : {}),
+          ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+          ...(typeof error.retryAfterMs === "number" ? { retryAfterMs: error.retryAfterMs } : {}),
+          ...(error.details && typeof error.details === "object" ? { details: error.details } : {}),
         }
       : {};
     const payload = error instanceof ParleApiError

@@ -723,3 +723,37 @@ test("connect never clobbers an occupied explicit profile and does not mint", as
     assert.equal(readFileSync(catalog, "utf8"), original);
   } finally { f.cleanup(); }
 });
+
+test("owned alias delivery and release use guarded exact human-session operations", async () => {
+  const f = fixture();
+  const calls = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, method: init.method, body: init.body && JSON.parse(init.body), idempotencyKey: init.headers["Idempotency-Key"] });
+        if (path.endsWith("/release/preview")) return response({ alias: "durable", alias_generation: 3, terminal: true, effects: {} });
+        if (path.endsWith("/release/complete")) return response({ alias: "durable", released_alias_generation: 3, released: true });
+        if (path.includes(`/v/rooms/${ROOM_ID}/`)) return response({ alias: "durable", alias_generation: 3, room_id: ROOM_ID, offline_delivery: true, room_offline_delivery: true, effective_offline_delivery: true, ...(init.method === "PUT" ? { changed: true } : {}) });
+        return response({ alias: "durable", alias_generation: 3, offline_delivery: true, ...(init.method !== "GET" ? { changed: true } : {}) });
+      },
+    });
+    await client.ownedAliasDelivery({ action: "get_global", agentId: AGENT_ID, alias: "durable" });
+    await assert.rejects(client.ownedAliasDelivery({ action: "set_global", agentId: AGENT_ID, alias: "durable", offlineDelivery: false }), /confirmMutation=true/);
+    await client.ownedAliasDelivery({ action: "set_room", agentId: AGENT_ID, alias: "durable", roomId: ROOM_ID, offlineDelivery: true, confirmMutation: true, reason: "restore room" });
+    const preview = await client.ownedAliasRelease({ action: "preview", agentId: AGENT_ID, alias: "durable" });
+    assert.match(preview.idempotencyKey, /^[0-9a-f-]{36}$/);
+    await assert.rejects(client.ownedAliasRelease({ action: "complete", agentId: AGENT_ID, alias: "durable", expectedAliasGeneration: 3, confirmMutation: true, reason: "release" }), /idempotencyKey returned by preview/);
+    await client.ownedAliasRelease({ action: "complete", agentId: AGENT_ID, alias: "durable", expectedAliasGeneration: 3, idempotencyKey: preview.idempotencyKey, confirmMutation: true, reason: "release" });
+    assert.deepEqual(calls.map((call) => [call.method, call.path]), [
+      ["GET", `/v/agents/${AGENT_ID}/session-aliases/durable/offline-delivery`],
+      ["PUT", `/v/rooms/${ROOM_ID}/agents/${AGENT_ID}/session-aliases/durable/offline-delivery`],
+      ["POST", `/v/agents/${AGENT_ID}/session-aliases/durable/release/preview`],
+      ["POST", `/v/agents/${AGENT_ID}/session-aliases/durable/release/complete`],
+    ]);
+    assert.equal(calls.at(-1).idempotencyKey, preview.idempotencyKey);
+    assert.deepEqual(calls.at(-1).body, { expected_alias_generation: 3 });
+  } finally { f.cleanup(); }
+});

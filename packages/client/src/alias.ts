@@ -16,9 +16,75 @@ export type AliasFacts = { alias: string; generation: number; currentAgentSessio
 // Injected transport so this module stays free of any client's request layer,
 // credential handling, or runtime state.
 export type AliasTransport = {
-  request(path: string, options?: { method?: string; body?: unknown; sessionCredential?: string; signal?: AbortSignal; rawResponse?: boolean; retry?: boolean }): Promise<any>;
+  request(path: string, options?: { method?: string; body?: unknown; session?: boolean; roomId?: string; sessionCredential?: string; signal?: AbortSignal; rawResponse?: boolean; retry?: boolean }): Promise<any>;
   signal?: AbortSignal;
 };
+
+export type AliasOfflineDelivery = {
+  alias: string;
+  aliasGeneration: number;
+  offlineDelivery: boolean;
+  changed?: boolean;
+};
+
+export type AliasRoomOfflineDelivery = AliasOfflineDelivery & {
+  roomId: string;
+  roomOfflineDelivery: boolean;
+  effectiveOfflineDelivery: boolean;
+};
+
+function validAlias(alias: string): string {
+  const value = alias.trim().toLowerCase();
+  if (value.length < 2 || value.length > 40 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+    throw new ParleApiError("Parle durable session alias is invalid", { code: "validation_failed", action: "fix_client", scope: "request" });
+  }
+  return value;
+}
+
+function aliasOfflineDelivery(value: any, alias: string, mutation: boolean): AliasOfflineDelivery {
+  if (value?.alias !== alias || !Number.isInteger(value?.alias_generation) || value.alias_generation < 1
+    || typeof value?.offline_delivery !== "boolean" || (mutation && typeof value?.changed !== "boolean")) {
+    throw new ParleApiError("Parle alias offline-delivery response was invalid", { code: "invalid_response", action: "fix_client", scope: "server" });
+  }
+  return {
+    alias,
+    aliasGeneration: value.alias_generation,
+    offlineDelivery: value.offline_delivery,
+    ...(mutation ? { changed: value.changed } : {}),
+  };
+}
+
+function aliasRoomOfflineDelivery(value: any, alias: string, roomId: string, mutation: boolean): AliasRoomOfflineDelivery {
+  const global = aliasOfflineDelivery(value, alias, mutation);
+  if (value?.room_id !== roomId || typeof value?.room_offline_delivery !== "boolean" || typeof value?.effective_offline_delivery !== "boolean") {
+    throw new ParleApiError("Parle alias room offline-delivery response was invalid", { code: "invalid_response", action: "fix_client", scope: "server" });
+  }
+  return { ...global, roomId, roomOfflineDelivery: value.room_offline_delivery, effectiveOfflineDelivery: value.effective_offline_delivery };
+}
+
+export async function getOwnAliasOfflineDelivery(transport: AliasTransport, alias: string, signal?: AbortSignal): Promise<AliasOfflineDelivery> {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}/offline-delivery`, { session: true, signal, retry: true });
+  return aliasOfflineDelivery(value, alias, false);
+}
+
+export async function disableOwnAliasOfflineDelivery(transport: AliasTransport, alias: string, signal?: AbortSignal): Promise<AliasOfflineDelivery> {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}/offline-delivery/disable`, { method: "POST", body: {}, session: true, signal, retry: false });
+  return aliasOfflineDelivery(value, alias, true);
+}
+
+export async function getOwnAliasRoomOfflineDelivery(transport: AliasTransport, roomId: string, alias: string, signal?: AbortSignal): Promise<AliasRoomOfflineDelivery> {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/rooms/${encodeURIComponent(roomId)}/my-session-aliases/${encodeURIComponent(alias)}/offline-delivery`, { session: true, roomId, signal, retry: true });
+  return aliasRoomOfflineDelivery(value, alias, roomId, false);
+}
+
+export async function disableOwnAliasRoomOfflineDelivery(transport: AliasTransport, roomId: string, alias: string, signal?: AbortSignal): Promise<AliasRoomOfflineDelivery> {
+  alias = validAlias(alias);
+  const value = await transport.request(`/v/rooms/${encodeURIComponent(roomId)}/my-session-aliases/${encodeURIComponent(alias)}/offline-delivery/disable`, { method: "POST", body: {}, session: true, roomId, signal, retry: false });
+  return aliasRoomOfflineDelivery(value, alias, roomId, true);
+}
 
 export class AliasClaimOutcomeUnknownError extends ParleApiError {
   // Hosts that predate the typed error still branch on this flag.

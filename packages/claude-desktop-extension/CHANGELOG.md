@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.13 (2026-08-07)
+
+- Refresh the bundled MCP runtime with durable alias delivery controls and guarded terminal release (#86).
+
 ## 0.8.12 (2026-08-07)
 
 - Refresh the shared MCP runtime with credential-free participant snapshot metadata and watcher launch support (#87).

@@ -14,6 +14,7 @@ const expectedTools = [
   "parle_accept_room_invitation",
   "parle_add_own_agent_seat",
   "parle_affordances",
+  "parle_alias_delivery",
   "parle_claim_principal_invite",
   "parle_connect",
   "parle_connect_own_agent",
@@ -23,6 +24,8 @@ const expectedTools = [
   "parle_inbox",
   "parle_login",
   "parle_mint_principal_invite",
+  "parle_owned_alias_delivery",
+  "parle_owned_alias_release",
   "parle_read",
   "parle_reply",
   "parle_rooms",
@@ -684,7 +687,7 @@ test("parle_status works against minimal fake clients without lifecycle methods"
   }
 });
 
-test("stdio server lists the eighteen tools and setup works without secrets", async () => {
+test("stdio server lists the twenty-two tools and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
@@ -760,6 +763,61 @@ test("room-scoped tools pass roomId through to the client", async () => {
     // configured room makes it unambiguous or fails closed.
     await client.callTool({ name: "parle_read", arguments: {} });
     assert.deepEqual(calls.at(-1), ["read", undefined]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("alias delivery tools preserve agent reduction and guarded human release parameters", async () => {
+  const calls = [];
+  const fakeClient = {
+    getOwnAliasOfflineDelivery: async (alias) => { calls.push(["agent-get", alias]); return { alias, offlineDelivery: true }; },
+    disableOwnAliasRoomOfflineDelivery: async (alias, roomId) => { calls.push(["agent-disable-room", alias, roomId]); return { alias, roomId, effectiveOfflineDelivery: false }; },
+  };
+  const fakeAccount = {
+    ownedAliasDelivery: async (params) => { calls.push(["human-delivery", params]); return { alias: params.alias, changed: true }; },
+    ownedAliasRelease: async (params) => { calls.push(["human-release", params]); return { alias: params.alias, terminal: true }; },
+  };
+  const server = createParleMcpServer(fakeClient, fakeAccount);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-alias", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    await client.callTool({ name: "parle_alias_delivery", arguments: { action: "get_global", alias: "durable" } });
+    await client.callTool({ name: "parle_alias_delivery", arguments: { action: "disable_room", alias: "durable", roomId: "room-1" } });
+    await client.callTool({ name: "parle_owned_alias_delivery", arguments: { action: "restore_everywhere", agentId: "agent-1", alias: "durable", confirmMutation: true, reason: "restore" } });
+    await client.callTool({ name: "parle_owned_alias_release", arguments: { action: "complete", agentId: "agent-1", alias: "durable", expectedAliasGeneration: 3, idempotencyKey: "release-key", confirmMutation: true, reason: "release" } });
+    assert.deepEqual(calls, [
+      ["agent-get", "durable"],
+      ["agent-disable-room", "durable", "room-1"],
+      ["human-delivery", { action: "restore_everywhere", agentId: "agent-1", alias: "durable", confirmMutation: true, reason: "restore" }],
+      ["human-release", { action: "complete", agentId: "agent-1", alias: "durable", expectedAliasGeneration: 3, idempotencyKey: "release-key", confirmMutation: true, reason: "release" }],
+    ]);
+
+    fakeAccount.ownedAliasDelivery = async () => {
+      throw Object.assign(new Error("room setting limit reached"), {
+        code: "alias_room_offline_delivery_limit",
+        status: 409,
+        action: "reduce_alias_room_settings",
+        scope: "alias_setting",
+        retryable: false,
+        retryAfterMs: 250,
+        details: { limit: 256 },
+      });
+    };
+    const errorResult = await client.callTool({ name: "parle_owned_alias_delivery", arguments: { action: "get_global", agentId: "agent-1", alias: "durable" } });
+    assert.deepEqual(JSON.parse(errorResult.content[0].text), {
+      ok: false,
+      error: "room setting limit reached",
+      code: "alias_room_offline_delivery_limit",
+      status: 409,
+      action: "reduce_alias_room_settings",
+      scope: "alias_setting",
+      retryable: false,
+      retryAfterMs: 250,
+      details: { limit: 256 },
+    });
   } finally {
     await client.close();
     await server.close();

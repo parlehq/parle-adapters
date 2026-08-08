@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { DEFAULT_VERSION } from "./protocol.js";
@@ -93,6 +94,26 @@ export type CreateRoomParams = {
 export type AddOwnAgentSeatParams = {
   roomId: string;
   agentId: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
+export type OwnedAliasDeliveryParams = {
+  action: "get_global" | "set_global" | "get_room" | "set_room" | "restore_everywhere";
+  agentId: string;
+  alias: string;
+  roomId?: string;
+  offlineDelivery?: boolean;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
+export type OwnedAliasReleaseParams = {
+  action: "preview" | "complete";
+  agentId: string;
+  alias: string;
+  expectedAliasGeneration?: number;
+  idempotencyKey?: string;
   confirmMutation?: boolean;
   reason?: string;
 };
@@ -271,6 +292,14 @@ function resolveAccountConfig(cwd: string, env: Record<string, string | undefine
 function validateUUID(raw: unknown, label: string): string {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (!UUID_RE.test(value) || value === "00000000-0000-0000-0000-000000000000") throw new Error(`${label} must be a non-zero UUID.`);
+  return value;
+}
+
+function validateAlias(raw: unknown): string {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || value.length < 2 || value.length > 40) {
+    throw new Error("alias must normalize to 2-40 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
+  }
   return value;
 }
 
@@ -611,8 +640,9 @@ export class ParleAccountClient {
     return resolveAccountConfig(this.cwd, this.env);
   }
 
-  private async request(config: AccountConfig, path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; secrets?: string[] } = {}): Promise<any> {
+  private async request(config: AccountConfig, path: string, options: { method?: string; body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; secrets?: string[] } = {}): Promise<any> {
     const headers: Record<string, string> = {
+      ...(options.headers || {}),
       Accept: "application/json",
       "Parle-Version": config.version,
       Cookie: config.sessionCookie,
@@ -637,6 +667,11 @@ export class ParleAccountClient {
       const raised: any = new Error(`Parle API ${response.status}: ${message}`);
       raised.status = response.status;
       raised.code = typeof error.code === "string" ? error.code : undefined;
+      raised.action = typeof error.action === "string" ? error.action : undefined;
+      raised.scope = typeof error.scope === "string" ? error.scope : undefined;
+      raised.retryable = typeof error.retryable === "boolean" ? error.retryable : undefined;
+      raised.retryAfterMs = typeof error.retry_after_ms === "number" ? error.retry_after_ms : undefined;
+      raised.details = error.details && typeof error.details === "object" ? error.details : undefined;
       if (denialIsRecognized) {
         raised.reason = rawReason;
         raised.nextAction = expectedNextAction;
@@ -961,6 +996,57 @@ export class ParleAccountClient {
       secrets: "redacted; PARLE_SESSION_COOKIE and PARLE_ROOM_AGENT_TOKEN were not returned in tool output",
       next: `Set PARLE_PROFILE=${profileName} for this project, remove any direct room-binding configuration, restart the host, and run parle_status.`,
     };
+  }
+
+  async ownedAliasDelivery(params: OwnedAliasDeliveryParams, signal?: AbortSignal) {
+    const config = this.config();
+    const agentId = validateUUID(params.agentId, "agentId");
+    const alias = validateAlias(params.alias);
+    const globalPath = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/offline-delivery`;
+    const roomPath = params.roomId
+      ? `/v/rooms/${encodeURIComponent(validateUUID(params.roomId, "roomId"))}/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/offline-delivery`
+      : undefined;
+    switch (params.action) {
+      case "get_global":
+        return this.request(config, globalPath, { signal });
+      case "get_room":
+        if (!roomPath) throw new Error("parle_owned_alias_delivery get_room requires roomId.");
+        return this.request(config, roomPath, { signal });
+      case "set_global":
+      case "set_room": {
+        if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error(`parle_owned_alias_delivery ${params.action} requires confirmMutation=true and a reason.`);
+        if (typeof params.offlineDelivery !== "boolean") throw new Error(`parle_owned_alias_delivery ${params.action} requires offlineDelivery.`);
+        const path = params.action === "set_global" ? globalPath : roomPath;
+        if (!path) throw new Error("parle_owned_alias_delivery set_room requires roomId.");
+        return this.request(config, path, { method: "PUT", body: { offline_delivery: params.offlineDelivery }, signal });
+      }
+      case "restore_everywhere":
+        if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_owned_alias_delivery restore_everywhere requires confirmMutation=true and a reason.");
+        return this.request(config, `${globalPath}/restore-everywhere`, { method: "POST", body: {}, signal });
+      default:
+        throw new Error("parle_owned_alias_delivery action is invalid.");
+    }
+  }
+
+  async ownedAliasRelease(params: OwnedAliasReleaseParams, signal?: AbortSignal) {
+    const config = this.config();
+    const agentId = validateUUID(params.agentId, "agentId");
+    const alias = validateAlias(params.alias);
+    const base = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}/release`;
+    if (params.action === "preview") {
+      const preview = await this.request(config, `${base}/preview`, { method: "POST", body: {}, signal });
+      return { ...preview, idempotencyKey: randomUUID() };
+    }
+    if (params.action !== "complete") throw new Error('parle_owned_alias_release action must be "preview" or "complete".');
+    if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_owned_alias_release complete requires confirmMutation=true and a reason.");
+    if (!Number.isInteger(params.expectedAliasGeneration) || (params.expectedAliasGeneration || 0) < 1) throw new Error("parle_owned_alias_release complete requires a positive expectedAliasGeneration from preview.");
+    if (!params.idempotencyKey?.trim()) throw new Error("parle_owned_alias_release complete requires the idempotencyKey returned by preview; reuse it unchanged after an ambiguous outcome.");
+    return this.request(config, `${base}/complete`, {
+      method: "POST",
+      headers: { "Idempotency-Key": params.idempotencyKey },
+      body: { expected_alias_generation: params.expectedAliasGeneration },
+      signal,
+    });
   }
 
   async createRoom(params: CreateRoomParams, signal?: AbortSignal) {
