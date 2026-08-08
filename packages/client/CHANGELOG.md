@@ -42,6 +42,7 @@
 
 ## 0.8.5 (2026-08-05)
 
+<!-- public-wire-lint: allow wire-version -- historical release -->
 - Require the terminal `Parle-Version: 2026-08-05` wire contract with no negotiation or fallback.
 
 ## 0.8.4 (2026-08-05)
