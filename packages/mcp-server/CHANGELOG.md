@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.17 (2026-08-08)
+
+- Publish one central responsive-delivery lifecycle model with credential-free evidence, truthful stale and conflict detection, and shared host status semantics (#47).
+
 ## 0.7.16 (2026-08-08)
 
 - Keep MCP alive in a diagnostics-only degraded state after profile resolution fails, then re-resolve on `parle_setup`, promote the full tool surface, and emit `notifications/tools/list_changed` without a host restart (#92).

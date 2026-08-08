@@ -70,6 +70,27 @@ test("one live session prints its address", () => {
   }
 });
 
+test("one live session renders canonical responsive-delivery evidence", () => {
+  const cwd = scaffold({ [`${process.pid}.json`]: liveSnapshot(process.pid) });
+  try {
+    const dir = join(cwd, ".parle", "runtime", "responsive");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${process.pid}.json`), JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      processStartedAt: ownStartIso(),
+      publisher: { name: "status-test", clientInstanceId: "status-test-1" },
+      target: { agentSessionId: "as-1" },
+      state: "watching",
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }));
+    assert.equal(run(cwd), "#test-room ✓ @gilman.galexc.abc123 · delivery watching");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("multiple live sessions never display a specific address", () => {
   const cwd = scaffold({
     [`${process.pid}.json`]: liveSnapshot(process.pid),

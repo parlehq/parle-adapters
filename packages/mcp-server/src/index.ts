@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, WATCHER_UNKNOWN_GUIDANCE, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, processClientInstanceId, redactString, resolveConfig, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, ResponsiveDeliveryRecorder, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -32,7 +32,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.16";
+export const MCP_CLIENT_VERSION = "0.7.17";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -207,7 +207,7 @@ export function createParleMcpServer(
 
   registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. A configured hook delivery bridge reports watcher state from owned runtime evidence; otherwise connected MCP status reports watcher state as unknown. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. The canonical responsiveDelivery field resolves shared credential-free lifecycle evidence; MCP connectivity and unread observation never imply healthy delivery. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => safeTool(async () => {
@@ -220,16 +220,24 @@ export function createParleMcpServer(
     if (typeof status === "object" && status !== null) {
       const connected = (status as any).runtime?.bootstrapState === "ready" && Boolean((status as any).runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = connected
-        ? bridgeStatus
-          ? bridgeStatus.lastError
-            ? { state: "degraded" as const, nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
-            : bridgeStatus.running
-              ? { state: "on" as const, nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" }
-            : { state: "off" as const, nextActionKey: "arm-watcher" as const, nextAction: "restart the Parle hook bridge" }
-          : WATCHER_UNKNOWN_GUIDANCE
+      const agentSessionId = (status as any).runtime?.agentSessionId;
+      let responsiveDelivery = connected && agentSessionId
+        ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid })
         : undefined;
-      const enriched = watcher ? { ...status, watcher } : status;
+      if (responsiveDelivery?.state === "unknown" && bridgeStatus) {
+        responsiveDelivery = bridgeStatus.lastError
+          ? { state: "backoff", lastError: { message: redactString(bridgeStatus.lastError), at: new Date().toISOString() } }
+          : { state: bridgeStatus.running ? "watching" : "stopped" };
+      }
+      if (responsiveDelivery) {
+        const next = responsiveDelivery.state === "unknown"
+          ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
+          : responsiveDelivery.state === "backoff" || responsiveDelivery.state === "stale" || responsiveDelivery.state === "terminal" || responsiveDelivery.state === "conflict"
+            ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
+            : { nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" };
+        responsiveDelivery = { ...responsiveDelivery, ...next };
+      }
+      const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
       let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
       if (!profilesPathOverride) {
@@ -242,7 +250,7 @@ export function createParleMcpServer(
         peers: readPeerContext(peerCatalog).peers,
         note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the parle-peers helper in an interactive terminal.",
       };
-      return { ...status, bootstrapAttempted, peerContext, ...(watcher ? { watcher } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
+      return { ...status, bootstrapAttempted, peerContext, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -299,15 +307,15 @@ export function createParleMcpServer(
     if (deliveryBridge?.start) await deliveryBridge.start();
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = bridgeStatus ? (bridgeStatus.lastError ? "degraded" : bridgeStatus.running ? "on" : "off") : undefined;
+      const agentSessionId = (summary as any).agentSessionId;
+      const responsiveDelivery = agentSessionId
+        ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid })
+        : undefined;
       return {
         ...summary,
+        ...(responsiveDelivery ? { responsiveDelivery } : {}),
         ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}),
-        compactText: compactConnectionCardFromSummary(summary as any, {
-          watcher,
-          ...(watcher === "on" ? { next: "already-connected" as const } : {}),
-          ...(watcher === "degraded" ? { next: "recover-watcher" as const } : {}),
-        }),
+        compactText: compactConnectionCardFromSummary(summary as any, { responsiveDelivery }),
       };
     }
     return summary;
@@ -825,6 +833,26 @@ export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs
   return { ...(profile ? { profile } : {}), workerArgs: positional as [string] | [string, string] | [string, string, string] };
 }
 
+type WatcherEvidenceSink = Pick<ResponsiveDeliveryRecorder, "watching" | "backoff" | "stopped" | "terminal" | "retarget">;
+
+export function reportResponsiveEvidence(operation: () => void, warn: (message: string) => void = console.error): boolean {
+  try { operation(); return true; } catch (error) {
+    warn(`Parle warning: responsive-delivery evidence unavailable: ${redactResponsiveDeliveryDiagnostic(error instanceof Error ? error.message : String(error)) || "redacted error"}`);
+    return false;
+  }
+}
+
+export function applyWatcherStateLine(line: string, evidence: WatcherEvidenceSink, nowMs = Date.now()): void {
+  const [kind, value] = line.trim().split("\t", 2);
+  if (kind === "watching") evidence.watching({ expectedProgressMs: 75_000, lastSuccessAt: new Date(nowMs).toISOString() });
+  else if (kind === "backoff") {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) evidence.backoff({ expectedProgressMs: Math.min(seconds * 1000, 570_000), retryAt: new Date(nowMs + seconds * 1000).toISOString() });
+  } else if (kind === "target" && value) evidence.retarget({ agentSessionId: value });
+  else if (kind === "wake") evidence.stopped({ reason: "wake_detected", lastWakeAt: new Date(nowMs).toISOString() });
+  else if (kind === "terminal") evidence.terminal({ reason: value || "watcher_terminal" });
+}
+
 export async function runWatcher(metaUrl: string, args: string[], cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): Promise<number> {
   const { profile, workerArgs } = parseWatcherArgs(args);
   const worker = join(dirname(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
@@ -843,6 +871,16 @@ export async function runWatcher(metaUrl: string, args: string[], cwd = process.
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
   const watcherClient = createMcpAgentClient({ cwd: dirname(fileURLToPath(metaUrl)), env: childEnv });
+  const watchedAgentSessionId = workerArgs[1];
+  const evidence = watchedAgentSessionId ? new ResponsiveDeliveryRecorder({
+    cwd,
+    persist: true,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "@parlehq/mcp-server:standalone-watch", version: MCP_CLIENT_VERSION, clientInstanceId: MCP_CLIENT_INSTANCE_ID },
+    target: { agentSessionId: watchedAgentSessionId, ...(workerArgs[2] ? { participantId: workerArgs[2] } : {}) },
+  }) : undefined;
+  const reportEvidence = (operation: () => void): void => { reportResponsiveEvidence(operation); };
+  if (evidence) reportEvidence(() => evidence.starting({ expectedProgressMs: 75_000 }));
   let child: ReturnType<typeof spawn> | undefined;
   let childRevision = 0;
   let desiredRevision = 0;
@@ -901,16 +939,37 @@ export async function runWatcher(metaUrl: string, args: string[], cwd = process.
       childRevision = spawnRevision;
       const launchedChild = spawn("sh", [worker, ...workerArgs], {
         cwd,
-        env: workerEnv,
-        stdio: "inherit",
+        env: { ...workerEnv, PARLE_WATCH_STATE_FD: "3" },
+        stdio: ["inherit", "inherit", "inherit", "pipe"],
         detached: process.platform !== "win32",
       });
       child = launchedChild;
+      if (evidence) reportEvidence(() => evidence.watching({ expectedProgressMs: 75_000 }));
+      const stateStream = launchedChild.stdio[3] as import("node:stream").Readable | null;
+      if (stateStream) {
+        stateStream.setEncoding("utf8");
+        let stateBuffer = "";
+        stateStream.on("data", (chunk: string) => {
+          stateBuffer += chunk;
+          if (Buffer.byteLength(stateBuffer, "utf8") > 4096) {
+            stateBuffer = "";
+            stateStream.destroy();
+            console.error("Parle warning: watcher state protocol exceeded 4096 bytes; continuing with spawn and exit evidence only");
+            return;
+          }
+          let newline: number;
+          while ((newline = stateBuffer.indexOf("\n")) >= 0) {
+            const line = stateBuffer.slice(0, newline);
+            stateBuffer = stateBuffer.slice(newline + 1);
+            if (evidence) reportEvidence(() => applyWatcherStateLine(line, evidence));
+          }
+        });
+      }
       let result: number;
       try {
         result = await new Promise<number>((resolve, reject) => {
           launchedChild.once("error", reject);
-          launchedChild.once("exit", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
+          launchedChild.once("close", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
         });
       } finally {
         if (forceStop) clearTimeout(forceStop);
@@ -920,15 +979,23 @@ export async function runWatcher(metaUrl: string, args: string[], cwd = process.
       const restartWasRequested = internalRestart?.child === launchedChild
         && watcherExitRequiresInternalRestart(spawnRevision, desiredRevision, internalRestart.revision);
       if (internalRestart?.child === launchedChild) internalRestart = undefined;
-      if (externalSignal) return result;
+      if (externalSignal) {
+        if (evidence) reportEvidence(() => evidence.stopped({ reason: "host_signal" }));
+        return result;
+      }
       if (restartWasRequested) {
         // The worker cursor is private in-memory shell state. Replaying the
         // original since_seq after this daily credential rollover is safe:
         // projection filtering is idempotent and the public argv stays stable.
         continue;
       }
+      if (evidence) {
+        if (result === 0) reportEvidence(() => evidence.stopped({ reason: "wake_detected" }));
+        else if (evidence.snapshot()?.state !== "terminal") reportEvidence(() => evidence.terminal({ reason: `watcher_exit_${result}` }));
+      }
       return result;
     }
+    if (evidence) reportEvidence(() => evidence.stopped({ reason: "host_signal" }));
     return 128;
   } finally {
     unsubscribeRevision();

@@ -427,6 +427,38 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
   }
 });
 
+test("hook delivery bridge renews lifecycle evidence on observed progress and tombstones shutdown", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-evidence-"));
+  const wakeSink = { push: () => {} };
+  let drains = 0;
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    clientInstanceId: "bridge-test",
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => { drains += 1; return { messages: [] }; },
+    openWakeStream: async (signal) => heldWakeStream(wakeSink, signal),
+  };
+  const evidencePath = join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`);
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    await eventually(() => existsSync(evidencePath));
+    const opened = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(opened.state, "watching");
+    const firstUpdatedAt = opened.updatedAt;
+    await settle(5);
+    wakeSink.push({ room_id: ROOM });
+    await eventually(() => drains >= 3 && JSON.parse(readFileSync(evidencePath, "utf8")).updatedAt !== firstUpdatedAt);
+    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "watching");
+    await bridge.stop();
+    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "stopped");
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("hook delivery bridge records runtime publication failure without throwing", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-runtime-failure-"));
   const fakeClient = {

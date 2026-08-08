@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.22 (2026-08-08)
+
+- Publish one central responsive-delivery lifecycle model with credential-free evidence, truthful stale and conflict detection, and shared host status semantics (#47).
+
 ## 0.7.21 (2026-08-08)
 
 - Refresh the shared client with typed profile-resolution diagnostics used by recoverable MCP boot (#92).

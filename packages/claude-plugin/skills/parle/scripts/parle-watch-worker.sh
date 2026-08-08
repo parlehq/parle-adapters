@@ -334,6 +334,11 @@ for path in files:
 PY
 }
 
+watch_state() {
+  [ -n "${PARLE_WATCH_STATE_FD:-}" ] || return 0
+  printf '%s\t%s\n' "$1" "${2:-}" >&3 2>/dev/null || true
+}
+
 fails=0
 helper_deadlines=0
 dead_liveness=0
@@ -387,7 +392,7 @@ print(err.get("retry_after_ms") or "")
 while :; do
   # Do not outlive a launcher terminated with SIGKILL. The request helper also
   # monitors this pid so an in-flight long poll aborts promptly.
-  kill -0 "$PARLE_WATCH_PARENT_PID" 2>/dev/null || exit 2
+  kill -0 "$PARLE_WATCH_PARENT_PID" 2>/dev/null || { watch_state terminal parent_gone; exit 2; }
   liveness_result=$(session_liveness)
   liveness_state=${liveness_result%%|*}
   case "$liveness_state" in
@@ -414,6 +419,7 @@ while :; do
             me=$observed_me
             me_participant=$observed_participant
             echo "Parle note: followed primary runtime rollover from $old_me to $me on verified live writer pid $bound_pid." >&2
+            watch_state target "$me"
           elif [ -n "$observed_participant" ]; then
             me_participant=$observed_participant
           fi
@@ -442,6 +448,7 @@ while :; do
         else
           echo "Parle stopped: the host process that published agent session $me's runtime snapshot is no longer running. Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId; do not re-arm with this session id or watermark." >&2
         fi
+        watch_state terminal target_dead
         exit 3
       fi
       sleep 1
@@ -460,6 +467,7 @@ while :; do
         if [ "$dead_liveness" -ge 2 ]; then
           liveness_forensics DEAD
           echo "Parle stopped: agent session $me was live in this host's runtime snapshots and is now gone (host process reloaded, session ended, or expired). Reconnect with parle_connect, then arm a fresh watch with the returned cursor and agentSessionId. Do not re-arm with this session id or watermark. If parle_connect reports this same session alive, check the remaining TTL before suspecting the heuristic: alive with seconds to spare near expiresAt confirms a scheduled rollover, while alive with plenty of TTL means a false verdict -- re-arm with PARLE_WATCH_SESSION_LIVENESS=0." >&2
+          watch_state terminal target_dead
           exit 3
         fi
         sleep 1
@@ -473,6 +481,7 @@ while :; do
   # The helper owns abort provenance and emits credential-free local outcomes
   # inside the existing two-line private wire. The shell never guesses a
   # deadline from status 000 or synthesizes canonical API error meaning.
+  watch_state watching
   wire=$(node "$PARLE_WATCH_REQUEST_HELPER" --parle-watch-request "$since" hold) || wire='000
 {"watcher_local":{"outcome":"network_failure"}}'
   parse_wire
@@ -494,24 +503,29 @@ while :; do
   fi
 
   if [ "$local_outcome" = "parent_gone" ]; then
+    watch_state terminal parent_gone
     exit 2
   fi
   if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
     case "$err_action" in
       fix_client)
         echo "Parle stopped: client request is invalid; upgrade or repair the adapter. ${err_code}" >&2
+        watch_state terminal fix_client
         exit 2
         ;;
       reauthorize)
         echo "Parle stopped: agent token is invalid or revoked; reauthorize the agent. ${err_code}" >&2
+        watch_state terminal reauthorize
         exit 2
         ;;
       rebootstrap)
         echo "Parle stopped: agent session is dead; reconnect with parle_connect and re-arm. ${err_code}" >&2
+        watch_state terminal rebootstrap
         exit 2
         ;;
       stop)
         echo "Parle stopped: agent session could not be rebootstrapped; reauthorize or restart. ${err_code}" >&2
+        watch_state terminal stop
         exit 2
         ;;
       backoff|retry_with_backoff|retry)
@@ -519,9 +533,11 @@ while :; do
         [ -n "$retry_after_ms" ] && sleep_secs=$(( (retry_after_ms + 999) / 1000 )) || sleep_secs=$((fails * 5))
         if [ "$fails" -ge 5 ]; then
           echo "parle-watch: retry budget exhausted after $fails failures" >&2
+          watch_state terminal retry_exhausted
           exit 2
         fi
         echo "Parle paused: retrying after ${sleep_secs}s (${err_code:-$err_action})." >&2
+        watch_state backoff "$sleep_secs"
         sleep "$sleep_secs"
         continue
         ;;
@@ -529,9 +545,12 @@ while :; do
         fails=$((fails + 1))
         if [ "$fails" -ge 5 ]; then
           echo "parle-watch: $fails consecutive network failures, giving up" >&2
+          watch_state terminal retry_exhausted
           exit 2
         fi
-        sleep $((fails * 5))
+        sleep_secs=$((fails * 5))
+        watch_state backoff "$sleep_secs"
+        sleep "$sleep_secs"
         continue
         ;;
     esac
@@ -559,6 +578,7 @@ while :; do
       me=$post_me
       me_participant=$post_participant
       echo "Parle note: followed primary runtime rollover from $old_me to $me on verified live writer pid $bound_pid after an in-flight projection." >&2
+      watch_state target "$me"
     fi
   fi
 
@@ -588,6 +608,7 @@ print("HIT" if any(relevant(r) for r in rows) else "PASS", top)
   top=${out##* }
   if [ "$state" = "HIT" ]; then
     echo "parle-watch: relevant activity, seq $since -> $top"
+    watch_state wake "$top"
     exit 0
   fi
   if [ "$top" -gt "$since" ] 2>/dev/null; then

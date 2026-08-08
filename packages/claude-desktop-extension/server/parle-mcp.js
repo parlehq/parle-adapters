@@ -1925,10 +1925,10 @@ var require_keyword = __commonJS({
       if (def.async && !schemaEnv.$async)
         throw new Error("async keyword in sync schema");
     }
-    function useKeyword(gen, keyword, result) {
-      if (result === void 0)
+    function useKeyword(gen, keyword, result2) {
+      if (result2 === void 0)
         throw new Error(`keyword "${keyword}" failed to compile`);
-      return gen.scopeValue("keyword", typeof result == "function" ? { ref: result } : { ref: result, code: (0, codegen_1.stringify)(result) });
+      return gen.scopeValue("keyword", typeof result2 == "function" ? { ref: result2 } : { ref: result2, code: (0, codegen_1.stringify)(result2) });
     }
     function validSchemaType(schema, schemaType, allowUndefined = false) {
       return !schemaType.length || schemaType.some((st) => st === "array" ? Array.isArray(schema) : st === "object" ? schema && typeof schema == "object" && !Array.isArray(schema) : typeof schema == st || allowUndefined && typeof schema == "undefined");
@@ -7382,9 +7382,9 @@ var ParseInputLazyPath = class {
     return this._cachedPath;
   }
 };
-var handleResult = (ctx, result) => {
-  if (isValid(result)) {
-    return { success: true, data: result.value };
+var handleResult = (ctx, result2) => {
+  if (isValid(result2)) {
+    return { success: true, data: result2.value };
   } else {
     if (!ctx.common.issues.length) {
       throw new Error("Validation failed but no issues detected.");
@@ -7455,21 +7455,21 @@ var ZodType = class {
     };
   }
   _parseSync(input) {
-    const result = this._parse(input);
-    if (isAsync(result)) {
+    const result2 = this._parse(input);
+    if (isAsync(result2)) {
       throw new Error("Synchronous parse encountered promise.");
     }
-    return result;
+    return result2;
   }
   _parseAsync(input) {
-    const result = this._parse(input);
-    return Promise.resolve(result);
+    const result2 = this._parse(input);
+    return Promise.resolve(result2);
   }
   parse(data, params) {
-    const result = this.safeParse(data, params);
-    if (result.success)
-      return result.data;
-    throw result.error;
+    const result2 = this.safeParse(data, params);
+    if (result2.success)
+      return result2.data;
+    throw result2.error;
   }
   safeParse(data, params) {
     const ctx = {
@@ -7484,8 +7484,8 @@ var ZodType = class {
       data,
       parsedType: getParsedType(data)
     };
-    const result = this._parseSync({ data, path: ctx.path, parent: ctx });
-    return handleResult(ctx, result);
+    const result2 = this._parseSync({ data, path: ctx.path, parent: ctx });
+    return handleResult(ctx, result2);
   }
   "~validate"(data) {
     const ctx = {
@@ -7501,9 +7501,9 @@ var ZodType = class {
     };
     if (!this["~standard"].async) {
       try {
-        const result = this._parseSync({ data, path: [], parent: ctx });
-        return isValid(result) ? {
-          value: result.value
+        const result2 = this._parseSync({ data, path: [], parent: ctx });
+        return isValid(result2) ? {
+          value: result2.value
         } : {
           issues: ctx.common.issues
         };
@@ -7517,17 +7517,17 @@ var ZodType = class {
         };
       }
     }
-    return this._parseAsync({ data, path: [], parent: ctx }).then((result) => isValid(result) ? {
-      value: result.value
+    return this._parseAsync({ data, path: [], parent: ctx }).then((result2) => isValid(result2) ? {
+      value: result2.value
     } : {
       issues: ctx.common.issues
     });
   }
   async parseAsync(data, params) {
-    const result = await this.safeParseAsync(data, params);
-    if (result.success)
-      return result.data;
-    throw result.error;
+    const result2 = await this.safeParseAsync(data, params);
+    if (result2.success)
+      return result2.data;
+    throw result2.error;
   }
   async safeParseAsync(data, params) {
     const ctx = {
@@ -7543,8 +7543,8 @@ var ZodType = class {
       parsedType: getParsedType(data)
     };
     const maybeAsyncResult = this._parse({ data, path: ctx.path, parent: ctx });
-    const result = await (isAsync(maybeAsyncResult) ? maybeAsyncResult : Promise.resolve(maybeAsyncResult));
-    return handleResult(ctx, result);
+    const result2 = await (isAsync(maybeAsyncResult) ? maybeAsyncResult : Promise.resolve(maybeAsyncResult));
+    return handleResult(ctx, result2);
   }
   refine(check2, message) {
     const getIssueProperties = (val) => {
@@ -7557,13 +7557,13 @@ var ZodType = class {
       }
     };
     return this._refinement((val, ctx) => {
-      const result = check2(val);
+      const result2 = check2(val);
       const setError = () => ctx.addIssue({
         code: ZodIssueCode.custom,
         ...getIssueProperties(val)
       });
-      if (typeof Promise !== "undefined" && result instanceof Promise) {
-        return result.then((data) => {
+      if (typeof Promise !== "undefined" && result2 instanceof Promise) {
+        return result2.then((data) => {
           if (!data) {
             setError();
             return false;
@@ -7572,7 +7572,7 @@ var ZodType = class {
           }
         });
       }
-      if (!result) {
+      if (!result2) {
         setError();
         return false;
       } else {
@@ -9067,14 +9067,14 @@ var ZodArray = class _ZodArray extends ZodType {
     if (ctx.common.async) {
       return Promise.all([...ctx.data].map((item, i) => {
         return def.type._parseAsync(new ParseInputLazyPath(ctx, item, ctx.path, i));
-      })).then((result2) => {
-        return ParseStatus.mergeArray(status, result2);
+      })).then((result3) => {
+        return ParseStatus.mergeArray(status, result3);
       });
     }
-    const result = [...ctx.data].map((item, i) => {
+    const result2 = [...ctx.data].map((item, i) => {
       return def.type._parseSync(new ParseInputLazyPath(ctx, item, ctx.path, i));
     });
-    return ParseStatus.mergeArray(status, result);
+    return ParseStatus.mergeArray(status, result2);
   }
   get element() {
     return this._def.type;
@@ -9480,18 +9480,18 @@ var ZodUnion = class extends ZodType {
     const { ctx } = this._processInputParams(input);
     const options = this._def.options;
     function handleResults(results) {
-      for (const result of results) {
-        if (result.result.status === "valid") {
-          return result.result;
+      for (const result2 of results) {
+        if (result2.result.status === "valid") {
+          return result2.result;
         }
       }
-      for (const result of results) {
-        if (result.result.status === "dirty") {
-          ctx.common.issues.push(...result.ctx.common.issues);
-          return result.result;
+      for (const result2 of results) {
+        if (result2.result.status === "dirty") {
+          ctx.common.issues.push(...result2.ctx.common.issues);
+          return result2.result;
         }
       }
-      const unionErrors = results.map((result) => new ZodError(result.ctx.common.issues));
+      const unionErrors = results.map((result2) => new ZodError(result2.ctx.common.issues));
       addIssueToContext(ctx, {
         code: ZodIssueCode.invalid_union,
         unionErrors
@@ -9529,15 +9529,15 @@ var ZodUnion = class extends ZodType {
           },
           parent: null
         };
-        const result = option._parseSync({
+        const result2 = option._parseSync({
           data: ctx.data,
           path: ctx.path,
           parent: childCtx
         });
-        if (result.status === "valid") {
-          return result;
-        } else if (result.status === "dirty" && !dirty) {
-          dirty = { result, ctx: childCtx };
+        if (result2.status === "valid") {
+          return result2;
+        } else if (result2.status === "dirty" && !dirty) {
+          dirty = { result: result2, ctx: childCtx };
         }
         if (childCtx.common.issues.length) {
           issues.push(childCtx.common.issues);
@@ -10082,9 +10082,9 @@ var ZodFunction = class _ZodFunction extends ZodType {
           error51.addIssue(makeArgsIssue(args, e));
           throw error51;
         });
-        const result = await Reflect.apply(fn, this, parsedArgs);
-        const parsedReturns = await me._def.returns._def.type.parseAsync(result, params).catch((e) => {
-          error51.addIssue(makeReturnsIssue(result, e));
+        const result2 = await Reflect.apply(fn, this, parsedArgs);
+        const parsedReturns = await me._def.returns._def.type.parseAsync(result2, params).catch((e) => {
+          error51.addIssue(makeReturnsIssue(result2, e));
           throw error51;
         });
         return parsedReturns;
@@ -10096,10 +10096,10 @@ var ZodFunction = class _ZodFunction extends ZodType {
         if (!parsedArgs.success) {
           throw new ZodError([makeArgsIssue(args, parsedArgs.error)]);
         }
-        const result = Reflect.apply(fn, this, parsedArgs.data);
-        const parsedReturns = me._def.returns.safeParse(result, params);
+        const result2 = Reflect.apply(fn, this, parsedArgs.data);
+        const parsedReturns = me._def.returns.safeParse(result2, params);
         if (!parsedReturns.success) {
-          throw new ZodError([makeReturnsIssue(result, parsedReturns.error)]);
+          throw new ZodError([makeReturnsIssue(result2, parsedReturns.error)]);
         }
         return parsedReturns.data;
       });
@@ -10351,43 +10351,43 @@ var ZodEffects = class extends ZodType {
         return Promise.resolve(processed).then(async (processed2) => {
           if (status.value === "aborted")
             return INVALID;
-          const result = await this._def.schema._parseAsync({
+          const result2 = await this._def.schema._parseAsync({
             data: processed2,
             path: ctx.path,
             parent: ctx
           });
-          if (result.status === "aborted")
+          if (result2.status === "aborted")
             return INVALID;
-          if (result.status === "dirty")
-            return DIRTY(result.value);
+          if (result2.status === "dirty")
+            return DIRTY(result2.value);
           if (status.value === "dirty")
-            return DIRTY(result.value);
-          return result;
+            return DIRTY(result2.value);
+          return result2;
         });
       } else {
         if (status.value === "aborted")
           return INVALID;
-        const result = this._def.schema._parseSync({
+        const result2 = this._def.schema._parseSync({
           data: processed,
           path: ctx.path,
           parent: ctx
         });
-        if (result.status === "aborted")
+        if (result2.status === "aborted")
           return INVALID;
-        if (result.status === "dirty")
-          return DIRTY(result.value);
+        if (result2.status === "dirty")
+          return DIRTY(result2.value);
         if (status.value === "dirty")
-          return DIRTY(result.value);
-        return result;
+          return DIRTY(result2.value);
+        return result2;
       }
     }
     if (effect.type === "refinement") {
       const executeRefinement = (acc) => {
-        const result = effect.refinement(acc, checkCtx);
+        const result2 = effect.refinement(acc, checkCtx);
         if (ctx.common.async) {
-          return Promise.resolve(result);
+          return Promise.resolve(result2);
         }
-        if (result instanceof Promise) {
+        if (result2 instanceof Promise) {
           throw new Error("Async refinement encountered during synchronous parse operation. Use .parseAsync instead.");
         }
         return acc;
@@ -10425,18 +10425,18 @@ var ZodEffects = class extends ZodType {
         });
         if (!isValid(base))
           return INVALID;
-        const result = effect.transform(base.value, checkCtx);
-        if (result instanceof Promise) {
+        const result2 = effect.transform(base.value, checkCtx);
+        if (result2 instanceof Promise) {
           throw new Error(`Asynchronous transform encountered during synchronous parse operation. Use .parseAsync instead.`);
         }
-        return { status: status.value, value: result };
+        return { status: status.value, value: result2 };
       } else {
         return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base) => {
           if (!isValid(base))
             return INVALID;
-          return Promise.resolve(effect.transform(base.value, checkCtx)).then((result) => ({
+          return Promise.resolve(effect.transform(base.value, checkCtx)).then((result2) => ({
             status: status.value,
-            value: result
+            value: result2
           }));
         });
       }
@@ -10533,18 +10533,18 @@ var ZodCatch = class extends ZodType {
         issues: []
       }
     };
-    const result = this._def.innerType._parse({
+    const result2 = this._def.innerType._parse({
       data: newCtx.data,
       path: newCtx.path,
       parent: {
         ...newCtx
       }
     });
-    if (isAsync(result)) {
-      return result.then((result2) => {
+    if (isAsync(result2)) {
+      return result2.then((result3) => {
         return {
           status: "valid",
-          value: result2.status === "valid" ? result2.value : this._def.catchValue({
+          value: result3.status === "valid" ? result3.value : this._def.catchValue({
             get error() {
               return new ZodError(newCtx.common.issues);
             },
@@ -10555,7 +10555,7 @@ var ZodCatch = class extends ZodType {
     } else {
       return {
         status: "valid",
-        value: result.status === "valid" ? result.value : this._def.catchValue({
+        value: result2.status === "valid" ? result2.value : this._def.catchValue({
           get error() {
             return new ZodError(newCtx.common.issues);
           },
@@ -10668,14 +10668,14 @@ var ZodPipeline = class _ZodPipeline extends ZodType {
 };
 var ZodReadonly = class extends ZodType {
   _parse(input) {
-    const result = this._def.innerType._parse(input);
+    const result2 = this._def.innerType._parse(input);
     const freeze = (data) => {
       if (isValid(data)) {
         data.value = Object.freeze(data.value);
       }
       return data;
     };
-    return isAsync(result) ? result.then((data) => freeze(data)) : freeze(result);
+    return isAsync(result2) ? result2.then((data) => freeze(data)) : freeze(result2);
   }
   unwrap() {
     return this._def.innerType;
@@ -11886,7 +11886,7 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
   return fieldErrors;
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
-  const result = { errors: [] };
+  const result2 = { errors: [] };
   const processError = (error52, path = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
@@ -11899,10 +11899,10 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
       } else {
         const fullpath = [...path, ...issue2.path];
         if (fullpath.length === 0) {
-          result.errors.push(mapper(issue2));
+          result2.errors.push(mapper(issue2));
           continue;
         }
-        let curr = result;
+        let curr = result2;
         let i = 0;
         while (i < fullpath.length) {
           const el = fullpath[i];
@@ -11925,7 +11925,7 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
     }
   };
   processError(error51);
-  return result;
+  return result2;
 }
 function toDotPath(_path) {
   const segs = [];
@@ -11959,52 +11959,52 @@ function prettifyError(error51) {
 // ../../node_modules/.pnpm/zod@4.4.3/node_modules/zod/v4/core/parse.js
 var _parse = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-  const result = schema._zod.run({ value, issues: [] }, ctx);
-  if (result instanceof Promise) {
+  const result2 = schema._zod.run({ value, issues: [] }, ctx);
+  if (result2 instanceof Promise) {
     throw new $ZodAsyncError();
   }
-  if (result.issues.length) {
-    const e = new (_params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
+  if (result2.issues.length) {
+    const e = new (_params?.Err ?? _Err)(result2.issues.map((iss) => finalizeIssue(iss, ctx, config())));
     captureStackTrace(e, _params?.callee);
     throw e;
   }
-  return result.value;
+  return result2.value;
 };
 var parse = /* @__PURE__ */ _parse($ZodRealError);
 var _parseAsync = (_Err) => async (schema, value, _ctx, params) => {
   const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-  let result = schema._zod.run({ value, issues: [] }, ctx);
-  if (result instanceof Promise)
-    result = await result;
-  if (result.issues.length) {
-    const e = new (params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
+  let result2 = schema._zod.run({ value, issues: [] }, ctx);
+  if (result2 instanceof Promise)
+    result2 = await result2;
+  if (result2.issues.length) {
+    const e = new (params?.Err ?? _Err)(result2.issues.map((iss) => finalizeIssue(iss, ctx, config())));
     captureStackTrace(e, params?.callee);
     throw e;
   }
-  return result.value;
+  return result2.value;
 };
 var parseAsync = /* @__PURE__ */ _parseAsync($ZodRealError);
 var _safeParse = (_Err) => (schema, value, _ctx) => {
   const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-  const result = schema._zod.run({ value, issues: [] }, ctx);
-  if (result instanceof Promise) {
+  const result2 = schema._zod.run({ value, issues: [] }, ctx);
+  if (result2 instanceof Promise) {
     throw new $ZodAsyncError();
   }
-  return result.issues.length ? {
+  return result2.issues.length ? {
     success: false,
-    error: new (_Err ?? $ZodError)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
-  } : { success: true, data: result.value };
+    error: new (_Err ?? $ZodError)(result2.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+  } : { success: true, data: result2.value };
 };
 var safeParse = /* @__PURE__ */ _safeParse($ZodRealError);
 var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
   const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-  let result = schema._zod.run({ value, issues: [] }, ctx);
-  if (result instanceof Promise)
-    result = await result;
-  return result.issues.length ? {
+  let result2 = schema._zod.run({ value, issues: [] }, ctx);
+  if (result2 instanceof Promise)
+    result2 = await result2;
+  return result2.issues.length ? {
     success: false,
-    error: new _Err(result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
-  } : { success: true, data: result.value };
+    error: new _Err(result2.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+  } : { success: true, data: result2.value };
 };
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
 var _encode = (_Err) => (schema, value, _ctx) => {
@@ -12707,22 +12707,22 @@ var $ZodCheckEndsWith = /* @__PURE__ */ $constructor("$ZodCheckEndsWith", (inst,
     });
   };
 });
-function handleCheckPropertyResult(result, payload, property) {
-  if (result.issues.length) {
-    payload.issues.push(...prefixIssues(property, result.issues));
+function handleCheckPropertyResult(result2, payload, property) {
+  if (result2.issues.length) {
+    payload.issues.push(...prefixIssues(property, result2.issues));
   }
 }
 var $ZodCheckProperty = /* @__PURE__ */ $constructor("$ZodCheckProperty", (inst, def) => {
   $ZodCheck.init(inst, def);
   inst._zod.check = (payload) => {
-    const result = def.schema._zod.run({
+    const result2 = def.schema._zod.run({
       value: payload.value[def.property],
       issues: []
     }, {});
-    if (result instanceof Promise) {
-      return result.then((result2) => handleCheckPropertyResult(result2, payload, def.property));
+    if (result2 instanceof Promise) {
+      return result2.then((result3) => handleCheckPropertyResult(result3, payload, def.property));
     }
-    handleCheckPropertyResult(result, payload, def.property);
+    handleCheckPropertyResult(result2, payload, def.property);
     return;
   };
 });
@@ -12884,13 +12884,13 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
         }
         return handleCanaryResult(canary, payload, ctx);
       }
-      const result = inst._zod.parse(payload, ctx);
-      if (result instanceof Promise) {
+      const result2 = inst._zod.parse(payload, ctx);
+      if (result2 instanceof Promise) {
         if (ctx.async === false)
           throw new $ZodAsyncError();
-        return result.then((result2) => runChecks(result2, checks, ctx));
+        return result2.then((result3) => runChecks(result3, checks, ctx));
       }
-      return runChecks(result, checks, ctx);
+      return runChecks(result2, checks, ctx);
     };
   }
   defineLazy(inst, "~standard", () => ({
@@ -13412,11 +13412,11 @@ var $ZodDate = /* @__PURE__ */ $constructor("$ZodDate", (inst, def) => {
     return payload;
   };
 });
-function handleArrayResult(result, final, index) {
-  if (result.issues.length) {
-    final.issues.push(...prefixIssues(index, result.issues));
+function handleArrayResult(result2, final, index) {
+  if (result2.issues.length) {
+    final.issues.push(...prefixIssues(index, result2.issues));
   }
-  final.value[index] = result.value;
+  final.value[index] = result2.value;
 }
 var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
   $ZodType.init(inst, def);
@@ -13435,14 +13435,14 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     const proms = [];
     for (let i = 0; i < input.length; i++) {
       const item = input[i];
-      const result = def.element._zod.run({
+      const result2 = def.element._zod.run({
         value: item,
         issues: []
       }, ctx);
-      if (result instanceof Promise) {
-        proms.push(result.then((result2) => handleArrayResult(result2, payload, i)));
+      if (result2 instanceof Promise) {
+        proms.push(result2.then((result3) => handleArrayResult(result3, payload, i)));
       } else {
-        handleArrayResult(result, payload, i);
+        handleArrayResult(result2, payload, i);
       }
     }
     if (proms.length) {
@@ -13451,16 +13451,16 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     return payload;
   };
 });
-function handlePropertyResult(result, final, key, input, isOptionalIn, isOptionalOut) {
+function handlePropertyResult(result2, final, key, input, isOptionalIn, isOptionalOut) {
   const isPresent = key in input;
-  if (result.issues.length) {
+  if (result2.issues.length) {
     if (isOptionalIn && isOptionalOut && !isPresent) {
       return;
     }
-    final.issues.push(...prefixIssues(key, result.issues));
+    final.issues.push(...prefixIssues(key, result2.issues));
   }
   if (!isPresent && !isOptionalIn) {
-    if (!result.issues.length) {
+    if (!result2.issues.length) {
       final.issues.push({
         code: "invalid_type",
         expected: "nonoptional",
@@ -13470,12 +13470,12 @@ function handlePropertyResult(result, final, key, input, isOptionalIn, isOptiona
     }
     return;
   }
-  if (result.value === void 0) {
+  if (result2.value === void 0) {
     if (isPresent) {
       final.value[key] = void 0;
     }
   } else {
-    final.value[key] = result.value;
+    final.value[key] = result2.value;
   }
 }
 function normalizeDef(def) {
@@ -13723,9 +13723,9 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   };
 });
 function handleUnionResults(results, final, inst, ctx) {
-  for (const result of results) {
-    if (result.issues.length === 0) {
-      final.value = result.value;
+  for (const result2 of results) {
+    if (result2.issues.length === 0) {
+      final.value = result2.value;
       return final;
     }
   }
@@ -13738,7 +13738,7 @@ function handleUnionResults(results, final, inst, ctx) {
     code: "invalid_union",
     input: final.value,
     inst,
-    errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+    errors: results.map((result2) => result2.issues.map((iss) => finalizeIssue(iss, ctx, config())))
   });
   return final;
 }
@@ -13767,17 +13767,17 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
     let async = false;
     const results = [];
     for (const option of def.options) {
-      const result = option._zod.run({
+      const result2 = option._zod.run({
         value: payload.value,
         issues: []
       }, ctx);
-      if (result instanceof Promise) {
-        results.push(result);
+      if (result2 instanceof Promise) {
+        results.push(result2);
         async = true;
       } else {
-        if (result.issues.length === 0)
-          return result;
-        results.push(result);
+        if (result2.issues.length === 0)
+          return result2;
+        results.push(result2);
       }
     }
     if (!async)
@@ -13798,7 +13798,7 @@ function handleExclusiveUnionResults(results, final, inst, ctx) {
       code: "invalid_union",
       input: final.value,
       inst,
-      errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+      errors: results.map((result2) => result2.issues.map((iss) => finalizeIssue(iss, ctx, config())))
     });
   } else {
     final.issues.push({
@@ -13822,15 +13822,15 @@ var $ZodXor = /* @__PURE__ */ $constructor("$ZodXor", (inst, def) => {
     let async = false;
     const results = [];
     for (const option of def.options) {
-      const result = option._zod.run({
+      const result2 = option._zod.run({
         value: payload.value,
         issues: []
       }, ctx);
-      if (result instanceof Promise) {
-        results.push(result);
+      if (result2 instanceof Promise) {
+        results.push(result2);
         async = true;
       } else {
-        results.push(result);
+        results.push(result2);
       }
     }
     if (!async)
@@ -13966,7 +13966,7 @@ function mergeValues2(a, b) {
   }
   return { valid: false, mergeErrorPath: [] };
 }
-function handleIntersectionResults(result, left, right) {
+function handleIntersectionResults(result2, left, right) {
   const unrecKeys = /* @__PURE__ */ new Map();
   let unrecIssue;
   for (const iss of left.issues) {
@@ -13978,7 +13978,7 @@ function handleIntersectionResults(result, left, right) {
         unrecKeys.get(k).l = true;
       }
     } else {
-      result.issues.push(iss);
+      result2.issues.push(iss);
     }
   }
   for (const iss of right.issues) {
@@ -13989,21 +13989,21 @@ function handleIntersectionResults(result, left, right) {
         unrecKeys.get(k).r = true;
       }
     } else {
-      result.issues.push(iss);
+      result2.issues.push(iss);
     }
   }
   const bothKeys = [...unrecKeys].filter(([, f]) => f.l && f.r).map(([k]) => k);
   if (bothKeys.length && unrecIssue) {
-    result.issues.push({ ...unrecIssue, keys: bothKeys });
+    result2.issues.push({ ...unrecIssue, keys: bothKeys });
   }
-  if (aborted(result))
-    return result;
+  if (aborted(result2))
+    return result2;
   const merged = mergeValues2(left.value, right.value);
   if (!merged.valid) {
     throw new Error(`Unmergable intersection. Error path: ${JSON.stringify(merged.mergeErrorPath)}`);
   }
-  result.value = merged.data;
-  return result;
+  result2.value = merged.data;
+  return result2;
 }
 var $ZodTuple = /* @__PURE__ */ $constructor("$ZodTuple", (inst, def) => {
   $ZodType.init(inst, def);
@@ -14062,11 +14062,11 @@ var $ZodTuple = /* @__PURE__ */ $constructor("$ZodTuple", (inst, def) => {
       const rest = input.slice(items.length);
       for (const el of rest) {
         i++;
-        const result = def.rest._zod.run({ value: el, issues: [] }, ctx);
-        if (result instanceof Promise) {
-          proms.push(result.then((r) => handleTupleResult(r, payload, i)));
+        const result2 = def.rest._zod.run({ value: el, issues: [] }, ctx);
+        if (result2 instanceof Promise) {
+          proms.push(result2.then((r) => handleTupleResult(r, payload, i)));
         } else {
-          handleTupleResult(result, payload, i);
+          handleTupleResult(result2, payload, i);
         }
       }
     }
@@ -14083,11 +14083,11 @@ function getTupleOptStart(items, key) {
   }
   return 0;
 }
-function handleTupleResult(result, final, index) {
-  if (result.issues.length) {
-    final.issues.push(...prefixIssues(index, result.issues));
+function handleTupleResult(result2, final, index) {
+  if (result2.issues.length) {
+    final.issues.push(...prefixIssues(index, result2.issues));
   }
-  final.value[index] = result.value;
+  final.value[index] = result2.value;
 }
 function handleTupleResults(itemResults, final, items, input, optoutStart) {
   for (let i = 0; i < items.length; i++) {
@@ -14148,19 +14148,19 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
             continue;
           }
           const outKey = keyResult.value;
-          const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-          if (result instanceof Promise) {
-            proms.push(result.then((result2) => {
-              if (result2.issues.length) {
-                payload.issues.push(...prefixIssues(key, result2.issues));
+          const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+          if (result2 instanceof Promise) {
+            proms.push(result2.then((result3) => {
+              if (result3.issues.length) {
+                payload.issues.push(...prefixIssues(key, result3.issues));
               }
-              payload.value[outKey] = result2.value;
+              payload.value[outKey] = result3.value;
             }));
           } else {
-            if (result.issues.length) {
-              payload.issues.push(...prefixIssues(key, result.issues));
+            if (result2.issues.length) {
+              payload.issues.push(...prefixIssues(key, result2.issues));
             }
-            payload.value[outKey] = result.value;
+            payload.value[outKey] = result2.value;
           }
         }
       }
@@ -14215,19 +14215,19 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
           }
           continue;
         }
-        const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-        if (result instanceof Promise) {
-          proms.push(result.then((result2) => {
-            if (result2.issues.length) {
-              payload.issues.push(...prefixIssues(key, result2.issues));
+        const result2 = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+        if (result2 instanceof Promise) {
+          proms.push(result2.then((result3) => {
+            if (result3.issues.length) {
+              payload.issues.push(...prefixIssues(key, result3.issues));
             }
-            payload.value[keyResult.value] = result2.value;
+            payload.value[keyResult.value] = result3.value;
           }));
         } else {
-          if (result.issues.length) {
-            payload.issues.push(...prefixIssues(key, result.issues));
+          if (result2.issues.length) {
+            payload.issues.push(...prefixIssues(key, result2.issues));
           }
-          payload.value[keyResult.value] = result.value;
+          payload.value[keyResult.value] = result2.value;
         }
       }
     }
@@ -14314,22 +14314,22 @@ var $ZodSet = /* @__PURE__ */ $constructor("$ZodSet", (inst, def) => {
     const proms = [];
     payload.value = /* @__PURE__ */ new Set();
     for (const item of input) {
-      const result = def.valueType._zod.run({ value: item, issues: [] }, ctx);
-      if (result instanceof Promise) {
-        proms.push(result.then((result2) => handleSetResult(result2, payload)));
+      const result2 = def.valueType._zod.run({ value: item, issues: [] }, ctx);
+      if (result2 instanceof Promise) {
+        proms.push(result2.then((result3) => handleSetResult(result3, payload)));
       } else
-        handleSetResult(result, payload);
+        handleSetResult(result2, payload);
     }
     if (proms.length)
       return Promise.all(proms).then(() => payload);
     return payload;
   };
 });
-function handleSetResult(result, final) {
-  if (result.issues.length) {
-    final.issues.push(...result.issues);
+function handleSetResult(result2, final) {
+  if (result2.issues.length) {
+    final.issues.push(...result2.issues);
   }
-  final.value.add(result.value);
+  final.value.add(result2.value);
 }
 var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   $ZodType.init(inst, def);
@@ -14412,11 +14412,11 @@ var $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) =>
     return payload;
   };
 });
-function handleOptionalResult(result, input) {
-  if (input === void 0 && (result.issues.length || result.fallback)) {
+function handleOptionalResult(result2, input) {
+  if (input === void 0 && (result2.issues.length || result2.fallback)) {
     return { issues: [], value: void 0 };
   }
-  return result;
+  return result2;
 }
 var $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
   $ZodType.init(inst, def);
@@ -14432,10 +14432,10 @@ var $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     if (def.innerType._zod.optin === "optional") {
       const input = payload.value;
-      const result = def.innerType._zod.run(payload, ctx);
-      if (result instanceof Promise)
-        return result.then((r) => handleOptionalResult(r, input));
-      return handleOptionalResult(result, input);
+      const result2 = def.innerType._zod.run(payload, ctx);
+      if (result2 instanceof Promise)
+        return result2.then((r) => handleOptionalResult(r, input));
+      return handleOptionalResult(result2, input);
     }
     if (payload.value === void 0) {
       return payload;
@@ -14480,11 +14480,11 @@ var $ZodDefault = /* @__PURE__ */ $constructor("$ZodDefault", (inst, def) => {
       payload.value = def.defaultValue;
       return payload;
     }
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then((result2) => handleDefaultResult(result2, def));
+    const result2 = def.innerType._zod.run(payload, ctx);
+    if (result2 instanceof Promise) {
+      return result2.then((result3) => handleDefaultResult(result3, def));
     }
-    return handleDefaultResult(result, def);
+    return handleDefaultResult(result2, def);
   };
 });
 function handleDefaultResult(payload, def) {
@@ -14514,11 +14514,11 @@ var $ZodNonOptional = /* @__PURE__ */ $constructor("$ZodNonOptional", (inst, def
     return v ? new Set([...v].filter((x) => x !== void 0)) : void 0;
   });
   inst._zod.parse = (payload, ctx) => {
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then((result2) => handleNonOptionalResult(result2, inst));
+    const result2 = def.innerType._zod.run(payload, ctx);
+    if (result2 instanceof Promise) {
+      return result2.then((result3) => handleNonOptionalResult(result3, inst));
     }
-    return handleNonOptionalResult(result, inst);
+    return handleNonOptionalResult(result2, inst);
   };
 });
 function handleNonOptionalResult(payload, inst) {
@@ -14538,14 +14538,14 @@ var $ZodSuccess = /* @__PURE__ */ $constructor("$ZodSuccess", (inst, def) => {
     if (ctx.direction === "backward") {
       throw new $ZodEncodeError("ZodSuccess");
     }
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then((result2) => {
-        payload.value = result2.issues.length === 0;
+    const result2 = def.innerType._zod.run(payload, ctx);
+    if (result2 instanceof Promise) {
+      return result2.then((result3) => {
+        payload.value = result3.issues.length === 0;
         return payload;
       });
     }
-    payload.value = result.issues.length === 0;
+    payload.value = result2.issues.length === 0;
     return payload;
   };
 });
@@ -14558,15 +14558,15 @@ var $ZodCatch = /* @__PURE__ */ $constructor("$ZodCatch", (inst, def) => {
     if (ctx.direction === "backward") {
       return def.innerType._zod.run(payload, ctx);
     }
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then((result2) => {
-        payload.value = result2.value;
-        if (result2.issues.length) {
+    const result2 = def.innerType._zod.run(payload, ctx);
+    if (result2 instanceof Promise) {
+      return result2.then((result3) => {
+        payload.value = result3.value;
+        if (result3.issues.length) {
           payload.value = def.catchValue({
             ...payload,
             error: {
-              issues: result2.issues.map((iss) => finalizeIssue(iss, ctx, config()))
+              issues: result3.issues.map((iss) => finalizeIssue(iss, ctx, config()))
             },
             input: payload.value
           });
@@ -14576,12 +14576,12 @@ var $ZodCatch = /* @__PURE__ */ $constructor("$ZodCatch", (inst, def) => {
         return payload;
       });
     }
-    payload.value = result.value;
-    if (result.issues.length) {
+    payload.value = result2.value;
+    if (result2.issues.length) {
       payload.value = def.catchValue({
         ...payload,
         error: {
-          issues: result.issues.map((iss) => finalizeIssue(iss, ctx, config()))
+          issues: result2.issues.map((iss) => finalizeIssue(iss, ctx, config()))
         },
         input: payload.value
       });
@@ -14657,24 +14657,24 @@ var $ZodCodec = /* @__PURE__ */ $constructor("$ZodCodec", (inst, def) => {
     }
   };
 });
-function handleCodecAResult(result, def, ctx) {
-  if (result.issues.length) {
-    result.aborted = true;
-    return result;
+function handleCodecAResult(result2, def, ctx) {
+  if (result2.issues.length) {
+    result2.aborted = true;
+    return result2;
   }
   const direction = ctx.direction || "forward";
   if (direction === "forward") {
-    const transformed = def.transform(result.value, result);
+    const transformed = def.transform(result2.value, result2);
     if (transformed instanceof Promise) {
-      return transformed.then((value) => handleCodecTxResult(result, value, def.out, ctx));
+      return transformed.then((value) => handleCodecTxResult(result2, value, def.out, ctx));
     }
-    return handleCodecTxResult(result, transformed, def.out, ctx);
+    return handleCodecTxResult(result2, transformed, def.out, ctx);
   } else {
-    const transformed = def.reverseTransform(result.value, result);
+    const transformed = def.reverseTransform(result2.value, result2);
     if (transformed instanceof Promise) {
-      return transformed.then((value) => handleCodecTxResult(result, value, def.in, ctx));
+      return transformed.then((value) => handleCodecTxResult(result2, value, def.in, ctx));
     }
-    return handleCodecTxResult(result, transformed, def.in, ctx);
+    return handleCodecTxResult(result2, transformed, def.in, ctx);
   }
 }
 function handleCodecTxResult(left, value, nextSchema, ctx) {
@@ -14697,11 +14697,11 @@ var $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
     if (ctx.direction === "backward") {
       return def.innerType._zod.run(payload, ctx);
     }
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then(handleReadonlyResult);
+    const result2 = def.innerType._zod.run(payload, ctx);
+    if (result2 instanceof Promise) {
+      return result2.then(handleReadonlyResult);
     }
-    return handleReadonlyResult(result);
+    return handleReadonlyResult(result2);
   };
 });
 function handleReadonlyResult(payload) {
@@ -14763,11 +14763,11 @@ var $ZodFunction = /* @__PURE__ */ $constructor("$ZodFunction", (inst, def) => {
     }
     return function(...args) {
       const parsedArgs = inst._def.input ? parse(inst._def.input, args) : args;
-      const result = Reflect.apply(func, this, parsedArgs);
+      const result2 = Reflect.apply(func, this, parsedArgs);
       if (inst._def.output) {
-        return parse(inst._def.output, result);
+        return parse(inst._def.output, result2);
       }
-      return result;
+      return result2;
     };
   };
   inst.implementAsync = (func) => {
@@ -14776,11 +14776,11 @@ var $ZodFunction = /* @__PURE__ */ $constructor("$ZodFunction", (inst, def) => {
     }
     return async function(...args) {
       const parsedArgs = inst._def.input ? await parseAsync(inst._def.input, args) : args;
-      const result = await Reflect.apply(func, this, parsedArgs);
+      const result2 = await Reflect.apply(func, this, parsedArgs);
       if (inst._def.output) {
-        return await parseAsync(inst._def.output, result);
+        return await parseAsync(inst._def.output, result2);
       }
-      return result;
+      return result2;
     };
   };
   inst._zod.parse = (payload, _ctx) => {
@@ -14869,8 +14869,8 @@ var $ZodCustom = /* @__PURE__ */ $constructor("$ZodCustom", (inst, def) => {
     return;
   };
 });
-function handleRefineResult(result, payload, input, inst) {
-  if (!result) {
+function handleRefineResult(result2, payload, input, inst) {
+  if (!result2) {
     const _iss = {
       code: "custom",
       input,
@@ -18245,12 +18245,12 @@ var error28 = () => {
     }
   };
   function getSizing(origin, unitType, inclusive, targetShouldBe) {
-    const result = Sizable[origin] ?? null;
-    if (result === null)
-      return result;
+    const result2 = Sizable[origin] ?? null;
+    if (result2 === null)
+      return result2;
     return {
-      unit: result.unit[unitType],
-      verb: result.verb[targetShouldBe][inclusive ? "inclusive" : "notInclusive"]
+      unit: result2.unit[unitType],
+      verb: result2.verb[targetShouldBe][inclusive ? "inclusive" : "notInclusive"]
     };
   }
   const FormatDictionary = {
@@ -21965,11 +21965,11 @@ function process2(schema, ctx, _params = { path: [], schemaPath: [] }) {
     }
     return seen.schema;
   }
-  const result = { schema: {}, count: 1, cycle: void 0, path: _params.path };
-  ctx.seen.set(schema, result);
+  const result2 = { schema: {}, count: 1, cycle: void 0, path: _params.path };
+  ctx.seen.set(schema, result2);
   const overrideSchema = schema._zod.toJSONSchema?.();
   if (overrideSchema) {
-    result.schema = overrideSchema;
+    result2.schema = overrideSchema;
   } else {
     const params = {
       ..._params,
@@ -21977,9 +21977,9 @@ function process2(schema, ctx, _params = { path: [], schemaPath: [] }) {
       path: _params.path
     };
     if (schema._zod.processJSONSchema) {
-      schema._zod.processJSONSchema(ctx, result.schema, params);
+      schema._zod.processJSONSchema(ctx, result2.schema, params);
     } else {
-      const _json = result.schema;
+      const _json = result2.schema;
       const processor = ctx.processors[def.type];
       if (!processor) {
         throw new Error(`[toJSONSchema]: Non-representable type encountered: ${def.type}`);
@@ -21988,22 +21988,22 @@ function process2(schema, ctx, _params = { path: [], schemaPath: [] }) {
     }
     const parent = schema._zod.parent;
     if (parent) {
-      if (!result.ref)
-        result.ref = parent;
+      if (!result2.ref)
+        result2.ref = parent;
       process2(parent, ctx, params);
       ctx.seen.get(parent).isParent = true;
     }
   }
   const meta3 = ctx.metadataRegistry.get(schema);
   if (meta3)
-    Object.assign(result.schema, meta3);
+    Object.assign(result2.schema, meta3);
   if (ctx.io === "input" && isTransforming(schema)) {
-    delete result.schema.examples;
-    delete result.schema.default;
+    delete result2.schema.examples;
+    delete result2.schema.default;
   }
-  if (ctx.io === "input" && "_prefault" in result.schema)
-    (_a3 = result.schema).default ?? (_a3.default = result.schema._prefault);
-  delete result.schema._prefault;
+  if (ctx.io === "input" && "_prefault" in result2.schema)
+    (_a3 = result2.schema).default ?? (_a3.default = result2.schema._prefault);
+  delete result2.schema._prefault;
   const _result = ctx.seen.get(schema);
   return _result.schema;
 }
@@ -22166,13 +22166,13 @@ function finalize(ctx, schema) {
   for (const entry of [...ctx.seen.entries()].reverse()) {
     flattenRef(entry[0]);
   }
-  const result = {};
+  const result2 = {};
   if (ctx.target === "draft-2020-12") {
-    result.$schema = "https://json-schema.org/draft/2020-12/schema";
+    result2.$schema = "https://json-schema.org/draft/2020-12/schema";
   } else if (ctx.target === "draft-07") {
-    result.$schema = "http://json-schema.org/draft-07/schema#";
+    result2.$schema = "http://json-schema.org/draft-07/schema#";
   } else if (ctx.target === "draft-04") {
-    result.$schema = "http://json-schema.org/draft-04/schema#";
+    result2.$schema = "http://json-schema.org/draft-04/schema#";
   } else if (ctx.target === "openapi-3.0") {
   } else {
   }
@@ -22180,12 +22180,12 @@ function finalize(ctx, schema) {
     const id = ctx.external.registry.get(schema)?.id;
     if (!id)
       throw new Error("Schema is missing an `id` property");
-    result.$id = ctx.external.uri(id);
+    result2.$id = ctx.external.uri(id);
   }
-  Object.assign(result, root.def ?? root.schema);
+  Object.assign(result2, root.def ?? root.schema);
   const rootMetaId = ctx.metadataRegistry.get(schema)?.id;
-  if (rootMetaId !== void 0 && result.id === rootMetaId)
-    delete result.id;
+  if (rootMetaId !== void 0 && result2.id === rootMetaId)
+    delete result2.id;
   const defs = ctx.external?.defs ?? {};
   for (const entry of ctx.seen.entries()) {
     const seen = entry[1];
@@ -22199,14 +22199,14 @@ function finalize(ctx, schema) {
   } else {
     if (Object.keys(defs).length > 0) {
       if (ctx.target === "draft-2020-12") {
-        result.$defs = defs;
+        result2.$defs = defs;
       } else {
-        result.definitions = defs;
+        result2.definitions = defs;
       }
     }
   }
   try {
-    const finalized = JSON.parse(JSON.stringify(result));
+    const finalized = JSON.parse(JSON.stringify(result2));
     Object.defineProperty(finalized, "~standard", {
       value: {
         ...schema["~standard"],
@@ -22903,8 +22903,8 @@ var JSONSchemaGenerator = class {
         this.ctx.external = _params.external;
     }
     extractDefs(this.ctx, schema);
-    const result = finalize(this.ctx, schema);
-    const { "~standard": _, ...plainResult } = result;
+    const result2 = finalize(this.ctx, schema);
+    const { "~standard": _, ...plainResult } = result2;
     return plainResult;
   }
 };
@@ -22977,21 +22977,21 @@ function objectFromShape(shape) {
 }
 function safeParse2(schema, data) {
   if (isZ4Schema(schema)) {
-    const result2 = safeParse(schema, data);
-    return result2;
+    const result3 = safeParse(schema, data);
+    return result3;
   }
   const v3Schema = schema;
-  const result = v3Schema.safeParse(data);
-  return result;
+  const result2 = v3Schema.safeParse(data);
+  return result2;
 }
 async function safeParseAsync2(schema, data) {
   if (isZ4Schema(schema)) {
-    const result2 = await safeParseAsync(schema, data);
-    return result2;
+    const result3 = await safeParseAsync(schema, data);
+    return result3;
   }
   const v3Schema = schema;
-  const result = await v3Schema.safeParseAsync(data);
-  return result;
+  const result2 = await v3Schema.safeParseAsync(data);
+  return result2;
 }
 function getObjectShape(schema) {
   if (!schema)
@@ -25286,11 +25286,11 @@ function convertBaseSchema(schema, ctx) {
         } else if (schemasToIntersect.length === 1) {
           zodSchema = schemasToIntersect[0];
         } else {
-          let result = z.intersection(schemasToIntersect[0], schemasToIntersect[1]);
+          let result2 = z.intersection(schemasToIntersect[0], schemasToIntersect[1]);
           for (let i = 2; i < schemasToIntersect.length; i++) {
-            result = z.intersection(result, schemasToIntersect[i]);
+            result2 = z.intersection(result2, schemasToIntersect[i]);
           }
-          zodSchema = result;
+          zodSchema = result2;
         }
         break;
       }
@@ -25375,12 +25375,12 @@ function convertSchema(schema, ctx) {
     if (schema.allOf.length === 0) {
       baseSchema = hasExplicitType ? baseSchema : z.any();
     } else {
-      let result = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx);
+      let result2 = hasExplicitType ? baseSchema : convertSchema(schema.allOf[0], ctx);
       const startIdx = hasExplicitType ? 0 : 1;
       for (let i = startIdx; i < schema.allOf.length; i++) {
-        result = z.intersection(result, convertSchema(schema.allOf[i], ctx));
+        result2 = z.intersection(result2, convertSchema(schema.allOf[i], ctx));
       }
-      baseSchema = result;
+      baseSchema = result2;
     }
   }
   if (schema.nullable === true && ctx.version === "openapi-3.0") {
@@ -27515,14 +27515,14 @@ function escapeLiteralCheckValue(literal2, refs) {
 }
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 function escapeNonAlphaNumeric(source) {
-  let result = "";
+  let result2 = "";
   for (let i = 0; i < source.length; i++) {
     if (!ALPHA_NUMERIC.has(source[i])) {
-      result += "\\";
+      result2 += "\\";
     }
-    result += source[i];
+    result2 += source[i];
   }
-  return result;
+  return result2;
 }
 function addFormat(schema, value, message, refs) {
   if (schema.format || schema.anyOf?.some((x) => x.format)) {
@@ -27919,7 +27919,7 @@ function parseNumberDef(def, refs) {
 // ../../node_modules/.pnpm/zod-to-json-schema@3.25.2_zod@4.4.3/node_modules/zod-to-json-schema/dist/esm/parsers/object.js
 function parseObjectDef(def, refs) {
   const forceOptionalIntoNullable = refs.target === "openAi";
-  const result = {
+  const result2 = {
     type: "object",
     properties: {}
   };
@@ -27948,19 +27948,19 @@ function parseObjectDef(def, refs) {
     if (parsedDef === void 0) {
       continue;
     }
-    result.properties[propName] = parsedDef;
+    result2.properties[propName] = parsedDef;
     if (!propOptional) {
       required2.push(propName);
     }
   }
   if (required2.length) {
-    result.required = required2;
+    result2.required = required2;
   }
   const additionalProperties = decideAdditionalProperties(def, refs);
   if (additionalProperties !== void 0) {
-    result.additionalProperties = additionalProperties;
+    result2.additionalProperties = additionalProperties;
   }
-  return result;
+  return result2;
 }
 function decideAdditionalProperties(def, refs) {
   if (def.catchall._def.typeName !== "ZodNever") {
@@ -28324,11 +28324,11 @@ function getMethodLiteral(schema) {
   return value;
 }
 function parseWithCompat(schema, data) {
-  const result = safeParse2(schema, data);
-  if (!result.success) {
-    throw result.error;
+  const result2 = safeParse2(schema, data);
+  if (!result2.success) {
+    throw result2.error;
   }
-  return result.data;
+  return result2.data;
 }
 
 // ../../node_modules/.pnpm/@modelcontextprotocol+sdk@1.29.0_zod@4.4.3/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
@@ -28406,12 +28406,12 @@ var Protocol = class {
             return await handleTaskResult();
           }
           if (isTerminal(task.status)) {
-            const result = await this._taskStore.getTaskResult(taskId, extra.sessionId);
+            const result2 = await this._taskStore.getTaskResult(taskId, extra.sessionId);
             this._clearTaskQueue(taskId);
             return {
-              ...result,
+              ...result2,
               _meta: {
-                ...result._meta,
+                ...result2._meta,
                 [RELATED_TASK_META_KEY]: {
                   taskId
                 }
@@ -28636,12 +28636,12 @@ var Protocol = class {
       if (taskCreationParams) {
         this.assertTaskHandlerCapability(request.method);
       }
-    }).then(() => handler(request, fullExtra)).then(async (result) => {
+    }).then(() => handler(request, fullExtra)).then(async (result2) => {
       if (abortController.signal.aborted) {
         return;
       }
       const response = {
-        result,
+        result: result2,
         jsonrpc: "2.0",
         id: request.id
       };
@@ -28727,9 +28727,9 @@ var Protocol = class {
     this._cleanupTimeout(messageId);
     let isTaskResponse = false;
     if (isJSONRPCResultResponse(response) && response.result && typeof response.result === "object") {
-      const result = response.result;
-      if (result.task && typeof result.task === "object") {
-        const task = result.task;
+      const result2 = response.result;
+      if (result2.task && typeof result2.task === "object") {
+        const task = result2.task;
         if (typeof task.taskId === "string") {
           isTaskResponse = true;
           this._taskProgressTokens.set(task.taskId, messageId);
@@ -28786,8 +28786,8 @@ var Protocol = class {
     const { task } = options ?? {};
     if (!task) {
       try {
-        const result = await this.request(request, resultSchema, options);
-        yield { type: "result", result };
+        const result2 = await this.request(request, resultSchema, options);
+        yield { type: "result", result: result2 };
       } catch (error51) {
         yield {
           type: "error",
@@ -28810,8 +28810,8 @@ var Protocol = class {
         yield { type: "taskStatus", task: task2 };
         if (isTerminal(task2.status)) {
           if (task2.status === "completed") {
-            const result = await this.getTaskResult({ taskId }, resultSchema, options);
-            yield { type: "result", result };
+            const result2 = await this.getTaskResult({ taskId }, resultSchema, options);
+            yield { type: "result", result: result2 };
           } else if (task2.status === "failed") {
             yield {
               type: "error",
@@ -28826,8 +28826,8 @@ var Protocol = class {
           return;
         }
         if (task2.status === "input_required") {
-          const result = await this.getTaskResult({ taskId }, resultSchema, options);
-          yield { type: "result", result };
+          const result2 = await this.getTaskResult({ taskId }, resultSchema, options);
+          yield { type: "result", result: result2 };
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
@@ -29221,8 +29221,8 @@ var Protocol = class {
         }
         return task;
       },
-      storeTaskResult: async (taskId, status, result) => {
-        await taskStore.storeTaskResult(taskId, status, result, sessionId);
+      storeTaskResult: async (taskId, status, result2) => {
+        await taskStore.storeTaskResult(taskId, status, result2, sessionId);
         const task = await taskStore.getTask(taskId, sessionId);
         if (task) {
           const notification = TaskStatusNotificationSchema.parse({
@@ -29269,20 +29269,20 @@ function isPlainObject2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function mergeCapabilities(base, additional) {
-  const result = { ...base };
+  const result2 = { ...base };
   for (const key in additional) {
     const k = key;
     const addValue = additional[k];
     if (addValue === void 0)
       continue;
-    const baseValue = result[k];
+    const baseValue = result2[k];
     if (isPlainObject2(baseValue) && isPlainObject2(addValue)) {
-      result[k] = { ...baseValue, ...addValue };
+      result2[k] = { ...baseValue, ...addValue };
     } else {
-      result[k] = addValue;
+      result2[k] = addValue;
     }
   }
-  return result;
+  return result2;
 }
 
 // ../../node_modules/.pnpm/@modelcontextprotocol+sdk@1.29.0_zod@4.4.3/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
@@ -29689,16 +29689,16 @@ var Server = class extends Protocol {
           throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage}`);
         }
         const { params } = validatedRequest.data;
-        const result = await Promise.resolve(handler(request, extra));
+        const result2 = await Promise.resolve(handler(request, extra));
         if (params.task) {
-          const taskValidationResult = safeParse2(CreateTaskResultSchema, result);
+          const taskValidationResult = safeParse2(CreateTaskResultSchema, result2);
           if (!taskValidationResult.success) {
             const errorMessage = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
             throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage}`);
           }
           return taskValidationResult.data;
         }
-        const validationResult = safeParse2(CallToolResultSchema, result);
+        const validationResult = safeParse2(CallToolResultSchema, result2);
         if (!validationResult.success) {
           const errorMessage = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
           throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage}`);
@@ -29907,11 +29907,11 @@ var Server = class extends Protocol {
           throw new Error("Client does not support form elicitation.");
         }
         const formParams = params.mode === "form" ? params : { ...params, mode: "form" };
-        const result = await this.request({ method: "elicitation/create", params: formParams }, ElicitResultSchema, options);
-        if (result.action === "accept" && result.content && formParams.requestedSchema) {
+        const result2 = await this.request({ method: "elicitation/create", params: formParams }, ElicitResultSchema, options);
+        if (result2.action === "accept" && result2.content && formParams.requestedSchema) {
           try {
             const validator = this._jsonSchemaValidator.getValidator(formParams.requestedSchema);
-            const validationResult = validator(result.content);
+            const validationResult = validator(result2.content);
             if (!validationResult.valid) {
               throw new McpError(ErrorCode.InvalidParams, `Elicitation response content does not match requested schema: ${validationResult.errorMessage}`);
             }
@@ -29922,7 +29922,7 @@ var Server = class extends Protocol {
             throw new McpError(ErrorCode.InternalError, `Error validating elicitation response: ${error51 instanceof Error ? error51.message : String(error51)}`);
           }
         }
-        return result;
+        return result2;
       }
     }
   }
@@ -30048,9 +30048,9 @@ function issueToolNameWarning(name, warnings) {
   }
 }
 function validateAndWarnToolName(name) {
-  const result = validateToolName(name);
-  issueToolNameWarning(name, result.warnings);
-  return result.isValid;
+  const result2 = validateToolName(name);
+  issueToolNameWarning(name, result2.warnings);
+  return result2.isValid;
 }
 
 // ../../node_modules/.pnpm/@modelcontextprotocol+sdk@1.29.0_zod@4.4.3/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/mcp-server.js
@@ -30172,12 +30172,12 @@ var McpServer = class {
           return await this.handleAutomaticTaskPolling(tool, request, extra);
         }
         const args = await this.validateToolInput(tool, request.params.arguments, request.params.name);
-        const result = await this.executeToolHandler(tool, args, extra);
+        const result2 = await this.executeToolHandler(tool, args, extra);
         if (isTaskRequest) {
-          return result;
+          return result2;
         }
-        await this.validateToolOutput(tool, result, request.params.name);
-        return result;
+        await this.validateToolOutput(tool, result2, request.params.name);
+        return result2;
       } catch (error51) {
         if (error51 instanceof McpError) {
           if (error51.code === ErrorCode.UrlElicitationRequired) {
@@ -30226,21 +30226,21 @@ var McpServer = class {
   /**
    * Validates tool output against the tool's output schema.
    */
-  async validateToolOutput(tool, result, toolName) {
+  async validateToolOutput(tool, result2, toolName) {
     if (!tool.outputSchema) {
       return;
     }
-    if (!("content" in result)) {
+    if (!("content" in result2)) {
       return;
     }
-    if (result.isError) {
+    if (result2.isError) {
       return;
     }
-    if (!result.structuredContent) {
+    if (!result2.structuredContent) {
       throw new McpError(ErrorCode.InvalidParams, `Output validation error: Tool ${toolName} has an output schema but no structured content was provided`);
     }
     const outputObj = normalizeObjectSchema(tool.outputSchema);
-    const parseResult = await safeParseAsync2(outputObj, result.structuredContent);
+    const parseResult = await safeParseAsync2(outputObj, result2.structuredContent);
     if (!parseResult.success) {
       const error51 = "error" in parseResult ? parseResult.error : "Unknown error";
       const errorMessage = getParseErrorMessage(error51);
@@ -30384,8 +30384,8 @@ var McpServer = class {
         if (!template.resourceTemplate.listCallback) {
           continue;
         }
-        const result = await template.resourceTemplate.listCallback(extra);
-        for (const resource of result.resources) {
+        const result2 = await template.resourceTemplate.listCallback(extra);
+        for (const resource of result2.resources) {
           templateResources.push({
             ...template.metadata,
             // the defined resource metadata should override the template metadata if present
@@ -30954,13 +30954,13 @@ var StdioServerTransport = class {
 
 // src/index.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync6, readFileSync as readFileSync7 } from "node:fs";
-import { dirname as dirname6, join as join8 } from "node:path";
+import { existsSync as existsSync6, readFileSync as readFileSync8 } from "node:fs";
+import { dirname as dirname6, join as join9 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
-import { readFileSync as readFileSync6, existsSync as existsSync5 } from "node:fs";
-import { join as join6 } from "node:path";
+import { readFileSync as readFileSync7, existsSync as existsSync5 } from "node:fs";
+import { join as join7 } from "node:path";
 import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
@@ -34127,11 +34127,6 @@ var ParleAccountClient = class {
 };
 
 // ../client/dist/format.js
-var WATCHER_UNKNOWN_GUIDANCE = {
-  state: "unknown",
-  nextActionKey: "arm-or-verify-watcher",
-  nextAction: "arm or verify the watcher"
-};
 var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
 var CARD_RULE = "========================================";
 function nextTextFor(key) {
@@ -34146,7 +34141,7 @@ function nextTextFor(key) {
       return "read your inbox for messages addressed to this session.";
     case "arm-watcher":
     case "arm-or-verify-watcher":
-      return `${WATCHER_UNKNOWN_GUIDANCE.nextAction}.`;
+      return "arm or verify responsive delivery.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     default:
@@ -34179,8 +34174,9 @@ function formatCompactConnectionCard(input) {
     lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1)
     lines.push(line("In rooms", rooms.join(", ")));
-  if (input.watcher)
-    lines.push(line("Watcher", input.watcher));
+  const delivery = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  if (delivery)
+    lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0)
     lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
@@ -34195,7 +34191,7 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
     sessionAddress: summary.sessionAddress,
     rooms: summary.rooms,
     next: opts.next || (summary.reusedExistingSession ? "already-connected" : void 0),
-    watcher: opts.watcher,
+    responsiveDelivery: opts.responsiveDelivery,
     connectedLabel: opts.connectedLabel
   });
 }
@@ -34209,8 +34205,8 @@ function compactStatusCardFromStatus(status) {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
       unread,
-      watcher: status.watcher?.state,
-      next: status.watcher?.nextActionKey || (unread && unread > 0 ? "read-inbox" : "already-connected")
+      responsiveDelivery: status.responsiveDelivery?.state,
+      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected")
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
@@ -34225,6 +34221,210 @@ function compactStatusCardFromStatus(status) {
     next: "run parle_setup to diagnose configuration."
   });
 }
+
+// ../client/dist/responsive-delivery.js
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync2, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join5 } from "node:path";
+var RESPONSIVE_DELIVERY_SKEW_MS = 3e4;
+var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
+var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
+var RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
+var RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS = 512;
+var ACTIVE = /* @__PURE__ */ new Set(["starting", "watching", "backoff"]);
+var PUBLISHED = /* @__PURE__ */ new Set(["starting", "watching", "backoff", "stopped", "terminal"]);
+var ISO = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+var string4 = (value, max = 256) => typeof value === "string" && value.length > 0 && value.length <= max ? value : void 0;
+function redactResponsiveDeliveryDiagnostic(value) {
+  if (typeof value !== "string")
+    return void 0;
+  const text = value.slice(0, RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS).replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]").replace(/\bparle_[a-z]+_[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]").replace(/\b(parle_(?:ses|tok|secret)[A-Za-z0-9_\-.]*)\b/gi, "[REDACTED]").replace(/\b(authorization|token|secret|password|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
+  return text || void 0;
+}
+function cleanSnapshot(input) {
+  const lastError = input.lastError ? { message: redactResponsiveDeliveryDiagnostic(input.lastError.message) || "[REDACTED]", at: input.lastError.at } : void 0;
+  return {
+    ...input,
+    publisher: { ...input.publisher, ...input.publisher.version ? { version: input.publisher.version.slice(0, 128) } : {} },
+    target: { ...input.target },
+    ...lastError ? { lastError } : {},
+    ...redactResponsiveDeliveryDiagnostic(input.reason) ? { reason: redactResponsiveDeliveryDiagnostic(input.reason) } : {}
+  };
+}
+function buildResponsiveDeliverySnapshot(base, state, event = {}, now = /* @__PURE__ */ new Date()) {
+  const updatedAt = now.toISOString();
+  const expected = Math.max(0, Math.min(RESPONSIVE_DELIVERY_MAX_LEASE_MS - RESPONSIVE_DELIVERY_SKEW_MS, Math.trunc(event.expectedProgressMs ?? 0)));
+  const expiresAt = new Date(now.getTime() + (ACTIVE.has(state) ? expected + RESPONSIVE_DELIVERY_SKEW_MS : RESPONSIVE_DELIVERY_TOMBSTONE_MS)).toISOString();
+  const message = typeof event.lastError === "string" ? event.lastError : event.lastError?.message;
+  const errorAt = typeof event.lastError === "string" ? updatedAt : event.lastError?.at || updatedAt;
+  return cleanSnapshot({
+    ...base,
+    schemaVersion: 1,
+    state,
+    updatedAt,
+    expiresAt,
+    ...event.lastSuccessAt ? { lastSuccessAt: event.lastSuccessAt } : {},
+    ...event.lastWakeAt ? { lastWakeAt: event.lastWakeAt } : {},
+    ...event.retryAt ? { retryAt: event.retryAt } : {},
+    ...message ? { lastError: { message, at: errorAt } } : {},
+    ...event.reason ? { reason: event.reason } : {}
+  });
+}
+function responsiveDeliveryRuntimeDirPath(cwd) {
+  return join5(cwd, ".parle", "runtime", "responsive");
+}
+function responsiveDeliveryRuntimeFilePath(cwd, pid) {
+  return join5(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
+}
+function writeResponsiveDeliverySnapshot(cwd, snapshot) {
+  const dir = responsiveDeliveryRuntimeDirPath(cwd);
+  mkdirSync4(dir, { recursive: true, mode: 448 });
+  chmodSync3(dir, 448);
+  const tmp = join5(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
+  writeFileSync3(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
+  chmodSync3(tmp, 384);
+  renameSync4(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
+}
+function parseResponsiveDeliverySnapshot(value) {
+  if (!value || typeof value !== "object")
+    return void 0;
+  const row = value;
+  if (row.schemaVersion !== 1 || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !PUBLISHED.has(row.state) || !ISO(row.processStartedAt) || !ISO(row.updatedAt) || !ISO(row.expiresAt))
+    return void 0;
+  const name = string4(row.publisher?.name);
+  const instance = string4(row.publisher?.clientInstanceId);
+  const agentSessionId = string4(row.target?.agentSessionId);
+  if (!name || !instance || !agentSessionId)
+    return void 0;
+  const snapshot = {
+    schemaVersion: 1,
+    pid: row.pid,
+    processStartedAt: row.processStartedAt,
+    publisher: { name, clientInstanceId: instance, ...string4(row.publisher.version, 128) ? { version: string4(row.publisher.version, 128) } : {} },
+    target: { agentSessionId, ...string4(row.target.participantId) ? { participantId: string4(row.target.participantId) } : {}, ...string4(row.target.roomId) ? { roomId: string4(row.target.roomId) } : {} },
+    state: row.state,
+    updatedAt: row.updatedAt,
+    expiresAt: row.expiresAt
+  };
+  for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"])
+    if (ISO(row[key]))
+      snapshot[key] = row[key];
+  if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string")
+    snapshot.lastError = { message: redactResponsiveDeliveryDiagnostic(row.lastError.message) || "[REDACTED]", at: row.lastError.at };
+  const reason = redactResponsiveDeliveryDiagnostic(row.reason);
+  if (reason)
+    snapshot.reason = reason;
+  return snapshot;
+}
+function readResponsiveDeliverySnapshots(cwd) {
+  let names;
+  try {
+    names = readdirSync2(responsiveDeliveryRuntimeDirPath(cwd));
+  } catch {
+    return [];
+  }
+  const result2 = [];
+  for (const name of names) {
+    if (!/^\d+\.json$/.test(name))
+      continue;
+    try {
+      const raw = readFileSync5(join5(responsiveDeliveryRuntimeDirPath(cwd), name), "utf8");
+      if (Buffer.byteLength(raw) > RESPONSIVE_DELIVERY_MAX_FILE_BYTES)
+        continue;
+      const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+      if (snapshot)
+        result2.push(snapshot);
+    } catch {
+    }
+  }
+  return result2;
+}
+function inspectResponsiveDeliveryPid(pid) {
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error51) {
+    return error51?.code === "ESRCH" ? "dead" : "unknown";
+  }
+}
+function inspection(pid, inspectPid) {
+  if (!inspectPid)
+    return "unknown";
+  try {
+    return inspectPid(pid);
+  } catch {
+    return "unknown";
+  }
+}
+function isFresh(snapshot, now) {
+  return Date.parse(snapshot.expiresAt) >= now.getTime() && Date.parse(snapshot.updatedAt) <= now.getTime() + RESPONSIVE_DELIVERY_SKEW_MS;
+}
+function isActiveLive(snapshot, now, inspectPid) {
+  if (!isFresh(snapshot, now))
+    return false;
+  const checked = inspection(snapshot.pid, inspectPid);
+  if (checked === "dead" || typeof checked === "object" && (checked.status === "dead" || checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt))
+    return false;
+  return true;
+}
+function result(state, snapshot, now = /* @__PURE__ */ new Date()) {
+  if (!snapshot)
+    return { state };
+  return { state, updatedAt: snapshot.updatedAt, ...snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}, ...snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}, ...snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}, ...snapshot.lastError ? { lastError: snapshot.lastError } : {}, ...snapshot.reason ? { reason: snapshot.reason } : {}, evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...snapshot.publisher.version ? { version: snapshot.publisher.version } : {} } };
+}
+function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
+  const now = options.now || /* @__PURE__ */ new Date();
+  const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
+  const mismatched = snapshots.filter((snapshot) => snapshot.target.agentSessionId !== agentSessionId);
+  const active = exact.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
+  if (active.length > 1)
+    return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
+  if (active.length === 1)
+    return result(active[0].state, active[0], now);
+  const tombstones = exact.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
+  if (tombstones.length) {
+    const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+    return result(newest.state, newest, now);
+  }
+  const stale = [...exact.filter((snapshot) => ACTIVE.has(snapshot.state)), ...mismatched].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return stale.length ? result("stale", stale[0], now) : { state: "unknown" };
+}
+var ResponsiveDeliveryRecorder = class {
+  options;
+  target;
+  latest;
+  constructor(options) {
+    this.options = options;
+    this.target = { ...options.target };
+  }
+  record(state, event = {}) {
+    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, event, this.options.now?.() || /* @__PURE__ */ new Date());
+    this.latest = snapshot;
+    if (this.options.persist && this.options.cwd)
+      writeResponsiveDeliverySnapshot(this.options.cwd, snapshot);
+    return snapshot;
+  }
+  starting(event) {
+    return this.record("starting", event);
+  }
+  watching(event) {
+    return this.record("watching", event);
+  }
+  backoff(event) {
+    return this.record("backoff", event);
+  }
+  stopped(event) {
+    return this.record("stopped", event);
+  }
+  terminal(event) {
+    return this.record("terminal", event);
+  }
+  retarget(target) {
+    this.target = { ...target };
+  }
+  snapshot() {
+    return this.latest && { ...this.latest, publisher: { ...this.latest.publisher }, target: { ...this.latest.target } };
+  }
+};
 
 // ../client/dist/delivery.js
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
@@ -34260,6 +34460,7 @@ var ResponsiveDeliveryController = class {
   random;
   onWakeError;
   onWakeOpen;
+  onProgress;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -34297,6 +34498,7 @@ var ResponsiveDeliveryController = class {
     this.random = options.random ?? Math.random;
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
+    this.onProgress = options.onProgress;
   }
   status() {
     return {
@@ -34406,6 +34608,7 @@ var ResponsiveDeliveryController = class {
             continue;
           this.lastError = void 0;
           this.onWakeOpen?.();
+          this.reportProgress("wake_open");
           const decoder = new TextDecoder();
           let buffer = "";
           while (!wakeAbort.signal.aborted) {
@@ -34555,6 +34758,12 @@ var ResponsiveDeliveryController = class {
     }
     return entry;
   }
+  reportProgress(kind) {
+    try {
+      this.onProgress?.(kind);
+    } catch {
+    }
+  }
   async doDrainRoom(room) {
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted)
@@ -34562,6 +34771,7 @@ var ResponsiveDeliveryController = class {
       let delivery;
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        this.reportProgress("drain_success");
       } catch (error51) {
         this.stat(room.roomId).lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
         return;
@@ -34655,8 +34865,8 @@ var ResponsiveDeliveryController = class {
 };
 
 // ../client/dist/peer-context.js
-import { chmodSync as chmodSync3, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync5, realpathSync as realpathSync2, renameSync as renameSync4, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname4, join as join5 } from "node:path";
+import { chmodSync as chmodSync4, existsSync as existsSync4, lstatSync as lstatSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync6, realpathSync as realpathSync2, renameSync as renameSync5, statSync as statSync3, unlinkSync as unlinkSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname4, join as join6 } from "node:path";
 var MAX_PEERS = 64;
 var MAX_FIELD = 200;
 var MAX_STORE_BYTES = 64 * 1024;
@@ -34667,7 +34877,7 @@ function validAddress(address) {
   return address.length <= MAX_FIELD && PEER_ADDRESS_RE.test(address);
 }
 function peerContextFilePath(catalogPath) {
-  return join5(dirname4(catalogPath), "peers");
+  return join6(dirname4(catalogPath), "peers");
 }
 function ownerOnlyFile(path) {
   const link = lstatSync4(path);
@@ -34701,7 +34911,7 @@ function readPeerContext(catalogPath) {
     const size = (link.isSymbolicLink() ? statSync3(path) : link).size;
     if (size > MAX_STORE_BYTES)
       return { version: 1, peers: [] };
-    const parsed = JSON.parse(readFileSync5(path, "utf8"));
+    const parsed = JSON.parse(readFileSync6(path, "utf8"));
     const peers = Array.isArray(parsed?.peers) ? parsed.peers : [];
     return {
       version: 1,
@@ -34860,7 +35070,7 @@ function parseKeyValueFile(text) {
 function readKeyValueFile(path) {
   if (!existsSync5(path))
     return {};
-  return parseKeyValueFile(readFileSync6(path, "utf8"));
+  return parseKeyValueFile(readFileSync7(path, "utf8"));
 }
 function firstConfigValue(name, sources, fallback) {
   for (const source of sources) {
@@ -34889,7 +35099,7 @@ function versionConfig(env, dotEnv, warnings) {
   return { value: DEFAULT_VERSION, source: "default" };
 }
 function resolveConfig(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join6(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join7(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -34949,7 +35159,7 @@ function requestOrigin(value) {
   }
 }
 function resolveRoomSet(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join6(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join7(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -35362,7 +35572,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!current)
       return void 0;
     try {
-      const onDisk = readKeyValueFile(join6(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
+      const onDisk = readKeyValueFile(join7(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
       if (onDisk === void 0 || onDisk === "")
         return void 0;
       if (onDisk === current)
@@ -36026,7 +36236,7 @@ var ParleAgentClient = class _ParleAgentClient {
         let scratch;
         let committed = false;
         try {
-          const result = await this.withPublicationBarrier("profile switch", () => performProfileSwitch({
+          const result2 = await this.withPublicationBarrier("profile switch", () => performProfileSwitch({
             resolve: () => {
               targetCfg = resolveConfig(this.cwd, this.selectedEnvironment(profile));
               if (!targetCfg.roomId?.value || !targetCfg.agentToken?.value) {
@@ -36126,13 +36336,13 @@ var ParleAgentClient = class _ParleAgentClient {
             }
           }));
           return {
-            ...result,
+            ...result2,
             previousProfile,
             sessionAddress: this.runtime.sessionAddress,
             agentSessionId: this.runtime.agentSessionId,
             expiresAt: this.runtime.expiresAt,
             rooms: this.runtime.rooms.map((room) => ({ ...room })),
-            watcherRestartRequired: result.switched
+            watcherRestartRequired: result2.switched
           };
         } finally {
           if (scratch && !committed)
@@ -36526,9 +36736,9 @@ var ParleAgentClient = class _ParleAgentClient {
     this.resetRebootstrapEpisodeIfHealthy();
     await this.ensureBootstrapped(signal);
     try {
-      const result = await fn();
+      const result2 = await fn();
       this.clearRolloverStormProtection(true);
-      return result;
+      return result2;
     } catch (error51) {
       if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap") {
         this.recordTerminalCause(error51);
@@ -36557,9 +36767,9 @@ var ParleAgentClient = class _ParleAgentClient {
           throw bootstrapError;
         }
       });
-      const result = await fn();
+      const result2 = await fn();
       this.clearRolloverStormProtection(true);
-      return result;
+      return result2;
     }
   }
   async openWakeStream(signal) {
@@ -36671,7 +36881,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!responsiveDeliveryKey(message))
       throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
     const roomId = this.roomTarget(roomIdParam ?? (typeof message.room_id === "string" ? message.room_id : void 0)).roomId.value;
-    const result = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
+    const result2 = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
       method: "POST",
       session: true,
       roomId,
@@ -36685,7 +36895,7 @@ var ParleAgentClient = class _ParleAgentClient {
       room.lastAckEventId = message.event_id;
       this.publishRoomRuntimes();
     }
-    return result;
+    return result2;
   }
   async readProjection(params = {}, signal) {
     return this.readSurface("projection", params, signal);
@@ -36727,11 +36937,11 @@ var ParleAgentClient = class _ParleAgentClient {
     const signal = signalOrParams instanceof AbortSignal ? signalOrParams : maybeSignal;
     const generation = this.bootstrapGeneration;
     let roomId = "";
-    const result = await this.withDataPlane(() => this.withRebootstrap(() => {
+    const result2 = await this.withDataPlane(() => this.withRebootstrap(() => {
       roomId = this.roomTarget(params.roomId).roomId.value;
       return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/affordances`, { session: true, roomId, signal });
     }, signal));
-    return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, roomId, session: this.sessionEstablishedBlock() } : result;
+    return this.bootstrapGeneration !== generation && result2 && typeof result2 === "object" ? { ...result2, roomId, session: this.sessionEstablishedBlock() } : result2;
   }
   async getOwnAliasOfflineDelivery(alias, signal) {
     return this.withRebootstrap(() => getOwnAliasOfflineDelivery(this.aliasTransport(), alias, signal), signal);
@@ -36757,10 +36967,10 @@ var ParleAgentClient = class _ParleAgentClient {
     try {
       return await this.withDataPlane(() => this.withRebootstrap(async () => {
         roomId = this.roomTarget(params.roomId).roomId.value;
-        const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", session: true, roomId, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
-        const deliveryStatus = summarizeSendDelivery(result);
-        const clientWarnings = sendAttentionWarnings(result);
-        return { ...result, roomId, idempotencyKey, ...clientWarnings ? { clientWarnings } : {}, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
+        const result2 = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", session: true, roomId, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
+        const deliveryStatus = summarizeSendDelivery(result2);
+        const clientWarnings = sendAttentionWarnings(result2);
+        return { ...result2, roomId, idempotencyKey, ...clientWarnings ? { clientWarnings } : {}, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
       }, signal));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
@@ -36779,7 +36989,7 @@ var ParleAgentClient = class _ParleAgentClient {
     try {
       return await this.withDataPlane(() => this.withRebootstrap(async () => {
         roomId = this.roomTarget(params.roomId).roomId.value;
-        const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/replies`, {
+        const result2 = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/replies`, {
           method: "POST",
           session: true,
           roomId,
@@ -36788,8 +36998,8 @@ var ParleAgentClient = class _ParleAgentClient {
           headers: { "Idempotency-Key": idempotencyKey },
           body: { reply_route_id: params.replyRouteId, payload: { body: params.body } }
         });
-        const deliveryStatus = summarizeSendDelivery(result);
-        return { ...result, roomId, idempotencyKey, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
+        const deliveryStatus = summarizeSendDelivery(result2);
+        return { ...result2, roomId, idempotencyKey, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
       }, signal));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
@@ -36817,20 +37027,20 @@ var ParleAgentClient = class _ParleAgentClient {
 import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
 import {
   accessSync,
-  chmodSync as chmodSync4,
+  chmodSync as chmodSync5,
   constants,
   lstatSync as lstatSync5,
-  mkdirSync as mkdirSync5,
-  readdirSync as readdirSync2,
-  renameSync as renameSync5,
-  rmSync as rmSync2,
+  mkdirSync as mkdirSync6,
+  readdirSync as readdirSync3,
+  renameSync as renameSync6,
+  rmSync as rmSync3,
   statSync as statSync4,
   symlinkSync,
-  writeFileSync as writeFileSync4
+  writeFileSync as writeFileSync5
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname5, isAbsolute as isAbsolute3, join as join7 } from "node:path";
+import { dirname as dirname5, isAbsolute as isAbsolute3, join as join8 } from "node:path";
 var MAX_PENDING = 100;
 var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
@@ -36841,16 +37051,16 @@ function deliveryKey2(roomId, message) {
 }
 function hookBridgeStateDir(scope) {
   const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
-  return join7(homedir2(), ".local", "state", "parle", "hook-bridge", key);
+  return join8(homedir2(), ".local", "state", "parle", "hook-bridge", key);
 }
 function hookBridgeSocketPath(scope, pid = process.pid) {
-  return join7(hookBridgeStateDir(scope), `${pid}.sock`);
+  return join8(hookBridgeStateDir(scope), `${pid}.sock`);
 }
 function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid) {
-  return join7(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+  return join8(hookBridgeStateDir(scope), `${pid}.runtime.json`);
 }
 function hookBridgeRuntimeHandlePath(scope, pid = process.pid) {
-  return join7(hookBridgeStateDir(scope), `${pid}.node`);
+  return join8(hookBridgeStateDir(scope), `${pid}.node`);
 }
 function processIsAlive(pid) {
   try {
@@ -36868,7 +37078,14 @@ var HookDeliveryBridge = class {
     this.runtimeExecPath = runtimeExecPath;
     this.controller = new ResponsiveDeliveryController(client, {
       handler: (input) => this.handleDelivery(input),
-      maxHandlerAttempts: Number.MAX_SAFE_INTEGER
+      maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
+      onProgress: () => this.publishEvidence("watching", { expectedProgressMs: 57e4, lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() }),
+      onWakeError: (error51) => {
+        const message = error51 instanceof Error ? error51.message : String(error51);
+        const action = typeof error51 === "object" && error51 !== null ? error51.action : void 0;
+        if (["reauthorize", "fix_client", "stop"].includes(action || "")) this.publishEvidence("terminal", { reason: action || "wake_terminal", lastError: message });
+        else this.publishEvidence("backoff", { expectedProgressMs: 3e4, lastError: message });
+      }
     });
   }
   client;
@@ -36887,6 +37104,7 @@ var HookDeliveryBridge = class {
   lastError;
   hostSessionId;
   unsubscribeCommitGuard;
+  evidence;
   status() {
     const controller = this.controller.status();
     const roomError = controller.rooms.find((room) => room.lastError)?.lastError;
@@ -36918,6 +37136,7 @@ var HookDeliveryBridge = class {
   }
   async stop() {
     this.stopped = true;
+    this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
     this.unsubscribeCommitGuard?.();
     this.unsubscribeCommitGuard = void 0;
@@ -36928,6 +37147,7 @@ var HookDeliveryBridge = class {
   }
   async startBridge() {
     this.lastError = void 0;
+    this.publishEvidence("starting", { expectedProgressMs: 12e4 });
     if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = this.client.onBeforeSessionCommit?.((plan) => this.guardSessionCommit(plan));
     }
@@ -36946,11 +37166,36 @@ var HookDeliveryBridge = class {
       try {
         await this.controller.start();
         this.baselineDone = true;
+        this.publishEvidence("watching", { expectedProgressMs: 57e4, lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
       } catch (error51) {
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        this.publishEvidence("backoff", { expectedProgressMs: 3e4, lastError: this.lastError });
       } finally {
         this.baselineActive = false;
       }
+    }
+  }
+  publishEvidence(state, event = {}) {
+    const runtime = this.client.runtime || {};
+    if (!runtime.agentSessionId) return;
+    if (!this.evidence) {
+      this.evidence = new ResponsiveDeliveryRecorder({
+        cwd: this.scope,
+        persist: true,
+        processStartedAt: processStartedAtIso(),
+        publisher: {
+          name: "@parlehq/mcp-server:hook-bridge",
+          clientInstanceId: String(this.client.clientInstanceId || "hook-bridge")
+        },
+        target: { agentSessionId: String(runtime.agentSessionId) }
+      });
+    } else if (this.evidence.snapshot()?.target.agentSessionId !== String(runtime.agentSessionId)) {
+      this.evidence.retarget({ agentSessionId: String(runtime.agentSessionId) });
+    }
+    try {
+      this.evidence.record(state, event);
+    } catch (error51) {
+      this.lastError = this.lastError || `responsive-delivery evidence unavailable: ${error51 instanceof Error ? error51.message : String(error51)}`;
     }
   }
   // Session-scoped backlog present before the bridge's first drain belongs to
@@ -36984,12 +37229,12 @@ var HookDeliveryBridge = class {
   async listen() {
     const path = hookBridgeSocketPath(this.scope);
     const dir = dirname5(path);
-    mkdirSync5(dir, { recursive: true, mode: 448 });
+    mkdirSync6(dir, { recursive: true, mode: 448 });
     const before = lstatSync5(dir);
     if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
       throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
     }
-    chmodSync4(dir, 448);
+    chmodSync5(dir, 448);
     const after = lstatSync5(dir);
     if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
     this.removeDeadRuntimeArtifacts(dir);
@@ -37001,7 +37246,7 @@ var HookDeliveryBridge = class {
         this.server.once("error", reject);
         this.server.listen(path, () => {
           this.server.removeListener("error", reject);
-          chmodSync4(path, 384);
+          chmodSync5(path, 384);
           resolve2();
         });
       });
@@ -37020,24 +37265,24 @@ var HookDeliveryBridge = class {
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
     const descriptorTemporary = `${descriptorPath}.tmp`;
     const handleTemporary = `${handlePath}.tmp`;
-    rmSync2(descriptorTemporary, { force: true });
-    rmSync2(handleTemporary, { force: true });
+    rmSync3(descriptorTemporary, { force: true });
+    rmSync3(handleTemporary, { force: true });
     try {
-      writeFileSync4(descriptorTemporary, `${JSON.stringify({
+      writeFileSync5(descriptorTemporary, `${JSON.stringify({
         execPath,
         pid: process.pid,
         startedAt: (/* @__PURE__ */ new Date()).toISOString()
       })}
 `, { encoding: "utf8", mode: 384, flag: "wx" });
-      chmodSync4(descriptorTemporary, 384);
-      renameSync5(descriptorTemporary, descriptorPath);
+      chmodSync5(descriptorTemporary, 384);
+      renameSync6(descriptorTemporary, descriptorPath);
       symlinkSync(execPath, handleTemporary, "file");
-      renameSync5(handleTemporary, handlePath);
+      renameSync6(handleTemporary, handlePath);
     } catch (error51) {
-      rmSync2(descriptorTemporary, { force: true });
-      rmSync2(handleTemporary, { force: true });
-      rmSync2(descriptorPath, { force: true });
-      rmSync2(handlePath, { force: true });
+      rmSync3(descriptorTemporary, { force: true });
+      rmSync3(handleTemporary, { force: true });
+      rmSync3(descriptorPath, { force: true });
+      rmSync3(handlePath, { force: true });
       throw error51;
     }
   }
@@ -37048,14 +37293,14 @@ var HookDeliveryBridge = class {
       hookBridgeRuntimeHandlePath(this.scope),
       `${hookBridgeRuntimeDescriptorPath(this.scope)}.tmp`,
       `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`
-    ]) rmSync2(path, { force: true });
+    ]) rmSync3(path, { force: true });
   }
   removeDeadRuntimeArtifacts(dir) {
     const stalePattern = /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp)?$/;
-    for (const name of readdirSync2(dir)) {
+    for (const name of readdirSync3(dir)) {
       const match = name.match(stalePattern);
       if (!match || processIsAlive(Number(match[1]))) continue;
-      rmSync2(join7(dir, name), { force: true });
+      rmSync3(join8(dir, name), { force: true });
     }
   }
   handleSocket(socket) {
@@ -37164,7 +37409,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.16";
+var MCP_CLIENT_VERSION = "0.7.17";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -37286,7 +37531,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   };
   registerTool("parle_status", {
     title: "Parle Status",
-    description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. A configured hook delivery bridge reports watcher state from owned runtime evidence; otherwise connected MCP status reports watcher state as unknown. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
+    description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. The canonical responsiveDelivery field resolves shared credential-free lifecycle evidence; MCP connectivity and unread observation never imply healthy delivery. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
     inputSchema: statusSchema,
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params, extra) => safeTool(async () => {
@@ -37299,13 +37544,21 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = connected ? bridgeStatus ? bridgeStatus.lastError ? { state: "degraded", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus.running ? { state: "on", nextActionKey: "already-connected", nextAction: "responsive delivery is armed" } : { state: "off", nextActionKey: "arm-watcher", nextAction: "restart the Parle hook bridge" } : WATCHER_UNKNOWN_GUIDANCE : void 0;
-      const enriched = watcher ? { ...status, watcher } : status;
+      const agentSessionId = status.runtime?.agentSessionId;
+      let responsiveDelivery = connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
+      if (responsiveDelivery?.state === "unknown" && bridgeStatus) {
+        responsiveDelivery = bridgeStatus.lastError ? { state: "backoff", lastError: { message: redactString(bridgeStatus.lastError), at: (/* @__PURE__ */ new Date()).toISOString() } } : { state: bridgeStatus.running ? "watching" : "stopped" };
+      }
+      if (responsiveDelivery) {
+        const next = responsiveDelivery.state === "unknown" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : responsiveDelivery.state === "backoff" || responsiveDelivery.state === "stale" || responsiveDelivery.state === "terminal" || responsiveDelivery.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
+        responsiveDelivery = { ...responsiveDelivery, ...next };
+      }
+      const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
       let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
       if (!profilesPathOverride) {
         try {
-          profilesPathOverride = parseKeyValueFile(readFileSync7(join8(process.cwd(), ".env"), "utf8")).PARLE_PROFILES_PATH;
+          profilesPathOverride = parseKeyValueFile(readFileSync8(join9(process.cwd(), ".env"), "utf8")).PARLE_PROFILES_PATH;
         } catch {
         }
       }
@@ -37314,7 +37567,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
         peers: readPeerContext(peerCatalog).peers,
         note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the parle-peers helper in an interactive terminal."
       };
-      return { ...status, bootstrapAttempted, peerContext, ...watcher ? { watcher } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
+      return { ...status, bootstrapAttempted, peerContext, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -37366,15 +37619,13 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (deliveryBridge?.start) await deliveryBridge.start();
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
-      const watcher = bridgeStatus ? bridgeStatus.lastError ? "degraded" : bridgeStatus.running ? "on" : "off" : void 0;
+      const agentSessionId = summary.agentSessionId;
+      const responsiveDelivery = agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
       return {
         ...summary,
+        ...responsiveDelivery ? { responsiveDelivery } : {},
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},
-        compactText: compactConnectionCardFromSummary(summary, {
-          watcher,
-          ...watcher === "on" ? { next: "already-connected" } : {},
-          ...watcher === "degraded" ? { next: "recover-watcher" } : {}
-        })
+        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery })
       };
     }
     return summary;
@@ -37388,9 +37639,9 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     observeRequest(extra);
     if (params.watcherStopped !== true) throw new Error("parle_switch_profile requires watcherStopped=true after the host has verified the sibling watcher task is stopped.");
     if (typeof client.switchProfile !== "function") throw new Error("This Parle client does not support live profile switching.");
-    const result = await client.switchProfile(params.profile);
-    if (!result || typeof result !== "object") return result;
-    const details = result;
+    const result2 = await client.switchProfile(params.profile);
+    if (!result2 || typeof result2 !== "object") return result2;
+    const details = result2;
     const room = Array.isArray(details.rooms) ? details.rooms.find((candidate) => candidate?.roomId === details.roomId) : void 0;
     const cursor = details.cursor ?? room?.cursor;
     const participantId = details.participantId ?? room?.participantId;
@@ -37829,14 +38080,45 @@ function parseWatcherArgs(args) {
   if (positional.length < 1 || positional.length > 3 || !/^[0-9]+$/.test(positional[0]) || positional.slice(1).some((value) => !value || value.startsWith("-"))) throw new WatcherUsageError();
   return { ...profile ? { profile } : {}, workerArgs: positional };
 }
+function reportResponsiveEvidence(operation, warn = console.error) {
+  try {
+    operation();
+    return true;
+  } catch (error51) {
+    warn(`Parle warning: responsive-delivery evidence unavailable: ${redactResponsiveDeliveryDiagnostic(error51 instanceof Error ? error51.message : String(error51)) || "redacted error"}`);
+    return false;
+  }
+}
+function applyWatcherStateLine(line2, evidence, nowMs = Date.now()) {
+  const [kind, value] = line2.trim().split("	", 2);
+  if (kind === "watching") evidence.watching({ expectedProgressMs: 75e3, lastSuccessAt: new Date(nowMs).toISOString() });
+  else if (kind === "backoff") {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) evidence.backoff({ expectedProgressMs: Math.min(seconds * 1e3, 57e4), retryAt: new Date(nowMs + seconds * 1e3).toISOString() });
+  } else if (kind === "target" && value) evidence.retarget({ agentSessionId: value });
+  else if (kind === "wake") evidence.stopped({ reason: "wake_detected", lastWakeAt: new Date(nowMs).toISOString() });
+  else if (kind === "terminal") evidence.terminal({ reason: value || "watcher_terminal" });
+}
 async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env) {
   const { profile, workerArgs } = parseWatcherArgs(args);
-  const worker = join8(dirname6(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
+  const worker = join9(dirname6(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
   if (!existsSync6(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
   const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
   delete childEnv.PARLE_SESSION_ALIAS;
   childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
   const watcherClient = createMcpAgentClient({ cwd: dirname6(fileURLToPath(metaUrl)), env: childEnv });
+  const watchedAgentSessionId = workerArgs[1];
+  const evidence = watchedAgentSessionId ? new ResponsiveDeliveryRecorder({
+    cwd,
+    persist: true,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "@parlehq/mcp-server:standalone-watch", version: MCP_CLIENT_VERSION, clientInstanceId: MCP_CLIENT_INSTANCE_ID },
+    target: { agentSessionId: watchedAgentSessionId, ...workerArgs[2] ? { participantId: workerArgs[2] } : {} }
+  }) : void 0;
+  const reportEvidence = (operation) => {
+    reportResponsiveEvidence(operation);
+  };
+  if (evidence) reportEvidence(() => evidence.starting({ expectedProgressMs: 75e3 }));
   let child;
   let childRevision = 0;
   let desiredRevision = 0;
@@ -37891,16 +38173,37 @@ async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env)
       childRevision = spawnRevision;
       const launchedChild = spawn("sh", [worker, ...workerArgs], {
         cwd,
-        env: workerEnv,
-        stdio: "inherit",
+        env: { ...workerEnv, PARLE_WATCH_STATE_FD: "3" },
+        stdio: ["inherit", "inherit", "inherit", "pipe"],
         detached: process.platform !== "win32"
       });
       child = launchedChild;
-      let result;
+      if (evidence) reportEvidence(() => evidence.watching({ expectedProgressMs: 75e3 }));
+      const stateStream = launchedChild.stdio[3];
+      if (stateStream) {
+        stateStream.setEncoding("utf8");
+        let stateBuffer = "";
+        stateStream.on("data", (chunk) => {
+          stateBuffer += chunk;
+          if (Buffer.byteLength(stateBuffer, "utf8") > 4096) {
+            stateBuffer = "";
+            stateStream.destroy();
+            console.error("Parle warning: watcher state protocol exceeded 4096 bytes; continuing with spawn and exit evidence only");
+            return;
+          }
+          let newline;
+          while ((newline = stateBuffer.indexOf("\n")) >= 0) {
+            const line2 = stateBuffer.slice(0, newline);
+            stateBuffer = stateBuffer.slice(newline + 1);
+            if (evidence) reportEvidence(() => applyWatcherStateLine(line2, evidence));
+          }
+        });
+      }
+      let result2;
       try {
-        result = await new Promise((resolve2, reject) => {
+        result2 = await new Promise((resolve2, reject) => {
           launchedChild.once("error", reject);
-          launchedChild.once("exit", (code, signal) => resolve2(code ?? (signal ? 128 : 2)));
+          launchedChild.once("close", (code, signal) => resolve2(code ?? (signal ? 128 : 2)));
         });
       } finally {
         if (forceStop) clearTimeout(forceStop);
@@ -37909,12 +38212,20 @@ async function runWatcher(metaUrl, args, cwd = process.cwd(), env = process.env)
       }
       const restartWasRequested = internalRestart?.child === launchedChild && watcherExitRequiresInternalRestart(spawnRevision, desiredRevision, internalRestart.revision);
       if (internalRestart?.child === launchedChild) internalRestart = void 0;
-      if (externalSignal) return result;
+      if (externalSignal) {
+        if (evidence) reportEvidence(() => evidence.stopped({ reason: "host_signal" }));
+        return result2;
+      }
       if (restartWasRequested) {
         continue;
       }
-      return result;
+      if (evidence) {
+        if (result2 === 0) reportEvidence(() => evidence.stopped({ reason: "wake_detected" }));
+        else if (evidence.snapshot()?.state !== "terminal") reportEvidence(() => evidence.terminal({ reason: `watcher_exit_${result2}` }));
+      }
+      return result2;
     }
+    if (evidence) reportEvidence(() => evidence.stopped({ reason: "host_signal" }));
     return 128;
   } finally {
     unsubscribeRevision();
@@ -38028,12 +38339,14 @@ export {
   MCP_CLIENT_VERSION,
   WATCHER_USAGE,
   WatcherUsageError,
+  applyWatcherStateLine,
   createMcpAgentClient,
   createParleMcpServer,
   degradedConfigDiagnostic,
   hostSessionIdFromMeta,
   isDirectRun,
   parseWatcherArgs,
+  reportResponsiveEvidence,
   resolveIntegrationMetadata,
   resolveWatcherEnvironment,
   runStdio,

@@ -37,7 +37,7 @@ When the user asks to connect (or coordination is about to start):
 
 1. If configuration may be missing, run `parle_setup`; otherwise go straight to `parle_connect`.
 2. `parle_connect` establishes or reuses the room session and returns the session address, `agentSessionId`, participant id, expiry, cursor, and `compactText`. Keep the full tool result for internal watcher setup. Do not report UUIDs, cursor, expiry, backlog, or config provenance in the default operator-facing response unless the user asks for details.
-3. Immediately arm the responsive watcher (next section) with the returned `cursor`, `agentSessionId`, and room participant id. Arming is part of connecting by default; stand by without a watcher only when the user explicitly asks. After the background watcher task is actually started, reply with the compact card shape below. Take `compactText` and insert `Watcher       on` after the `In room` line once the watcher task is confirmed started. Do not say the watcher is on until the background task start is confirmed.
+3. Immediately arm responsive delivery (next section) with the returned `cursor`, `agentSessionId`, and room participant id. Arming is part of connecting by default; stand by without delivery only when the user explicitly asks. After the background watcher task starts, call `parle_status` again and render its canonical `compactText`. Do not infer delivery health from background-task creation, MCP connectivity, or remembered state.
 
 Default compact response shape:
 
@@ -48,7 +48,7 @@ Connected to Parle
 You are       @gilman
 Acting as     @gilman.galexc
 In room       #galexc-intercom
-Watcher       on
+Delivery      watching
 
 Session Address:
 @gilman.galexc.2avkwos36qa4kd5t
@@ -57,7 +57,7 @@ Next: open another session and send a message to this Session Address.
 ========================================
 ```
 
-`parle_status` is the full detail entrypoint for config provenance and runtime state, and it also carries `compactText`: when the user asks about Parle status or session state, render that card verbatim instead of improvising a summary from the JSON. Status watcher evidence is not yet authoritative, so the card must remain `Watcher       unknown` with `Next: arm or verify the watcher.` Do not insert `Watcher       on` into a status card based on remembered background-task state. The JSON is diagnostic detail; report it only when the user asks for specifics. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
+`parle_status` is the full detail entrypoint for config provenance, runtime state, and canonical `responsiveDelivery` lifecycle evidence. When the user asks about Parle status or session state, render its `compactText` verbatim instead of improvising a summary from the JSON. Delivery evidence comes only from the shared resolver and may honestly report `starting`, `watching`, `backoff`, `stopped`, `terminal`, `stale`, `unknown`, or `conflict`. Never infer delivery health from MCP connectivity, unread observation, task creation, or remembered state. The JSON is diagnostic detail; report it only when the user asks for specifics. Reads and sends also establish a session lazily when needed; when that happens the response carries a `session` block with the same identity fields.
 
 For room-list, connectable-room, or Rooms UI comparison requests, call `parle_rooms` and render its `compactText` verbatim. Never treat `parle_status.runtime.rooms` as exhaustive. Configured rooms are local and unverified; account relationships are server-authored provenance but do not prove local connection readiness. The returned inventory is principal-private operator context and must not be reposted verbatim into rooms.
 

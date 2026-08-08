@@ -1,13 +1,6 @@
-export type CompactConnectionWatcher = "on" | "off" | "degraded" | "unknown";
+export type CompactResponsiveDelivery = "starting" | "watching" | "backoff" | "stopped" | "terminal" | "stale" | "unknown" | "conflict";
 
 export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "recover-watcher";
-
-// Temporary L1 wording until core discovery authors watcher next-step guidance.
-export const WATCHER_UNKNOWN_GUIDANCE = {
-  state: "unknown" as const,
-  nextActionKey: "arm-or-verify-watcher" as const,
-  nextAction: "arm or verify the watcher",
-};
 
 export type CompactCardRoom = { roomId?: string; roomHandle?: string; unreadCount?: number };
 
@@ -16,7 +9,7 @@ export type CompactConnectionCardInput = {
   sessionAddress?: string | null;
   // One entry per configured room. A single-room session simply has one.
   rooms?: CompactCardRoom[];
-  watcher?: CompactConnectionWatcher;
+  responsiveDelivery?: { state: CompactResponsiveDelivery } | CompactResponsiveDelivery;
   unread?: number;
   next?: CompactConnectionNextKey | string;
 };
@@ -41,7 +34,7 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
       return "read your inbox for messages addressed to this session.";
     case "arm-watcher":
     case "arm-or-verify-watcher":
-      return `${WATCHER_UNKNOWN_GUIDANCE.nextAction}.`;
+      return "arm or verify responsive delivery.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     default:
@@ -77,7 +70,8 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   const rooms = roomLabels(input.rooms);
   if (rooms.length === 1) lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1) lines.push(line("In rooms", rooms.join(", ")));
-  if (input.watcher) lines.push(line("Watcher", input.watcher));
+  const delivery = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  if (delivery) lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0) lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
     lines.push("", "Session Address:", input.sessionAddress);
@@ -94,14 +88,14 @@ export function compactConnectionCardFromSummary(summary: ConnectionSummaryLike,
     sessionAddress: summary.sessionAddress,
     rooms: summary.rooms,
     next: opts.next || (summary.reusedExistingSession ? "already-connected" : undefined),
-    watcher: opts.watcher,
+    responsiveDelivery: opts.responsiveDelivery,
     connectedLabel: opts.connectedLabel,
   });
 }
 
 export type StatusLike = {
-  watcher?: {
-    state?: CompactConnectionWatcher;
+  responsiveDelivery?: {
+    state?: CompactResponsiveDelivery;
     nextActionKey?: CompactConnectionNextKey;
     nextAction?: string;
   };
@@ -135,8 +129,8 @@ export function compactStatusCardFromStatus(status: StatusLike): string {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : (status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : undefined),
       unread,
-      watcher: status.watcher?.state,
-      next: status.watcher?.nextActionKey || (unread && unread > 0 ? "read-inbox" : "already-connected"),
+      responsiveDelivery: status.responsiveDelivery?.state,
+      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected"),
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);

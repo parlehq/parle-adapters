@@ -3188,6 +3188,11 @@ var ParleAccountClient = class {
   }
 };
 
+// ../client/dist/responsive-delivery.js
+var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
+var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
+var RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
+
 // ../client/dist/delivery.js
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 var DEFAULT_MAX_DRAIN_BATCHES = 100;
@@ -3222,6 +3227,7 @@ var ResponsiveDeliveryController = class {
   random;
   onWakeError;
   onWakeOpen;
+  onProgress;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -3259,6 +3265,7 @@ var ResponsiveDeliveryController = class {
     this.random = options.random ?? Math.random;
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
+    this.onProgress = options.onProgress;
   }
   status() {
     return {
@@ -3368,6 +3375,7 @@ var ResponsiveDeliveryController = class {
             continue;
           this.lastError = void 0;
           this.onWakeOpen?.();
+          this.reportProgress("wake_open");
           const decoder = new TextDecoder();
           let buffer = "";
           while (!wakeAbort.signal.aborted) {
@@ -3517,6 +3525,12 @@ var ResponsiveDeliveryController = class {
     }
     return entry;
   }
+  reportProgress(kind) {
+    try {
+      this.onProgress?.(kind);
+    } catch {
+    }
+  }
   async doDrainRoom(room) {
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted)
@@ -3524,6 +3538,7 @@ var ResponsiveDeliveryController = class {
       let delivery;
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        this.reportProgress("drain_success");
       } catch (error) {
         this.stat(room.roomId).lastError = redactString(error instanceof Error ? error.message : String(error));
         return;
@@ -5880,7 +5895,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.21";
+var PI_EXTENSION_VERSION = "0.7.22";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -6986,6 +7001,14 @@ async function runRateLimitRecoveryOperation(pi, ctx, cfg, operation, fn) {
 function formatResult(details) {
   return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
 }
+function normalizedResponsiveDelivery() {
+  const state = runtime.watcherState;
+  if (state === "starting") return { state: "starting" };
+  if (["watching", "waiting", "injecting", "held", "idle"].includes(state || "")) return { state: "watching", updatedAt: runtime.lastSuccessAt };
+  if (["backoff", "rate_limited", "disconnected"].includes(state || "")) return { state: "backoff", retryAt: runtime.nextRetryAt, ...runtime.lastError ? { lastError: { message: runtime.lastError, at: runtime.lastWatcherErrorAt || (/* @__PURE__ */ new Date()).toISOString() } } : {} };
+  if (["auth_expired", "session_expired"].includes(state || "") || runtime.terminalCause) return { state: "terminal", reason: runtime.terminalCause?.message || state };
+  return { state: "stopped" };
+}
 function statusDetails(ctx) {
   const resolved = resolveConfig2(ctx.cwd || process.cwd());
   const cfg = configForLiveRuntime(resolved);
@@ -7016,6 +7039,7 @@ function statusDetails(ctx) {
     profile: redactedValue2(cfg.profile),
     profiles: redactedValue2(cfg.profiles),
     warnings: Array.from(/* @__PURE__ */ new Set([...cfg.warnings, ...bindingWarning ? [bindingWarning] : []])),
+    responsiveDelivery: normalizedResponsiveDelivery(),
     runtime: {
       bootstrapped: view.bootstrapped,
       sessionAddress: view.sessionAddress,

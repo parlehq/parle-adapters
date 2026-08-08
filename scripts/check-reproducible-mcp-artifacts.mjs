@@ -45,6 +45,11 @@ const hookMirrorSets = [
     ],
   },
 ];
+const responsiveDeliveryReader = "packages/client/dist/responsive-delivery.js";
+const responsiveDeliveryReaderMirrors = [
+  "packages/claude-plugin/statusline/responsive-delivery-reader.mjs",
+  "packages/command-code/skills/parle/mods/responsive-delivery-reader.mjs",
+];
 const piArtifact = "packages/pi-extension/dist/index.js";
 const piArtifactChecker = "packages/pi-extension/scripts/check-pi-artifact.mjs";
 const staleSentinel = "stale-ignored-client-dist-fixture";
@@ -81,6 +86,13 @@ function assertArtifactsMatch(root) {
     const wrapperBytes = readFileSync(resolve(root, relativePath));
     if (!canonicalBytes.equals(wrapperBytes)) {
       throw new Error(`${relativePath} differs from the clean canonical MCP build. Run pnpm refresh:mcp-artifacts and commit the required wrapper version and changelog updates.`);
+    }
+  }
+  const readerBytes = readFileSync(resolve(root, responsiveDeliveryReader));
+  for (const relativePath of responsiveDeliveryReaderMirrors) {
+    const mirrorBytes = readFileSync(resolve(root, relativePath));
+    if (!readerBytes.equals(mirrorBytes)) {
+      throw new Error(`${relativePath} differs from the compiled shared responsive-delivery reader. Run pnpm refresh:mcp-artifacts.`);
     }
   }
 }
@@ -138,6 +150,7 @@ try {
   run("pnpm", ["install", "--filter", "@parlehq/mcp-server...", "--filter", "@parlehq/pi-extension...", "--frozen-lockfile", "--offline"], isolatedRoot);
   seedStaleClientDist(isolatedRoot);
   run("pnpm", ["build:mcp"], isolatedRoot);
+  run("node", ["scripts/copy-responsive-delivery-reader.mjs"], isolatedRoot);
   assertStaleFixtureWasRebuilt(isolatedRoot);
   assertPiArtifactFresh(isolatedRoot);
   assertArtifactsMatch(isolatedRoot);

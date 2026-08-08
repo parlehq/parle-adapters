@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,6 +115,13 @@ function runWatch(cwd, apiBase, args, extraEnv = {}) {
   return { child, exited, out: () => stdout, err: () => stderr };
 }
 
+function readResponsiveEvidence(cwd) {
+  const dir = join(cwd, ".parle", "runtime", "responsive");
+  const files = existsSync(dir) ? readdirSync(dir).filter((name) => /^\d+\.json$/.test(name)) : [];
+  assert.equal(files.length, 1, `expected one responsive evidence file in ${dir}`);
+  return JSON.parse(readFileSync(join(dir, files[0]), "utf8"));
+}
+
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
@@ -165,19 +172,23 @@ process.stdout.write(outputs[Math.min(index, outputs.length - 1)]);
       WATCH_STATE: statePath,
       WATCH_REQUEST_LOG: requestLog,
       WATCH_SLEEP_LOG: sleepLog,
+      PARLE_WATCH_STATE_FD: "3",
     }),
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
+  let state = "";
   child.stdout.on("data", (chunk) => (stdout += chunk));
   child.stderr.on("data", (chunk) => (stderr += chunk));
+  child.stdio[3].on("data", (chunk) => (state += chunk));
   return {
     exited: new Promise((resolveExit) => child.on("exit", (code) => resolveExit(code))),
     out: () => stdout,
     err: () => stderr,
     requests: () => existsSync(requestLog) ? readFileSync(requestLog, "utf8").trim().split("\n") : [],
     sleeps: () => existsSync(sleepLog) ? readFileSync(sleepLog, "utf8").trim().split("\n") : [],
+    state: () => state,
     cleanup: () => rmSync(cwd, { recursive: true, force: true }),
   };
 }
@@ -229,6 +240,8 @@ test("one or two helper deadlines do not consume failures or trigger a health pr
     assert.equal(await watch.exited, 0, watch.err());
     assert.deepEqual(watch.requests(), ["hold", "hold", "hold"]);
     assert.deepEqual(watch.sleeps(), []);
+    assert.match(watch.state(), /watching\t/);
+    assert.match(watch.state(), /wake\t/);
   } finally {
     watch.cleanup();
   }
@@ -264,6 +277,8 @@ test("a failed deadline health probe enters the ordinary five-failure path", asy
     assert.deepEqual(watch.requests(), ["hold", "hold", "hold", "probe", "hold", "hold", "hold", "hold"]);
     assert.deepEqual(watch.sleeps(), ["5", "10", "15", "20"]);
     assert.match(watch.err(), /5 consecutive network failures/);
+    assert.match(watch.state(), /backoff\t5/);
+    assert.match(watch.state(), /terminal\tretry_exhausted/);
   } finally {
     watch.cleanup();
   }
@@ -295,6 +310,8 @@ test("retryable and terminal HTTP outcomes keep their canonical shell behavior",
     assert.equal(await retryWatch.exited, 0, retryWatch.err());
     assert.deepEqual(retryWatch.sleeps(), ["2"]);
     assert.match(retryWatch.err(), /retrying after 2s/);
+    assert.match(retryWatch.state(), /backoff\t2/);
+    assert.match(retryWatch.state(), /wake\t/);
   } finally {
     retryWatch.cleanup();
   }
@@ -305,6 +322,7 @@ test("retryable and terminal HTTP outcomes keep their canonical shell behavior",
     assert.equal(await terminalWatch.exited, 2);
     assert.deepEqual(terminalWatch.sleeps(), []);
     assert.match(terminalWatch.err(), /reauthorize/);
+    assert.match(terminalWatch.state(), /terminal\treauthorize/);
   } finally {
     terminalWatch.cleanup();
   }
@@ -548,12 +566,13 @@ test("external termination is final and ends the current dedicated session once"
     if (req.method === "POST" && url.pathname.endsWith("/end")) endCalls += 1;
   });
   try {
-    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"], { PARLE_WATCH_SESSION_LIVENESS: "0" });
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1", "primary-session"], { PARLE_WATCH_SESSION_LIVENESS: "0" });
     await waitFor(() => heldRequests > 0, "watcher worker did not start before external termination");
     watch.child.kill("SIGTERM");
     assert.equal(await watch.exited, 128);
     assert.equal(sessionCreates, 1, "external termination must not respawn the worker or mint another session");
     assert.equal(endCalls, 1, "external termination must end the current session once");
+    assert.deepEqual({ state: readResponsiveEvidence(cwd).state, reason: readResponsiveEvidence(cwd).reason }, { state: "stopped", reason: "host_signal" });
   } finally {
     server.close();
     rmSync(cwd, { recursive: true, force: true });
@@ -675,6 +694,7 @@ test("watch exits 3 when its session was present and then removed", { skip: !hav
     assert.match(watch.err(), /remaining TTL/);
     assert.match(watch.err(), /parle-watch forensics: watched=session-mine verdict=DEAD/);
     assert.match(watch.err(), /mine=no/);
+    assert.deepEqual({ state: readResponsiveEvidence(cwd).state, reason: readResponsiveEvidence(cwd).reason }, { state: "terminal", reason: "target_dead" });
   } finally {
     server.close();
   }
@@ -731,6 +751,9 @@ test("watch follows the same live runtime through proactive rollover and updates
     assert.equal(await watch.exited, 0, watch.err());
     assert.match(watch.out(), /relevant activity/);
     assert.doesNotMatch(watch.err(), /verdict=/);
+    const evidence = readResponsiveEvidence(cwd);
+    assert.equal(evidence.target.agentSessionId, newSession);
+    assert.equal(evidence.state, "stopped");
   } finally {
     server.close();
     rmSync(cwd, { recursive: true, force: true });

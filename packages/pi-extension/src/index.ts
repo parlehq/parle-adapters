@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.21";
+const PI_EXTENSION_VERSION = "0.7.22";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1520,6 +1520,15 @@ function formatResult(details: any) {
   return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
 }
 
+function normalizedResponsiveDelivery() {
+  const state = runtime.watcherState;
+  if (state === "starting") return { state: "starting" };
+  if (["watching", "waiting", "injecting", "held", "idle"].includes(state || "")) return { state: "watching", updatedAt: runtime.lastSuccessAt };
+  if (["backoff", "rate_limited", "disconnected"].includes(state || "")) return { state: "backoff", retryAt: runtime.nextRetryAt, ...(runtime.lastError ? { lastError: { message: runtime.lastError, at: runtime.lastWatcherErrorAt || new Date().toISOString() } } : {}) };
+  if (["auth_expired", "session_expired"].includes(state || "") || runtime.terminalCause) return { state: "terminal", reason: runtime.terminalCause?.message || state };
+  return { state: "stopped" };
+}
+
 function statusDetails(ctx: any) {
   const resolved = resolveConfig(ctx.cwd || process.cwd());
   const cfg = configForLiveRuntime(resolved);
@@ -1552,6 +1561,7 @@ function statusDetails(ctx: any) {
     profile: redactedValue(cfg.profile),
     profiles: redactedValue(cfg.profiles),
     warnings: Array.from(new Set([...cfg.warnings, ...(bindingWarning ? [bindingWarning] : [])])),
+    responsiveDelivery: normalizedResponsiveDelivery(),
     runtime: {
       bootstrapped: view.bootstrapped,
       sessionAddress: view.sessionAddress,

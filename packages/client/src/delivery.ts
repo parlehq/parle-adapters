@@ -50,6 +50,10 @@ export type DeliveryControllerOptions = {
   // start(), this fires for every internal reconnect so host connectivity
   // state follows the live stream instead of the most recent failure.
   onWakeOpen?: () => void;
+  // Observed delivery-loop progress only: a wake stream opened or a
+  // responsive-delivery drain completed successfully. Host diagnostics must
+  // remain best-effort and must not interrupt delivery when this callback fails.
+  onProgress?: (kind: "wake_open" | "drain_success") => void;
 };
 
 export type DeliveryRoomStatus = {
@@ -112,6 +116,7 @@ export class ResponsiveDeliveryController {
   private readonly random: () => number;
   private readonly onWakeError?: (error: unknown) => "continue" | "stop" | void;
   private readonly onWakeOpen?: () => void;
+  private readonly onProgress?: (kind: "wake_open" | "drain_success") => void;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -149,6 +154,7 @@ export class ResponsiveDeliveryController {
     this.random = options.random ?? Math.random;
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
+    this.onProgress = options.onProgress;
   }
 
   status(): DeliveryControllerStatus {
@@ -271,6 +277,7 @@ export class ResponsiveDeliveryController {
           if (wakeAbort.signal.aborted) continue;
           this.lastError = undefined;
           this.onWakeOpen?.();
+          this.reportProgress("wake_open");
           const decoder = new TextDecoder();
           let buffer = "";
           while (!wakeAbort.signal.aborted) {
@@ -423,12 +430,17 @@ export class ResponsiveDeliveryController {
     return entry;
   }
 
+  private reportProgress(kind: "wake_open" | "drain_success"): void {
+    try { this.onProgress?.(kind); } catch { /* diagnostics never interrupt delivery */ }
+  }
+
   private async doDrainRoom(room: RoomRuntime): Promise<void> {
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted) return;
       let delivery: any;
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        this.reportProgress("drain_success");
       } catch (error) {
         this.stat(room.roomId).lastError = redactString(error instanceof Error ? error.message : String(error));
         return;

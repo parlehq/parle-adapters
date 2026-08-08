@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+// @ts-expect-error Generated dependency-free ESM copied from @parlehq/agent-client.
+import { inspectResponsiveDeliveryPid, readResponsiveDeliverySnapshots, resolveResponsiveDelivery } from "./responsive-delivery-reader.mjs";
 
 // Snapshot schema v2: one session, rooms[] only. No v1 read path.
 const SCHEMA_VERSION = 2;
@@ -67,7 +69,8 @@ export function renderParleStatus(cwd: string, now = Date.now()): string | null 
   if (live.length === 1) {
     const snapshot = live[0];
     const unread = unreadInfo(snapshot, now);
-    return `${roomLabel(snapshot)} ✓ ${snapshot.sessionAddress || "connected"}${unread?.fresh ? ` · ${unread.count} unread` : ""}`;
+    const delivery = responsiveState(cwd, snapshot.agentSessionId, now);
+    return `${roomLabel(snapshot)} ✓ ${snapshot.sessionAddress || "connected"}${delivery === "unknown" ? "" : ` · delivery ${delivery}`}${unread?.fresh ? ` · ${unread.count} unread` : ""}`;
   }
   if (live.length > 1) {
     const anyUnread = live.some((snapshot) => unreadInfo(snapshot, now)?.fresh);
@@ -98,6 +101,14 @@ function readLiveSnapshots(cwd: string, now: number): any[] {
     }
   }
   return live;
+}
+
+function responsiveState(cwd: string, agentSessionId: string | undefined, now: number): string {
+  if (!agentSessionId) return "unknown";
+  return resolveResponsiveDelivery(readResponsiveDeliverySnapshots(cwd), agentSessionId, {
+    now: new Date(now),
+    inspectPid: inspectResponsiveDeliveryPid,
+  }).state;
 }
 
 function roomLabel(snapshot: any): string {

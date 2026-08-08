@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient, ProfileNotFoundError } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveWatcherEnvironment, scheduleEagerBootstrap, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, applyWatcherStateLine, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, reportResponsiveEvidence, resolveWatcherEnvironment, scheduleEagerBootstrap, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -35,6 +35,35 @@ const expectedTools = [
   "parle_status",
   "parle_switch_profile",
 ];
+
+test("watcher evidence protocol ignores malformed values and maps bounded lifecycle events", () => {
+  const events = [];
+  const sink = {
+    watching: (event) => events.push(["watching", event]),
+    backoff: (event) => events.push(["backoff", event]),
+    stopped: (event) => events.push(["stopped", event]),
+    terminal: (event) => events.push(["terminal", event]),
+    retarget: (target) => events.push(["target", target]),
+  };
+  const now = Date.parse("2026-08-08T20:00:00Z");
+  applyWatcherStateLine("backoff\tnot-a-number", sink, now);
+  applyWatcherStateLine("unknown\tignored", sink, now);
+  assert.deepEqual(events, []);
+  applyWatcherStateLine("watching", sink, now);
+  applyWatcherStateLine("backoff\t12", sink, now);
+  applyWatcherStateLine("target\tnext-session", sink, now);
+  applyWatcherStateLine("wake", sink, now);
+  applyWatcherStateLine("terminal\tretry_exhausted", sink, now);
+  assert.deepEqual(events.map(([kind]) => kind), ["watching", "backoff", "target", "stopped", "terminal"]);
+  assert.equal(events[1][1].retryAt, "2026-08-08T20:00:12.000Z");
+});
+
+test("responsive evidence failures remain best-effort", () => {
+  const warnings = [];
+  assert.equal(reportResponsiveEvidence(() => { throw new Error("disk full token=secret"); }, (message) => warnings.push(message)), false);
+  assert.equal(warnings.length, 1);
+  assert.doesNotMatch(warnings[0], /token=secret/);
+});
 
 test("eager MCP bootstrap retries autonomously at the shared-client deadline", async () => {
   let now = 1_000;
@@ -689,17 +718,17 @@ test("parle_status auto-connects a configured client and reports the attempt", a
     assert.equal(first.structuredContent.runtime.bootstrapState, "ready");
     assert.equal(first.structuredContent.runtime.sessionAddress, "@p.a.s1");
     assert.match(first.structuredContent.compactText, /Session Address:\n@p\.a\.s1/);
-    assert.match(first.structuredContent.compactText, /Watcher       unknown/);
-    assert.match(first.structuredContent.compactText, /Next: arm or verify the watcher\./);
-    assert.deepEqual(first.structuredContent.watcher, {
+    assert.match(first.structuredContent.compactText, /Delivery      unknown/);
+    assert.match(first.structuredContent.compactText, /Next: arm or verify responsive delivery\./);
+    assert.deepEqual(first.structuredContent.responsiveDelivery, {
       state: "unknown",
       nextActionKey: "arm-or-verify-watcher",
-      nextAction: "arm or verify the watcher",
+      nextAction: "arm or verify responsive delivery",
     });
     assert.equal(counters.sessions, 1);
     const second = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(second.structuredContent.bootstrapAttempted, false);
-    assert.deepEqual(second.structuredContent.watcher, first.structuredContent.watcher);
+    assert.deepEqual(second.structuredContent.responsiveDelivery, first.structuredContent.responsiveDelivery);
     assert.equal(counters.sessions, 1);
   } finally {
     await client.close();
@@ -728,9 +757,9 @@ test("parle_status surfaces an unarmed bridge error as degraded", async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const result = await client.callTool({ name: "parle_status", arguments: {} });
-    assert.match(result.structuredContent.compactText, /Watcher       degraded/);
+    assert.match(result.structuredContent.compactText, /Delivery      backoff/);
     assert.match(result.structuredContent.compactText, /Next: inspect the responsive delivery error and restart the host if it does not recover\./);
-    assert.equal(result.structuredContent.watcher.state, "degraded");
+    assert.equal(result.structuredContent.responsiveDelivery.state, "backoff");
     assert.equal(result.structuredContent.responsiveDeliveryBridge.lastError, "Parle wake stream 502: Bad Gateway");
   } finally {
     await client.close();

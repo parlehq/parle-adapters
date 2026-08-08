@@ -23,6 +23,7 @@ function snapshot(overrides = {}) {
     expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     rooms: [{ roomId: "room-1", roomHandle: "workshop", state: "ready" }],
     sessionAddress: "@gilman.galexc.abcdefgh",
+    agentSessionId: "as-1",
     ...overrides,
   };
 }
@@ -36,6 +37,28 @@ test("renders one live room-first Parle session with fresh unread state", () => 
   try {
     writeSnapshot(cwd, "one", snapshot({ rooms: [{ roomId: "room-1", roomHandle: "workshop", state: "ready", unreadCount: 2, unreadAsOf: new Date().toISOString() }] }));
     assert.equal(renderParleStatus(cwd), "#workshop ✓ @gilman.galexc.abcdefgh · 2 unread");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("renders canonical responsive-delivery evidence", () => {
+  const cwd = workspace("delivery");
+  try {
+    writeSnapshot(cwd, "one", snapshot());
+    const dir = join(cwd, ".parle", "runtime", "responsive");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${process.pid}.json`), JSON.stringify({
+      schemaVersion: 1,
+      pid: process.pid,
+      processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+      publisher: { name: "status-test", clientInstanceId: "status-test-1" },
+      target: { agentSessionId: "as-1" },
+      state: "watching",
+      updatedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }));
+    assert.equal(renderParleStatus(cwd), "#workshop ✓ @gilman.galexc.abcdefgh · delivery watching");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

@@ -90,6 +90,10 @@ test("status reads room and token from project .env and redacts token", async ()
   assert.equal(status.details.roomId.value, "room-1");
   assert.equal(status.details.agentToken.set, true);
   assert.equal(status.details.agentToken.value, "<redacted>");
+  assert.equal(status.details.responsiveDelivery.state, "stopped");
+  __testing.patchRuntime({ watcherState: "watching", lastSuccessAt: "2026-08-08T20:00:00.000Z" });
+  const watching = await harness.call("parle_status");
+  assert.deepEqual(watching.details.responsiveDelivery, { state: "watching", updatedAt: "2026-08-08T20:00:00.000Z" });
 });
 
 test("status warns when an explicit wake base matches the API base", async () => {
@@ -746,7 +750,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.21" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.22" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1420,7 +1424,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.21");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.22");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

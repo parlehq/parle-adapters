@@ -16,6 +16,7 @@ export * from "./hardening.js";
 export * from "./format.js";
 export * from "./room-inventory.js";
 export * from "./runtime-file.js";
+export * from "./responsive-delivery.js";
 export * from "./process-instance.js";
 export * from "./delivery.js";
 export * from "./peer-context.js";

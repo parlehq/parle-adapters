@@ -25,6 +25,8 @@ import {
   type ResponsiveDeliveryMessage,
   type ResponsiveReplyPresentation,
   type SessionCommitPlan,
+  ResponsiveDeliveryRecorder,
+  processStartedAtIso,
 } from "@parlehq/agent-client";
 
 const MAX_PENDING = 100;
@@ -109,6 +111,7 @@ export class HookDeliveryBridge {
   private lastError?: string;
   private hostSessionId?: string;
   private unsubscribeCommitGuard?: () => void;
+  private evidence?: ResponsiveDeliveryRecorder;
 
   constructor(
     private readonly client: ParleAgentClient,
@@ -121,6 +124,13 @@ export class HookDeliveryBridge {
     this.controller = new ResponsiveDeliveryController(client, {
       handler: (input) => this.handleDelivery(input),
       maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
+      onProgress: () => this.publishEvidence("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() }),
+      onWakeError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        const action = typeof error === "object" && error !== null ? (error as { action?: string }).action : undefined;
+        if (["reauthorize", "fix_client", "stop"].includes(action || "")) this.publishEvidence("terminal", { reason: action || "wake_terminal", lastError: message });
+        else this.publishEvidence("backoff", { expectedProgressMs: 30_000, lastError: message });
+      },
     });
   }
 
@@ -158,6 +168,7 @@ export class HookDeliveryBridge {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
     this.unsubscribeCommitGuard?.();
     this.unsubscribeCommitGuard = undefined;
@@ -169,6 +180,7 @@ export class HookDeliveryBridge {
 
   private async startBridge(): Promise<void> {
     this.lastError = undefined;
+    this.publishEvidence("starting", { expectedProgressMs: 120_000 });
     if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = (this.client as any).onBeforeSessionCommit?.((plan: SessionCommitPlan) => this.guardSessionCommit(plan));
     }
@@ -192,11 +204,37 @@ export class HookDeliveryBridge {
       try {
         await this.controller.start();
         this.baselineDone = true;
+        this.publishEvidence("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
+        this.publishEvidence("backoff", { expectedProgressMs: 30_000, lastError: this.lastError });
       } finally {
         this.baselineActive = false;
       }
+    }
+  }
+
+  private publishEvidence(state: "starting" | "watching" | "backoff" | "stopped" | "terminal", event: Record<string, unknown> = {}): void {
+    const runtime = (this.client as any).runtime || {};
+    if (!runtime.agentSessionId) return;
+    if (!this.evidence) {
+      this.evidence = new ResponsiveDeliveryRecorder({
+        cwd: this.scope,
+        persist: true,
+        processStartedAt: processStartedAtIso(),
+        publisher: {
+          name: "@parlehq/mcp-server:hook-bridge",
+          clientInstanceId: String((this.client as any).clientInstanceId || "hook-bridge"),
+        },
+        target: { agentSessionId: String(runtime.agentSessionId) },
+      });
+    } else if (this.evidence.snapshot()?.target.agentSessionId !== String(runtime.agentSessionId)) {
+      this.evidence.retarget({ agentSessionId: String(runtime.agentSessionId) });
+    }
+    try {
+      this.evidence.record(state, event as any);
+    } catch (error) {
+      this.lastError = this.lastError || `responsive-delivery evidence unavailable: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 

@@ -28,6 +28,7 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { inspectResponsiveDeliveryPid, readResponsiveDeliverySnapshots, resolveResponsiveDelivery } from "./responsive-delivery-reader.mjs";
 
 // Snapshot schema v2: one session, rooms[] only. No v1 read path.
 const SCHEMA_VERSION = 2;
@@ -67,15 +68,16 @@ function main() {
     const label = roomLabel(s);
     const address = s.sessionAddress || "connected";
     const unread = unreadInfo(s, now);
+    const delivery = responsiveState(cwd, s.agentSessionId, now);
     if (FULL) {
-      const parts = [`${label} ✓ ${address}`];
+      const parts = [`${label} ✓ ${address}`, ...(delivery === "unknown" ? [] : [`delivery ${delivery}`])];
       const expiry = relativeExpiry(Date.parse(s.expiresAt || ""), now);
       if (expiry) parts.push(`expires ${expiry}`);
       if (unread?.fresh) parts.push(`${unread.count} unread`);
       else if (unread) parts.push(`unread stale ${Math.round(unread.ageMs / 60_000)}m`);
       process.stdout.write(parts.join(" · "));
     } else {
-      process.stdout.write(`${label} ✓ ${address}${unread?.fresh ? ` · ${unread.count} unread` : ""}`);
+      process.stdout.write(`${label} ✓ ${address}${delivery === "unknown" ? "" : ` · delivery ${delivery}`}${unread?.fresh ? ` · ${unread.count} unread` : ""}`);
     }
     return;
   }
@@ -97,6 +99,14 @@ function main() {
     return;
   }
   if (parleConfiguredHint(cwd)) process.stdout.write("parle · off");
+}
+
+function responsiveState(cwd, agentSessionId, now) {
+  if (!agentSessionId) return "unknown";
+  return resolveResponsiveDelivery(readResponsiveDeliverySnapshots(cwd), agentSessionId, {
+    now: new Date(now),
+    inspectPid: inspectResponsiveDeliveryPid,
+  }).state;
 }
 
 function roomLabel(snapshot) {
