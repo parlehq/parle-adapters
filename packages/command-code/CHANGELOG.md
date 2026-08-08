@@ -2,7 +2,7 @@
 
 ## 0.6.13 (2026-08-07)
 
-- Refresh the bundled MCP runtime with durable alias delivery controls and guarded terminal release (#86).
+- Refresh the bundled MCP runtime with durable alias delivery controls and guarded terminal release that reports ambiguous completion as unknown (#86).
 
 ## 0.6.12 (2026-08-07)
 

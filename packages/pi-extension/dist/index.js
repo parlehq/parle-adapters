@@ -2680,12 +2680,24 @@ var ParleAccountClient = class {
       throw new Error("parle_owned_alias_release complete requires a positive expectedAliasGeneration from preview.");
     if (!params.idempotencyKey?.trim())
       throw new Error("parle_owned_alias_release complete requires the idempotencyKey returned by preview; reuse it unchanged after an ambiguous outcome.");
-    return this.request(config, `${base}/complete`, {
-      method: "POST",
-      headers: { "Idempotency-Key": params.idempotencyKey },
-      body: { expected_alias_generation: params.expectedAliasGeneration },
-      signal
-    });
+    try {
+      return await this.request(config, `${base}/complete`, {
+        method: "POST",
+        headers: { "Idempotency-Key": params.idempotencyKey },
+        body: { expected_alias_generation: params.expectedAliasGeneration },
+        signal
+      });
+    } catch (error) {
+      const status = typeof error?.status === "number" ? error.status : void 0;
+      const ambiguous = status === void 0 || status >= 500 || error?.retryable === true && !(status >= 400 && status < 500);
+      if (!ambiguous)
+        throw error;
+      return {
+        outcome: "unknown",
+        idempotencyKey: params.idempotencyKey,
+        replay: "Replay parle_owned_alias_release complete with the same agentId, alias, expectedAliasGeneration, and idempotencyKey. This reproduces the byte-identical core request. Do not infer current alias state."
+      };
+    }
   }
   async createRoom(params, signal) {
     if (params.confirmMutation !== true || !params.reason?.trim())

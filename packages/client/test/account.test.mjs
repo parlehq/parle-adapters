@@ -757,3 +757,29 @@ test("owned alias delivery and release use guarded exact human-session operation
     assert.deepEqual(calls.at(-1).body, { expected_alias_generation: 3 });
   } finally { f.cleanup(); }
 });
+
+test("owned alias release reports ambiguous complete outcomes as unknown and preserves definite refusals", async () => {
+  const f = fixture();
+  const complete = { action: "complete", agentId: AGENT_ID, alias: "durable", expectedAliasGeneration: 3, idempotencyKey: "release-key", confirmMutation: true, reason: "release" };
+  try {
+    for (const fetchImpl of [
+      async () => { throw new TypeError("connection reset"); },
+      async () => response({ error: { code: "server_error", retryable: false } }, 503),
+    ]) {
+      const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: fetchImpl });
+      const result = await client.ownedAliasRelease(complete);
+      assert.deepEqual(result, {
+        outcome: "unknown",
+        idempotencyKey: "release-key",
+        replay: "Replay parle_owned_alias_release complete with the same agentId, alias, expectedAliasGeneration, and idempotencyKey. This reproduces the byte-identical core request. Do not infer current alias state.",
+      });
+    }
+
+    const definite = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => response({ error: { code: "idempotency_conflict", retryable: false } }, 409),
+    });
+    await assert.rejects(definite.ownedAliasRelease(complete), (error) => error.status === 409 && error.code === "idempotency_conflict");
+  } finally { f.cleanup(); }
+});

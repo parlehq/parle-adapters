@@ -1041,12 +1041,23 @@ export class ParleAccountClient {
     if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_owned_alias_release complete requires confirmMutation=true and a reason.");
     if (!Number.isInteger(params.expectedAliasGeneration) || (params.expectedAliasGeneration || 0) < 1) throw new Error("parle_owned_alias_release complete requires a positive expectedAliasGeneration from preview.");
     if (!params.idempotencyKey?.trim()) throw new Error("parle_owned_alias_release complete requires the idempotencyKey returned by preview; reuse it unchanged after an ambiguous outcome.");
-    return this.request(config, `${base}/complete`, {
-      method: "POST",
-      headers: { "Idempotency-Key": params.idempotencyKey },
-      body: { expected_alias_generation: params.expectedAliasGeneration },
-      signal,
-    });
+    try {
+      return await this.request(config, `${base}/complete`, {
+        method: "POST",
+        headers: { "Idempotency-Key": params.idempotencyKey },
+        body: { expected_alias_generation: params.expectedAliasGeneration },
+        signal,
+      });
+    } catch (error: any) {
+      const status = typeof error?.status === "number" ? error.status : undefined;
+      const ambiguous = status === undefined || status >= 500 || (error?.retryable === true && !(status >= 400 && status < 500));
+      if (!ambiguous) throw error;
+      return {
+        outcome: "unknown",
+        idempotencyKey: params.idempotencyKey,
+        replay: "Replay parle_owned_alias_release complete with the same agentId, alias, expectedAliasGeneration, and idempotencyKey. This reproduces the byte-identical core request. Do not infer current alias state.",
+      };
+    }
   }
 
   async createRoom(params: CreateRoomParams, signal?: AbortSignal) {

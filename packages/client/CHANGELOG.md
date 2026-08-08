@@ -2,7 +2,7 @@
 
 ## 0.8.13 (2026-08-07)
 
-- Add default-on durable alias offline-delivery controls for agent and human owners, guarded terminal release, and server-authoritative known-alias sending without peer-context gating (#86).
+- Add default-on durable alias offline-delivery controls for agent and human owners, guarded terminal release with explicit unknown outcomes for ambiguous completion, and server-authoritative known-alias sending without peer-context gating (#86).
 
 ## 0.8.12 (2026-08-07)
 

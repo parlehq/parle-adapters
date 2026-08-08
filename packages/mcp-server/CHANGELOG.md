@@ -2,7 +2,7 @@
 
 ## 0.7.13 (2026-08-07)
 
-- Add equivalent agent and human durable alias delivery tools, including guarded two-step terminal release, and refresh known-alias send guidance (#86).
+- Add equivalent agent and human durable alias delivery tools, including guarded two-step terminal release with explicit unknown outcomes for ambiguous completion, and refresh known-alias send guidance (#86).
 
 ## 0.7.12 (2026-08-07)
 

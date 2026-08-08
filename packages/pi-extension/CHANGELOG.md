@@ -2,7 +2,7 @@
 
 ## 0.7.18 (2026-08-07)
 
-- Add native agent and human durable alias delivery tools, guarded two-step terminal release, and server-authoritative known-alias send guidance (#86).
+- Add native agent and human durable alias delivery tools, guarded two-step terminal release with explicit unknown outcomes for ambiguous completion, and server-authoritative known-alias send guidance (#86).
 
 ## 0.7.17 (2026-08-07)
 
