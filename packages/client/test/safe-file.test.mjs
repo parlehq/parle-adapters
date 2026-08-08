@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   chmodSync,
   existsSync,
@@ -111,16 +113,26 @@ test("atomic replacement can explicitly replace a legacy loose mode without weak
   } finally { f.cleanup(); }
 });
 
-test("best-effort and no-durability classes remain explicit write policies", () => {
+test("durability policy handles unsupported file and directory sync explicitly", () => {
   const f = fixture();
+  const originalFsync = fs.fsyncSync;
   try {
+    fs.fsyncSync = () => { const error = new Error("unsupported sync"); error.code = "ENOTSUP"; throw error; };
+    syncBuiltinESMExports();
     const best = join(f.state, "best");
+    const required = join(f.state, "required");
     const transient = join(f.state, "transient");
     atomicReplaceOwnerOnlyFile(best, "best", { label: "best effort state", durability: "best-effort" });
+    assert.throws(() => atomicReplaceOwnerOnlyFile(required, "required", { label: "required state", durability: "required" }), expectCode("file_sync_unsupported"));
     atomicReplaceOwnerOnlyFile(transient, "transient", { label: "transient state", durability: "none" });
     assert.equal(readFileSync(best, "utf8"), "best");
+    assert.equal(existsSync(required), false);
     assert.equal(readFileSync(transient, "utf8"), "transient");
-  } finally { f.cleanup(); }
+  } finally {
+    fs.fsyncSync = originalFsync;
+    syncBuiltinESMExports();
+    f.cleanup();
+  }
 });
 
 test("lock contention fails closed without removing the active writer lock", () => {
