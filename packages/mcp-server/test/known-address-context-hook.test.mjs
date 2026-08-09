@@ -9,6 +9,10 @@ import { fileURLToPath } from "node:url";
 const hookPath = fileURLToPath(new URL("../hooks/parle-hook.mjs", import.meta.url));
 const ROOM = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
 
+function withoutAmbientParle(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("PARLE_")));
+}
+
 function registryEntry(address, overrides = {}) {
   return {
     apiOrigin: "https://api.parle.sh",
@@ -31,7 +35,7 @@ function runHook(home, payload, args = ["--known-address-context"], env = {}) {
   const output = execFileSync(process.execPath, [hookPath, ...args], {
     input: JSON.stringify(payload),
     env: {
-      ...process.env,
+      ...withoutAmbientParle(),
       HOME: home,
       PARLE_PROFILES_PATH: join(home, ".parle", "profiles"),
       PARLE_ROOM_ID: ROOM,
@@ -78,7 +82,7 @@ test("hook resolves the registry beside a project-relative profile catalog", () 
     const output = execFileSync(process.execPath, [hookPath, "--known-address-context"], {
       input: JSON.stringify({ hook_event_name: "SessionStart", session_id: "", cwd: project }),
       cwd: project,
-      env: { ...process.env, HOME: home, PARLE_PROFILES_PATH: "", PARLE_ROOM_ID: "", PARLE_ROOM_AGENT_TOKEN: "", COMMANDCODE_SESSION_ID: "" },
+      env: { ...withoutAmbientParle(), HOME: home, COMMANDCODE_SESSION_ID: "" },
       encoding: "utf8",
     });
     const context = JSON.parse(output.trim().split("\n")[0]).hookSpecificOutput.additionalContext;
