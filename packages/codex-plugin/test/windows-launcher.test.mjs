@@ -17,6 +17,10 @@ const pkgRoot = fileURLToPath(new URL("..", import.meta.url));
 // POSIX suite covers the sh launcher.
 const onWindows = process.platform === "win32";
 
+function withoutAmbientParle(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("PARLE_")));
+}
+
 const commandWindows = (() => {
   const hooks = JSON.parse(readFileSync(resolve(pkgRoot, "hooks/hooks.json"), "utf8"));
   const literal = hooks.hooks.SessionStart[0].hooks[0].commandWindows;
@@ -98,7 +102,7 @@ function emptyFallbacks(fixture) {
 }
 
 function launcherEnv(fixture, overrides = {}) {
-  const env = { ...process.env };
+  const env = withoutAmbientParle();
   const values = {
     PLUGIN_ROOT: fixture.pluginRoot,
     HOME: fixture.home,

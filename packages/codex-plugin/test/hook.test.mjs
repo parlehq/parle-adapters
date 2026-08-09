@@ -16,6 +16,10 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
 
+function withoutAmbientParle(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("PARLE_")));
+}
+
 function runProcess(executable, args, options, payload) {
   return new Promise((resolveResult, reject) => {
     const child = spawn(executable, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
@@ -40,7 +44,7 @@ test("Codex launcher is fail-open without a runtime handle", async () => {
   const home = mkdtempSync(join(tmpdir(), "codex-parle-launcher-empty-"));
   try {
     const result = await runProcess("/bin/sh", [resolve("hooks/run-parle-hook.sh"), "--scope", "codex-plugin"], {
-      env: { ...process.env, HOME: home, PLUGIN_ROOT: resolve(".") },
+      env: { ...withoutAmbientParle(), HOME: home, PLUGIN_ROOT: resolve(".") },
     }, { session_id: "codex-thread", hook_event_name: "Stop" });
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {});
@@ -62,7 +66,7 @@ test("Codex launcher is fail-open for malformed, dead, and non-executable handle
   symlinkSync(nonExecutable, join(stateDir, `${process.pid}.node`));
   try {
     const result = await runProcess("/bin/sh", [resolve("hooks/run-parle-hook.sh"), "--scope", "codex-plugin"], {
-      env: { ...process.env, HOME: home, PLUGIN_ROOT: resolve(".") },
+      env: { ...withoutAmbientParle(), HOME: home, PLUGIN_ROOT: resolve(".") },
     }, { session_id: "codex-thread", hook_event_name: "Stop" });
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {});
@@ -85,7 +89,7 @@ test("Codex launcher deterministically selects the first live runtime handle", a
   symlinkSync(secondRuntime, join(stateDir, `${secondPid}.node`));
   try {
     const result = await runProcess("/bin/sh", [resolve("hooks/run-parle-hook.sh"), "--scope", "codex-plugin"], {
-      env: { ...process.env, HOME: home, PLUGIN_ROOT: resolve(".") },
+      env: { ...withoutAmbientParle(), HOME: home, PLUGIN_ROOT: resolve(".") },
     }, { session_id: "codex-thread", hook_event_name: "Stop" });
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {});
@@ -129,7 +133,7 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
         const result = await runProcess(shell, ["-lc", command], {
           cwd: project,
           env: {
-            ...process.env,
+            ...withoutAmbientParle(),
             HOME: home,
             ZDOTDIR: home,
             PLUGIN_ROOT: pluginRoot,
@@ -150,7 +154,7 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
         const result = await runProcess(shell, ["-lc", sessionStartCommand], {
           cwd: project,
           env: {
-            ...process.env,
+            ...withoutAmbientParle(),
             HOME: home,
             ZDOTDIR: home,
             PLUGIN_ROOT: pluginRoot,
@@ -186,7 +190,7 @@ test("Codex Windows launcher argument chain renders SessionStart known-address c
     version: 1,
     entries: [{ apiOrigin: "https://api.parle.sh", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", address: "@gilman.galexc.lead", continuity: "durable", expiresAt: "2099-01-01T00:00:00.000Z" }],
   }, null, 2)}\n`, { mode: 0o600 });
-  const env = { ...process.env, HOME: home, PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", PARLE_ROOM_AGENT_TOKEN: "parle_agt_test" };
+  const env = { ...withoutAmbientParle(), HOME: home, PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", PARLE_ROOM_AGENT_TOKEN: "parle_agt_test" };
   delete env.PARLE_PROFILES_PATH;
   try {
     const launcher = readFileSync(resolve("hooks/run-parle-hook.cmd"), "utf8");
@@ -214,7 +218,7 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
     mkdirSync(home, { recursive: true, mode: 0o700 });
     try {
       const script = resolve("hooks/parle-hook.mjs");
-      const result = await runHook(script, ["--scope", "codex-plugin"], { ...process.env, HOME: home }, {
+      const result = await runHook(script, ["--scope", "codex-plugin"], { ...withoutAmbientParle(), HOME: home }, {
         cwd: "/tmp/codex-project",
         session_id: "codex-thread",
         hook_event_name: hookEventName,
@@ -232,7 +236,7 @@ for (const scenario of [
   { name: "unknown argument", args: ["--unknown"], input: {} },
 ]) {
   test(`Codex hook fails open on ${scenario.name}`, async () => {
-    const result = await runHook(resolve("hooks/parle-hook.mjs"), scenario.args, process.env, scenario.input);
+    const result = await runHook(resolve("hooks/parle-hook.mjs"), scenario.args, withoutAmbientParle(), scenario.input);
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {});
     assert.match(result.stderr, /failed open/);
@@ -267,7 +271,7 @@ test("Codex hook preserves one valid output when commit fails", async () => {
       server.listen(socketPath, resolveListen);
     });
     chmodSync(socketPath, 0o600);
-    const result = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", scope], { ...process.env, HOME: home }, {
+    const result = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", scope], { ...withoutAmbientParle(), HOME: home }, {
       cwd: "/tmp/codex-project",
       session_id: "codex-thread",
       hook_event_name: "PostToolUse",
@@ -320,7 +324,7 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
       });
       chmodSync(socketPath, 0o600);
       const script = resolve("hooks/parle-hook.mjs");
-      const result = await runHook(script, ["--scope", scope], { ...process.env, HOME: home }, {
+      const result = await runHook(script, ["--scope", scope], { ...withoutAmbientParle(), HOME: home }, {
         cwd: "/tmp/codex-project",
         session_id: "codex-thread",
         hook_event_name: hookEventName,
