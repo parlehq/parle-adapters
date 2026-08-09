@@ -147,8 +147,8 @@ function expiryAscending(left: KnownAddressEntry, right: KnownAddressEntry): num
 
 function mutate(catalogPath: string, operation: (entries: KnownAddressEntry[]) => KnownAddressEntry[], now: Date): boolean {
   const path = knownAddressRegistryPath(catalogPath);
-  ensureOwnerOnlyDirectory(dirname(path), { label: `${LABEL} directory` });
   try {
+    ensureOwnerOnlyDirectory(dirname(path), { label: `${LABEL} directory` });
     return withOwnerOnlyFileLock(path, { label: LABEL, durability: "best-effort", now: () => now }, () => {
       const current = readRegistryFile(path);
       if (!current.available) return false;
@@ -241,5 +241,5 @@ export function knownAddressContextFor(
   input: { apiBase: string; roomId: string },
   now = new Date(),
 ): string {
-  return renderKnownAddressContext(readKnownAddressRegistry(catalogPath, now), input);
+  return renderKnownAddressContext(readKnownAddressRegistry(catalogPath, now, { prune: false }), input);
 }

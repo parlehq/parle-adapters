@@ -32062,8 +32062,8 @@ function expiryAscending(left, right) {
 }
 function mutate(catalogPath, operation, now) {
   const path = knownAddressRegistryPath(catalogPath);
-  ensureOwnerOnlyDirectory(dirname3(path), { label: `${LABEL} directory` });
   try {
+    ensureOwnerOnlyDirectory(dirname3(path), { label: `${LABEL} directory` });
     return withOwnerOnlyFileLock(path, { label: LABEL, durability: "best-effort", now: () => now }, () => {
       const current = readRegistryFile(path);
       if (!current.available)
@@ -32144,7 +32144,7 @@ function renderKnownAddressContext(registry2, input) {
   return lines.join("\n");
 }
 function knownAddressContextFor(catalogPath, input, now = /* @__PURE__ */ new Date()) {
-  return renderKnownAddressContext(readKnownAddressRegistry(catalogPath, now), input);
+  return renderKnownAddressContext(readKnownAddressRegistry(catalogPath, now, { prune: false }), input);
 }
 
 // ../client/dist/account.js
@@ -37449,23 +37449,29 @@ var ParleAgentClient = class _ParleAgentClient {
         const clientWarnings = sendAttentionWarnings(result2);
         return { ...result2, roomId, idempotencyKey, ...clientWarnings ? { clientWarnings } : {}, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
       }, signal));
-      if (params.to && details?.routing?.mode === "direct") {
-        enrollKnownAddress(this.registryCatalogPath, {
-          apiBase: this.cfg.apiBase.value,
-          roomId,
-          address: params.to,
-          continuity: details.routing.continuity
-        }, this.now());
+      if (params.to && details?.routing?.mode === "direct" && details.routing.target_level !== "none" && details.routing.continuity !== "none") {
+        try {
+          enrollKnownAddress(this.registryCatalogPath, {
+            apiBase: this.cfg.apiBase.value,
+            roomId,
+            address: params.to,
+            continuity: details.routing.continuity
+          }, this.now());
+        } catch {
+        }
       }
       return details;
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
-        if (error51.status === 422 && params.to && roomId) {
-          shortenKnownAddressAfterUnprocessable(this.registryCatalogPath, {
-            apiBase: this.cfg.apiBase.value,
-            roomId,
-            address: params.to
-          }, this.now());
+        if (error51.code === "address_not_deliverable" && params.to && roomId) {
+          try {
+            shortenKnownAddressAfterUnprocessable(this.registryCatalogPath, {
+              apiBase: this.cfg.apiBase.value,
+              roomId,
+              address: params.to
+            }, this.now());
+          } catch {
+          }
         }
         return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error51.message) };
       }
