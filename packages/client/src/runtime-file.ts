@@ -1,6 +1,6 @@
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { atomicReplaceOwnerOnlyFile, ensureOwnerOnlyDirectory, readOwnerOnlyTextFile } from "./safe-file.js";
+import { atomicReplaceOwnerOnlyFile, ensureOwnerOnlyDirectory, readOwnerOnlyTextFile, removeOwnerOnlyFileIf } from "./safe-file.js";
 
 // Local per-process runtime snapshot files: display-safe session state published
 // for host UX surfaces (statuslines, footers). Never contains a credential.
@@ -13,7 +13,10 @@ import { atomicReplaceOwnerOnlyFile, ensureOwnerOnlyDirectory, readOwnerOnlyText
 export const RUNTIME_SCHEMA_VERSION = 2;
 export const RUNTIME_DIR_SEGMENTS = [".parle", "runtime"] as const;
 export const RUNTIME_EXPIRY_SKEW_MS = 30_000;
+export const RUNTIME_PRUNE_LIMIT = 32;
+export const RUNTIME_PRUNE_INSPECTION_LIMIT = 64;
 const MAX_RUNTIME_FILE_BYTES = 64 * 1024;
+const pruneCursor = new Map<string, number>();
 
 export type RuntimeFileState = "starting" | "ready" | "failed";
 
@@ -66,6 +69,9 @@ export function writeRuntimeFile(cwd: string, snapshot: RuntimeFileSnapshot): vo
     maxBytes: MAX_RUNTIME_FILE_BYTES,
     durability: "none",
   });
+  try {
+    pruneRuntimeFiles(cwd, new Date(snapshot.updatedAt), { excludePid: snapshot.pid });
+  } catch { /* cleanup is best effort after the snapshot is committed */ }
 }
 
 export function removeRuntimeFile(cwd: string, pid: number): void {
@@ -117,14 +123,52 @@ export function isLiveRuntimeSnapshot(snapshot: RuntimeFileSnapshot, now: Date =
   return pidLiveness(snapshot.pid) === "alive";
 }
 
-// Writer-side startup prune. Deletes only files that are provably stale:
-// unparseable expiry, past expiry, or a definitively dead pid. Uncertain
-// liveness keeps the file; expiry self-invalidates it for readers anyway.
-export function pruneRuntimeFiles(cwd: string, now: Date = new Date()): void {
-  for (const { path, snapshot } of readRuntimeFiles(cwd)) {
-    if (snapshot.pid === process.pid) continue;
-    const expiresAt = Date.parse(snapshot.expiresAt || "");
-    const expired = !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
-    if (expired || pidLiveness(snapshot.pid) === "dead") rmSync(path, { force: true });
+export type RuntimePruneOptions = {
+  excludePid?: number;
+  maxInspections?: number;
+  maxRemovals?: number;
+  inspectPid?: (pid: number) => PidLiveness;
+};
+
+function boundedLimit(value: number | undefined, fallback: number): number {
+  const parsed = Math.trunc(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+
+function rotatedCandidates(dir: string, names: string[], limit: number): string[] {
+  if (!names.length || limit === 0) return [];
+  names.sort();
+  const start = (pruneCursor.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  pruneCursor.set(dir, (start + count) % names.length);
+  return selected;
+}
+
+// Writer-side bounded prune. Deletes only records that are both expired and
+// owned by a definitively dead pid. The quarantine primitive revalidates the
+// exact file generation so a concurrent replacement cannot be deleted.
+export function pruneRuntimeFiles(cwd: string, now: Date = new Date(), options: RuntimePruneOptions = {}): void {
+  const dir = runtimeDirPath(cwd);
+  let names: string[];
+  try { names = readdirSync(dir).filter((name) => !name.startsWith(".") && name.endsWith(".json")); } catch { return; }
+  const maxInspections = boundedLimit(options.maxInspections, RUNTIME_PRUNE_INSPECTION_LIMIT);
+  const maxRemovals = boundedLimit(options.maxRemovals, RUNTIME_PRUNE_LIMIT);
+  const inspectPid = options.inspectPid ?? pidLiveness;
+  let removed = 0;
+  for (const name of rotatedCandidates(dir, names, maxInspections)) {
+    if (removed >= maxRemovals) break;
+    const path = join(dir, name);
+    if (removeOwnerOnlyFileIf(path, {
+      label: "Parle runtime snapshot",
+      maxBytes: MAX_RUNTIME_FILE_BYTES,
+      shouldRemove: (raw) => {
+        let snapshot: any;
+        try { snapshot = JSON.parse(raw); } catch { return false; }
+        if (!snapshot || !Number.isSafeInteger(snapshot.pid) || snapshot.pid <= 0 || snapshot.pid === process.pid || snapshot.pid === options.excludePid) return false;
+        const expiresAt = Date.parse(snapshot.expiresAt || "");
+        return Number.isFinite(expiresAt) && expiresAt <= now.getTime() && inspectPid(snapshot.pid) === "dead";
+      },
+    })) removed += 1;
   }
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.25 (2026-08-09)
+
+- Refresh the native shared-client bundle with session-scoped responsive-delivery resolution and bounded expired runtime evidence cleanup (#103, #104).
+
 ## 0.7.24 (2026-08-08)
 
 - Restore bounded known-address context at Pi model boundaries, enroll only after successful direct routing receipts, and remove the legacy `/parle-peers` command, status field, renderer, and store integration (#96, #93).

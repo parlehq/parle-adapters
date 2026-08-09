@@ -8,6 +8,7 @@ import {
   ParleAgentClient,
   processClientInstanceId,
   isLiveRuntimeSnapshot,
+  pruneRuntimeFiles,
   runtimeDirPath,
   runtimeFilePath,
 } from "../dist/index.js";
@@ -161,19 +162,24 @@ test("bootstrap failure publishes a failed snapshot readers reject", async () =>
   }
 });
 
-test("construction prunes provably stale sibling files and keeps uncertain ones", () => {
+test("runtime pruning requires expiry and dead ownership and bounds each sweep", () => {
   const cwd = tempCwd();
   try {
     const dir = runtimeDirPath(cwd);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const now = new Date();
     const gone = deadPid();
-    writeFileSync(join(dir, "expired.json"), JSON.stringify(snapshotFor(process.pid + 1, { expiresAt: new Date(Date.now() - 1000).toISOString() })), { mode: 0o600 });
-    writeFileSync(join(dir, "dead.json"), JSON.stringify(snapshotFor(gone)), { mode: 0o600 });
-    writeFileSync(join(dir, "uncertain.json"), JSON.stringify(snapshotFor(1)), { mode: 0o600 });
+    writeFileSync(join(dir, "expired-dead.json"), JSON.stringify(snapshotFor(gone, { expiresAt: new Date(now.getTime() - 1000).toISOString() })), { mode: 0o600 });
+    writeFileSync(join(dir, "expired-live.json"), JSON.stringify(snapshotFor(process.pid, { expiresAt: new Date(now.getTime() - 1000).toISOString() })), { mode: 0o600 });
+    writeFileSync(join(dir, "fresh-dead.json"), JSON.stringify(snapshotFor(gone)), { mode: 0o600 });
+    writeFileSync(join(dir, "uncertain.json"), JSON.stringify(snapshotFor(1, { expiresAt: new Date(now.getTime() - 1000).toISOString() })), { mode: 0o600 });
     writeFileSync(join(dir, ".tmp-ignored"), "not json");
-    new ParleAgentClient({ cwd, env: ENV, publishRuntime: { adapterName: "test" } });
-    assert.equal(existsSync(join(dir, "expired.json")), false);
-    assert.equal(existsSync(join(dir, "dead.json")), false);
+    let inspections = 0;
+    pruneRuntimeFiles(cwd, now, { inspectPid: (pid) => { inspections += 1; return pid === gone ? "dead" : pid === process.pid ? "alive" : "uncertain"; }, maxInspections: 1, maxRemovals: 1 });
+    assert.equal(inspections, 2, "one candidate is checked before and after quarantine");
+    assert.equal(existsSync(join(dir, "expired-dead.json")), false);
+    assert.equal(existsSync(join(dir, "expired-live.json")), true);
+    assert.equal(existsSync(join(dir, "fresh-dead.json")), true);
     assert.equal(existsSync(join(dir, "uncertain.json")), true);
     assert.equal(existsSync(join(dir, ".tmp-ignored")), true);
   } finally {

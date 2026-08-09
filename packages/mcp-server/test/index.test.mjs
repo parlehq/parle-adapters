@@ -722,6 +722,7 @@ test("parle_status auto-connects a configured client and reports the attempt", a
     assert.match(first.structuredContent.compactText, /Next: arm or verify responsive delivery\./);
     assert.deepEqual(first.structuredContent.responsiveDelivery, {
       state: "unknown",
+      reason: "no_evidence_for_session",
       nextActionKey: "arm-or-verify-watcher",
       nextAction: "arm or verify responsive delivery",
     });

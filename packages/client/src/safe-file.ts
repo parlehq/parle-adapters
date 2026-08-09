@@ -8,6 +8,7 @@ import {
   fsyncSync,
   fstatSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readSync,
@@ -35,6 +36,12 @@ export type SafeFileWriteOptions = {
   mode?: number;
   durability: SafeFileDurability;
   existingMode?: "require" | "replace";
+};
+
+export type SafeFileConditionalRemoveOptions = {
+  label: string;
+  maxBytes: number;
+  shouldRemove: (raw: string) => boolean;
 };
 
 export type SafeFileLockOptions = {
@@ -277,6 +284,51 @@ export function atomicReplaceOwnerOnlyFile(path: string, value: string | Uint8Ar
     try { if (existsSync(temp)) unlinkSync(temp); } catch {}
     body.fill(0);
   }
+}
+
+function restoreQuarantinedFile(path: string, quarantine: string): void {
+  try {
+    linkSync(quarantine, path);
+    unlinkSync(quarantine);
+  } catch (error) {
+    if (systemCode(error) === "EEXIST") {
+      try { unlinkSync(quarantine); } catch (unlinkError) { if (systemCode(unlinkError) !== "ENOENT") throw unlinkError; }
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Removes an owner-only file only after atomically quarantining and revalidating
+ * that exact inode. A concurrent replacement at the canonical path always wins.
+ */
+export function removeOwnerOnlyFileIf(path: string, options: SafeFileConditionalRemoveOptions): boolean {
+  try {
+    inspectOwnerOnlyPath(path, options.label, DEFAULT_FILE_MODE, true);
+    const raw = readOwnerOnlyTextFile(path, { label: options.label, maxBytes: options.maxBytes });
+    if (!options.shouldRemove(raw)) return false;
+  } catch { return false; }
+  const quarantine = join(dirname(path), `.${basename(path)}.prune.${process.pid}.${randomUUID()}`);
+  try {
+    renameSync(path, quarantine);
+  } catch (error) {
+    if (systemCode(error) === "ENOENT") return false;
+    throw error;
+  }
+  let remove = false;
+  try {
+    const raw = readOwnerOnlyTextFile(quarantine, { label: options.label, maxBytes: options.maxBytes });
+    remove = options.shouldRemove(raw);
+  } catch {
+    remove = false;
+  }
+  if (remove) {
+    try { unlinkSync(quarantine); } catch (error) { if (systemCode(error) !== "ENOENT") throw error; }
+    return true;
+  }
+  restoreQuarantinedFile(path, quarantine);
+  return false;
 }
 
 function defaultPidIsAlive(pid: number): boolean {

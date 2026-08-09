@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.20 (2026-08-09)
+
+- Refresh the bundled runtime with session-scoped responsive-delivery resolution and bounded expired runtime record cleanup (#103, #104).
+
 ## 0.6.19 (2026-08-08)
 
 - Restore bounded known-address context at the verified Codex `SessionStart` boundary, refresh automatic direct-send enrollment, and remove the legacy peer helper, renderer, status field, and generated copies (#96, #93).

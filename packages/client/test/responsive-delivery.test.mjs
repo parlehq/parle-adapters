@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import {
   RESPONSIVE_DELIVERY_MAX_FILE_BYTES,
   ResponsiveDeliveryRecorder,
@@ -59,7 +60,15 @@ test("resolver correlates only agent session and applies deterministic selection
   const predecessor = active("watching", 10, "agent-a");
   const successor = active("watching", 11, "agent-a");
   assert.equal(resolveResponsiveDelivery([predecessor, successor], "agent-a", { now: now(), inspectPid: live }).state, "conflict");
-  assert.equal(resolveResponsiveDelivery([predecessor], "agent-b", { now: now(), inspectPid: live }).state, "stale");
+  assert.deepEqual(resolveResponsiveDelivery([predecessor], "agent-b", { now: now(), inspectPid: live }), { state: "unknown", reason: "no_evidence_for_session" });
+  assert.deepEqual(resolveResponsiveDelivery([], "agent-a", { now: now(), inspectPid: live }), { state: "unknown", reason: "no_evidence_for_session" });
+  assert.equal(resolveResponsiveDelivery([predecessor, active("watching", 13, "agent-b")], "agent-a", { now: now(), inspectPid: live }).state, "watching", "a foreign live owner does not create a conflict");
+  const ownExpired = { ...predecessor, expiresAt: new Date(ms - 1).toISOString(), publisher: { ...predecessor.publisher, name: "own-publisher" } };
+  const foreignTerminal = buildResponsiveDeliverySnapshot({ ...base(14, "agent-b"), publisher: { ...base(14, "agent-b").publisher, name: "foreign-publisher" } }, "terminal", { reason: "foreign failure" }, now());
+  const attributed = resolveResponsiveDelivery([ownExpired, foreignTerminal], "agent-a", { now: now(), inspectPid: live });
+  assert.equal(attributed.state, "stale");
+  assert.equal(attributed.publisher?.name, "own-publisher");
+  assert.equal(attributed.reason, undefined);
   const tombstone = buildResponsiveDeliverySnapshot(base(12), "stopped", { reason: "clean exit" }, now());
   assert.equal(resolveResponsiveDelivery([successor, tombstone], "agent-a", { now: now(), inspectPid: live }).state, "watching");
   assert.equal(resolveResponsiveDelivery([tombstone], "agent-a", { now: now(), inspectPid: () => "dead" }).state, "stopped");
@@ -69,7 +78,7 @@ test("resolver correlates only agent session and applies deterministic selection
   recorder.watching({ expectedProgressMs: 1_000 });
   recorder.retarget({ agentSessionId: "agent-b" });
   const retargeted = recorder.watching({ expectedProgressMs: 1_000 });
-  assert.equal(resolveResponsiveDelivery([retargeted], "agent-a", { now: now(), inspectPid: live }).state, "stale");
+  assert.equal(resolveResponsiveDelivery([retargeted], "agent-a", { now: now(), inspectPid: live }).state, "unknown");
   assert.equal(resolveResponsiveDelivery([retargeted], "agent-b", { now: now(), inspectPid: live }).state, "watching");
 });
 
@@ -89,10 +98,34 @@ test("secure persistence, malformed files, oversized files, future schemas, and 
     writeFileSync(join(dir, "10.json"), JSON.stringify({ ...snapshot, schemaVersion: 2, pid: 10 }));
     writeFileSync(join(dir, "11.json"), "x".repeat(RESPONSIVE_DELIVERY_MAX_FILE_BYTES + 1));
     assert.equal(readResponsiveDeliverySnapshots(cwd).length, 1);
-    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, 457), JSON.stringify({ ...snapshot, pid: 457, expiresAt: new Date(ms - 1).toISOString() }));
-    pruneResponsiveDeliverySnapshots(cwd, { now: now(), inspectPid: live });
+    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, 457), JSON.stringify({ ...snapshot, pid: 457, expiresAt: new Date(ms - 1).toISOString() }), { mode: 0o600 });
+    pruneResponsiveDeliverySnapshots(cwd, { now: now(), inspectPid: () => "dead" });
     assert.equal(readResponsiveDeliverySnapshots(cwd).length, 1);
     assert.equal(parseResponsiveDeliverySnapshot({ ...snapshot, schemaVersion: 2 }), undefined);
     assert.match(redactResponsiveDeliveryDiagnostic("token=abc Bearer parle_tok_deadbeef") || "", /REDACTED/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("writer pruning requires expiry and dead ownership and bounds each sweep", () => {
+  ms = Date.parse("2026-01-01T01:00:00Z");
+  const cwd = mkdtempSync(join(tmpdir(), "parle-responsive-prune-"));
+  try {
+    const dir = responsiveDeliveryRuntimeDirPath(cwd);
+    mkdirSync(dir, { recursive: true });
+    const expired = (pid) => ({ ...active("watching", pid), expiresAt: new Date(ms - 1).toISOString() });
+    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, 700), JSON.stringify(expired(700)), { mode: 0o600 });
+    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, 701), JSON.stringify(expired(701)), { mode: 0o600 });
+    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, 702), JSON.stringify(active("watching", 702)), { mode: 0o600 });
+    pruneResponsiveDeliverySnapshots(cwd, { now: now(), inspectPid: () => "dead", maxInspections: 1, maxRemovals: 1 });
+    assert.equal(readResponsiveDeliverySnapshots(cwd).length, 2, "one candidate is inspected and removed per bounded sweep while a fresh dead record remains");
+    pruneResponsiveDeliverySnapshots(cwd, { now: now(), inspectPid: () => "dead", maxInspections: 1, maxRemovals: 1 });
+    pruneResponsiveDeliverySnapshots(cwd, { now: now(), inspectPid: () => "dead", maxInspections: 1, maxRemovals: 1 });
+    assert.deepEqual(readResponsiveDeliverySnapshots(cwd).map((row) => row.pid), [702], "the rotating cursor eventually reaches later stale records");
+
+    const child = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
+    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, child.pid), JSON.stringify(expired(child.pid)), { mode: 0o600 });
+    new ResponsiveDeliveryRecorder({ ...base(703), cwd, persist: true, now }).watching({ expectedProgressMs: 20_000 });
+    assert.equal(readResponsiveDeliverySnapshots(cwd).some((row) => row.pid === child.pid), false, "a normal write opportunistically reaps an expired dead sibling");
+    assert.equal(readResponsiveDeliverySnapshots(cwd).some((row) => row.pid === 702), true);
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

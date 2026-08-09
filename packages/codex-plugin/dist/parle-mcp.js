@@ -410,11 +410,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants3);
+          this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -431,10 +431,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants3);
+        this.rhs = optimizeExpr(this.rhs, names, constants4);
         return this;
       }
       get names() {
@@ -495,8 +495,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants3) {
-        this.code = optimizeExpr(this.code, names, constants3);
+      optimizeNames(names, constants4) {
+        this.code = optimizeExpr(this.code, names, constants4);
         return this;
       }
       get names() {
@@ -525,12 +525,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants3))
+          if (n.optimizeNames(names, constants4))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -583,12 +583,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         var _a3;
-        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants3);
-        if (!(super.optimizeNames(names, constants3) || this.else))
+        this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants4);
+        if (!(super.optimizeNames(names, constants4) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants3);
+        this.condition = optimizeExpr(this.condition, names, constants4);
         return this;
       }
       get names() {
@@ -611,10 +611,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants3) {
-        if (!super.optimizeNames(names, constants3))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants3);
+        this.iteration = optimizeExpr(this.iteration, names, constants4);
         return this;
       }
       get names() {
@@ -650,10 +650,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants3) {
-        if (!super.optimizeNames(names, constants3))
+      optimizeNames(names, constants4) {
+        if (!super.optimizeNames(names, constants4))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants3);
+        this.iterable = optimizeExpr(this.iterable, names, constants4);
         return this;
       }
       get names() {
@@ -695,11 +695,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants3) {
+      optimizeNames(names, constants4) {
         var _a3, _b;
-        super.optimizeNames(names, constants3);
-        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants3);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants3);
+        super.optimizeNames(names, constants4);
+        (_a3 = this.catch) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants4);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants4);
         return this;
       }
       get names() {
@@ -1000,7 +1000,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants3) {
+    function optimizeExpr(expr, names, constants4) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -1015,14 +1015,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants3[n.str];
+        const c = constants4[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants4[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -30954,12 +30954,12 @@ var StdioServerTransport = class {
 
 // src/index.ts
 import { spawn } from "node:child_process";
-import { existsSync as existsSync7, readFileSync as readFileSync6 } from "node:fs";
+import { existsSync as existsSync7, readFileSync as readFileSync5 } from "node:fs";
 import { dirname as dirname7, join as join10 } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
-import { readFileSync as readFileSync5, existsSync as existsSync6 } from "node:fs";
+import { readFileSync as readFileSync4, existsSync as existsSync6 } from "node:fs";
 import { join as join8 } from "node:path";
 import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
 
@@ -30969,7 +30969,7 @@ import { join as join2 } from "node:path";
 
 // ../client/dist/safe-file.js
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, linkSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 var DEFAULT_FILE_MODE = 384;
 var DEFAULT_DIRECTORY_MODE = 448;
@@ -31230,6 +31230,59 @@ function atomicReplaceOwnerOnlyFile(path, value, options) {
     body.fill(0);
   }
 }
+function restoreQuarantinedFile(path, quarantine) {
+  try {
+    linkSync(quarantine, path);
+    unlinkSync(quarantine);
+  } catch (error51) {
+    if (systemCode(error51) === "EEXIST") {
+      try {
+        unlinkSync(quarantine);
+      } catch (unlinkError) {
+        if (systemCode(unlinkError) !== "ENOENT")
+          throw unlinkError;
+      }
+      return;
+    }
+    throw error51;
+  }
+}
+function removeOwnerOnlyFileIf(path, options) {
+  try {
+    inspectOwnerOnlyPath(path, options.label, DEFAULT_FILE_MODE, true);
+    const raw = readOwnerOnlyTextFile(path, { label: options.label, maxBytes: options.maxBytes });
+    if (!options.shouldRemove(raw))
+      return false;
+  } catch {
+    return false;
+  }
+  const quarantine = join(dirname(path), `.${basename(path)}.prune.${process.pid}.${randomUUID()}`);
+  try {
+    renameSync(path, quarantine);
+  } catch (error51) {
+    if (systemCode(error51) === "ENOENT")
+      return false;
+    throw error51;
+  }
+  let remove = false;
+  try {
+    const raw = readOwnerOnlyTextFile(quarantine, { label: options.label, maxBytes: options.maxBytes });
+    remove = options.shouldRemove(raw);
+  } catch {
+    remove = false;
+  }
+  if (remove) {
+    try {
+      unlinkSync(quarantine);
+    } catch (error51) {
+      if (systemCode(error51) !== "ENOENT")
+        throw error51;
+    }
+    return true;
+  }
+  restoreQuarantinedFile(path, quarantine);
+  return false;
+}
 function defaultPidIsAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -31381,7 +31434,10 @@ function withOwnerOnlyFileLock(targetPath, options, operation) {
 // ../client/dist/runtime-file.js
 var RUNTIME_SCHEMA_VERSION = 2;
 var RUNTIME_DIR_SEGMENTS = [".parle", "runtime"];
+var RUNTIME_PRUNE_LIMIT = 32;
+var RUNTIME_PRUNE_INSPECTION_LIMIT = 64;
 var MAX_RUNTIME_FILE_BYTES = 64 * 1024;
+var pruneCursor = /* @__PURE__ */ new Map();
 function runtimeDirPath(cwd) {
   return join2(cwd, ...RUNTIME_DIR_SEGMENTS);
 }
@@ -31399,31 +31455,13 @@ function writeRuntimeFile(cwd, snapshot) {
     maxBytes: MAX_RUNTIME_FILE_BYTES,
     durability: "none"
   });
+  try {
+    pruneRuntimeFiles(cwd, new Date(snapshot.updatedAt), { excludePid: snapshot.pid });
+  } catch {
+  }
 }
 function removeRuntimeFile(cwd, pid) {
   rmSync(runtimeFilePath(cwd, pid), { force: true });
-}
-function readRuntimeFiles(cwd) {
-  const dir = runtimeDirPath(cwd);
-  let names;
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const name of names) {
-    if (name.startsWith(".") || !name.endsWith(".json"))
-      continue;
-    const path = join2(dir, name);
-    try {
-      const snapshot = JSON.parse(readOwnerOnlyTextFile(path, { label: "Parle runtime snapshot", maxBytes: MAX_RUNTIME_FILE_BYTES }));
-      if (snapshot && typeof snapshot === "object")
-        out.push({ path, snapshot });
-    } catch {
-    }
-  }
-  return out;
 }
 function pidLiveness(pid) {
   try {
@@ -31433,14 +31471,53 @@ function pidLiveness(pid) {
     return error51?.code === "ESRCH" ? "dead" : "uncertain";
   }
 }
-function pruneRuntimeFiles(cwd, now = /* @__PURE__ */ new Date()) {
-  for (const { path, snapshot } of readRuntimeFiles(cwd)) {
-    if (snapshot.pid === process.pid)
-      continue;
-    const expiresAt = Date.parse(snapshot.expiresAt || "");
-    const expired = !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
-    if (expired || pidLiveness(snapshot.pid) === "dead")
-      rmSync(path, { force: true });
+function boundedLimit(value, fallback) {
+  const parsed = Math.trunc(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+function rotatedCandidates(dir, names, limit) {
+  if (!names.length || limit === 0)
+    return [];
+  names.sort();
+  const start = (pruneCursor.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  pruneCursor.set(dir, (start + count) % names.length);
+  return selected;
+}
+function pruneRuntimeFiles(cwd, now = /* @__PURE__ */ new Date(), options = {}) {
+  const dir = runtimeDirPath(cwd);
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => !name.startsWith(".") && name.endsWith(".json"));
+  } catch {
+    return;
+  }
+  const maxInspections = boundedLimit(options.maxInspections, RUNTIME_PRUNE_INSPECTION_LIMIT);
+  const maxRemovals = boundedLimit(options.maxRemovals, RUNTIME_PRUNE_LIMIT);
+  const inspectPid = options.inspectPid ?? pidLiveness;
+  let removed = 0;
+  for (const name of rotatedCandidates(dir, names, maxInspections)) {
+    if (removed >= maxRemovals)
+      break;
+    const path = join2(dir, name);
+    if (removeOwnerOnlyFileIf(path, {
+      label: "Parle runtime snapshot",
+      maxBytes: MAX_RUNTIME_FILE_BYTES,
+      shouldRemove: (raw) => {
+        let snapshot;
+        try {
+          snapshot = JSON.parse(raw);
+        } catch {
+          return false;
+        }
+        if (!snapshot || !Number.isSafeInteger(snapshot.pid) || snapshot.pid <= 0 || snapshot.pid === process.pid || snapshot.pid === options.excludePid)
+          return false;
+        const expiresAt = Date.parse(snapshot.expiresAt || "");
+        return Number.isFinite(expiresAt) && expiresAt <= now.getTime() && inspectPid(snapshot.pid) === "dead";
+      }
+    }))
+      removed += 1;
   }
 }
 
@@ -34755,17 +34832,43 @@ function compactStatusCardFromStatus(status) {
 }
 
 // ../client/dist/responsive-delivery.js
-import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, readdirSync as readdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync3, closeSync as closeSync3, constants as constants2, fstatSync as fstatSync3, linkSync as linkSync2, lstatSync as lstatSync5, mkdirSync as mkdirSync4, openSync as openSync3, readdirSync as readdirSync2, readSync as readSync2, renameSync as renameSync2, rmSync as rmSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join7 } from "node:path";
 var RESPONSIVE_DELIVERY_SKEW_MS = 3e4;
 var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
 var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
 var RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
 var RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS = 512;
+var RESPONSIVE_DELIVERY_PRUNE_LIMIT = 32;
+var RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT = 64;
 var ACTIVE = /* @__PURE__ */ new Set(["starting", "watching", "backoff"]);
 var PUBLISHED = /* @__PURE__ */ new Set(["starting", "watching", "backoff", "stopped", "terminal"]);
 var ISO = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
 var string4 = (value, max = 256) => typeof value === "string" && value.length > 0 && value.length <= max ? value : void 0;
+var pruneCursor2 = /* @__PURE__ */ new Map();
+var systemCode2 = (error51) => typeof error51?.code === "string" ? error51.code : void 0;
+var NO_FOLLOW2 = typeof constants2.O_NOFOLLOW === "number" ? constants2.O_NOFOLLOW : 0;
+function readBoundedText(path, maxBytes) {
+  const fd = openSync3(path, constants2.O_RDONLY | NO_FOLLOW2);
+  try {
+    const stat = fstatSync3(fd);
+    if (!stat.isFile() || stat.size > maxBytes)
+      throw new Error("Responsive-delivery evidence exceeds its byte limit.");
+    const output = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < output.length) {
+      const count = readSync2(fd, output, offset, output.length - offset, null);
+      if (count === 0)
+        break;
+      offset += count;
+    }
+    if (offset > maxBytes)
+      throw new Error("Responsive-delivery evidence exceeds its byte limit.");
+    return output.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync3(fd);
+  }
+}
 function redactResponsiveDeliveryDiagnostic(value) {
   if (typeof value !== "string")
     return void 0;
@@ -34815,6 +34918,14 @@ function writeResponsiveDeliverySnapshot(cwd, snapshot) {
   writeFileSync2(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
   chmodSync3(tmp, 384);
   renameSync2(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
+  try {
+    pruneResponsiveDeliverySnapshots(cwd, {
+      now: new Date(snapshot.updatedAt),
+      inspectPid: inspectResponsiveDeliveryPid,
+      excludePid: snapshot.pid
+    });
+  } catch {
+  }
 }
 function parseResponsiveDeliverySnapshot(value) {
   if (!value || typeof value !== "object")
@@ -34859,9 +34970,7 @@ function readResponsiveDeliverySnapshots(cwd) {
     if (!/^\d+\.json$/.test(name))
       continue;
     try {
-      const raw = readFileSync4(join7(responsiveDeliveryRuntimeDirPath(cwd), name), "utf8");
-      if (Buffer.byteLength(raw) > RESPONSIVE_DELIVERY_MAX_FILE_BYTES)
-        continue;
+      const raw = readBoundedText(join7(responsiveDeliveryRuntimeDirPath(cwd), name), RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
       const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
       if (snapshot)
         result2.push(snapshot);
@@ -34906,7 +35015,6 @@ function result(state, snapshot, now = /* @__PURE__ */ new Date()) {
 function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
   const now = options.now || /* @__PURE__ */ new Date();
   const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
-  const mismatched = snapshots.filter((snapshot) => snapshot.target.agentSessionId !== agentSessionId);
   const active = exact.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
   if (active.length > 1)
     return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
@@ -34917,8 +35025,108 @@ function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
     const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
     return result(newest.state, newest, now);
   }
-  const stale = [...exact.filter((snapshot) => ACTIVE.has(snapshot.state)), ...mismatched].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  return stale.length ? result("stale", stale[0], now) : { state: "unknown" };
+  const stale = exact.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return stale.length ? result("stale", stale[0], now) : { state: "unknown", reason: "no_evidence_for_session" };
+}
+function isDefinitelyGone(snapshot, inspectPid) {
+  const checked = inspection(snapshot.pid, inspectPid);
+  return checked === "dead" || typeof checked === "object" && (checked.status === "dead" || Boolean(checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt));
+}
+function boundedLimit2(value, fallback) {
+  const parsed = Math.trunc(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+function rotatedCandidates2(dir, names, limit) {
+  if (!names.length || limit === 0)
+    return [];
+  names.sort();
+  const start = (pruneCursor2.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  pruneCursor2.set(dir, (start + count) % names.length);
+  return selected;
+}
+function restoreResponsiveCandidate(path, quarantine) {
+  try {
+    linkSync2(quarantine, path);
+    unlinkSync4(quarantine);
+  } catch (error51) {
+    if (systemCode2(error51) === "EEXIST") {
+      try {
+        unlinkSync4(quarantine);
+      } catch (unlinkError) {
+        if (systemCode2(unlinkError) !== "ENOENT")
+          throw unlinkError;
+      }
+      return;
+    }
+    throw error51;
+  }
+}
+function removeResponsiveCandidateIf(path, shouldRemove) {
+  let stat;
+  try {
+    stat = lstatSync5(path);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile() || stat.nlink !== 1 || process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 511) !== 384))
+    return false;
+  try {
+    const raw = readBoundedText(path, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+    if (!snapshot || !shouldRemove(snapshot))
+      return false;
+  } catch {
+    return false;
+  }
+  const quarantine = `${path}.prune-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    renameSync2(path, quarantine);
+  } catch (error51) {
+    if (systemCode2(error51) === "ENOENT")
+      return false;
+    throw error51;
+  }
+  let remove = false;
+  try {
+    const raw = readBoundedText(quarantine, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+    remove = Boolean(snapshot && shouldRemove(snapshot));
+  } catch {
+    remove = false;
+  }
+  if (remove) {
+    try {
+      unlinkSync4(quarantine);
+    } catch (error51) {
+      if (systemCode2(error51) !== "ENOENT")
+        throw error51;
+    }
+    return true;
+  }
+  restoreResponsiveCandidate(path, quarantine);
+  return false;
+}
+function pruneResponsiveDeliverySnapshots(cwd, options = {}) {
+  const now = options.now || /* @__PURE__ */ new Date();
+  const dir = responsiveDeliveryRuntimeDirPath(cwd);
+  let names;
+  try {
+    names = readdirSync2(dir).filter((name) => /^\d+\.json$/.test(name));
+  } catch {
+    return;
+  }
+  const maxInspections = boundedLimit2(options.maxInspections, RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT);
+  const maxRemovals = boundedLimit2(options.maxRemovals, RESPONSIVE_DELIVERY_PRUNE_LIMIT);
+  let removed = 0;
+  for (const name of rotatedCandidates2(dir, names, maxInspections)) {
+    if (removed >= maxRemovals)
+      break;
+    const path = join7(dir, name);
+    if (removeResponsiveCandidateIf(path, (snapshot) => snapshot.pid !== options.excludePid && Date.parse(snapshot.expiresAt) <= now.getTime() && isDefinitelyGone(snapshot, options.inspectPid)))
+      removed += 1;
+  }
 }
 var ResponsiveDeliveryRecorder = class {
   options;
@@ -35544,7 +35752,7 @@ function parseKeyValueFile(text) {
 function readKeyValueFile(path) {
   if (!existsSync6(path))
     return {};
-  return parseKeyValueFile(readFileSync5(path, "utf8"));
+  return parseKeyValueFile(readFileSync4(path, "utf8"));
 }
 function firstConfigValue(name, sources, fallback) {
   for (const source of sources) {
@@ -37527,8 +37735,8 @@ import { createHash as createHash3, randomUUID as randomUUID5 } from "node:crypt
 import {
   accessSync,
   chmodSync as chmodSync4,
-  constants as constants2,
-  lstatSync as lstatSync5,
+  constants as constants3,
+  lstatSync as lstatSync6,
   mkdirSync as mkdirSync5,
   readdirSync as readdirSync3,
   renameSync as renameSync3,
@@ -37728,12 +37936,12 @@ var HookDeliveryBridge = class {
     const path = hookBridgeSocketPath(this.scope);
     const dir = dirname6(path);
     mkdirSync5(dir, { recursive: true, mode: 448 });
-    const before = lstatSync5(dir);
+    const before = lstatSync6(dir);
     if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
       throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
     }
     chmodSync4(dir, 448);
-    const after = lstatSync5(dir);
+    const after = lstatSync6(dir);
     if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
     this.removeDeadRuntimeArtifacts(dir);
     this.removeOwnRuntimeArtifacts();
@@ -37757,7 +37965,7 @@ var HookDeliveryBridge = class {
   publishRuntimeArtifacts() {
     const execPath = this.runtimeExecPath;
     if (!isAbsolute3(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
-    accessSync(execPath, constants2.X_OK);
+    accessSync(execPath, constants3.X_OK);
     if (!statSync3(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
     const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
@@ -37901,7 +38109,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.19";
+var MCP_CLIENT_VERSION = "0.7.20";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -38805,7 +39013,7 @@ async function runKnownAddressContext(cwd) {
   let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
   if (!profilesPathOverride) {
     try {
-      profilesPathOverride = parseKeyValueFile(readFileSync6(join10(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
+      profilesPathOverride = parseKeyValueFile(readFileSync5(join10(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
     } catch {
     }
   }

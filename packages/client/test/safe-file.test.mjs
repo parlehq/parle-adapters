@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -25,6 +26,7 @@ import {
   ensureOwnerOnlyDirectory,
   readOwnerOnlyFile,
   readOwnerOnlyTextFile,
+  removeOwnerOnlyFileIf,
   withOwnerOnlyFileLock,
 } from "../dist/index.js";
 
@@ -98,6 +100,49 @@ test("atomic replacement publishes complete owner-only files and leaves no tempo
     symlinkSync(outside, path);
     assert.throws(() => atomicReplaceOwnerOnlyFile(path, "replacement", { label: "test state", durability: "required" }), expectCode("symlink_refused"));
     assert.equal(readFileSync(outside, "utf8"), "outside");
+  } finally { f.cleanup(); }
+});
+
+test("conditional removal does not quarantine a non-candidate", () => {
+  const f = fixture();
+  const originalRename = fs.renameSync;
+  try {
+    const path = join(f.state, "healthy.json");
+    writeFileSync(path, '{"healthy":true}\n', { mode: 0o600 });
+    fs.renameSync = () => { throw new Error("non-candidate must not be renamed"); };
+    syncBuiltinESMExports();
+    assert.equal(removeOwnerOnlyFileIf(path, { label: "healthy snapshot", maxBytes: 1024, shouldRemove: () => false }), false);
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { healthy: true });
+  } finally {
+    fs.renameSync = originalRename;
+    syncBuiltinESMExports();
+    f.cleanup();
+  }
+});
+
+test("conditional removal quarantines one generation and preserves a concurrent replacement", () => {
+  const f = fixture();
+  try {
+    const path = join(f.state, "snapshot.json");
+    writeFileSync(path, '{"generation":1}\n', { mode: 0o600 });
+    let evaluations = 0;
+    assert.equal(removeOwnerOnlyFileIf(path, {
+      label: "test snapshot",
+      maxBytes: 1024,
+      shouldRemove: (raw) => {
+        evaluations += 1;
+        assert.match(raw, /generation.*1/);
+        if (evaluations === 2) {
+          const replacement = join(f.state, "snapshot.replacement");
+          writeFileSync(replacement, '{"generation":2}\n', { mode: 0o600 });
+          renameSync(replacement, path);
+        }
+        return true;
+      },
+    }), true);
+    assert.equal(evaluations, 2);
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { generation: 2 });
+    assert.equal(readdirSync(f.state).some((name) => name.includes(".prune.")), false);
   } finally { f.cleanup(); }
 });
 

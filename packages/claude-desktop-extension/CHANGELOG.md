@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.20 (2026-08-09)
+
+- Refresh the bundled runtime with session-scoped responsive-delivery resolution and bounded expired runtime record cleanup (#103, #104).
+
 ## 0.8.19 (2026-08-08)
 
 - Refresh automatic direct-send enrollment while explicitly leaving context restoration unsupported, and remove the legacy peer status surface from the bundled runtime (#96, #93).

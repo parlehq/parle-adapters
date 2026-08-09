@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.20 (2026-08-09)
+
+- Refresh the bundled runtime and responsive-delivery reader with session-scoped status evidence and bounded expired runtime record cleanup (#103, #104).
+
 ## 0.6.19 (2026-08-08)
 
 - Refresh automatic direct-send enrollment while explicitly leaving context restoration unsupported, and remove the legacy peer helper, startup renderer, status field, and generated copies (#96, #93).

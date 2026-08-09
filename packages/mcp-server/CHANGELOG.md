@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.20 (2026-08-09)
+
+- Refresh shared responsive-delivery resolution and bounded runtime evidence cleanup so status never borrows another session's watcher evidence (#103, #104).
+
 ## 0.7.19 (2026-08-08)
 
 - Refresh the shared transport with automatic known-address enrollment, add the supported-host context renderer, remove `parle_status.peerContext`, and delete the legacy peer helper and injection path (#96, #93).

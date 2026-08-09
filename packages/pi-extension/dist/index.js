@@ -1,5 +1,5 @@
 // src/index.ts
-import { existsSync as existsSync7, lstatSync as lstatSync5, readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
+import { existsSync as existsSync7, lstatSync as lstatSync6, readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
 import { dirname as dirname6, join as join8 } from "node:path";
 
 // ../client/dist/index.js
@@ -13,7 +13,7 @@ import { join as join2 } from "node:path";
 
 // ../client/dist/safe-file.js
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fchmodSync, fsyncSync, fstatSync, lstatSync, linkSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 var DEFAULT_FILE_MODE = 384;
 var DEFAULT_DIRECTORY_MODE = 448;
@@ -274,6 +274,59 @@ function atomicReplaceOwnerOnlyFile(path, value, options) {
     body.fill(0);
   }
 }
+function restoreQuarantinedFile(path, quarantine) {
+  try {
+    linkSync(quarantine, path);
+    unlinkSync(quarantine);
+  } catch (error) {
+    if (systemCode(error) === "EEXIST") {
+      try {
+        unlinkSync(quarantine);
+      } catch (unlinkError) {
+        if (systemCode(unlinkError) !== "ENOENT")
+          throw unlinkError;
+      }
+      return;
+    }
+    throw error;
+  }
+}
+function removeOwnerOnlyFileIf(path, options) {
+  try {
+    inspectOwnerOnlyPath(path, options.label, DEFAULT_FILE_MODE, true);
+    const raw = readOwnerOnlyTextFile(path, { label: options.label, maxBytes: options.maxBytes });
+    if (!options.shouldRemove(raw))
+      return false;
+  } catch {
+    return false;
+  }
+  const quarantine = join(dirname(path), `.${basename(path)}.prune.${process.pid}.${randomUUID()}`);
+  try {
+    renameSync(path, quarantine);
+  } catch (error) {
+    if (systemCode(error) === "ENOENT")
+      return false;
+    throw error;
+  }
+  let remove = false;
+  try {
+    const raw = readOwnerOnlyTextFile(quarantine, { label: options.label, maxBytes: options.maxBytes });
+    remove = options.shouldRemove(raw);
+  } catch {
+    remove = false;
+  }
+  if (remove) {
+    try {
+      unlinkSync(quarantine);
+    } catch (error) {
+      if (systemCode(error) !== "ENOENT")
+        throw error;
+    }
+    return true;
+  }
+  restoreQuarantinedFile(path, quarantine);
+  return false;
+}
 function defaultPidIsAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -425,7 +478,10 @@ function withOwnerOnlyFileLock(targetPath, options, operation) {
 // ../client/dist/runtime-file.js
 var RUNTIME_SCHEMA_VERSION = 2;
 var RUNTIME_DIR_SEGMENTS = [".parle", "runtime"];
+var RUNTIME_PRUNE_LIMIT = 32;
+var RUNTIME_PRUNE_INSPECTION_LIMIT = 64;
 var MAX_RUNTIME_FILE_BYTES = 64 * 1024;
+var pruneCursor = /* @__PURE__ */ new Map();
 function runtimeDirPath(cwd) {
   return join2(cwd, ...RUNTIME_DIR_SEGMENTS);
 }
@@ -443,31 +499,13 @@ function writeRuntimeFile(cwd, snapshot) {
     maxBytes: MAX_RUNTIME_FILE_BYTES,
     durability: "none"
   });
+  try {
+    pruneRuntimeFiles(cwd, new Date(snapshot.updatedAt), { excludePid: snapshot.pid });
+  } catch {
+  }
 }
 function removeRuntimeFile(cwd, pid) {
   rmSync(runtimeFilePath(cwd, pid), { force: true });
-}
-function readRuntimeFiles(cwd) {
-  const dir = runtimeDirPath(cwd);
-  let names;
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const name of names) {
-    if (name.startsWith(".") || !name.endsWith(".json"))
-      continue;
-    const path = join2(dir, name);
-    try {
-      const snapshot = JSON.parse(readOwnerOnlyTextFile(path, { label: "Parle runtime snapshot", maxBytes: MAX_RUNTIME_FILE_BYTES }));
-      if (snapshot && typeof snapshot === "object")
-        out.push({ path, snapshot });
-    } catch {
-    }
-  }
-  return out;
 }
 function pidLiveness(pid) {
   try {
@@ -477,14 +515,53 @@ function pidLiveness(pid) {
     return error?.code === "ESRCH" ? "dead" : "uncertain";
   }
 }
-function pruneRuntimeFiles(cwd, now = /* @__PURE__ */ new Date()) {
-  for (const { path, snapshot } of readRuntimeFiles(cwd)) {
-    if (snapshot.pid === process.pid)
-      continue;
-    const expiresAt = Date.parse(snapshot.expiresAt || "");
-    const expired = !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
-    if (expired || pidLiveness(snapshot.pid) === "dead")
-      rmSync(path, { force: true });
+function boundedLimit(value, fallback) {
+  const parsed = Math.trunc(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+function rotatedCandidates(dir, names, limit) {
+  if (!names.length || limit === 0)
+    return [];
+  names.sort();
+  const start = (pruneCursor.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  pruneCursor.set(dir, (start + count) % names.length);
+  return selected;
+}
+function pruneRuntimeFiles(cwd, now = /* @__PURE__ */ new Date(), options = {}) {
+  const dir = runtimeDirPath(cwd);
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => !name.startsWith(".") && name.endsWith(".json"));
+  } catch {
+    return;
+  }
+  const maxInspections = boundedLimit(options.maxInspections, RUNTIME_PRUNE_INSPECTION_LIMIT);
+  const maxRemovals = boundedLimit(options.maxRemovals, RUNTIME_PRUNE_LIMIT);
+  const inspectPid = options.inspectPid ?? pidLiveness;
+  let removed = 0;
+  for (const name of rotatedCandidates(dir, names, maxInspections)) {
+    if (removed >= maxRemovals)
+      break;
+    const path = join2(dir, name);
+    if (removeOwnerOnlyFileIf(path, {
+      label: "Parle runtime snapshot",
+      maxBytes: MAX_RUNTIME_FILE_BYTES,
+      shouldRemove: (raw) => {
+        let snapshot;
+        try {
+          snapshot = JSON.parse(raw);
+        } catch {
+          return false;
+        }
+        if (!snapshot || !Number.isSafeInteger(snapshot.pid) || snapshot.pid <= 0 || snapshot.pid === process.pid || snapshot.pid === options.excludePid)
+          return false;
+        const expiresAt = Date.parse(snapshot.expiresAt || "");
+        return Number.isFinite(expiresAt) && expiresAt <= now.getTime() && inspectPid(snapshot.pid) === "dead";
+      }
+    }))
+      removed += 1;
   }
 }
 
@@ -3721,9 +3798,11 @@ var ParleAccountClient = class {
 };
 
 // ../client/dist/responsive-delivery.js
+import { chmodSync as chmodSync3, closeSync as closeSync3, constants as constants2, fstatSync as fstatSync3, linkSync as linkSync2, lstatSync as lstatSync5, mkdirSync as mkdirSync4, openSync as openSync3, readdirSync as readdirSync2, readSync as readSync2, renameSync as renameSync2, rmSync as rmSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
 var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
 var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
 var RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
+var NO_FOLLOW2 = typeof constants2.O_NOFOLLOW === "number" ? constants2.O_NOFOLLOW : 0;
 
 // ../client/dist/delivery.js
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
@@ -6293,7 +6372,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.24";
+var PI_EXTENSION_VERSION = "0.7.25";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -6691,7 +6770,7 @@ function sessionCookieFilePath2(catalogPath) {
 function readSessionCookieFile(path) {
   try {
     if (!existsSync7(path)) return void 0;
-    const link = lstatSync5(path);
+    const link = lstatSync6(path);
     const stat = link.isSymbolicLink() ? statSync3(path) : link;
     if (!stat.isFile()) return void 0;
     if (process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 63) !== 0)) return void 0;

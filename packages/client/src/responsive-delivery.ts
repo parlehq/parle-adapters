@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** Credential-free local evidence for a responsive-delivery owner. */
@@ -8,6 +8,8 @@ export const RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 60_000;
 export const RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 60_000;
 export const RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
 export const RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS = 512;
+export const RESPONSIVE_DELIVERY_PRUNE_LIMIT = 32;
+export const RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT = 64;
 
 export type ResponsiveDeliveryPublishedState = "starting" | "watching" | "backoff" | "stopped" | "terminal";
 export type ResponsiveDeliveryState = ResponsiveDeliveryPublishedState | "stale" | "unknown" | "conflict";
@@ -42,6 +44,11 @@ export type ResponsiveDeliveryResolveOptions = {
   now?: Date;
   inspectPid?: (pid: number) => ResponsivePidInspection;
 };
+export type ResponsiveDeliveryPruneOptions = ResponsiveDeliveryResolveOptions & {
+  excludePid?: number;
+  maxInspections?: number;
+  maxRemovals?: number;
+};
 export type ResponsiveDeliveryEvent = {
   expectedProgressMs?: number;
   lastSuccessAt?: string;
@@ -64,6 +71,28 @@ const ACTIVE = new Set<ResponsiveDeliveryPublishedState>(["starting", "watching"
 const PUBLISHED = new Set<ResponsiveDeliveryPublishedState>(["starting", "watching", "backoff", "stopped", "terminal"]);
 const ISO = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 const string = (value: unknown, max = 256): string | undefined => typeof value === "string" && value.length > 0 && value.length <= max ? value : undefined;
+const pruneCursor = new Map<string, number>();
+const systemCode = (error: unknown): string | undefined => typeof (error as any)?.code === "string" ? (error as any).code : undefined;
+const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+
+function readBoundedText(path: string, maxBytes: number): string {
+  const fd = openSync(path, constants.O_RDONLY | NO_FOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error("Responsive-delivery evidence exceeds its byte limit.");
+    const output = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < output.length) {
+      const count = readSync(fd, output, offset, output.length - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset > maxBytes) throw new Error("Responsive-delivery evidence exceeds its byte limit.");
+    return output.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /** Removes common credentials and bounds text before it can enter local evidence. */
 export function redactResponsiveDeliveryDiagnostic(value: unknown): string | undefined {
@@ -122,6 +151,13 @@ export function writeResponsiveDeliverySnapshot(cwd: string, snapshot: Responsiv
   writeFileSync(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 0o600 });
   chmodSync(tmp, 0o600);
   renameSync(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
+  try {
+    pruneResponsiveDeliverySnapshots(cwd, {
+      now: new Date(snapshot.updatedAt),
+      inspectPid: inspectResponsiveDeliveryPid,
+      excludePid: snapshot.pid,
+    });
+  } catch { /* cleanup is best effort after the snapshot is committed */ }
 }
 export function removeResponsiveDeliverySnapshot(cwd: string, pid: number): void { rmSync(responsiveDeliveryRuntimeFilePath(cwd, pid), { force: true }); }
 
@@ -151,8 +187,7 @@ export function readResponsiveDeliverySnapshots(cwd: string): ResponsiveDelivery
   for (const name of names) {
     if (!/^\d+\.json$/.test(name)) continue;
     try {
-      const raw = readFileSync(join(responsiveDeliveryRuntimeDirPath(cwd), name), "utf8");
-      if (Buffer.byteLength(raw) > RESPONSIVE_DELIVERY_MAX_FILE_BYTES) continue;
+      const raw = readBoundedText(join(responsiveDeliveryRuntimeDirPath(cwd), name), RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
       const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw)); if (snapshot) result.push(snapshot);
     } catch { /* fail closed */ }
   }
@@ -183,7 +218,6 @@ function result(state: ResponsiveDeliveryState, snapshot?: ResponsiveDeliverySna
 export function resolveResponsiveDelivery(snapshots: readonly ResponsiveDeliverySnapshot[], agentSessionId: string, options: ResponsiveDeliveryResolveOptions = {}): ResponsiveDeliveryResult {
   const now = options.now || new Date();
   const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
-  const mismatched = snapshots.filter((snapshot) => snapshot.target.agentSessionId !== agentSessionId);
   const active = exact.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
   if (active.length > 1) return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
   if (active.length === 1) return result(active[0].state, active[0], now);
@@ -192,15 +226,81 @@ export function resolveResponsiveDelivery(snapshots: readonly ResponsiveDelivery
     const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
     return result(newest.state, newest, now);
   }
-  const stale = [...exact.filter((snapshot) => ACTIVE.has(snapshot.state)), ...mismatched].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  return stale.length ? result("stale", stale[0], now) : { state: "unknown" };
+  const stale = exact.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return stale.length ? result("stale", stale[0], now) : { state: "unknown", reason: "no_evidence_for_session" };
 }
 
-export function pruneResponsiveDeliverySnapshots(cwd: string, options: ResponsiveDeliveryResolveOptions = {}): void {
+function isDefinitelyGone(snapshot: ResponsiveDeliverySnapshot, inspectPid?: ResponsiveDeliveryResolveOptions["inspectPid"]): boolean {
+  const checked = inspection(snapshot.pid, inspectPid);
+  return checked === "dead" || (typeof checked === "object" && (checked.status === "dead" || Boolean(checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt)));
+}
+
+function boundedLimit(value: number | undefined, fallback: number): number {
+  const parsed = Math.trunc(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+
+function rotatedCandidates(dir: string, names: string[], limit: number): string[] {
+  if (!names.length || limit === 0) return [];
+  names.sort();
+  const start = (pruneCursor.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  pruneCursor.set(dir, (start + count) % names.length);
+  return selected;
+}
+
+function restoreResponsiveCandidate(path: string, quarantine: string): void {
+  try {
+    linkSync(quarantine, path);
+    unlinkSync(quarantine);
+  } catch (error) {
+    if (systemCode(error) === "EEXIST") {
+      try { unlinkSync(quarantine); } catch (unlinkError) { if (systemCode(unlinkError) !== "ENOENT") throw unlinkError; }
+      return;
+    }
+    throw error;
+  }
+}
+
+function removeResponsiveCandidateIf(path: string, shouldRemove: (snapshot: ResponsiveDeliverySnapshot) => boolean): boolean {
+  let stat;
+  try { stat = lstatSync(path); } catch { return false; }
+  if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600))) return false;
+  try {
+    const raw = readBoundedText(path, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+    if (!snapshot || !shouldRemove(snapshot)) return false;
+  } catch { return false; }
+  const quarantine = `${path}.prune-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try { renameSync(path, quarantine); } catch (error) { if (systemCode(error) === "ENOENT") return false; throw error; }
+  let remove = false;
+  try {
+    const raw = readBoundedText(quarantine, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+    remove = Boolean(snapshot && shouldRemove(snapshot));
+  } catch { remove = false; }
+  if (remove) {
+    try { unlinkSync(quarantine); } catch (error) { if (systemCode(error) !== "ENOENT") throw error; }
+    return true;
+  }
+  restoreResponsiveCandidate(path, quarantine);
+  return false;
+}
+
+/** Opportunistically inspects and removes bounded sets of expired records whose writer is definitively gone. */
+export function pruneResponsiveDeliverySnapshots(cwd: string, options: ResponsiveDeliveryPruneOptions = {}): void {
   const now = options.now || new Date();
-  for (const snapshot of readResponsiveDeliverySnapshots(cwd)) {
-    const stale = ACTIVE.has(snapshot.state) ? !isActiveLive(snapshot, now, options.inspectPid) : !isFresh(snapshot, now);
-    if (stale) removeResponsiveDeliverySnapshot(cwd, snapshot.pid);
+  const dir = responsiveDeliveryRuntimeDirPath(cwd);
+  let names: string[];
+  try { names = readdirSync(dir).filter((name) => /^\d+\.json$/.test(name)); } catch { return; }
+  const maxInspections = boundedLimit(options.maxInspections, RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT);
+  const maxRemovals = boundedLimit(options.maxRemovals, RESPONSIVE_DELIVERY_PRUNE_LIMIT);
+  let removed = 0;
+  for (const name of rotatedCandidates(dir, names, maxInspections)) {
+    if (removed >= maxRemovals) break;
+    const path = join(dir, name);
+    if (removeResponsiveCandidateIf(path, (snapshot) => snapshot.pid !== options.excludePid && Date.parse(snapshot.expiresAt) <= now.getTime() && isDefinitelyGone(snapshot, options.inspectPid))) removed += 1;
   }
 }
 

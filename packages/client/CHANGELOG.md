@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.20 (2026-08-09)
+
+- Scope responsive-delivery resolution strictly to the calling agent session, report missing caller evidence honestly, and opportunistically reap a bounded number of expired records whose owners are definitively gone (#103, #104).
+
 ## 0.8.19 (2026-08-08)
 
 - Add the automatic bounded known-address registry using shared safe-file mechanics, enroll only from successful direct routing receipts, apply deterministic expiry and eviction, and remove every legacy peer-context export (#96, #93).
