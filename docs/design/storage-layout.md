@@ -20,11 +20,11 @@ The current layout is:
 - human session record: `dirname(catalogPath)/session`, resolved in `packages/client/src/account.ts`
 - invitation handoffs: `dirname(catalogPath)/invites/`, resolved in `packages/client/src/account.ts`
 - account-hardening ceremony state: beside the resolved catalog through the same account state directory
-- operator-tagged peer routes: `dirname(catalogPath)/peers`
+- non-authoritative known-address registry: `dirname(catalogPath)/registry`
 
 `PARLE_PROFILES_PATH` selects a replacement catalog file. It does not layer another catalog over the default. Relative overrides resolve against the adapter working directory. Because account state follows `dirname(catalogPath)`, one override relocates the credential-bearing adapter state together.
 
-The default safety posture is 0700 directories, 0600 credential files, bounded reads, and atomic temporary-file replacement. Symlink handling and ownership checks remain implementation details that must fail closed. Issue #37 owns the pending decision about refusing loose catalog permissions and remediating git exposure. Its outcome should update the consequences here without changing the one-root decision.
+The default safety posture is 0700 directories, 0600 credential files, bounded reads, and atomic temporary-file replacement. The known-address registry uses the shared safe-file mechanics and is same-owner-readable convenience data, not a security boundary or routing authority. Symlink handling and ownership checks remain implementation details that must fail closed. Issue #37 owns the pending decision about refusing loose catalog permissions and remediating git exposure. Its outcome should update the consequences here without changing the one-root decision.
 
 Per-process runtime snapshots currently live at `<cwd>/.parle/runtime/<pid>.json`. They are display-safe, expiring rendezvous files rather than credential state. Issue #34 owns whether they remain workspace-local or move to a user-scoped runtime root.
 

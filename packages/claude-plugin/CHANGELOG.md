@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.20 (2026-08-08)
+
+- Restore bounded known-address context at Claude Code `SessionStart`, refresh automatic direct-send enrollment, and remove the legacy peer helper, renderer, status field, and generated copies (#96, #93).
+
 ## 0.9.19 (2026-08-08)
 
 - Refresh the bundled MCP runtime with the canonical safe-file foundation (#95).

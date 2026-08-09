@@ -88,32 +88,13 @@ cmd skills remove parle --global --yes
 Restart Command Code after reinstalling or removing Parle.
 
 
-## Stable peer routes (issue #53): not supported on this host
+## Automatic known-address context: unsupported on this host
 
-Shipped Command Code 1.5.0 exposes exactly four hook events (`SessionStart`,
-`PreToolUse`, `PostToolUse`, `Stop`), fires `SessionStart` only for startup,
-resume, and clear, and has no `UserPromptSubmit` or compact-source boundary
-that runs before every model turn. Without an always-before-model boundary,
-deterministic re-anchoring of peer context after compaction cannot be
-provided on this host, so #53 support is explicitly not claimed here. It
-stays blocked on an upstream Command Code API (a compact-source
-`SessionStart` or `UserPromptSubmit` equivalent).
+Command Code has no compaction or always-before-model boundary, so it does not
+restore the local known-address registry. The shared transport may record a
+successful direct send for supported hosts using the same profile catalog, but
+Command Code never injects that registry into model context.
 
-What still works: the shared TTY-only `parle-peers.mjs` helper edits the same
-operator-owned store other hosts render
-(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), the managed
-`SessionStart` hook renders the tagged block on startup, resume, and clear,
-and models can read the store via `parle_status.peerContext`. Nothing
-model-callable mutates it. None of that constitutes compaction retention.
-
-Helper usage (does NOT provide compaction retention on this host - it edits
-the shared store rendered here only at startup/resume/clear and rendered at
-real compaction boundaries by other hosts). Mutations refuse hooks, pipes,
-and automation and confirm on the controlling terminal:
-
-```sh
-node skills/parle/scripts/parle-peers.mjs list
-node skills/parle/scripts/parle-peers.mjs add lead @principal.agent.route implementation lead
-node skills/parle/scripts/parle-peers.mjs remove lead
-node skills/parle/scripts/parle-peers.mjs clear
-```
+No peer-memory helper, status field, migration, or compatibility behavior is
+shipped. Existing legacy peer files are unreferenced and remain untouched.
+Host support remains tracked by issue #68.

@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, addStablePeer, clearStablePeers, parseSSEBlocks, processClientInstanceId, readPeerContext, removeStablePeer, renderPeerContextBlock, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.23";
+const PI_EXTENSION_VERSION = "0.7.24";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1619,10 +1619,6 @@ function statusDetails(ctx: any) {
       lastEndSessionAt: runtime.lastEndSessionAt,
       sessionHandle: view.sessionHandle ? "<redacted>" : undefined,
     },
-    peerContext: {
-      peers: readPeerContext(cfg.profilesPath.value).peers,
-      note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the /parle-peers command.",
-    },
     guidance: { ai: AI_GUIDANCE_URL, api: DEFAULT_API_BASE },
   };
 }
@@ -1863,56 +1859,17 @@ export default function parleExtension(pi: any) {
     },
   });
 
-  // Operator-only stable peer-context mutations (issue #53). The command
-  // surface keeps mutation out of every model-callable tool and out of
-  // peer-authored parsing; command dispatch provenance is as strong as the
-  // host makes it (Pi can dispatch commands from RPC), so the structural
-  // guarantee is the absence of a model tool and of content parsing, not a
-  // proof of typed-human origin.
-  pi.registerCommand("parle-peers", {
-    description: "Operator-tag stable Parle peer routes retained across compaction: list, add <label> <@address> [role...], remove <label>, clear.",
-    handler: async (args: string, ctx: any) => {
-      lastCtx = ctx;
-      const catalog = resolveConfig(ctx.cwd || process.cwd()).profilesPath.value;
-      const [action, ...rest] = (args || "list").trim().split(/\s+/);
-      try {
-        if (action === "add") {
-          const [label, address, ...roleParts] = rest;
-          const next = addStablePeer(catalog, { label: label || "", address: address || "", role: roleParts.join(" ") || undefined });
-          ctx.ui.notify(`Tagged stable peer ${label} -> ${address} (${next.peers.length} total)`, "info");
-          return;
-        }
-        if (action === "remove") {
-          const next = removeStablePeer(catalog, rest[0] || "");
-          ctx.ui.notify(`Removed stable peer ${rest[0]} (${next.peers.length} remaining)`, "info");
-          return;
-        }
-        if (action === "clear") {
-          clearStablePeers(catalog);
-          ctx.ui.notify("Cleared all stable peer routes", "info");
-          return;
-        }
-        const peers = readPeerContext(catalog).peers;
-        ctx.ui.notify(peers.length === 0
-          ? "No stable peer routes are tagged. Use /parle-peers add <label> <@address> [role...]"
-          : peers.map((peer) => `${peer.label}: ${peer.address}${peer.role ? ` (${peer.role})` : ""}`).join(" | "), "info");
-      } catch (error) {
-        ctx.ui.notify(redactString(error instanceof Error ? error.message : String(error)), "error");
-      }
-    },
-  });
-
-  // Deterministic rehydration: before every LLM call exactly one copy of the
-  // operator-tagged peer block is present, including the first call after a
-  // compaction. The handler is non-destructive and idempotent.
+  // Pi's context boundary replaces the prior local convenience block before
+  // every model call, including the first call after compaction.
   pi.on("context", (event: any, ctx: any) => {
     try {
-      const catalog = resolveConfig(ctx?.cwd || process.cwd()).profilesPath.value;
-      const block = renderPeerContextBlock(readPeerContext(catalog));
+      const cfg = resolveConfig(ctx?.cwd || process.cwd());
+      if (!cfg.apiBase.value || !cfg.roomId?.value) return undefined;
+      const block = knownAddressContextFor(cfg.profilesPath.value, { apiBase: cfg.apiBase.value, roomId: cfg.roomId.value });
       const messages = (Array.isArray(event?.messages) ? event.messages : []).filter(
-        (message: any) => !(message?.role === "custom" && message?.customType === "parle-peer-context"),
+        (message: any) => !(message?.role === "custom" && message?.customType === "parle-known-address-context"),
       );
-      messages.push({ role: "custom", customType: "parle-peer-context", content: block, display: false, timestamp: Date.now() });
+      messages.push({ role: "custom", customType: "parle-known-address-context", content: block, display: false, timestamp: Date.now() });
       return { messages };
     } catch {
       return undefined;
@@ -1920,11 +1877,7 @@ export default function parleExtension(pi: any) {
   });
 
   pi.on("session_compact", (_event: any, ctx: any) => {
-    try {
-      const catalog = resolveConfig(ctx?.cwd || process.cwd()).profilesPath.value;
-      const count = readPeerContext(catalog).peers.length;
-      ctx?.ui?.notify?.(`Parle stable peer context re-anchored (${count} route${count === 1 ? "" : "s"})`, "info");
-    } catch {}
+    ctx?.ui?.notify?.("Parle known-address context re-anchored", "info");
   });
 
   pi.registerTool({

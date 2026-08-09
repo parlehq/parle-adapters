@@ -20,6 +20,9 @@ test("Claude plugin metadata and MCP config point at bundled server", () => {
     PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
     PARLE_INTEGRATION_VERSION: plugin.version,
   });
+
+  const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
+  assert.equal(hooks.hooks.SessionStart[0].hooks[0].command, "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --known-address-context");
 });
 
 test("Claude plugin includes skill guidance and copied MCP artifact", () => {

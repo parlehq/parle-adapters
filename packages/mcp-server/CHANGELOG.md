@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.19 (2026-08-08)
+
+- Refresh the shared transport with automatic known-address enrollment, add the supported-host context renderer, remove `parle_status.peerContext`, and delete the legacy peer helper and injection path (#96, #93).
+
 ## 0.7.18 (2026-08-08)
 
 - Adopt the shared safe-file primitive for hook bridge runtime descriptor publication and refresh the shared client foundation (#95).

@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, ResponsiveDeliveryRecorder, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, parseKeyValueFile, readPeerContext, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, ResponsiveDeliveryRecorder, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, type HookDeliveryBridgeStatus } from "./hook-delivery-bridge.js";
 
 export type ParleMcpClientLike = {
@@ -32,7 +32,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.18";
+export const MCP_CLIENT_VERSION = "0.7.19";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -239,18 +239,7 @@ export function createParleMcpServer(
       }
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
-      let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
-      if (!profilesPathOverride) {
-        try {
-          profilesPathOverride = parseKeyValueFile(readFileSync(join(process.cwd(), ".env"), "utf8")).PARLE_PROFILES_PATH;
-        } catch {}
-      }
-      const peerCatalog = resolveProfileCatalogPath(profilesPathOverride, process.cwd(), process.env);
-      const peerContext = {
-        peers: readPeerContext(peerCatalog).peers,
-        note: "Stable peer routes are operator-tagged only; this surface is read-only. Mutations run through the parle-peers helper in an interactive terminal.",
-      };
-      return { ...status, bootstrapAttempted, peerContext, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
+      return { ...status, bootstrapAttempted, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -1101,6 +1090,20 @@ async function runWatcherRequest(since: string, mode: string): Promise<void> {
   await new Promise<void>((resolve) => process.stdout.write(wire, () => resolve()));
 }
 
+async function runKnownAddressContext(cwd: string): Promise<void> {
+  const cfg = resolveConfig(cwd, process.env);
+  if (!cfg.apiBase.value || !cfg.roomId?.value) return;
+  let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
+  if (!profilesPathOverride) {
+    try {
+      profilesPathOverride = parseKeyValueFile(readFileSync(join(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
+    } catch {}
+  }
+  const catalog = resolveProfileCatalogPath(profilesPathOverride, cwd, process.env);
+  const block = knownAddressContextFor(catalog, { apiBase: cfg.apiBase.value, roomId: cfg.roomId.value });
+  await new Promise<void>((resolve) => process.stdout.write(block, () => resolve()));
+}
+
 if (isDirectRun(import.meta.url)) {
   const command = process.argv[2];
   const isRequest = command === "--parle-watch-request";
@@ -1108,7 +1111,9 @@ if (isDirectRun(import.meta.url)) {
     ? runWatcher(import.meta.url, process.argv.slice(3)).then((code) => { process.exitCode = code; })
     : isRequest
       ? runWatcherRequest(process.argv[3] ?? "0", process.argv[4] ?? "hold")
-      : runStdio();
+      : command === "--parle-known-address-context"
+        ? runKnownAddressContext(process.argv[3] || process.cwd())
+        : runStdio();
   task.then(() => {
     // Node's global fetch keeps an idle connection alive. The one-shot private
     // request helper has flushed stdout and must not linger after each poll.

@@ -145,6 +145,17 @@ After room entry succeeds, the footer uses the canonical handle returned by Parl
 
 Before `show-provisioning-qr`, disable terminal scrollback and recording. Run the human-only helper in a separate terminal, never through Pi or shell arguments. The [operator ceremony](../../docs/account-hardening-ceremony.md) defines the exact status, staged-input, recovery, and cleanup sequence.
 
+## Automatic known-address context
+
+After a successful direct send, the shared transport records the submitted
+canonical selector in the bounded local registry beside the profile catalog.
+Pi replaces one local known-address block before each model call, including the
+first call after compaction. The block is convenience data only and proves
+neither identity, authorization, liveness, nor deliverability.
+
+There are no peer-memory commands or status fields. Existing legacy peer files
+are unreferenced and remain untouched.
+
 ## Trust note
 
 Pi extensions run with local process permissions. Install this only from the trusted `parlehq/parle-adapters` source or a reviewed fork.

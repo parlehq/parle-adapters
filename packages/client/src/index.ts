@@ -9,6 +9,7 @@ import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShar
 import { ProfileConfigError, catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
+import { enrollKnownAddress, shortenKnownAddressAfterUnprocessable } from "./known-address-registry.js";
 
 export * from "./protocol.js";
 export * from "./account.js";
@@ -20,7 +21,7 @@ export * from "./safe-file.js";
 export * from "./responsive-delivery.js";
 export * from "./process-instance.js";
 export * from "./delivery.js";
-export * from "./peer-context.js";
+export * from "./known-address-registry.js";
 export * from "./alias.js";
 export * from "./helpers.js";
 export * from "./reply.js";
@@ -33,7 +34,7 @@ export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
-export const SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted without local peer tagging or a /parle-peers step; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
+export const SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted directly; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
   "authorization",
@@ -926,10 +927,13 @@ export class ParleAgentClient {
   // connect/read/send and raw requestJson calls remain recovery paths.
   private automaticTerminalBinding?: string;
   private missingAliasWarning?: string;
+  private readonly registryCatalogPath: string;
 
   constructor(options: ClientOptions = {}) {
     this.env = options.env || process.env;
     this.cwd = options.cwd ?? process.cwd();
+    const dotEnv = readKeyValueFile(join(this.cwd, ".env"));
+    this.registryCatalogPath = resolveProfileCatalogPath(this.env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, this.cwd, this.env);
     const roomSet = resolveRoomSet(this.cwd, this.env);
     this.roomConfigs = roomSet.rooms;
     // The first configured room supplies the session-auth bearer and, in
@@ -2483,15 +2487,35 @@ export class ParleAgentClient {
     const body: any = { type: "message_submitted", payload: { body: params.body } };
     if (params.to) body.addressing = { audience: "direct", to: params.to };
     try {
-      return await this.withDataPlane(() => this.withRebootstrap(async () => {
+      const details = await this.withDataPlane(() => this.withRebootstrap(async () => {
         roomId = this.roomTarget(params.roomId).roomId!.value!;
         const result = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", session: true, roomId, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
         const deliveryStatus = summarizeSendDelivery(result);
         const clientWarnings = sendAttentionWarnings(result);
         return { ...result, roomId, idempotencyKey, ...(clientWarnings ? { clientWarnings } : {}), ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
       }, signal));
+      if (params.to && details?.routing?.mode === "direct" && details.routing.target_level !== "none" && details.routing.continuity !== "none") {
+        try {
+          enrollKnownAddress(this.registryCatalogPath, {
+            apiBase: this.cfg.apiBase.value!,
+            roomId,
+            address: params.to,
+            continuity: details.routing.continuity,
+          }, this.now());
+        } catch {}
+      }
+      return details;
     } catch (error: any) {
       if (error instanceof ParleApiError) {
+        if (error.code === "address_not_deliverable" && params.to && roomId) {
+          try {
+            shortenKnownAddressAfterUnprocessable(this.registryCatalogPath, {
+              apiBase: this.cfg.apiBase.value!,
+              roomId,
+              address: params.to,
+            }, this.now());
+          } catch {}
+        }
         return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
       }
       throw error;

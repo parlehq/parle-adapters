@@ -26,7 +26,7 @@ const wrapperArtifacts = [
   "packages/codex-plugin/dist/parle-mcp.js",
 ];
 // Hook-runtime mirrors: every wrapper copy must be byte-identical to the
-// canonical script so a release can never ship a stale hook or peers helper.
+// canonical script so a release can never ship a stale hook.
 const hookMirrorSets = [
   {
     canonical: "packages/mcp-server/hooks/parle-hook.mjs",
@@ -34,14 +34,6 @@ const hookMirrorSets = [
       "packages/claude-plugin/hooks/parle-hook.mjs",
       "packages/command-code/skills/parle/scripts/parle-hook.mjs",
       "packages/codex-plugin/hooks/parle-hook.mjs",
-    ],
-  },
-  {
-    canonical: "packages/mcp-server/hooks/parle-peers.mjs",
-    mirrors: [
-      "packages/claude-plugin/hooks/parle-peers.mjs",
-      "packages/command-code/skills/parle/scripts/parle-peers.mjs",
-      "packages/codex-plugin/hooks/parle-peers.mjs",
     ],
   },
 ];
@@ -166,7 +158,7 @@ try {
   }
 }
 
-console.log("Clean MCP and Pi artifact reproducibility, hook/helper mirror parity, stale-dist isolation, and divergence checks passed.");
+console.log("Clean MCP and Pi artifact reproducibility, hook mirror parity, stale-dist isolation, and divergence checks passed.");
 } finally {
   rmSync(isolatedRoot, { recursive: true, force: true });
 }

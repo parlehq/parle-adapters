@@ -6,10 +6,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
-            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin --known-address-context",
+            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin --known-address-context\"",
             "timeout": 5,
-            "statusMessage": "Re-anchoring Parle peer context",
+            "statusMessage": "Restoring Parle known-address context",
             "additionalContextLimit": 5000
           }
         ]

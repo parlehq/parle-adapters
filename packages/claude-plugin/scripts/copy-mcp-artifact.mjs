@@ -7,8 +7,6 @@ const source = resolve(here, "../../mcp-server/dist/parle-mcp.js");
 const target = resolve(here, "../dist/parle-mcp.js");
 const hookSource = resolve(here, "../../mcp-server/hooks/parle-hook.mjs");
 const hookTarget = resolve(here, "../hooks/parle-hook.mjs");
-const peersSource = resolve(here, "../../mcp-server/hooks/parle-peers.mjs");
-const peersTarget = resolve(here, "../hooks/parle-peers.mjs");
 
 const sourceStat = statSync(source);
 if (!sourceStat.isFile() || sourceStat.size === 0) {
@@ -19,5 +17,3 @@ copyFileSync(source, target);
 mkdirSync(dirname(hookTarget), { recursive: true });
 copyFileSync(hookSource, hookTarget);
 chmodSync(hookTarget, 0o755);
-copyFileSync(peersSource, peersTarget);
-chmodSync(peersTarget, 0o755);

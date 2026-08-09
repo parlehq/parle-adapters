@@ -43,6 +43,18 @@ pnpm -F @parlehq/claude-desktop-extension test
 
 `pack:desktop` uses pnpm's dependency-aware filter to build `@parlehq/agent-client` before `@parlehq/mcp-server`; it does not rely on an ignored `packages/client/dist` tree from an earlier build. The package-local `pack:mcpb` script stages, validates, and packs the bundle. The test path additionally runs the MCP smoke test, unpacks and inspects the archive, and runs package-local secret scans.
 
+## Automatic known-address context
+
+Claude Desktop has no supported hook or compaction boundary, so it does not
+restore the local known-address registry. The bundled transport may record a
+successful direct send for supported coding hosts that share the profile
+catalog, but Desktop never injects that registry into model context. Raw MCP
+layouts have the same explicit limitation.
+
+No peer-memory commands or status fields are shipped. Existing legacy peer
+files are unreferenced and remain untouched. Desktop architecture remains
+tracked by issue #97.
+
 ## Local Desktop validation checklist
 
 Use disposable room credentials for first validation.
