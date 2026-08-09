@@ -30,11 +30,10 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
 
   const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
   assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
-  for (const definitions of Object.values(hooks.hooks)) {
-    // Trust is recorded against the command definition. Keep this launcher
-    // literal stable so handler-only releases do not require renewed approval.
-    assert.equal(definitions[0].hooks[0].command, "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin");
-    assert.equal(definitions[0].hooks[0].commandWindows, "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"");
+  for (const [event, definitions] of Object.entries(hooks.hooks)) {
+    const suffix = event === "SessionStart" ? " --known-address-context" : "";
+    assert.equal(definitions[0].hooks[0].command, `\"\${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin${suffix}`);
+    assert.equal(definitions[0].hooks[0].commandWindows, `cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin${suffix}\"`);
   }
 });
 

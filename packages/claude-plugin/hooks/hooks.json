@@ -1,12 +1,12 @@
 {
-  "description": "Re-anchor operator-tagged stable Parle peer context at session boundaries, including compaction restarts.",
+  "description": "Restore bounded Parle known-address context at session boundaries, including compaction restarts.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --known-address-context",
             "timeout": 5
           }
         ]

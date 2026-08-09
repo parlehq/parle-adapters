@@ -139,20 +139,14 @@ Validated with Claude Code 2.1.201 on macOS:
   step, so the plugin manager displays the packaged version rather than `0.0.0`.
 
 
-## Stable peer routes (issue #53)
+## Automatic known-address context
 
-Operator-tagged peer routes survive context compaction. Tag, list, or clear
-them with the bundled helper from an interactive terminal (mutations refuse
-hooks, pipes, and automation and confirm on the controlling terminal):
+After a successful direct send, the shared transport records the submitted
+canonical selector in the bounded local registry beside the profile catalog.
+Claude Code restores active addresses at `SessionStart`, including compaction
+restarts. The block is local convenience data only and proves neither identity,
+authorization, liveness, nor deliverability. Parle core remains authoritative
+on every later send.
 
-```sh
-node hooks/parle-peers.mjs list
-node hooks/parle-peers.mjs add lead @principal.agent.route implementation lead
-node hooks/parle-peers.mjs remove lead
-node hooks/parle-peers.mjs clear
-```
-
-The store lives beside the resolved profile catalog
-(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), and the hook
-re-injects the tagged block at the host's session boundary. Models read it
-via `parle_status.peerContext`; nothing model-callable mutates it.
+There are no remember, forget, list, import, export, or migration commands.
+Existing legacy peer files are unreferenced and remain untouched.

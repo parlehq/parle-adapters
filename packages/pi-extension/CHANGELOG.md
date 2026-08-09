@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.24 (2026-08-08)
+
+- Restore bounded known-address context at Pi model boundaries, enroll only after successful direct routing receipts, and remove the legacy `/parle-peers` command, status field, renderer, and store integration (#96, #93).
+
 ## 0.7.23 (2026-08-08)
 
 - Refresh the native shared-client bundle with the canonical safe-file foundation (#95).

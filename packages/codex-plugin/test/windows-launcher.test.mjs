@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const pkgRoot = fileURLToPath(new URL("..", import.meta.url));
 
-// Behavioral proof for the Codex Windows wiring (issue #53): these tests run
+// Behavioral proof for the Codex Windows wiring: these tests run
 // the exact commandWindows string from hooks.json through cmd's /d /s /c
 // execution shape - the same wrapping Codex applies - against the real
 // run-parle-hook.cmd, with a plugin root containing spaces, a hostile cwd and
@@ -47,15 +47,18 @@ function setup() {
   // the whole cmd chain.
   const pluginRoot = join(base, "plugin root");
   const hooksDir = join(pluginRoot, "hooks");
+  const distDir = join(pluginRoot, "dist");
   mkdirSync(hooksDir, { recursive: true });
+  mkdirSync(distDir, { recursive: true });
   for (const name of ["parle-hook.mjs", "run-parle-hook.cmd"]) {
     cpSync(resolve(pkgRoot, "hooks", name), join(hooksDir, name));
   }
+  cpSync(resolve(pkgRoot, "dist", "parle-mcp.js"), join(distDir, "parle-mcp.js"));
   const home = join(base, "home");
   mkdirSync(join(home, ".parle"), { recursive: true });
-  writeFileSync(join(home, ".parle", "peers"), `${JSON.stringify({
+  writeFileSync(join(home, ".parle", "registry"), `${JSON.stringify({
     version: 1,
-    peers: [{ label: "lead", address: "@gilman.galexc.lead", role: "implementation lead", taggedAt: "2026-08-01T00:00:00.000Z" }],
+    entries: [{ apiOrigin: "https://api.parle.sh", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", address: "@gilman.galexc.lead", continuity: "durable", expiresAt: "2099-01-01T00:00:00.000Z" }],
   }, null, 2)}\n`);
   // Hostile PATH entry and a hostile cwd holding a real, runnable node.exe at
   // a relative location: if the launcher ever resolved a relative override or
@@ -101,6 +104,8 @@ function launcherEnv(fixture, overrides = {}) {
     HOME: fixture.home,
     USERPROFILE: fixture.home,
     PATH: `${fixture.hostilePath};${process.env.PATH ?? ""}`,
+    PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e",
+    PARLE_ROOM_AGENT_TOKEN: "parle_agt_test",
     ...overrides,
   };
   for (const [key, value] of Object.entries(values)) setEnvCaseInsensitive(env, key, value);
@@ -142,7 +147,7 @@ test("Windows child cmd sees the overridden fallback locations", { skip: !onWind
   }
 });
 
-test("Windows commandWindows renders SessionStart compact peer context via an absolute override", { skip: !onWindows }, async () => {
+test("Windows commandWindows renders SessionStart known-address context via an absolute override", { skip: !onWindows }, async () => {
   const fixture = setup();
   try {
     // Fallback locations are pointed at an empty directory, so a render here
@@ -153,15 +158,15 @@ test("Windows commandWindows renders SessionStart compact peer context via an ab
     }, sessionStart);
     assert.equal(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
-    assert.match(parsed.hookSpecificOutput.additionalContext, /\[Parle stable peer context\]/);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /\[Parle known-address context\]/);
     assert.match(parsed.hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/);
-    assert.match(parsed.hookSpecificOutput.additionalContext, /implementation lead/);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /durable/);
   } finally {
     rmSync(fixture.base, { recursive: true, force: true });
   }
 });
 
-test("Windows commandWindows renders SessionStart peer context via the %ProgramFiles% fallback", { skip: !onWindows }, async () => {
+test("Windows commandWindows renders SessionStart known-address context via the %ProgramFiles% fallback", { skip: !onWindows }, async () => {
   const fixture = setup();
   try {
     // A constructed Program Files (with a space in the path) holding the real
@@ -181,7 +186,7 @@ test("Windows commandWindows renders SessionStart peer context via the %ProgramF
     assert.equal(result.code, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
     assert.match(parsed.hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/);
-    assert.match(parsed.hookSpecificOutput.additionalContext, /implementation lead/);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /durable/);
   } finally {
     rmSync(fixture.base, { recursive: true, force: true });
   }
@@ -193,7 +198,7 @@ for (const override of ["node.exe", "evil\\node.exe", "C:evil\\node.exe"]) {
     try {
       // The override resolves to a real runnable node.exe relative to the
       // hostile cwd; every fallback location is empty. A launcher that
-      // resolved relative values would render peer context here, so the
+      // resolved relative values would render registry context here, so the
       // fail-open {} is the rejection proof.
       const result = await runLauncher({
         env: launcherEnv(fixture, { PARLE_HOOK_RUNTIME: override, ...emptyFallbacks(fixture) }),

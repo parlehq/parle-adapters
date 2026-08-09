@@ -72,20 +72,13 @@ This package owns:
 `parle_harden_account` is the only MCP account-hardening surface. It accepts only `action`, `confirmMutation`, and `reason`, never starts a helper, and never accepts or returns secrets or local paths supplied by a model. The human must separately launch `parle-hardening-secret` on a controlling TTY. Follow the [operator ceremony](../../docs/account-hardening-ceremony.md), especially its recording and scrollback prerequisite.
 
 
-## Stable peer routes (issue #53)
+## Automatic known-address context
 
-Operator-tagged peer routes survive context compaction. Tag, list, or clear
-them with the bundled helper from an interactive terminal (mutations refuse
-hooks, pipes, and automation and confirm on the controlling terminal):
+The shared transport records submitted canonical selectors after successful
+direct sends. Raw MCP layouts have no deterministic context-injection boundary,
+so this package does not restore the local registry by itself. Claude Code and
+Codex wrappers opt into restoration at verified `SessionStart` boundaries.
 
-```sh
-node hooks/parle-peers.mjs list
-node hooks/parle-peers.mjs add lead @principal.agent.route implementation lead
-node hooks/parle-peers.mjs remove lead
-node hooks/parle-peers.mjs clear
-```
-
-The store lives beside the resolved profile catalog
-(`dirname(PARLE_PROFILES_PATH or ~/.parle/profiles)/peers`), and the hook
-re-injects the tagged block at the host's session boundary. Models read it
-via `parle_status.peerContext`; nothing model-callable mutates it.
+The registry is non-authoritative local convenience data. No peer-memory
+commands or status field are exposed, and existing legacy peer files remain
+unreferenced and untouched.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.19 (2026-08-08)
+
+- Refresh automatic direct-send enrollment while explicitly leaving context restoration unsupported, and remove the legacy peer status surface from the bundled runtime (#96, #93).
+
 ## 0.8.18 (2026-08-08)
 
 - Refresh the bundled MCP runtime with the canonical safe-file foundation (#95).

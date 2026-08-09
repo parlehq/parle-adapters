@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.19 (2026-08-08)
+
+- Refresh automatic direct-send enrollment while explicitly leaving context restoration unsupported, and remove the legacy peer helper, startup renderer, status field, and generated copies (#96, #93).
+
 ## 0.6.18 (2026-08-08)
 
 - Refresh the bundled MCP runtime with the canonical safe-file foundation (#95).

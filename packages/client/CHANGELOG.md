@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.19 (2026-08-08)
+
+- Add the automatic bounded known-address registry using shared safe-file mechanics, enroll only from successful direct routing receipts, apply deterministic expiry and eviction, and remove every legacy peer-context export (#96, #93).
+
 ## 0.8.18 (2026-08-08)
 
 - Add canonical typed safe-file primitives with bounded owner-only reads, symlink refusal, atomic durable replacement, token-owned stale-recovering locks, and matching profile, login, hardening, and runtime adoption (#95).
