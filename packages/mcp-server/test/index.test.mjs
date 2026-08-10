@@ -45,7 +45,7 @@ test("watcher evidence protocol ignores malformed values and maps bounded lifecy
     terminal: (event) => events.push(["terminal", event]),
     retarget: (target) => events.push(["target", target]),
   };
-  const now = Date.parse("2026-08-08T20:00:00Z");
+  const now = Date.parse("2026-08-09T20:00:00Z");
   applyWatcherStateLine("backoff\tnot-a-number", sink, now);
   applyWatcherStateLine("unknown\tignored", sink, now);
   assert.deepEqual(events, []);
@@ -55,7 +55,7 @@ test("watcher evidence protocol ignores malformed values and maps bounded lifecy
   applyWatcherStateLine("wake", sink, now);
   applyWatcherStateLine("terminal\tretry_exhausted", sink, now);
   assert.deepEqual(events.map(([kind]) => kind), ["watching", "backoff", "target", "stopped", "terminal"]);
-  assert.equal(events[1][1].retryAt, "2026-08-08T20:00:12.000Z");
+  assert.equal(events[1][1].retryAt, "2026-08-09T20:00:12.000Z");
 });
 
 test("responsive evidence failures remain best-effort", () => {
@@ -202,7 +202,7 @@ const watcherEnv = {
   PARLE_ROOM_AGENT_TOKEN: "parle_agt_watch_secret",
   PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
   PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
-  PARLE_VERSION: "2026-08-08",
+  PARLE_VERSION: "2026-08-09",
   PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
   PARLE_INTEGRATION_VERSION: "0.5.39",
 };

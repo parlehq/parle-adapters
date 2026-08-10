@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.21 (2026-08-10)
+
+- Pin `Parle-Version: 2026-08-09` for the unified exact-seat admission hard cut.
+
 ## 0.8.20 (2026-08-09)
 
 - Scope responsive-delivery resolution strictly to the calling agent session, report missing caller evidence honestly, and opportunistically reap a bounded number of expired records whose owners are definitively gone (#103, #104).

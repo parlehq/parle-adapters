@@ -112,7 +112,7 @@ test("status ignores persisted PARLE_VERSION and warns", async () => {
   globalThis.fetch = async () => { throw new Error("offline test"); };
   const harness = installHarness(cwd);
   const status = await harness.call("parle_status");
-  assert.equal(status.details.version.value, "2026-08-08");
+  assert.equal(status.details.version.value, "2026-08-09");
   assert.equal(status.details.version.source, "default");
   assert.equal(status.details.roomId.value, "room-1");
   assert.match(status.details.warnings.join("\n"), /Ignoring PARLE_VERSION from project \.env/);

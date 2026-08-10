@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.21 (2026-08-10)
+
+- Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.
+
 ## 0.7.20 (2026-08-09)
 
 - Refresh shared responsive-delivery resolution and bounded runtime evidence cleanup so status never borrows another session's watcher evidence (#103, #104).

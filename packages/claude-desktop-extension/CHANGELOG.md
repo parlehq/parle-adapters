@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.21 (2026-08-10)
+
+- Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.
+
 ## 0.8.20 (2026-08-09)
 
 - Refresh the bundled runtime with session-scoped responsive-delivery resolution and bounded expired runtime record cleanup (#103, #104).
