@@ -305,7 +305,10 @@ export async function registerCommandCodeMod(cmd: any, env: NodeJS.ProcessEnv = 
 
 function inputJsonSchema(shape: Record<string, z.ZodTypeAny> | undefined): Record<string, unknown> {
   if (!shape) return { type: "object", properties: {}, required: [] };
-  return z.toJSONSchema(z.object(shape)) as Record<string, unknown>;
+  const schema = z.toJSONSchema(z.object(shape)) as Record<string, unknown>;
+  // Command Code requires the JSON Schema required list even when every
+  // property is optional. Zod omits it for that case.
+  return { ...schema, required: Array.isArray(schema.required) ? schema.required : [] };
 }
 
 function commandCodeToolResult(result: any): any {

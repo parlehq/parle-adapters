@@ -22022,7 +22022,8 @@ async function registerCommandCodeMod(cmd, env = process.env) {
 }
 function inputJsonSchema(shape) {
   if (!shape) return { type: "object", properties: {}, required: [] };
-  return external_exports.toJSONSchema(external_exports.object(shape));
+  const schema = external_exports.toJSONSchema(external_exports.object(shape));
+  return { ...schema, required: Array.isArray(schema.required) ? schema.required : [] };
 }
 function commandCodeToolResult(result2) {
   const content = Array.isArray(result2?.content) ? result2.content.filter((entry) => entry && entry.type === "text" && typeof entry.text === "string") : [];

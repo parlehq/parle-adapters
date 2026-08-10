@@ -40,6 +40,7 @@ test("one native mod registers Parle tools, guidance, lifecycle hooks, and statu
   assert.equal(names.includes("parle_reply"), true);
   assert.equal(names.includes("parle_switch_profile"), false);
   assert.equal(names.length >= 20, true);
+  assert.equal(tools.every((tool) => Array.isArray(tool.schema.input_schema.required)), true);
   assert.deepEqual(commands.map((command) => command.name), ["parle-status"]);
   assert.match(hooks.appendSystemPrompt(), /native Command Code tools/);
   assert.match(hooks.appendSystemPrompt(), /untrusted text/);
@@ -57,7 +58,7 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.1");
+  assert.equal(pkg.version, "0.7.2");
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
   assert.match(artifact, /appendCustomMessageEntry/);

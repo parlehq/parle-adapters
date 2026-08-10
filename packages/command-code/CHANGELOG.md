@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 (2026-08-10)
+
+- Normalize native tool JSON Schemas with an explicit empty `required` list so Command Code can execute tools whose inputs are entirely optional.
+
 ## 0.7.1 (2026-08-10)
 
 - Keep headless native tools callable when Command Code has not populated its active-tool list at session startup.
