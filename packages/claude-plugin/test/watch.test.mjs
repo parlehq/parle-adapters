@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,15 +94,16 @@ function writeSnapshot(cwd, agentSessionId, overrides = {}) {
   renameSync(temporary, path);
 }
 
-function runWatch(cwd, apiBase, args, extraEnv = {}) {
+function runWatch(cwd, apiBase, args, extraEnv = {}, launcher = script) {
   const env = isolatedTestEnv({
+    HOME: cwd,
     PARLE_API_BASE: apiBase,
     PARLE_ROOM_ID: "room-1",
     PARLE_ROOM_AGENT_TOKEN: "parle_agt_test",
     PARLE_ALLOW_INSECURE_LOCAL: "1",
     ...extraEnv,
   });
-  const child = spawn("sh", [script, ...args], {
+  const child = spawn("sh", [launcher, ...args], {
     cwd,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -200,12 +201,124 @@ async function assertStillWatching(watch) {
   await watch.exited;
 }
 
+function writeInstalledPlugins(home, value) {
+  const dir = join(home, ".claude", "plugins");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "installed_plugins.json"), typeof value === "string" ? value : JSON.stringify(value));
+}
+
+function pluginManifest(installs, key = "parle-claude-plugin@parlehq") {
+  return { plugins: { [key]: installs } };
+}
+
+function copyWatcherBundle(targetRoot, includeArtifact = true) {
+  const targetScript = join(targetRoot, "skills", "parle", "scripts", "parle-watch.sh");
+  mkdirSync(dirname(targetScript), { recursive: true });
+  copyFileSync(script, targetScript);
+  if (includeArtifact) {
+    mkdirSync(join(targetRoot, "dist"), { recursive: true });
+    copyFileSync(join(root, "dist", "parle-mcp.js"), join(targetRoot, "dist", "parle-mcp.js"));
+  }
+  return targetScript;
+}
+
 test("watch fixtures strip ambient Parle config before applying explicit overrides", () => {
   const env = isolatedTestEnv(
     { PARLE_ROOM_ID: "fixture-room", PARLE_PROFILE: "explicit-profile" },
     { PATH: "/test/bin", PARLE_PROFILE: "ambient-profile", PARLE_SESSION_ALIAS: "ambient-route" },
   );
   assert.deepEqual(env, { PATH: "/test/bin", PARLE_ROOM_ID: "fixture-room", PARLE_PROFILE: "explicit-profile" });
+});
+
+test("inactive cached watcher refuses before bootstrap and names the active launcher", async () => {
+  let requests = 0;
+  const server = await stubServer({ messages: [], watermark: 1 }, () => { requests += 1; });
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-stale-cache-"));
+  const activeRoot = join(cwd, ".claude", "plugins", "cache", "parlehq", "parle-claude-plugin", "0.9.23");
+  const staleRoot = join(cwd, ".claude", "plugins", "cache", "parlehq", "parle-claude-plugin", "0.9.7");
+  const staleScript = copyWatcherBundle(staleRoot, false);
+  mkdirSync(activeRoot, { recursive: true });
+  writeInstalledPlugins(cwd, pluginManifest([{ scope: "user", installPath: activeRoot }]));
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"], {}, staleScript);
+    assert.equal(await watch.exited, 2);
+    assert.equal(watch.out(), "");
+    assert.match(watch.err(), /inactive Claude plugin cache/);
+    assert.match(watch.err(), new RegExp(join(realpathSync(activeRoot), "skills", "parle", "scripts", "parle-watch.sh").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.equal(requests, 0);
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("source checkout silently ignores unrelated active plugin metadata", async () => {
+  const server = await stubServer({ messages: [{ seq: 2 }], watermark: 2 });
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-source-checkout-"));
+  const activeRoot = join(cwd, ".claude", "plugins", "cache", "parlehq", "parle-claude-plugin", "0.9.23");
+  mkdirSync(activeRoot, { recursive: true });
+  writeInstalledPlugins(cwd, pluginManifest([{ scope: "user", installPath: activeRoot }]));
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"]);
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.equal(watch.err(), "");
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("active cached watcher accepts any matching install path without version sorting", async () => {
+  const server = await stubServer({ messages: [{ seq: 2 }], watermark: 2 });
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-active-cache-"));
+  const activeRoot = join(cwd, ".claude", "plugins", "cache", "alternate", "parle-claude-plugin", "release-current");
+  const otherRoot = join(cwd, ".claude", "plugins", "cache", "alternate", "parle-claude-plugin", "release-newer");
+  const activeScript = copyWatcherBundle(activeRoot);
+  mkdirSync(otherRoot, { recursive: true });
+  writeInstalledPlugins(cwd, pluginManifest([
+    { scope: "project", installPath: otherRoot },
+    { scope: "user", installPath: activeRoot },
+  ], "parle-claude-plugin@alternate-marketplace"));
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"], {}, activeScript);
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.equal(watch.err(), "");
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("missing malformed or unknown install metadata is a silent no-op", async () => {
+  for (const manifest of [undefined, "{not-json", { plugins: { other: [] } }, pluginManifest([{ installPath: 7 }, null])]) {
+    const server = await stubServer({ messages: [{ seq: 2 }], watermark: 2 });
+    const cwd = mkdtempSync(join(tmpdir(), "parle-watch-unknown-cache-"));
+    if (manifest !== undefined) writeInstalledPlugins(cwd, manifest);
+    try {
+      const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"]);
+      assert.equal(await watch.exited, 0, watch.err());
+      assert.equal(watch.err(), "");
+    } finally {
+      server.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+});
+
+test("deleted active install metadata is a silent no-op", async () => {
+  const server = await stubServer({ messages: [{ seq: 2 }], watermark: 2 });
+  const cwd = mkdtempSync(join(tmpdir(), "parle-watch-deleted-cache-"));
+  const staleRoot = join(cwd, ".claude", "plugins", "cache", "parlehq", "parle-claude-plugin", "stale");
+  const staleScript = copyWatcherBundle(staleRoot);
+  writeInstalledPlugins(cwd, pluginManifest([{ installPath: join(cwd, ".claude", "plugins", "cache", "parlehq", "parle-claude-plugin", "deleted") }]));
+  try {
+    const watch = runWatch(cwd, `http://127.0.0.1:${server.address().port}`, ["1"], {}, staleScript);
+    assert.equal(await watch.exited, 0, watch.err());
+    assert.equal(watch.err(), "");
+  } finally {
+    server.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("invalid launcher forms fail with one usage line before network or worker activity", async () => {

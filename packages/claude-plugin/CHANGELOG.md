@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.23 (2026-08-10)
+
+- Refuse watcher launches from inactive Claude plugin cache paths and document safe recovery after mid-session plugin reloads.
+
 ## 0.9.22 (2026-08-10)
 
 - Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.

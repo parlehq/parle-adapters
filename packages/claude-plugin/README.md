@@ -117,6 +117,18 @@ CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 claude plugin marketplace add parlehq/parle-ad
 Both forms register the marketplace as `parlehq` and resolve plugin versions the
 same way, so `claude plugin update` behaves identically across them.
 
+### Stale plugin cache troubleshooting
+
+After a mid-session plugin update and reload, re-invoke the current Parle skill
+before arming its watcher. Never select `parle-watch.sh` by listing directories
+under Claude's plugin cache. Lexical and modification-time ordering do not prove
+which install Claude currently owns.
+
+Watcher bundles containing the active-install guard refuse to start from a cache
+path that Claude no longer lists as active and report the current launcher path.
+Older cached bundles predate that guard and cannot protect themselves. Prune stale
+plugin cache versions after confirming the current plugin is loaded.
+
 ## Install validation notes (issue #9, 2026-07-05)
 
 Validated with Claude Code 2.1.201 on macOS:

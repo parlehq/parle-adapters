@@ -105,6 +105,8 @@ Profile switches last only for the current MCP process. A Claude restart returns
 
 Canonical launcher usage: `Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]`. The one-argument positional form intentionally watches for any new room row, including the caller's own sends. The two-argument form retains the legacy session and direct-target filters. Pass both optional identities for privacy-flat self-filtering.
 
+Never reconstruct the launcher path by listing Claude's plugin cache. Use the current skill's `${CLAUDE_PLUGIN_ROOT}` path. If the launcher refuses an inactive cached install after a mid-session plugin reload, re-invoke the current Parle skill and arm from its current path.
+
 Claude Code cannot receive Parle pushes today: MCP v1 has no background delivery, and the `/v/agent/wake` SSE credential is held inside the MCP process. Until channel delivery ships, use the bundled watcher instead of improvised polling loops:
 
 1. Take the watermark from the `cursor` in your `parle_connect` result, or the latest `watermark` from a `parle_inbox`/`parle_send` result (`seq` of your own send counts).
