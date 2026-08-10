@@ -215,6 +215,9 @@ export async function registerCommandCodeMod(cmd: any, env: NodeJS.ProcessEnv = 
   const syncActiveTools = () => {
     if (!registrationComplete) return;
     const current = cmd.getActiveTools();
+    // Some headless Command Code runs bind the tool registry after session
+    // startup. Leave the filter untouched until the host returns a real list.
+    if (!Array.isArray(current)) return;
     const nativeNames = new Set(toolStates.keys());
     const unrelated = current.filter((name: string) => !nativeNames.has(name));
     const enabled = [...toolStates].filter(([, state]) => state.enabled).map(([name]) => name);

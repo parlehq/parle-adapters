@@ -21932,6 +21932,7 @@ async function registerCommandCodeMod(cmd, env = process.env) {
   const syncActiveTools = () => {
     if (!registrationComplete) return;
     const current = cmd.getActiveTools();
+    if (!Array.isArray(current)) return;
     const nativeNames = new Set(toolStates.keys());
     const unrelated = current.filter((name) => !nativeNames.has(name));
     const enabled = [...toolStates].filter(([, state]) => state.enabled).map(([name]) => name);

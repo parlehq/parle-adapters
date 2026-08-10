@@ -57,7 +57,7 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.0");
+  assert.equal(pkg.version, "0.7.1");
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
   assert.match(artifact, /appendCustomMessageEntry/);

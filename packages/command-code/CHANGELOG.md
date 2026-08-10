@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 (2026-08-10)
+
+- Keep headless native tools callable when Command Code has not populated its active-tool list at session startup.
+
 ## 0.7.0 (2026-08-10)
 
 - Replace the Command Code skill, MCP registration, settings hooks, helper process, and socket bridge with one native ModApi package.
