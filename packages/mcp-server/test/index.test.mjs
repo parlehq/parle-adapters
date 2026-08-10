@@ -435,7 +435,7 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
   try {
     const initialTools = await client.listTools();
     assert.deepEqual(initialTools.tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
-    assert.match(initialTools.tools.find((tool) => tool.name === "parle_setup").description, /profile_not_found/);
+    assert.match(initialTools.tools.find((tool) => tool.name === "parle_setup").description, /Diagnose or retry Parle configuration/);
 
     const status = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(status.isError, true);

@@ -25,6 +25,11 @@
       "./packages/pi-extension/dist/index.js"
     ]
   },
+  "commandcode": {
+    "mods": [
+      "./packages/command-code/mods/parle.ts"
+    ]
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.80.4",
     "typebox": "*"

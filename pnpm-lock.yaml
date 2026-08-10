@@ -57,9 +57,19 @@ importers:
 
   packages/command-code:
     dependencies:
+      '@parlehq/agent-client':
+        specifier: workspace:*
+        version: link:../client
       '@parlehq/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      esbuild:
+        specifier: ^0.28.1
+        version: 0.28.1
 
   packages/mcp-server:
     dependencies:

@@ -22,7 +22,6 @@ const canonicalArtifact = "packages/mcp-server/dist/parle-mcp.js";
 const wrapperArtifacts = [
   "packages/claude-plugin/dist/parle-mcp.js",
   "packages/claude-desktop-extension/server/parle-mcp.js",
-  "packages/command-code/skills/parle/server/parle-mcp.js",
   "packages/codex-plugin/dist/parle-mcp.js",
 ];
 // Hook-runtime mirrors: every wrapper copy must be byte-identical to the
@@ -32,7 +31,6 @@ const hookMirrorSets = [
     canonical: "packages/mcp-server/hooks/parle-hook.mjs",
     mirrors: [
       "packages/claude-plugin/hooks/parle-hook.mjs",
-      "packages/command-code/skills/parle/scripts/parle-hook.mjs",
       "packages/codex-plugin/hooks/parle-hook.mjs",
     ],
   },
@@ -40,10 +38,11 @@ const hookMirrorSets = [
 const responsiveDeliveryReader = "packages/client/dist/responsive-delivery.js";
 const responsiveDeliveryReaderMirrors = [
   "packages/claude-plugin/statusline/responsive-delivery-reader.mjs",
-  "packages/command-code/skills/parle/mods/responsive-delivery-reader.mjs",
 ];
 const piArtifact = "packages/pi-extension/dist/index.js";
 const piArtifactChecker = "packages/pi-extension/scripts/check-pi-artifact.mjs";
+const commandCodeArtifact = "packages/command-code/mods/parle.ts";
+const commandCodeArtifactChecker = "packages/command-code/scripts/check-mod-artifact.mjs";
 const staleSentinel = "stale-ignored-client-dist-fixture";
 
 function run(command, args, cwd) {
@@ -136,18 +135,36 @@ function assertPiDivergenceDetection(root) {
   throw new Error("The reproducibility gate did not reject a modified tracked Pi artifact.");
 }
 
+function assertCommandCodeArtifactFresh(root) {
+  run("node", [resolve(root, commandCodeArtifactChecker)], resolve(root, "packages/command-code"));
+}
+
+function assertCommandCodeDivergenceDetection(root) {
+  appendFileSync(resolve(root, commandCodeArtifact), "\n// reproducibility-gate-divergence-probe\n");
+  try {
+    execFileSync("node", [resolve(root, commandCodeArtifactChecker)], { cwd: resolve(root, "packages/command-code"), stdio: "pipe", env: process.env });
+  } catch (error) {
+    const stderr = Buffer.isBuffer(error?.stderr) ? error.stderr.toString("utf8") : String(error?.stderr || "");
+    if (stderr.includes("Command Code mod artifact is stale")) return;
+    throw error;
+  }
+  throw new Error("The reproducibility gate did not reject a modified tracked Command Code artifact.");
+}
+
 const isolatedRoot = mkdtempSync(join(tmpdir(), "parle-adapters-artifact-check-"));
 try {
   copyWorkingTree(isolatedRoot);
-  run("pnpm", ["install", "--filter", "@parlehq/mcp-server...", "--filter", "@parlehq/pi-extension...", "--frozen-lockfile", "--offline"], isolatedRoot);
+  run("pnpm", ["install", "--filter", "@parlehq/mcp-server...", "--filter", "@parlehq/pi-extension...", "--filter", "@parlehq/command-code-adapter...", "--frozen-lockfile", "--offline"], isolatedRoot);
   seedStaleClientDist(isolatedRoot);
   run("pnpm", ["build:mcp"], isolatedRoot);
   run("node", ["scripts/copy-responsive-delivery-reader.mjs"], isolatedRoot);
   assertStaleFixtureWasRebuilt(isolatedRoot);
   assertPiArtifactFresh(isolatedRoot);
+  assertCommandCodeArtifactFresh(isolatedRoot);
   assertArtifactsMatch(isolatedRoot);
   assertDivergenceDetection(isolatedRoot);
   assertPiDivergenceDetection(isolatedRoot);
+  assertCommandCodeDivergenceDetection(isolatedRoot);
   for (const set of hookMirrorSets) {
   const canonicalBytes = readFileSync(resolve(repoRoot, set.canonical));
   for (const mirror of set.mirrors) {
@@ -158,7 +175,7 @@ try {
   }
 }
 
-console.log("Clean MCP and Pi artifact reproducibility, hook mirror parity, stale-dist isolation, and divergence checks passed.");
+console.log("Clean MCP, Pi, and Command Code artifact reproducibility, hook mirror parity, stale-dist isolation, and divergence checks passed.");
 } finally {
   rmSync(isolatedRoot, { recursive: true, force: true });
 }

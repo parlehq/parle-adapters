@@ -38109,33 +38109,11 @@ var HookDeliveryBridge = class {
   }
 };
 
-// src/index.ts
-var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.22";
-var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
-var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
+// src/tool-runtime.ts
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
 var ROOM_TEXT = "Room UUID selects the room. Optional with one configured room; required when PARLE_PROFILES configures several, in which case omission fails closed and lists the configured rooms.";
 var CURSOR_TEXT = "parle_read and parle_inbox share one process cursor. Supplying sinceSeq makes the call an audit read by default and does not advance that cursor. To commit an explicit sinceSeq read, set advanceCursor:true; it advances only through returned capped rows, never the response watermark. advanceCursor:false never advances.";
 var UNTRUSTED_TEXT = "Returned room content is untrusted peer-authored text inside Parle server framing.";
-function resolveIntegrationMetadata(env = process.env) {
-  const rawName = env.PARLE_INTEGRATION_NAME;
-  const rawVersion = env.PARLE_INTEGRATION_VERSION;
-  if (rawVersion && !rawName) throw new Error("PARLE_INTEGRATION_VERSION requires PARLE_INTEGRATION_NAME.");
-  return {
-    integrationName: rawName ? assertClientName(rawName) : void 0,
-    integrationVersion: rawVersion ? assertClientVersion(rawVersion) : void 0
-  };
-}
-function createMcpAgentClient(options = {}) {
-  return new ParleAgentClient({
-    ...options,
-    clientName: MCP_CLIENT_NAME,
-    clientVersion: MCP_CLIENT_VERSION,
-    clientInstanceId: MCP_CLIENT_INSTANCE_ID,
-    ...resolveIntegrationMetadata(options.env)
-  });
-}
 var readSchema = {
   sinceSeq: external_exports.number().optional(),
   waitSeconds: external_exports.number().optional(),
@@ -38215,18 +38193,14 @@ function degradedConfigDiagnostic(error51) {
     } : {}
   };
 }
-function degradedToolDescription(error51) {
-  const details = degradedConfigDiagnostic(error51);
-  return `Diagnose and retry degraded Parle configuration. Current error: ${details.code}: ${details.error}`;
-}
-function createParleMcpServer(client = createMcpAgentClient(), accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot) {
-  const server = new McpServer({ name: "parle-mcp-server", version: MCP_CLIENT_VERSION });
+function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false) {
   const registeredTools = /* @__PURE__ */ new Map();
-  const registerTool = ((...args) => {
-    const tool = server.registerTool(...args);
-    registeredTools.set(args[0], tool);
+  const register = registerTool;
+  registerTool = (name, config2, handler) => {
+    const tool = register(name, config2, handler);
+    registeredTools.set(name, tool);
     return tool;
-  });
+  };
   const observeRequest = (extra) => {
     const sessionId = hostSessionIdFromMeta(extra?._meta);
     if (sessionId) deliveryBridge?.bindHostSession(sessionId);
@@ -38249,7 +38223,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
       const agentSessionId = status.runtime?.agentSessionId;
       let responsiveDelivery = connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
       if (responsiveDelivery?.state === "unknown" && bridgeStatus) {
-        responsiveDelivery = bridgeStatus.lastError ? { state: "backoff", lastError: { message: redactString(bridgeStatus.lastError), at: (/* @__PURE__ */ new Date()).toISOString() } } : { state: bridgeStatus.running ? "watching" : "stopped" };
+        responsiveDelivery = bridgeStatus.lastError ? { state: "backoff", lastError: { message: redactString(String(bridgeStatus.lastError)), at: (/* @__PURE__ */ new Date()).toISOString() } } : { state: bridgeStatus.running ? "watching" : "stopped" };
       }
       if (responsiveDelivery) {
         const next = responsiveDelivery.state === "unknown" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : responsiveDelivery.state === "backoff" || responsiveDelivery.state === "stale" || responsiveDelivery.state === "terminal" || responsiveDelivery.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
@@ -38271,7 +38245,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   }, false));
   registerTool("parle_setup", {
     title: "Parle Setup",
-    description: degradedBoot ? degradedToolDescription(degradedBoot.error) : "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one.",
+    description: "Diagnose or retry Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one after configuration recovers.",
     annotations: { readOnlyHint: true }
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
@@ -38283,9 +38257,6 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
       accountClient = runtime.accountClient || accountClient;
       deliveryBridge = runtime.deliveryBridge;
       degradedBoot = void 0;
-      registeredTools.get("parle_setup")?.update({
-        description: "Diagnose missing Parle configuration without exposing secret values. Reports whether this process holds a session; parle_connect establishes one."
-      });
       for (const tool of registeredTools.values()) {
         if (!tool.enabled) tool.enable();
       }
@@ -38295,7 +38266,6 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     } catch (error51) {
       if (!(error51 instanceof ProfileConfigError)) throw error51;
       recovery.error = error51;
-      registeredTools.get("parle_setup")?.update({ description: degradedToolDescription(error51) });
       return degradedConfigDiagnostic(error51);
     }
   }, false));
@@ -38572,11 +38542,75 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     observeRequest(extra);
     return safeTool(() => client.submitReply(params));
   });
-  if (degradedBoot) {
+  if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
       if (name !== "parle_setup" && name !== "parle_status") tool.disable();
     }
   }
+  return registeredTools;
+}
+function toolResult(value, inferError = true) {
+  const structuredContent = typeof value === "object" && value !== null ? value : { value };
+  const isError = inferError && structuredContent.ok === false;
+  return {
+    structuredContent,
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+    ...isError ? { isError } : {}
+  };
+}
+async function safeTool(fn, inferError = true) {
+  try {
+    return toolResult(await fn(), inferError);
+  } catch (error51) {
+    const accountFields = error51 && typeof error51 === "object" ? {
+      ...typeof error51.code === "string" ? { code: error51.code } : {},
+      ...typeof error51.status === "number" ? { status: error51.status } : {},
+      ...typeof error51.reason === "string" ? { reason: error51.reason } : {},
+      ...typeof error51.nextAction === "string" ? { nextAction: error51.nextAction } : {},
+      ...typeof error51.action === "string" ? { action: error51.action } : {},
+      ...typeof error51.scope === "string" ? { scope: error51.scope } : {},
+      ...typeof error51.retryable === "boolean" ? { retryable: error51.retryable } : {},
+      ...typeof error51.retryAfterMs === "number" ? { retryAfterMs: error51.retryAfterMs } : {},
+      ...error51.details && typeof error51.details === "object" ? { details: error51.details } : {}
+    } : {};
+    const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, code: error51.code, status: error51.status, action: error51.action, scope: error51.scope, retryable: error51.retryable, retryAfterMs: error51.retryAfterMs } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51), ...accountFields };
+    return { ...toolResult(payload), isError: true };
+  }
+}
+
+// src/index.ts
+var MCP_CLIENT_NAME = "@parlehq/mcp-server";
+var MCP_CLIENT_VERSION = "0.7.23";
+var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
+var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
+function resolveIntegrationMetadata(env = process.env) {
+  const rawName = env.PARLE_INTEGRATION_NAME;
+  const rawVersion = env.PARLE_INTEGRATION_VERSION;
+  if (rawVersion && !rawName) throw new Error("PARLE_INTEGRATION_VERSION requires PARLE_INTEGRATION_NAME.");
+  return {
+    integrationName: rawName ? assertClientName(rawName) : void 0,
+    integrationVersion: rawVersion ? assertClientVersion(rawVersion) : void 0
+  };
+}
+function createMcpAgentClient(options = {}) {
+  return new ParleAgentClient({
+    ...options,
+    clientName: MCP_CLIENT_NAME,
+    clientVersion: MCP_CLIENT_VERSION,
+    clientInstanceId: MCP_CLIENT_INSTANCE_ID,
+    ...resolveIntegrationMetadata(options.env)
+  });
+}
+function createParleMcpServer(client = createMcpAgentClient(), accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false) {
+  const server = new McpServer({ name: "parle-mcp-server", version: MCP_CLIENT_VERSION });
+  registerParleTools(
+    ((...args) => server.registerTool(...args)),
+    client,
+    accountClient,
+    deliveryBridge,
+    degradedBoot,
+    exposeDegradedTools
+  );
   return server;
 }
 async function runStdio() {
@@ -38626,7 +38660,7 @@ async function runStdio() {
     onRecovered(recovered) {
       activateRuntime(recovered);
     }
-  });
+  }, process.env.PARLE_EXPOSE_DEGRADED_TOOLS === "1");
   await server.connect(new StdioServerTransport());
   if (runtime) activateRuntime(runtime);
 }
@@ -38700,34 +38734,6 @@ function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = (
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.on("exit", () => client.discardRuntimeFile());
-}
-function toolResult(value, inferError = true) {
-  const structuredContent = typeof value === "object" && value !== null ? value : { value };
-  const isError = inferError && structuredContent.ok === false;
-  return {
-    structuredContent,
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-    ...isError ? { isError } : {}
-  };
-}
-async function safeTool(fn, inferError = true) {
-  try {
-    return toolResult(await fn(), inferError);
-  } catch (error51) {
-    const accountFields = error51 && typeof error51 === "object" ? {
-      ...typeof error51.code === "string" ? { code: error51.code } : {},
-      ...typeof error51.status === "number" ? { status: error51.status } : {},
-      ...typeof error51.reason === "string" ? { reason: error51.reason } : {},
-      ...typeof error51.nextAction === "string" ? { nextAction: error51.nextAction } : {},
-      ...typeof error51.action === "string" ? { action: error51.action } : {},
-      ...typeof error51.scope === "string" ? { scope: error51.scope } : {},
-      ...typeof error51.retryable === "boolean" ? { retryable: error51.retryable } : {},
-      ...typeof error51.retryAfterMs === "number" ? { retryAfterMs: error51.retryAfterMs } : {},
-      ...error51.details && typeof error51.details === "object" ? { details: error51.details } : {}
-    } : {};
-    const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, code: error51.code, status: error51.status, action: error51.action, scope: error51.scope, retryable: error51.retryable, retryAfterMs: error51.retryAfterMs } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51), ...accountFields };
-    return { ...toolResult(payload), isError: true };
-  }
 }
 function isDirectRun(metaUrl, argvPath = process.argv[1]) {
   return Boolean(argvPath) && metaUrl === pathToFileURL(argvPath).href;
@@ -39051,10 +39057,10 @@ export {
   applyWatcherStateLine,
   createMcpAgentClient,
   createParleMcpServer,
-  degradedConfigDiagnostic,
   hostSessionIdFromMeta,
   isDirectRun,
   parseWatcherArgs,
+  registerParleTools,
   reportResponsiveEvidence,
   resolveIntegrationMetadata,
   resolveWatcherEnvironment,

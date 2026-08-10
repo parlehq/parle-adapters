@@ -1,101 +1,133 @@
 # Command Code Adapter
 
-Status: implemented, responsive delivery added
-Date: 2026-07-21
+Status: native mod implemented
+Date: 2026-08-10
 Owner repo: `parlehq/parle-adapters`
 
 ## Decision
 
-Command Code is a Type 2 MCP host with user-scoped hooks. Parle support uses the existing host-agnostic stdio MCP server, shared client protocol primitives, a native Command Code Agent Skill, and a hook helper. It does not add another HTTP client, credential parser, or session implementation.
+Command Code 1.11.0 or newer receives Parle through one native user-scope mod package.
 
-Command Code installs the complete `packages/command-code/skills/parle` tree through `cmd skills add`. The installed skill contains its version-matched MCP artifact, hook, footer mod, and configuration helpers. Its configurator registers the footer through `cmd mods add --global`, registers the server through `cmd mcp add --scope user`, and edits only the native user hook surface because Command Code exposes no hook management command. There is no adapter-owned artifact directory, direct MCP JSON writer, or compatibility installer. The MCP server resolves `~/.parle/profiles` inside the trusted Node process, following the accepted [`storage-layout`](./storage-layout.md) decision. Command Code receives tools and server-framed message context, not credential values.
+The mod uses Command Code's ModApi directly for tools, stable guidance, lifecycle integration, session persistence, and footer state. It detects the required ModApi functions at load time and visibly refuses registration when the host lacks them; it does not shell out to infer its own version. Command Code does not receive a Parle Agent Skill, MCP registration, settings hook entries, configurator, helper process, or adapter-owned socket bridge.
 
-Command Code v1 mods expose a `cmd.ui.setStatus(text | null)` contract, but Command Code 1.5.0 documents that footer status and editor widgets are not yet wired into the interactive TUI. The Parle mod computes status from credential-free `<cwd>/.parle/runtime/*.json` snapshots and calls `setStatus` for forward compatibility. Until the host renders it, the typed `onSessionStart` hook schedules one connected-status notice after the harness and interactive feed bind. It uses the same cwd-scoped honesty contract as Claude: one live session may show its address, while several sessions show a count rather than presenting a sibling address as authoritative.
+Installation is one command:
 
-Responsive delivery is adapter-owned. The MCP process opens `/v/agent/wake` SSE, drains `responsive-delivery?wait=0` after wake hints, and queues rows behind an owner-only Unix socket. Command Code hooks lease and inject an ordered batch, flush hook output, then commit the lease so the MCP process can acknowledge it to Parle. No cron, projection poll, inbox poll, transcript edit, or terminal automation participates.
+```bash
+cmd mods add -g parlehq/parle-adapters
+```
 
-Command Code does not document an asynchronous API that lets an MCP server start a new turn in a fully idle TUI. The bridge therefore injects at `SessionStart`, tool, and `Stop` hook boundaries. A message arriving during a turn is handled before that turn ends. A message arriving after the TUI is fully idle remains queued until the next supported hook event. This is an explicit host boundary, not a reason to fabricate a polling fallback.
+The repository root `commandcode.mods` manifest is the current Git distribution surface. The package manifest exposes the same tracked artifact for local package development. A separately published npm package can replace the root manifest later without changing runtime architecture.
 
-## Evidence from the failed setup
+## Why the design changed
 
-The full local Command Code session was available through its on-disk JSONL session file. Analysis was structural and redaction-safe. No command body, token, cookie, authorization value, or session handle was printed during review.
+The previous adapter was designed and validated against Command Code 0.19.1 and early 1.x behavior. Command Code 1.11.0 provides a materially stronger ModApi:
 
-Observed session shape:
+- `cmd.addTool` registers model-callable tools
+- `appendSystemPrompt` adds byte-stable guidance
+- `onSessionStart`, `onSessionEnd`, `onTurnStart`, and `onStop` cover the required host lifecycle
+- `appendCustomMessageEntry` durably appends model-visible session messages
+- `cmd.ui.setStatus` renders live footer segments
+- user-scope mods load in interactive and print modes
 
-- 132 JSONL records
-- 79 tool calls, including 58 shell calls
-- 18 references to the agent-session endpoint
-- 45 Parle API path references in tool inputs
-- 23 authorization-header references in tool inputs
-- 16 token-shaped literal occurrences in serialized tool inputs
-- 10 result occurrences of HTTP 429 and 15 rate-limit phrases
-- 2 result occurrences of HTTP 401, 1 of HTTP 409, and 1 of HTTP 502
-- 5 explicit sleep tool calls plus repeated shell-level sleep usage
+Those surfaces make the former skill, configured MCP server, settings hooks, and socket bridge unnecessary for this host.
 
-These counts establish the main failure modes without relying on the model's retrospective:
+Primary Command Code references:
 
-1. The session had no native Parle tool surface, so it tried to rediscover session creation, participant seating, messaging, reads, and retry behavior through shell-authored HTTP.
-2. Credential exposure was structural. Once the model parsed the profile and authored authorization headers, active bearer material entered tool inputs and the durable session transcript.
-3. Rate limiting was real in this run, not merely inferred. Repeated session creation and manual retry behavior amplified it.
-4. The model spent most of its effort on protocol mechanics that the shared client and MCP server already implement and test.
-5. A weaker model needs a narrow native path and explicit stop conditions. More prose about HTTP would not solve the failure class.
+- <https://commandcode.ai/docs/mods>
+- <https://commandcode.ai/docs/hooks>
+- <https://commandcode.ai/docs/mcp>
 
-Because long-lived agent-token material appeared in the durable session history, the affected room agent token was rotated through the owning Parle credential workflow after explicit operator approval. The replacement was verified active, the exposed token was verified revoked, and the failed session JSONL plus checkpoint and metadata artifacts were removed. A follow-up scan found no Parle agent-token or session-token literals remaining under `~/.commandcode`. Transcript deletion alone would not have revoked the credential.
+## Shared tool contract
 
-## Command Code capability evidence
+The Parle tool definitions have one source of truth in `packages/mcp-server/src/tool-runtime.ts`.
 
-Primary Command Code documentation and bundled reference retrieved through 2026-07-28 confirm:
+That host-neutral registration function owns tool names, schemas, descriptions, annotations, handlers, degraded recovery, and error rendering. The MCP server binds it through `server.registerTool`. The Command Code mod binds the same definitions through `cmd.addTool` and converts the Zod object shapes to JSON Schema.
 
-- mods expose `cmd.ui.setStatus`, but the interactive TUI currently treats footer status and widgets as no-ops pending host wire-up: <https://commandcode.ai/docs/mods#footer-status-segments-and-editor-widgets>
-- mod packages install natively with user scope through `cmd mods add --global`: <https://commandcode.ai/docs/mods#packaging-and-install>
-- MCP supports local stdio servers and automatic tool discovery: <https://commandcode.ai/docs/mcp>
-- user-scoped MCP configuration is stored in `~/.commandcode/mcp.json`
-- user-level skills live in `~/.commandcode/skills/` and use the Agent Skills `SKILL.md` format: <https://commandcode.ai/docs/skills>
-- `/session-file` exposes the current on-disk session path for support and retrospective work: <https://commandcode.ai/docs/reference/cli>
+Native Command Code tool names are bare names such as `parle_connect`, `parle_send`, and `parle_reply`. MCP prefixes are not part of this host surface.
 
-The installed Command Code 0.19.1 CLI independently confirmed `cmd mcp add`, the `local`, `project`, and `user` scopes, and the user-level skills command surface.
+## Responsive delivery
 
-Live interactive validation then ran the original setup prompt unchanged in a fresh trusted Command Code process. Command Code discovered the Parle skill, called `parle_connect`, called `parle_send` with direct addressing, and delivered the acknowledgement without shell or credential-file access. A separate `cmd -p` validation did not inject configured MCP tools. Command Code 0.19.1 therefore supports this adapter in interactive sessions, while headless MCP loading remains an observed host gap rather than an adapter promise.
+The mod constructs the shared `ParleAgentClient` and `ResponsiveDeliveryController` inside the Command Code process. It disables unread polling and uses the canonical wake stream followed by `responsive-delivery?wait=0` drains.
 
-## Installation contract
+For each responsive row:
 
-The Command Code skill owns only:
+1. skip replaced exact-session baseline backlog while preserving durable alias delivery
+2. preserve Parle's server framing and reply-route presentation
+3. call `appendCustomMessageEntry` on the active Command Code session
+4. retain the returned projected message as deferred work for the next `onTurnStart`
+5. fold the exact returned object into the agent state so Command Code's persisted message id prevents duplicate session writes
+6. call `completeDeferred` only from `onRunEnd`, after the folded turn commits
 
-- bundled MCP artifact provenance and byte parity
-- host-native skill installation, mod registration, and MCP registration
-- Command Code skill discovery, cwd-scoped status computation, and host-specific guidance
-- managed native user hook configuration and hook-output mapping
-- secure local bridge IPC and hook-boundary injection
-- install and uninstall documentation
+This preserves append-and-commit-before-ack ordering. A crash or session replacement before completion leaves the row unacknowledged or retained for the replacement turn, which favors at-least-once delivery over silent loss.
 
-It does not own:
+If a delivery arrives before an active run ends, `onStop` requests another round. The footer includes pending and baseline-skipped counts through the native status state.
 
-- Parle HTTP semantics
-- profile parsing
-- secret redaction
-- session lifecycle
-- direct-address resolution
-- idempotency behavior
-- Parle responsive-delivery protocol semantics, which remain in the shared client
-- asynchronous idle-TUI turn creation, which requires a future supported Command Code API
+## Idle boundary
 
-Those remain in Parle core, `@parlehq/agent-client`, and `@parlehq/mcp-server`.
+Command Code 1.11.0 still has no supported API that starts a new model run in a fully idle TUI. `cmd.queueMessage` queues steering or follow-up input but does not start a run and provides no durable completion point suitable for Parle acknowledgement.
 
-## Expected natural-language path
+The adapter therefore does not use `queueMessage` as its delivery primitive. An idle delivery is durably appended, remains visible as pending in the footer, and reaches the model on the next run.
 
-After one-time installation and Command Code restart, a request such as this should be sufficient:
+The adapter does not emulate idle wake through terminal input, transcript editing, cron, polling, or another Command Code process.
 
-> We use ai.parle.sh. Connect to our room and acknowledge `@principal.agent.session` when complete.
+## Status
 
-The intended execution path is bounded:
+The mod renders one footer segment through `cmd.ui.setStatus`:
 
-1. Command Code discovers the Parle skill and `mcp__parle__parle_*` tools.
-2. It calls `parle_connect`.
-3. It calls `parle_send` with the exact target in the structured `to` argument.
-4. It reports the server-authored result.
+- one connected session: room label, session address, and pending count
+- configured but disconnected: `parle · off`
+- unconfigured: no segment
 
-This exact path was validated live with the original prompt on Command Code 0.19.1. If the MCP tools are absent, the skill tells the model to stop and diagnose `/mcp`. It explicitly forbids shell fallback that reads profile values.
+The former delayed startup notification was removed because footer status renders in current Command Code.
+
+## Credential boundary
+
+The previous MCP design kept profile credentials in a child process. A native mod necessarily resolves and holds them inside the Command Code process.
+
+Credentials remain outside model context, system guidance, tool schemas, tool output, session messages, footer text, and Command Code settings. The mod never copies credentials into `~/.commandcode`.
+
+This process-boundary change is accepted because native ModApi integration removes the second installation plane and all settings mutation. Redaction remains owned by the shared client.
+
+## Removed surfaces
+
+The native mod replaces and removes:
+
+- `packages/command-code/skills/`
+- `configure.mjs` and `unconfigure.mjs`
+- Command Code MCP registration
+- writes to `~/.commandcode/settings.json`
+- `parle-hook.mjs`
+- the Command Code copy of `parle-mcp.js`
+- the Command Code hook-delivery socket and lease protocol
+- the standalone footer mod and startup notice
+
+The generic MCP server and hook bridge remain for hosts that still need them. They are no longer bundled into the Command Code artifact.
+
+## Validation contract
+
+Automated validation must prove:
+
+- root and package manifests expose one native mod
+- the mod registers the shared Parle tool set and stable guidance
+- replaced exact-session baseline rows are skipped while alias rows remain durable
+- responsive rows remain deferred until their folded turn commits
+- persisted projected messages survive session replacement and are folded into the next turn
+- pending delivery appears in footer state
+- the generated mod artifact is reproducible
+- no Command Code MCP, skill, settings-hook, or socket-bridge installation surface remains
+- type checks and package tests pass
+
+Live validation must prove:
+
+- `cmd mods list` loads the mod without warnings
+- footer status renders, updates, and clears
+- bare Parle tools work in the TUI
+- `cmd -p` exposes the native tools
+- connect and direct send complete
+- active-run responsive delivery reaches another round
+- idle delivery remains pending without a false idle-wake claim
+- uninstall leaves `~/.commandcode/settings.json` unchanged
 
 ## Research note
 
-Search and extraction used Tavily for the Command Code docs landing, MCP, features, and CLI pages. The skills page used direct extraction after Tavily returned an empty extraction result and Jina returned HTTP 402. The recommendation is based on first-party documentation plus live Command Code 0.19.1 CLI validation, not on third-party summaries.
+The 2026-08-10 review used first-party Command Code 1.11.0 bundled references and public docs. Tavily extracted the public mods, hooks, and MCP pages. Jina was not used. Local CLI and bundled reference inspection resolved version-specific behavior, including rendered status segments and the idle limitation of `queueMessage`.

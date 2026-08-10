@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.23 (2026-08-10)
+
+- Refresh the bundled MCP runtime with the shared native tool registry and stable setup guidance.
+
 ## 0.6.22 (2026-08-10)
 
 - Fail open in the outer Codex hook command when a live session loses its versioned plugin directory during an upgrade, and refresh the bundled runtime so connect and status never wait on optional delivery startup and read correctly rooted evidence.

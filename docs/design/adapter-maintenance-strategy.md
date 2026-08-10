@@ -113,7 +113,7 @@ pnpm refresh:mcp-artifacts
 pnpm check:mcp-artifacts
 ```
 
-The refresh builds `@parlehq/agent-client` before `@parlehq/mcp-server`, rebuilds the native Pi bundle, then copies the canonical MCP output into the tracked Claude Code, Claude Desktop, Command Code, and Codex wrappers. The check runs before the ordinary repo build in CI. It creates an isolated tracked-source tree with no ignored build output, seeds a stale client dist fixture, rebuilds through the canonical dependency-aware path, verifies the native Pi bundle against current client source, and byte-compares all four tracked MCP wrappers. Divergence probes prove that both a modified Pi bundle and a modified MCP wrapper are rejected.
+The refresh builds `@parlehq/agent-client` before `@parlehq/mcp-server`, rebuilds the native Pi and Command Code bundles, then copies the canonical MCP output into the tracked Claude Code, Claude Desktop, and Codex wrappers. The check runs before the ordinary repo build in CI. It creates an isolated tracked-source tree with no ignored build output, seeds a stale client dist fixture, rebuilds through the canonical dependency-aware path, verifies the native bundles against current source, and byte-compares all three tracked MCP wrappers. Divergence probes prove that modified native and MCP bundles are rejected.
 
 A bundled runtime change requires a version and changelog decision for every affected wrapper. Follow `AGENTS.md`: bump each wrapper version when installable behavior or packaged runtime semantics changed, and document any intentional no-bump case in the commit or release change.
 
@@ -131,9 +131,9 @@ Desktop should only change when:
 
 A skill can explain how to use Parle tools better without changing the MCPB package. Conversely, Desktop can improve installation UX without changing Claude Code skills.
 
-## Pi versus MCP wrappers
+## Native adapters versus MCP wrappers
 
-Pi remains native because Pi has capabilities MCP v1 does not provide cleanly:
+Pi and Command Code remain native because they have capabilities MCP v1 does not provide cleanly:
 
 - process-local extension tools
 - lifecycle hooks
@@ -164,6 +164,7 @@ The repo now has four release artifact classes:
 
 - npm candidates: `@parlehq/agent-client`, `@parlehq/mcp-server`, `@parlehq/pi-extension`
 - git-installed Claude Code plugin: `packages/claude-plugin`
+- git-installed Command Code mod: `packages/command-code`
 - marketplace-installed Codex plugin: `packages/codex-plugin`
 - downloadable MCPB bundle: `packages/claude-desktop-extension/out/parle-claude-desktop-extension.mcpb`
 
@@ -181,7 +182,7 @@ pnpm test
 Additional artifact checks:
 
 - run `pnpm check:mcp-artifacts` before the ordinary build can overwrite tracked wrappers
-- verify the native Pi bundle matches current client source and the Claude Code, Claude Desktop, Command Code, and Codex MCP artifacts are byte-identical to a clean canonical build
+- verify the native Pi and Command Code bundles match current source and the Claude Code, Claude Desktop, and Codex MCP artifacts are byte-identical to a clean canonical build
 - prove stale ignored client output cannot influence either bundled runtime path
 - pack Desktop MCPB from staging
 - unpack and inspect allowlisted contents

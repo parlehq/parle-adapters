@@ -9,7 +9,7 @@ Use this library when an agent runtime benefits from an extension, plugin, adapt
 - Pi extension: installable today as a Git package.
 - Claude Code plugin: installable today from this repo's plugin marketplace.
 - Generic MCP host: run the bundled stdio server artifact from a clone of this repo.
-- Command Code: install the user-scoped MCP server and Parle skill from this repo.
+- Command Code: install the user-scoped native mod from this repo.
 - Codex: install the native plugin from this repo's Codex marketplace.
 - Claude Desktop (MCPB): clean build, installation, connection, and artifact validation have passed; credential-lifecycle evidence remains pending under issue #38.
 
@@ -26,14 +26,13 @@ This adds native `parle_*` tools through a bundled MCP server plus a `parle` ski
 
 ## Install for Command Code
 
-Use Command Code's native skill and MCP channels:
+Install the native user-scope mod:
 
 ```bash
-cmd skills add parlehq/parle-adapters/packages/command-code/skills/parle --global
-node ~/.commandcode/skills/parle/scripts/configure.mjs
+cmd mods add -g parlehq/parle-adapters
 ```
 
-The installed Agent Skill contains the version-matched MCP server and responsive-delivery hook. The configurator registers MCP through `cmd mcp add --scope user` and merges native user hook entries without copying profile credentials into Command Code config. Restart Command Code after installation. See [`packages/command-code/README.md`](./packages/command-code/README.md) for the exact behavior and validation path.
+Restart Command Code after installation. The mod registers native Parle tools, stable guidance, footer status, and durable responsive delivery directly through ModApi. It does not install a skill, register MCP, edit Command Code settings, or launch hook helpers. See [`packages/command-code/README.md`](./packages/command-code/README.md) for the exact behavior and validation path.
 
 ## Install for Codex
 
@@ -78,7 +77,7 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 - `@parlehq/pi-extension` - active Pi extension package.
 - `@parlehq/mcp-server` - host-agnostic stdio MCP server exposing the current Parle tool contract, bundled into a single artifact with esbuild. Not yet on npm.
 - `@parlehq/claude-plugin` (`packages/claude-plugin`) - Claude Code plugin packaging around the bundled MCP server artifact, plus the `parle` skill.
-- `@parlehq/command-code-adapter` (`packages/command-code`) - Command Code Agent Skill containing the bundled MCP server, responsive-delivery hook, and native configuration helpers.
+- `@parlehq/command-code-adapter` (`packages/command-code`) - native Command Code mod with direct tools, lifecycle integration, footer state, and durable responsive delivery.
 - `@parlehq/codex-plugin` (`packages/codex-plugin`) - Codex plugin containing the bundled MCP server and focused Agent Skill guidance.
 - `@parlehq/claude-desktop-extension` (`packages/claude-desktop-extension`) - Claude Desktop MCPB packaging around the bundled MCP server artifact. Manual Desktop validation is still tracked separately.
 
@@ -86,7 +85,7 @@ This loads only the Pi extension exposed by this repo's Pi package manifest. The
 
 - Pi: [`packages/pi-extension/README.md`](./packages/pi-extension/README.md) for the Pi tool surface, configuration, and install notes.
 - Claude Code: [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for install, permissions namespacing, and validation notes.
-- Command Code: [`packages/command-code/README.md`](./packages/command-code/README.md) for user installation, skill behavior, and validation notes.
+- Command Code: [`packages/command-code/README.md`](./packages/command-code/README.md) for native mod installation, runtime behavior, and validation notes.
 - Codex: [`packages/codex-plugin/README.md`](./packages/codex-plugin/README.md) for marketplace installation, skill behavior, and validation notes.
 - MCP server: [`packages/mcp-server/README.md`](./packages/mcp-server/README.md) for the tool contract and build.
 - Claude Desktop: [`packages/claude-desktop-extension/README.md`](./packages/claude-desktop-extension/README.md) for MCPB build and validation.

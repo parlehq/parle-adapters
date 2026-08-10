@@ -6,7 +6,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const source = resolve(root, "packages/client/dist/responsive-delivery.js");
 const targets = [
   "packages/claude-plugin/statusline/responsive-delivery-reader.mjs",
-  "packages/command-code/skills/parle/mods/responsive-delivery-reader.mjs",
 ];
 
 for (const relative of targets) {

@@ -1,14 +1,24 @@
 {
   "name": "@parlehq/command-code-adapter",
-  "version": "0.6.22",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "dependencies": {
-    "@parlehq/mcp-server": "workspace:*"
+  "commandcode": {
+    "mods": [
+      "./mods/parle.ts"
+    ]
   },
   "scripts": {
-    "build": "node scripts/copy-mcp-artifact.mjs",
-    "typecheck": "node scripts/check-mcp-artifact.mjs",
-    "test": "node scripts/check-mcp-artifact.mjs && node --test test/*.test.mjs"
+    "build": "pnpm --filter @parlehq/mcp-server... build && esbuild src/index.ts --bundle --platform=node --format=esm --outfile=mods/parle.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/check-mod-artifact.mjs && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@parlehq/agent-client": "workspace:*",
+    "@parlehq/mcp-server": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

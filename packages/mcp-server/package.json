@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/mcp-server",
-  "version": "0.7.22",
+  "version": "0.7.23",
   "private": true,
   "type": "module",
   "bin": {
@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./tool-runtime": {
+      "types": "./dist/tool-runtime.d.ts",
+      "import": "./dist/tool-runtime.js"
     }
   },
   "scripts": {

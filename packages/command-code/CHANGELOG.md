@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0 (2026-08-10)
+
+- Replace the Command Code skill, MCP registration, settings hooks, helper process, and socket bridge with one native ModApi package.
+- Register the shared Parle tool contract directly with `cmd.addTool`, add byte-stable safety guidance, and render native footer status.
+- Preserve exact-session baseline skipping and durable alias delivery, keep appended rows deferred through the folded turn commit, and retain unacknowledged work across Command Code session replacement.
+- Recover degraded configuration through native active-tool controls, filter unsupported live profile switching, and fail visibly when required ModApi capabilities are absent.
+
 ## 0.6.22 (2026-08-10)
 
 - Refresh the bundled MCP runtime with nonblocking hook bridge startup, bounded responsive delivery drains, and correctly rooted runtime evidence.

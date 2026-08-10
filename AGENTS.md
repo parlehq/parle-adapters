@@ -18,11 +18,11 @@ This repository is the public home for Parle agent harness adapters.
 - `packages/mcp-server` - host-agnostic stdio MCP server package, bundled to a single artifact.
 - `packages/pi-extension` - Pi adapter package.
 - `packages/claude-plugin` - Claude Code plugin directory wrapping the bundled MCP server artifact.
-- `packages/command-code` - Command Code Agent Skill wrapping the bundled MCP server artifact and responsive-delivery hook.
+- `packages/command-code` - native Command Code mod with direct Parle tools, lifecycle hooks, footer status, and durable responsive delivery.
 - `packages/codex-plugin` - Codex plugin wrapping the bundled MCP server artifact and focused Agent Skill guidance.
 - `packages/claude-desktop-extension` - Claude Desktop MCPB package wrapping the same bundled MCP server artifact.
 
-After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` to rebuild canonical source in dependency order and refresh the native Pi bundle plus all four tracked MCP wrappers. Run `pnpm check:mcp-artifacts` before committing to verify clean-checkout reproducibility, stale-dist isolation, and divergence detection for all five tracked artifacts. Apply the package version and changelog policy below to every installable package whose bundled runtime changed.
+After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` to rebuild canonical source in dependency order, refresh the native Pi and Command Code bundles, and refresh the three tracked MCP wrappers. Run `pnpm check:mcp-artifacts` before committing to verify clean-checkout reproducibility, stale-dist isolation, and divergence detection. Apply the package version and changelog policy below to every installable package whose bundled runtime changed.
 
 ## Tooling
 

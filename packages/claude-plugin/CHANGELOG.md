@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.25 (2026-08-10)
+
+- Refresh the bundled MCP runtime with the shared native tool registry and stable setup guidance.
+
 ## 0.9.24 (2026-08-10)
 
 - Refresh the bundled MCP runtime with nonblocking hook bridge startup, bounded responsive delivery drains, and correctly rooted runtime evidence.

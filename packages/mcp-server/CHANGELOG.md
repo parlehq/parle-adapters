@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.23 (2026-08-10)
+
+- Export the shared native tool runtime for host adapters and keep `parle_setup` guidance byte-stable across configured and degraded states. Detailed profile diagnostics remain in the `parle_setup` and `parle_status` results.
+
 ## 0.7.22 (2026-08-10)
 
 - Keep `parle_connect`, active `parle_status`, and eager bootstrap responsive while optional hook bridge startup continues in the background, and separate the opaque hook queue scope from the runtime evidence directory.
