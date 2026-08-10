@@ -215,6 +215,7 @@ function copyWatcherBundle(targetRoot, includeArtifact = true) {
   const targetScript = join(targetRoot, "skills", "parle", "scripts", "parle-watch.sh");
   mkdirSync(dirname(targetScript), { recursive: true });
   copyFileSync(script, targetScript);
+  copyFileSync(workerScript, join(dirname(targetScript), "parle-watch-worker.sh"));
   if (includeArtifact) {
     mkdirSync(join(targetRoot, "dist"), { recursive: true });
     copyFileSync(join(root, "dist", "parle-mcp.js"), join(targetRoot, "dist", "parle-mcp.js"));
