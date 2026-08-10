@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.22 (2026-08-10)
+
+- Keep `parle_connect`, active `parle_status`, and eager bootstrap responsive while optional hook bridge startup continues in the background, and separate the opaque hook queue scope from the runtime evidence directory.
+
 ## 0.7.21 (2026-08-10)
 
 - Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.

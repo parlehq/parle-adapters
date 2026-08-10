@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.24 (2026-08-10)
+
+- Refresh the bundled MCP runtime with nonblocking hook bridge startup, bounded responsive delivery drains, and correctly rooted runtime evidence.
+
 ## 0.9.23 (2026-08-10)
 
 - Refuse watcher launches from inactive Claude plugin cache paths and document safe recovery after mid-session plugin reloads.

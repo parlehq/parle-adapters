@@ -117,6 +117,7 @@ export class HookDeliveryBridge {
     private readonly client: ParleAgentClient,
     private readonly scope = process.cwd(),
     private readonly runtimeExecPath = process.execPath,
+    private readonly evidenceCwd = process.cwd(),
   ) {
     // The handler only ever throws on queue overflow, which is host capacity,
     // never a poison row. An unbounded attempt budget keeps the controller
@@ -219,7 +220,7 @@ export class HookDeliveryBridge {
     if (!runtime.agentSessionId) return;
     if (!this.evidence) {
       this.evidence = new ResponsiveDeliveryRecorder({
-        cwd: this.scope,
+        cwd: this.evidenceCwd,
         persist: true,
         processStartedAt: processStartedAtIso(),
         publisher: {

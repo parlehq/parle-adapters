@@ -37544,7 +37544,7 @@ var ParleAgentClient = class _ParleAgentClient {
       let retained = false;
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?wait=0`, { session: true, roomId, signal, retry: false });
+        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?wait=0`, { session: true, roomId, signal, timeoutMs: 1e4, retry: false });
         fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
         retained = true;
         return { delivery, fence, release };
@@ -37778,10 +37778,11 @@ function processIsAlive(pid) {
   }
 }
 var HookDeliveryBridge = class {
-  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath) {
+  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd()) {
     this.client = client;
     this.scope = scope;
     this.runtimeExecPath = runtimeExecPath;
+    this.evidenceCwd = evidenceCwd;
     this.controller = new ResponsiveDeliveryController(client, {
       handler: (input) => this.handleDelivery(input),
       maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
@@ -37797,6 +37798,7 @@ var HookDeliveryBridge = class {
   client;
   scope;
   runtimeExecPath;
+  evidenceCwd;
   controller;
   pending = [];
   queuedKeys = /* @__PURE__ */ new Set();
@@ -37886,7 +37888,7 @@ var HookDeliveryBridge = class {
     if (!runtime.agentSessionId) return;
     if (!this.evidence) {
       this.evidence = new ResponsiveDeliveryRecorder({
-        cwd: this.scope,
+        cwd: this.evidenceCwd,
         persist: true,
         processStartedAt: processStartedAtIso(),
         publisher: {
@@ -38109,7 +38111,7 @@ var HookDeliveryBridge = class {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.21";
+var MCP_CLIENT_VERSION = "0.7.22";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
@@ -38239,7 +38241,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
     if (degradedBoot) return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
-    if (!params.inspect && deliveryBridge?.start) await deliveryBridge.start();
+    if (!params.inspect && deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
@@ -38304,7 +38306,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
     const summary = await client.connect();
-    if (deliveryBridge?.start) await deliveryBridge.start();
+    if (deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
@@ -38654,7 +38656,12 @@ function scheduleEagerBootstrap(client, deliveryBridge, options = {}) {
       await client.ensureReadySafe();
       if (stopped) return;
       if (client.runtime.bootstrapped) {
-        if (deliveryBridge) await deliveryBridge.start();
+        if (deliveryBridge) {
+          void deliveryBridge.start().catch((error51) => {
+            options.onError?.(error51);
+            schedule(1e3 * 2 ** Math.min(attempts - 1, 6));
+          });
+        }
         return;
       }
       const retryAt = client.runtime.nextRetryAt ? Date.parse(client.runtime.nextRetryAt) : Number.NaN;

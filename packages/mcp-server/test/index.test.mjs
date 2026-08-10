@@ -599,6 +599,33 @@ test("in-memory server maps read, send, and errors through fake client", async (
   }
 });
 
+test("connect and status do not wait for optional responsive delivery startup", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const deliveryBridge = {
+    start: () => new Promise(() => {}),
+    bindHostSession: () => true,
+    status: () => ({ running: false, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true }),
+  };
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-nonblocking-delivery", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("tool waited for responsive delivery startup")), 500));
+    const connect = await Promise.race([client.callTool({ name: "parle_connect", arguments: {} }), timeout]);
+    assert.equal(connect.structuredContent.connected, true);
+    const status = await Promise.race([client.callTool({ name: "parle_status", arguments: {} }), timeout]);
+    assert.equal(status.structuredContent.runtime.sessionAddress, "@p.a.s1");
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("in-memory server send summarizes delivery state through real client", async () => {
   const clientImpl = new ParleAgentClient({
     env: {

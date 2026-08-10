@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.22 (2026-08-10)
+
+- Refresh the bundled MCP runtime with nonblocking hook bridge startup, bounded responsive delivery drains, and correctly rooted runtime evidence.
+
 ## 0.8.21 (2026-08-10)
 
 - Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.

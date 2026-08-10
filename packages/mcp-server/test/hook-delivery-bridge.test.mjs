@@ -440,7 +440,8 @@ test("hook delivery bridge renews lifecycle evidence on observed progress and to
     openWakeStream: async (signal) => heldWakeStream(wakeSink, signal),
   };
   const evidencePath = join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`);
-  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  const queueScope = join(cwd, "opaque-queue-scope");
+  const bridge = new HookDeliveryBridge(fakeClient, queueScope, process.execPath, cwd);
   try {
     await bridge.start();
     await eventually(() => existsSync(evidencePath));

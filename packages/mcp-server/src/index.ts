@@ -32,7 +32,7 @@ export type ParleMcpClientLike = {
 };
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.21";
+export const MCP_CLIENT_VERSION = "0.7.22";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -215,7 +215,7 @@ export function createParleMcpServer(
     if (degradedBoot) return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
-    if (!params.inspect && deliveryBridge?.start) await deliveryBridge.start();
+    if (!params.inspect && deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = (status as any).runtime?.bootstrapState === "ready" && Boolean((status as any).runtime?.sessionAddress);
@@ -293,7 +293,7 @@ export function createParleMcpServer(
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
     const summary = await client.connect();
-    if (deliveryBridge?.start) await deliveryBridge.start();
+    if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = (summary as any).agentSessionId;
@@ -687,7 +687,12 @@ export function scheduleEagerBootstrap(client: ParleAgentClient, deliveryBridge?
       await client.ensureReadySafe();
       if (stopped) return;
       if (client.runtime.bootstrapped) {
-        if (deliveryBridge) await deliveryBridge.start();
+        if (deliveryBridge) {
+          void deliveryBridge.start().catch((error) => {
+            options.onError?.(error);
+            schedule(1_000 * (2 ** Math.min(attempts - 1, 6)));
+          });
+        }
         return;
       }
       const retryAt = client.runtime.nextRetryAt ? Date.parse(client.runtime.nextRetryAt) : Number.NaN;

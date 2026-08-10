@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.22 (2026-08-10)
+
+- Fail open in the outer Codex hook command when a live session loses its versioned plugin directory during an upgrade, and refresh the bundled runtime so connect and status never wait on optional delivery startup and read correctly rooted evidence.
+
 ## 0.6.21 (2026-08-10)
 
 - Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.

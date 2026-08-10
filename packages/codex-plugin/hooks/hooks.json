@@ -6,8 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin --known-address-context",
-            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin --known-address-context\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin --known-address-context || printf '{}\\n'",
+            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin --known-address-context || echo {}\"",
             "timeout": 5,
             "statusMessage": "Restoring Parle known-address context",
             "additionalContextLimit": 5000
@@ -20,8 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
-            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin || printf '{}\\n'",
+            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin || echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -34,8 +34,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
-            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin || printf '{}\\n'",
+            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin || echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -48,8 +48,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
-            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin || printf '{}\\n'",
+            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin || echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery",
             "additionalContextLimit": 5000
@@ -62,8 +62,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin",
-            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin\"",
+            "command": "\"${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin || printf '{}\\n'",
+            "commandWindows": "cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin || echo {}\"",
             "timeout": 5,
             "statusMessage": "Checking Parle delivery"
           }

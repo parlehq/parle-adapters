@@ -314,6 +314,7 @@ test("wake, zero-wait drain, and ack stay in shared client primitives", async ()
   assert.equal(calls[0].init.headers["Parle-Agent-Session"], "session-secret");
   assert.equal(calls[0].init.headers["Parle-Client-Instance"], client.clientInstanceId);
   assert.equal(calls[1].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery?wait=0");
+  assert.equal(calls[1].init.signal instanceof AbortSignal, true, "zero-wait drains carry a bounded deadline");
   assert.equal(calls[2].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery/ack");
   assert.deepEqual(JSON.parse(calls[2].init.body), { seq: 8, event_id: "evt-8" });
   assert.equal(calls[2].init.method, "POST");

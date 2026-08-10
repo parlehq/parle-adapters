@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.27 (2026-08-10)
+
+- Refresh the native shared-client bundle with bounded responsive delivery drains.
+
 ## 0.7.26 (2026-08-10)
 
 - Refresh the bundled runtime for the `2026-08-09` unified exact-seat admission hard cut.

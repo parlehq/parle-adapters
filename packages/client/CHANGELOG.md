@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.22 (2026-08-10)
+
+- Bound zero-wait responsive delivery drains so optional hook bridge startup cannot wait forever on a stalled request.
+
 ## 0.8.21 (2026-08-10)
 
 - Pin `Parle-Version: 2026-08-09` for the unified exact-seat admission hard cut.
@@ -26,7 +30,7 @@
 
 ## 0.8.15 (2026-08-08)
 
-- Pin `Parle-Version: 2026-08-08` and accept only bare invitation UUIDs or canonical `/room-invitations/<uuid>` URLs while keeping API transport configured locally.
+- Pin the then-current Parle wire version and accept only bare invitation UUIDs or canonical `/room-invitations/<uuid>` URLs while keeping API transport configured locally.
 
 ## 0.8.14 (2026-08-08)
 

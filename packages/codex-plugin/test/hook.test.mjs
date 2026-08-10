@@ -75,6 +75,38 @@ test("Codex launcher is fail-open for malformed, dead, and non-executable handle
   }
 });
 
+for (const shell of ["/bin/zsh", "/bin/bash"]) {
+  test(`Codex hook command fails open outside a missing or unusable plugin root under ${shell}`, async (context) => {
+    if (!existsSync(shell)) {
+      context.skip(`${shell} is unavailable`);
+      return;
+    }
+    const home = mkdtempSync(join(tmpdir(), "codex-parle-missing-plugin-root-"));
+    const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
+    const unusableRoot = join(home, "unusable-plugin");
+    mkdirSync(join(unusableRoot, "hooks"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(unusableRoot, "hooks", "run-parle-hook.sh"), "#!/bin/sh\nprintf '{}\\n'\n", { mode: 0o600 });
+    try {
+      for (const [hookEventName, definitions] of Object.entries(hooks.hooks)) {
+        const command = definitions[0].hooks[0].command;
+        for (const pluginRoot of [undefined, join(home, "deleted-plugin"), unusableRoot]) {
+          const env = { ...withoutAmbientParle(), HOME: home };
+          if (pluginRoot !== undefined) env.PLUGIN_ROOT = pluginRoot;
+          const result = await runProcess(shell, ["-lc", command], { env }, {
+            session_id: "codex-thread",
+            hook_event_name: hookEventName,
+          });
+          assert.equal(result.code, 0, result.stderr);
+          assert.deepEqual(JSON.parse(result.stdout), {});
+          assert.equal(result.stdout.trim().split("\n").length, 1);
+        }
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
 test("Codex launcher deterministically selects the first live runtime handle", async () => {
   const home = mkdtempSync(join(tmpdir(), "codex-parle-launcher-order-"));
   const stateDir = join(home, ".local", "state", "parle", "hook-bridge", "b52cc0f7fef9d88d");

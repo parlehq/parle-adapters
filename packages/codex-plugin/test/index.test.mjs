@@ -32,8 +32,8 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
   for (const [event, definitions] of Object.entries(hooks.hooks)) {
     const suffix = event === "SessionStart" ? " --known-address-context" : "";
-    assert.equal(definitions[0].hooks[0].command, `\"\${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin${suffix}`);
-    assert.equal(definitions[0].hooks[0].commandWindows, `cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin${suffix}\"`);
+    assert.equal(definitions[0].hooks[0].command, `\"\${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin${suffix} || printf '{}\\n'`);
+    assert.equal(definitions[0].hooks[0].commandWindows, `cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin${suffix} || echo {}\"`);
   }
 });
 
