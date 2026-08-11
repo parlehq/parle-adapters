@@ -3,7 +3,7 @@ import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.4";
+const ADAPTER_VERSION = "0.7.5";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 
@@ -24,27 +24,59 @@ type PendingMessage = {
 };
 
 export class NativeResponsiveDelivery {
-  private readonly controller: ResponsiveDeliveryController;
+  private controller: ResponsiveDeliveryController;
   private readonly pending: PendingMessage[] = [];
   private recorder?: ResponsiveDeliveryRecorder;
   private startPromise?: Promise<void>;
   private stopped = false;
+  private controllerStopped = false;
   private baselineActive = false;
   private baselineDone = false;
   private baselineSkipped = 0;
   private lastError?: string;
+  private terminalAction?: string;
 
   constructor(private readonly cmd: any, private readonly client: ParleAgentClient, private readonly refreshStatus: () => void) {
-    this.controller = new ResponsiveDeliveryController(client, {
+    this.controller = this.createController();
+  }
+
+  private createController(): ResponsiveDeliveryController {
+    return new ResponsiveDeliveryController(this.client, {
       handler: (input) => this.handleDelivery(input),
       onProgress: () => this.publish("watching", { lastSuccessAt: new Date().toISOString() }),
-      onWakeError: (error) => {
-        this.lastError = error instanceof Error ? error.message : String(error);
-        const action = typeof error === "object" && error !== null ? (error as { action?: string }).action : undefined;
-        this.publish(["reauthorize", "fix_client", "stop"].includes(action || "") ? "terminal" : "backoff", { lastError: this.lastError });
-        this.refreshStatus();
-      },
+      onWakeOpen: () => this.handleWakeOpen(),
+      onWakeError: (error) => this.handleWakeError(error),
     });
+  }
+
+  // Fires on every valid wake open, including the controller's internal
+  // reconnects, so host status follows the live stream instead of retaining
+  // the most recent failure after transport recovery.
+  handleWakeOpen(): void {
+    this.lastError = undefined;
+    this.terminalAction = undefined;
+    this.publish("watching", { lastSuccessAt: new Date().toISOString() });
+    this.refreshStatus();
+  }
+
+  // Returning void keeps ordinary wake failures inside the controller's own
+  // reconnect loop. Terminal actions settle that loop, so they latch here and
+  // name the host recovery edge (parle_connect calls start()) out loud instead
+  // of stalling silently behind a degraded footer.
+  handleWakeError(error: unknown): void {
+    this.lastError = safeError(error);
+    const action = typeof error === "object" && error !== null ? (error as { action?: string }).action : undefined;
+    if (!["reauthorize", "fix_client", "stop"].includes(action || "")) {
+      this.publish("backoff", { lastError: this.lastError });
+      this.refreshStatus();
+      return;
+    }
+    this.publish("terminal", { lastError: this.lastError, action });
+    if (this.terminalAction !== action) {
+      this.terminalAction = action;
+      this.cmd.ui?.notify?.(terminalRecoveryNotice(action!, this.lastError));
+    }
+    this.refreshStatus();
   }
 
   async handleDelivery(input: any) {
@@ -79,6 +111,7 @@ export class NativeResponsiveDelivery {
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
       hostSessionBound: Boolean(this.cmd.session?.appendCustomMessageEntry),
+      ...(this.terminalAction ? { terminalAction: this.terminalAction } : {}),
       ...(this.lastError ? { lastError: this.lastError } : {}),
     };
   }
@@ -99,6 +132,7 @@ export class NativeResponsiveDelivery {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.controllerStopped = true;
     this.publish("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
   }
@@ -135,6 +169,14 @@ export class NativeResponsiveDelivery {
 
   private async startDelivery(): Promise<void> {
     this.stopped = false;
+    // stop() aborts the controller permanently, so a later host start() must
+    // construct a fresh instance rather than silently reuse a dead loop. A
+    // loop settled by a terminal wake error keeps its controller and dedupe
+    // memory; controller.start() restarts it without a second wake loop.
+    if (this.controllerStopped) {
+      this.controller = this.createController();
+      this.controllerStopped = false;
+    }
     await this.client.ensureReadySafe();
     // Only the first successful drain is baseline. Rows found by a retry after
     // a wake failure arrived for this live session and must queue, not skip.
@@ -145,6 +187,8 @@ export class NativeResponsiveDelivery {
     } finally {
       this.baselineActive = false;
     }
+    this.lastError = undefined;
+    this.terminalAction = undefined;
     this.publish("watching", { lastSuccessAt: new Date().toISOString() });
     this.refreshStatus();
   }
@@ -355,6 +399,15 @@ export function missingModCapabilities(cmd: any): string[] {
     ["cmd.ui.notify", cmd?.ui?.notify],
   ] as const;
   return required.filter(([, value]) => typeof value !== "function").map(([name]) => name);
+}
+
+// Each terminal wake action maps to the one host edge that restarts delivery:
+// parle_connect (and non-inspect parle_status) call the bridge's start().
+function terminalRecoveryNotice(action: string, lastError?: string): string {
+  const detail = lastError ? ` (${lastError})` : "";
+  if (action === "reauthorize") return `Parle responsive delivery stopped: reauthorization required${detail}. Run parle_setup to repair credentials, then parle_connect to resume delivery.`;
+  if (action === "fix_client") return `Parle responsive delivery stopped: the server requires a client update${detail}. Update the Parle mod, restart Command Code, then run parle_connect.`;
+  return `Parle responsive delivery was stopped by the server${detail}. Resolve the reported cause, then run parle_connect to resume delivery.`;
 }
 
 function safeError(error: unknown): string {

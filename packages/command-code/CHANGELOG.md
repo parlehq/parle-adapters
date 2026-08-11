@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.5 (2026-08-11)
+
+- Recover responsive-delivery status after wake-stream disruption: a successful wake reopen now clears the stale error and republishes healthy `watching` evidence instead of retaining the most recent failure.
+- Latch terminal wake failures (`reauthorize`, `fix_client`, `stop`) once with a visible host notice naming the recovery action (`parle_setup` / `parle_connect`), so a settled wake loop can never stall silently.
+- Recreate the delivery controller when a host `start()` follows `stop()`: a stopped controller is permanently aborted, and reusing it left delivery silently dead; ordinary reconnects and terminal restarts keep the same controller and its dedupe memory, so recovery never opens a duplicate wake loop.
+
 ## 0.7.4 (2026-08-11)
 
 - Surface clearer saved-start not-found guidance from the shared client.

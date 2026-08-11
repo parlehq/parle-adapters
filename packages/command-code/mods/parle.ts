@@ -21996,7 +21996,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.4";
+var ADAPTER_VERSION = "0.7.5";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
@@ -22012,16 +22012,7 @@ var NativeResponsiveDelivery = class {
     this.cmd = cmd;
     this.client = client;
     this.refreshStatus = refreshStatus;
-    this.controller = new ResponsiveDeliveryController(client, {
-      handler: (input) => this.handleDelivery(input),
-      onProgress: () => this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() }),
-      onWakeError: (error51) => {
-        this.lastError = error51 instanceof Error ? error51.message : String(error51);
-        const action = typeof error51 === "object" && error51 !== null ? error51.action : void 0;
-        this.publish(["reauthorize", "fix_client", "stop"].includes(action || "") ? "terminal" : "backoff", { lastError: this.lastError });
-        this.refreshStatus();
-      }
-    });
+    this.controller = this.createController();
   }
   cmd;
   client;
@@ -22031,10 +22022,48 @@ var NativeResponsiveDelivery = class {
   recorder;
   startPromise;
   stopped = false;
+  controllerStopped = false;
   baselineActive = false;
   baselineDone = false;
   baselineSkipped = 0;
   lastError;
+  terminalAction;
+  createController() {
+    return new ResponsiveDeliveryController(this.client, {
+      handler: (input) => this.handleDelivery(input),
+      onProgress: () => this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() }),
+      onWakeOpen: () => this.handleWakeOpen(),
+      onWakeError: (error51) => this.handleWakeError(error51)
+    });
+  }
+  // Fires on every valid wake open, including the controller's internal
+  // reconnects, so host status follows the live stream instead of retaining
+  // the most recent failure after transport recovery.
+  handleWakeOpen() {
+    this.lastError = void 0;
+    this.terminalAction = void 0;
+    this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
+    this.refreshStatus();
+  }
+  // Returning void keeps ordinary wake failures inside the controller's own
+  // reconnect loop. Terminal actions settle that loop, so they latch here and
+  // name the host recovery edge (parle_connect calls start()) out loud instead
+  // of stalling silently behind a degraded footer.
+  handleWakeError(error51) {
+    this.lastError = safeError(error51);
+    const action = typeof error51 === "object" && error51 !== null ? error51.action : void 0;
+    if (!["reauthorize", "fix_client", "stop"].includes(action || "")) {
+      this.publish("backoff", { lastError: this.lastError });
+      this.refreshStatus();
+      return;
+    }
+    this.publish("terminal", { lastError: this.lastError, action });
+    if (this.terminalAction !== action) {
+      this.terminalAction = action;
+      this.cmd.ui?.notify?.(terminalRecoveryNotice(action, this.lastError));
+    }
+    this.refreshStatus();
+  }
   async handleDelivery(input) {
     if (this.baselineActive && input.cursorScope !== "alias") {
       this.baselineSkipped += 1;
@@ -22066,6 +22095,7 @@ var NativeResponsiveDelivery = class {
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
       hostSessionBound: Boolean(this.cmd.session?.appendCustomMessageEntry),
+      ...this.terminalAction ? { terminalAction: this.terminalAction } : {},
       ...this.lastError ? { lastError: this.lastError } : {}
     };
   }
@@ -22083,6 +22113,7 @@ var NativeResponsiveDelivery = class {
   }
   async stop() {
     this.stopped = true;
+    this.controllerStopped = true;
     this.publish("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
   }
@@ -22110,6 +22141,10 @@ var NativeResponsiveDelivery = class {
   }
   async startDelivery() {
     this.stopped = false;
+    if (this.controllerStopped) {
+      this.controller = this.createController();
+      this.controllerStopped = false;
+    }
     await this.client.ensureReadySafe();
     this.baselineActive = !this.baselineDone;
     try {
@@ -22118,6 +22153,8 @@ var NativeResponsiveDelivery = class {
     } finally {
       this.baselineActive = false;
     }
+    this.lastError = void 0;
+    this.terminalAction = void 0;
     this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
     this.refreshStatus();
   }
@@ -22315,6 +22352,12 @@ function missingModCapabilities(cmd) {
     ["cmd.ui.notify", cmd?.ui?.notify]
   ];
   return required2.filter(([, value]) => typeof value !== "function").map(([name]) => name);
+}
+function terminalRecoveryNotice(action, lastError) {
+  const detail = lastError ? ` (${lastError})` : "";
+  if (action === "reauthorize") return `Parle responsive delivery stopped: reauthorization required${detail}. Run parle_setup to repair credentials, then parle_connect to resume delivery.`;
+  if (action === "fix_client") return `Parle responsive delivery stopped: the server requires a client update${detail}. Update the Parle mod, restart Command Code, then run parle_connect.`;
+  return `Parle responsive delivery was stopped by the server${detail}. Resolve the reported cause, then run parle_connect to resume delivery.`;
 }
 function safeError(error51) {
   const message = error51 instanceof Error ? error51.message : String(error51);

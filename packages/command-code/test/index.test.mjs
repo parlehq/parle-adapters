@@ -61,7 +61,8 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.4");
+  assert.equal(pkg.version, "0.7.5");
+  assert.match(readFileSync(resolve("src/index.ts"), "utf8"), new RegExp(`ADAPTER_VERSION = "${pkg.version}"`));
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
   assert.match(artifact, /appendCustomMessageEntry/);
@@ -175,6 +176,74 @@ test("session replacement retains deferred work for the replacement turn", async
   const replacement = delivery.foldPending({ messages: [] });
   assert.deepEqual(replacement.messages, [projected]);
   assert.equal(delivery.status().pending, 1);
+});
+
+test("a successful wake reopen clears stale error state and reports watching evidence", () => {
+  const cmd = {
+    cwd: "/tmp/parle-command-code-reopen",
+    session: { appendCustomMessageEntry() {} },
+    ui: { setStatus() {}, notify() {} },
+  };
+  let refreshes = 0;
+  const delivery = new source.NativeResponsiveDelivery(cmd, { runtime: {}, clientInstanceId: "test-client" }, () => { refreshes += 1; });
+  assert.equal(typeof delivery.controller.onWakeOpen, "function", "controller registers the wake-open policy");
+  assert.equal(typeof delivery.controller.onWakeError, "function", "controller registers the wake-error policy");
+
+  delivery.handleWakeError(new Error("stream ended unexpectedly"));
+  assert.equal(delivery.status().lastError, "stream ended unexpectedly");
+  assert.equal(delivery.status().terminalAction, undefined, "an ordinary wake failure never latches terminal state");
+
+  delivery.handleWakeOpen();
+  assert.equal(delivery.status().lastError, undefined, "a live stream supersedes the most recent failure");
+  assert.equal(refreshes >= 2, true);
+});
+
+test("terminal wake errors latch once, name the recovery action, and clear on restart", async () => {
+  const notices = [];
+  const cmd = {
+    cwd: "/tmp/parle-command-code-terminal",
+    session: { appendCustomMessageEntry() {} },
+    ui: { setStatus() {}, notify(message) { notices.push(message); } },
+  };
+  const client = { runtime: {}, clientInstanceId: "test-client", async ensureReadySafe() {} };
+  const delivery = new source.NativeResponsiveDelivery(cmd, client, () => {});
+  const terminal = Object.assign(new Error("agent token rejected"), { action: "reauthorize" });
+
+  delivery.handleWakeError(terminal);
+  delivery.handleWakeError(terminal);
+  assert.equal(delivery.status().terminalAction, "reauthorize");
+  assert.equal(delivery.status().lastError, "agent token rejected");
+  assert.equal(notices.length, 1, "a repeated terminal error notifies once, not per retry");
+  assert.match(notices[0], /parle_setup/);
+  assert.match(notices[0], /parle_connect/);
+
+  delivery.controller.start = async () => {};
+  await delivery.start();
+  assert.equal(delivery.status().terminalAction, undefined, "a successful start clears the terminal latch");
+  assert.equal(delivery.status().lastError, undefined, "a successful start clears the stale error");
+});
+
+test("start after stop recreates the settled controller instead of reusing a dead loop", async () => {
+  const cmd = {
+    cwd: "/tmp/parle-command-code-restart",
+    session: { appendCustomMessageEntry() {} },
+    ui: { setStatus() {}, notify() {} },
+  };
+  const client = { runtime: {}, clientInstanceId: "test-client", async ensureReadySafe() {} };
+  const delivery = new source.NativeResponsiveDelivery(cmd, client, () => {});
+  const first = delivery.controller;
+  first.start = async () => {};
+  first.stop = async () => {};
+
+  await delivery.start();
+  assert.equal(delivery.controller, first, "an ordinary start keeps the controller and its dedupe memory");
+
+  await delivery.stop();
+  let restarted = 0;
+  delivery.createController = () => ({ start: async () => { restarted += 1; }, stop: async () => {} });
+  await delivery.start();
+  assert.notEqual(delivery.controller, first, "a stopped controller is permanently aborted and must be replaced");
+  assert.equal(restarted, 1, "the replacement controller starts exactly one wake loop");
 });
 
 test("degraded setup recovery restores native tools through the active-tool API", async () => {
