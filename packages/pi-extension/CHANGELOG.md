@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.31 (2026-08-11)
+
+- Move saved starts under the explicit `/parle start` namespace, execute the shared plan, reject loose free-text fallbacks, and abort cleanly when the save dialog is cancelled.
+
 ## 0.7.30 (2026-08-11)
 
 - Make bare `/parle` output task-oriented, with clear commands to run, inspect, create, and remove saved starts.

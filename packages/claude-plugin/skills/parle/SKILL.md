@@ -89,9 +89,9 @@ The human session cookie always comes from safe local configuration. It is never
 
 ## Saved starts
 
-When the user invokes `/parle <name>` or asks to run a saved Parle start:
+When the user invokes the canonical `/parle start <name>` form or asks to run a saved Parle start, normalize the request to that form rather than inventing another command grammar:
 
-1. Call `parle_saved_start` with action `show` and the exact name.
+1. Call `parle_saved_start` with action `show` and the exact saved-start name.
 2. Run the returned steps in order and stop at the first failure.
 3. For `switch_profile`, use the guarded live profile-switching flow below, including watcher stop and re-arm.
 4. For `claim_alias`, call `parle_session_alias` with the exact alias.
@@ -99,7 +99,7 @@ When the user invokes `/parle <name>` or asks to run a saved Parle start:
 
 Profile, alias, and `next` are independently optional. Missing profile keeps the current binding. Missing alias performs no alias action. Missing `next` stops after Parle setup. Starting a saved start sends no Parle room message unless `next` explicitly requests one.
 
-Use `parle_saved_start` actions `list`, `show`, `save`, and `delete` to manage the credential-free catalog beside the profile catalog. Save and delete require `confirmMutation: true`. Never copy profile tokens into a saved start.
+Use `parle_saved_start` actions `list`, `show`, `save`, and `delete` to manage the credential-free catalog beside the profile catalog. In command-oriented hosts, document these as `/parle start list`, `/parle start show <name>`, `/parle start save <name>`, and `/parle start delete <name>`. Save and delete require `confirmMutation: true`. Never copy profile tokens into a saved start.
 
 Examples of valid `next` values include `say hello!`, `ask me what I want to work on`, `/issue-collector`, `load the GalexC Guru skill and initialize`, and `inspect the current task, then suggest a plan`.
 

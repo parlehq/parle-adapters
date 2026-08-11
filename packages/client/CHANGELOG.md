@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.25 (2026-08-11)
+
+- Own saved-start execution ordering through typed shared plans, reserve management names, and keep not-found errors harness-neutral.
+
 ## 0.8.24 (2026-08-11)
 
 - Render missing saved starts as a readable list and give empty catalogs a direct creation prompt.

@@ -157,25 +157,22 @@ test("/parle lists saved starts with clear next steps", async () => {
     message: [
       "Saved Parle starts:",
       "",
-      "These reusable shortcuts connect you to a Parle room and can begin a role or instruction.",
+      "Saved starts can select a profile, claim an alias, and queue a host instruction.",
       "",
       "- galexc-net-guru",
       "- issue-collector",
       "",
       "Start one:",
-      "  /parle <name>",
+      "  /parle start <name>",
       "",
       "Example:",
-      "  /parle galexc-net-guru",
+      "  /parle start galexc-net-guru",
       "",
-      "See details:",
-      "  /parle show <name>",
-      "",
-      "Create another:",
-      "  /parle save <name>",
-      "",
-      "Remove one:",
-      "  /parle delete <name>",
+      "Manage starts:",
+      "  /parle start list",
+      "  /parle start show <name>",
+      "  /parle start save <name>",
+      "  /parle start delete <name>",
     ].join("\n"),
   }]);
 });
@@ -186,20 +183,20 @@ test("/parle explains how to create the first saved start", async () => {
   const notifications = [];
   harness.ctx.ui.notify = (message, type) => notifications.push({ message, type });
 
-  await harness.commands.parle.handler("list", harness.ctx);
+  await harness.commands.parle.handler("start list", harness.ctx);
 
   assert.deepEqual(notifications, [{
     type: "info",
     message: [
       "No saved Parle starts yet.",
       "",
-      "Saved starts are reusable shortcuts that connect you to a Parle room and can begin a role or instruction.",
+      "Saved starts can select a profile, claim an alias, and queue a host instruction.",
       "",
       "Create your first:",
-      "  /parle save <name>",
+      "  /parle start save <name>",
       "",
       "Example:",
-      "  /parle save issue-collector",
+      "  /parle start save issue-collector",
       "",
       "Pi will guide you through the rest.",
     ].join("\n"),
@@ -214,21 +211,39 @@ test("/parle sends an opaque next instruction through Pi without posting to Parl
   globalThis.fetch = async () => { throw new Error("a next-only saved start must not use the network"); };
   const harness = installHarness(cwd);
 
-  await harness.commands.parle.handler("hello", harness.ctx);
+  await harness.commands.parle.handler("start hello", harness.ctx);
 
   assert.deepEqual(harness.injected, ["say hello!"]);
 });
 
-test("/parle passes unmatched free-form requests to normal Pi interpretation", async () => {
+test("/parle rejects input outside the explicit start namespace", async () => {
   const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
-  globalThis.fetch = async () => { throw new Error("free-form interpretation must not use the network before the model acts"); };
+  globalThis.fetch = async () => { throw new Error("invalid command input must not use the network"); };
   const harness = installHarness(cwd);
+  const notifications = [];
+  harness.ctx.ui.notify = (message, type) => notifications.push({ message, type });
 
   await harness.commands.parle.handler("Join #room as @principal.agent and ask what to do next", harness.ctx);
 
-  assert.equal(harness.injected.length, 1);
-  assert.match(harness.injected[0], /Join #room as @principal\.agent and ask what to do next/);
-  assert.match(harness.injected[0], /do not send a room message unless explicitly requested/);
+  assert.deepEqual(harness.injected, []);
+  assert.equal(notifications[0].type, "error");
+  assert.match(notifications[0].message, /Usage: \/parle start/);
+});
+
+test("/parle start save aborts when any prompt is cancelled", async () => {
+  for (const responses of [[undefined], ["", undefined], ["", "", undefined]]) {
+    const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+    const harness = installHarness(cwd);
+    const notifications = [];
+    const pending = [...responses];
+    harness.ctx.ui.input = async () => pending.shift();
+    harness.ctx.ui.notify = (message, type) => notifications.push({ message, type });
+
+    await harness.commands.parle.handler("start save cancelled", harness.ctx);
+
+    assert.equal(existsSync(join(process.env.HOME, ".parle", "launches")), false);
+    assert.deepEqual(notifications, [{ message: "Save cancelled", type: "info" }]);
+  }
 });
 
 test("/parle surfaces saved-start errors when UI notifications are unavailable", async () => {
@@ -236,7 +251,7 @@ test("/parle surfaces saved-start errors when UI notifications are unavailable",
   const harness = installHarness(cwd);
   harness.ctx.hasUI = false;
 
-  await assert.rejects(harness.commands.parle.handler("missing", harness.ctx), /saved start missing was not found/);
+  await assert.rejects(harness.commands.parle.handler("start missing", harness.ctx), /saved start missing was not found/);
 });
 
 test("/parle stops before next when an earlier saved-start step fails", async () => {
@@ -247,7 +262,7 @@ test("/parle stops before next when an earlier saved-start step fails", async ()
   globalThis.fetch = async () => { throw new Error("profile resolution should fail before network access"); };
   const harness = installHarness(cwd);
 
-  await harness.commands.parle.handler("broken", harness.ctx);
+  await harness.commands.parle.handler("start broken", harness.ctx);
 
   assert.deepEqual(harness.injected, []);
 });
@@ -861,7 +876,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.30" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.31" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1541,7 +1556,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.30");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.31");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

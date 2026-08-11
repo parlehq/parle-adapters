@@ -35614,6 +35614,7 @@ var LABEL2 = "Parle saved-start catalog";
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 var ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var ALLOWED_KEYS2 = /* @__PURE__ */ new Set(["profile", "alias", "next"]);
+var RESERVED_SAVED_START_NAMES = /* @__PURE__ */ new Set(["list", "show", "save", "delete"]);
 var SavedStartConfigError = class extends Error {
   code;
   constructor(message, code = "saved_start_config_error") {
@@ -35627,7 +35628,7 @@ var SavedStartNotFoundError = class extends SavedStartConfigError {
   availableSavedStarts;
   constructor(selector, availableSavedStarts, path) {
     const guidance = availableSavedStarts.length ? `Available saved starts:
-${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured. Create one with /parle save <name>.";
+${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured.";
     super(`Parle saved start ${selector} was not found in ${path}.
 ${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
@@ -35673,6 +35674,9 @@ function assertValue(value, label) {
 }
 function validateSavedStart(start) {
   assertName(start.name, "Parle saved-start name");
+  if (RESERVED_SAVED_START_NAMES.has(start.name)) {
+    throw new SavedStartConfigError(`Parle saved-start name ${start.name} is reserved for saved-start management.`);
+  }
   if (start.profile !== void 0) {
     assertValue(start.profile, `Parle saved start ${start.name} profile`);
     assertName(start.profile, `Parle saved start ${start.name} profile`);
@@ -35690,6 +35694,14 @@ function validateSavedStart(start) {
     }
   }
   return { name: start.name, ...start.profile ? { profile: start.profile } : {}, ...start.alias ? { alias: start.alias } : {}, ...start.next ? { next: start.next } : {} };
+}
+function savedStartPlan(start) {
+  const normalized = validateSavedStart(start);
+  return [
+    ...normalized.profile ? [{ action: "switch_profile", profile: normalized.profile }] : [],
+    ...normalized.alias ? [{ action: "claim_alias", alias: normalized.alias }] : [],
+    ...normalized.next ? [{ action: "host_instruction", next: normalized.next }] : []
+  ];
 }
 function parseSavedStarts(text, path = SAVED_START_CATALOG_PATH) {
   const sections = /* @__PURE__ */ new Map();
@@ -38491,7 +38503,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }));
   registerTool("parle_saved_start", {
     title: "Manage Parle Saved Starts",
-    description: "List, show, save, or delete credential-free saved starts from the local catalog beside ~/.parle/profiles. A saved start has independently optional profile, alias, and next fields. Show returns an ordered host plan; the shared client never interprets next. Save and delete require confirmMutation=true.",
+    description: "List, show, save, or delete credential-free saved starts from the local catalog beside ~/.parle/profiles. A saved start has independently optional profile, alias, and next fields. Show returns the shared client's ordered host plan; the shared client never interprets next. Save and delete require confirmMutation=true.",
     inputSchema: savedStartSchema,
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, async (params, extra) => safeTool(async () => {
@@ -38505,11 +38517,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       const savedStart = loadSavedStart(params.name, path);
       return {
         savedStart,
-        steps: [
-          ...savedStart.profile ? [{ action: "switch_profile", profile: savedStart.profile }] : [],
-          ...savedStart.alias ? [{ action: "claim_alias", alias: savedStart.alias }] : [],
-          ...savedStart.next ? [{ action: "host_instruction", next: savedStart.next }] : []
-        ],
+        steps: savedStartPlan(savedStart),
         next: "Run the returned steps in order. Stop at the first failure. Pass host_instruction.next through the host's normal instruction path without parsing it in shared code."
       };
     }
@@ -38827,7 +38835,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.25";
+var MCP_CLIENT_VERSION = "0.7.26";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {

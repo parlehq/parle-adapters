@@ -13,6 +13,7 @@ import {
   resolveSavedStartCatalogPath,
   saveSavedStart,
   savedStartCatalogPath,
+  savedStartPlan,
   serializeSavedStarts,
 } from "../dist/index.js";
 
@@ -69,11 +70,27 @@ profile = default
   assert.deepEqual(starts.get("current"), { name: "current" });
 });
 
-test("saved starts reject unknown fields, invalid aliases, duplicate names, and multiline next values", () => {
+test("saved starts reject unknown fields, invalid aliases, reserved names, duplicate names, and multiline next values", () => {
   assert.throws(() => parseSavedStarts("[bad]\nscript = run\n"), SavedStartConfigError);
   assert.throws(() => parseSavedStarts("[bad]\nalias = Not Valid\n"), /alias must be/);
+  assert.throws(() => parseSavedStarts("[list]\nnext = unavailable\n"), /name list is reserved/);
+  assert.throws(() => saveSavedStart({ name: "delete", next: "unavailable" }), /name delete is reserved/);
   assert.throws(() => parseSavedStarts("[same]\n[same]\n"), /duplicate saved start/);
   assert.throws(() => serializeSavedStarts([{ name: "bad", next: "one\ntwo" }]), /must fit on one line/);
+});
+
+test("saved-start plans own the portable profile, alias, and host-instruction order", () => {
+  assert.deepEqual(savedStartPlan({
+    name: "galexc-guru",
+    profile: "galexc-seedwork",
+    alias: "galexc-net-guru",
+    next: "load the GalexC Guru skill and initialize",
+  }), [
+    { action: "switch_profile", profile: "galexc-seedwork" },
+    { action: "claim_alias", alias: "galexc-net-guru" },
+    { action: "host_instruction", next: "load the GalexC Guru skill and initialize" },
+  ]);
+  assert.deepEqual(savedStartPlan({ name: "current" }), []);
 });
 
 test("save, load, list, replace, and delete use one owner-only catalog", () => {
@@ -81,7 +98,7 @@ test("save, load, list, replace, and delete use one owner-only catalog", () => {
   try {
     assert.throws(
       () => loadSavedStart("missing", path),
-      (error) => error instanceof SavedStartNotFoundError && error.message === `Parle saved start missing was not found in ${path}.\nNo saved starts are configured. Create one with /parle save <name>.`,
+      (error) => error instanceof SavedStartNotFoundError && error.message === `Parle saved start missing was not found in ${path}.\nNo saved starts are configured.`,
     );
 
     saveSavedStart({ name: "galexc-guru", profile: "galexc-seedwork", alias: "galexc-net-guru", next: "/galexc-guru" }, path);

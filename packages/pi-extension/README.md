@@ -154,11 +154,11 @@ profile = default
 Run one by name:
 
 ```text
-/parle galexc-guru
-/parle standard-galexc
+/parle start galexc-guru
+/parle start standard-galexc
 ```
 
-The fields are independently optional. Pi switches profiles when `profile` is present, claims a session alias when `alias` is present, then submits `next` as the next user instruction. Missing fields perform no action. A failure stops the sequence before later steps.
+The fields are independently optional. The shared client builds the canonical profile, alias, and host-instruction plan. Pi executes that plan by switching profiles when `profile` is present, claiming a session alias when `alias` is present, then submitting `next` as the next user instruction. Missing fields perform no action. A failure stops the sequence before later steps.
 
 `next` is opaque user input interpreted by Pi through its normal command, prompt, skill, tool, and safety behavior. It can be a slash command or an ordinary sentence:
 
@@ -175,13 +175,13 @@ A plain instruction does not post to the Parle room. A room message is sent only
 Manage starts without hand-editing the catalog:
 
 ```text
-/parle list
-/parle show galexc-guru
-/parle save galexc-guru
-/parle delete galexc-guru
+/parle start list
+/parle start show galexc-guru
+/parle start save galexc-guru
+/parle start delete galexc-guru
 ```
 
-`/parle save` asks for the optional profile, alias, and next instruction. The catalog is credential-free but still uses owner-only directory and file custody. `PARLE_PROFILES_PATH` relocates saved starts with the rest of the Parle account state.
+Bare `/parle` lists available starts and these canonical command forms. `/parle start save` asks for the optional profile, alias, and next instruction. The catalog is credential-free but still uses owner-only directory and file custody. `PARLE_PROFILES_PATH` relocates saved starts with the rest of the Parle account state.
 
 The extension also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery?wait=0` only after wake hints. While Pi is busy, direct messages remain in the adapter's local pending buffer and the footer shows their count. At `agent_settled`, the adapter injects one ordered batch and then acknowledges it to Parle. This avoids Pi's generic queued-input UI without changing Parle delivery semantics.
 

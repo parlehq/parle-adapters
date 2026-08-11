@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.26 (2026-08-11)
+
+- Return the shared-client saved-start plan and remove harness-specific missing-start guidance from the bundled runtime.
+
 ## 0.7.25 (2026-08-11)
 
 - Surface clearer saved-start not-found guidance from the shared client.

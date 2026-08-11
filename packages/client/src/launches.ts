@@ -11,6 +11,7 @@ const LABEL = "Parle saved-start catalog";
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ALLOWED_KEYS = new Set(["profile", "alias", "next"]);
+const RESERVED_SAVED_START_NAMES = new Set(["list", "show", "save", "delete"]);
 
 export type SavedStart = {
   name: string;
@@ -18,6 +19,11 @@ export type SavedStart = {
   alias?: string;
   next?: string;
 };
+
+export type SavedStartStep =
+  | { action: "switch_profile"; profile: string }
+  | { action: "claim_alias"; alias: string }
+  | { action: "host_instruction"; next: string };
 
 export class SavedStartConfigError extends Error {
   readonly code: string;
@@ -36,7 +42,7 @@ export class SavedStartNotFoundError extends SavedStartConfigError {
   constructor(selector: string, availableSavedStarts: string[], path: string) {
     const guidance = availableSavedStarts.length
       ? `Available saved starts:\n${availableSavedStarts.map((name) => `- ${name}`).join("\n")}`
-      : "No saved starts are configured. Create one with /parle save <name>.";
+      : "No saved starts are configured.";
     super(`Parle saved start ${selector} was not found in ${path}.\n${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
     this.selector = selector;
@@ -80,6 +86,9 @@ function assertValue(value: string, label: string): void {
 
 function validateSavedStart(start: SavedStart): SavedStart {
   assertName(start.name, "Parle saved-start name");
+  if (RESERVED_SAVED_START_NAMES.has(start.name)) {
+    throw new SavedStartConfigError(`Parle saved-start name ${start.name} is reserved for saved-start management.`);
+  }
   if (start.profile !== undefined) {
     assertValue(start.profile, `Parle saved start ${start.name} profile`);
     assertName(start.profile, `Parle saved start ${start.name} profile`);
@@ -97,6 +106,15 @@ function validateSavedStart(start: SavedStart): SavedStart {
     }
   }
   return { name: start.name, ...(start.profile ? { profile: start.profile } : {}), ...(start.alias ? { alias: start.alias } : {}), ...(start.next ? { next: start.next } : {}) };
+}
+
+export function savedStartPlan(start: SavedStart): SavedStartStep[] {
+  const normalized = validateSavedStart(start);
+  return [
+    ...(normalized.profile ? [{ action: "switch_profile" as const, profile: normalized.profile }] : []),
+    ...(normalized.alias ? [{ action: "claim_alias" as const, alias: normalized.alias }] : []),
+    ...(normalized.next ? [{ action: "host_instruction" as const, next: normalized.next }] : []),
+  ];
 }
 
 export function parseSavedStarts(text: string, path: string = SAVED_START_CATALOG_PATH): Map<string, SavedStart> {

@@ -30,9 +30,9 @@ If the target is not deliverable, report the server action. Do not guess another
 
 ## Saved starts
 
-When the user invokes `/parle <name>` or asks to run a saved Parle start:
+When the user invokes the canonical `/parle start <name>` form or asks to run a saved Parle start, normalize the request to that form rather than inventing another command grammar:
 
-1. Call `mcp__parle__parle_saved_start` with action `show` and the exact name.
+1. Call `mcp__parle__parle_saved_start` with action `show` and the exact saved-start name.
 2. Run the returned steps in order and stop at the first failure.
 3. Call `mcp__parle__parle_switch_profile` for a profile step only when live switching is available. If the hook bridge rejects switching, stop and ask the user to restart Codex with the target `PARLE_PROFILE`.
 4. Call `mcp__parle__parle_session_alias` for an alias step.
@@ -40,7 +40,7 @@ When the user invokes `/parle <name>` or asks to run a saved Parle start:
 
 Profile, alias, and `next` are independently optional. Starting a saved start sends no Parle room message unless `next` explicitly requests one. Valid `next` values include `say hello!`, `ask me what I want to work on`, `/issue-collector`, `load the GalexC Guru skill and initialize`, and `inspect the current task, then suggest a plan`.
 
-Use `mcp__parle__parle_saved_start` actions `list`, `show`, `save`, and `delete` to manage the credential-free local catalog. Save and delete require `confirmMutation: true`.
+Use `mcp__parle__parle_saved_start` actions `list`, `show`, `save`, and `delete` to manage the credential-free local catalog. In command-oriented hosts, document these as `/parle start list`, `/parle start show <name>`, `/parle start save <name>`, and `/parle start delete <name>`. Save and delete require `confirmMutation: true`.
 
 ## Normal coordination
 

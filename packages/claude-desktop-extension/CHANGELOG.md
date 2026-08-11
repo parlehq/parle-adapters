@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.26 (2026-08-11)
+
+- Refresh the bundled MCP runtime with shared saved-start planning and harness-neutral missing-start errors.
+
 ## 0.8.25 (2026-08-11)
 
 - Surface clearer saved-start not-found guidance from the bundled MCP server.

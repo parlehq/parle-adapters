@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.28 (2026-08-11)
+
+- Document the canonical `/parle start` namespace and refresh the MCP bundle with shared saved-start planning.
+
 ## 0.9.27 (2026-08-11)
 
 - Surface clearer saved-start not-found guidance from the bundled MCP server.

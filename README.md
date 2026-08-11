@@ -82,7 +82,7 @@ alias = galexc-net-guru
 next = load the GalexC Guru skill and initialize
 ```
 
-Saved starts live in the credential-free `~/.parle/launches` catalog beside `~/.parle/profiles`. In Pi, run one with `/parle galexc-guru`. Profile, alias, and `next` are independently optional. The adapter applies them in that order and stops at the first failure.
+Saved starts live in the credential-free `~/.parle/launches` catalog beside `~/.parle/profiles`. In Pi, run one with `/parle start galexc-guru`. Profile, alias, and `next` are independently optional. The shared client produces the ordered profile, alias, and host-instruction plan. Each adapter executes that plan in order and stops at the first failure.
 
 `next` is ordinary input for the current harness, not a shared scripting language. For example:
 
@@ -96,7 +96,7 @@ next = inspect the current task, then suggest a plan
 
 The shared client stores and returns `next` unchanged. Pi submits it as the next user instruction. MCP hosts receive it as an ordered host step and interpret it through their normal prompt, skill, command, and safety behavior. It does not send a Parle room message unless the instruction explicitly requests one.
 
-Pi also provides `/parle list`, `/parle show <name>`, `/parle save <name>`, and `/parle delete <name>`. MCP hosts use `parle_saved_start` for the same local catalog and `parle_session_alias` for the optional alias step.
+Pi also provides `/parle start list`, `/parle start show <name>`, `/parle start save <name>`, and `/parle start delete <name>`. Bare `/parle` shows available starts and the canonical command forms. MCP hosts use `parle_saved_start` for the same local catalog and `parle_session_alias` for the optional alias step.
 
 ## Packages
 

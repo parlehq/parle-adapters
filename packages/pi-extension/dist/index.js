@@ -4252,6 +4252,7 @@ var LABEL2 = "Parle saved-start catalog";
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 var ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var ALLOWED_KEYS2 = /* @__PURE__ */ new Set(["profile", "alias", "next"]);
+var RESERVED_SAVED_START_NAMES = /* @__PURE__ */ new Set(["list", "show", "save", "delete"]);
 var SavedStartConfigError = class extends Error {
   code;
   constructor(message, code = "saved_start_config_error") {
@@ -4265,7 +4266,7 @@ var SavedStartNotFoundError = class extends SavedStartConfigError {
   availableSavedStarts;
   constructor(selector, availableSavedStarts, path) {
     const guidance = availableSavedStarts.length ? `Available saved starts:
-${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured. Create one with /parle save <name>.";
+${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured.";
     super(`Parle saved start ${selector} was not found in ${path}.
 ${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
@@ -4289,6 +4290,9 @@ function assertValue(value, label) {
 }
 function validateSavedStart(start) {
   assertName(start.name, "Parle saved-start name");
+  if (RESERVED_SAVED_START_NAMES.has(start.name)) {
+    throw new SavedStartConfigError(`Parle saved-start name ${start.name} is reserved for saved-start management.`);
+  }
   if (start.profile !== void 0) {
     assertValue(start.profile, `Parle saved start ${start.name} profile`);
     assertName(start.profile, `Parle saved start ${start.name} profile`);
@@ -4306,6 +4310,14 @@ function validateSavedStart(start) {
     }
   }
   return { name: start.name, ...start.profile ? { profile: start.profile } : {}, ...start.alias ? { alias: start.alias } : {}, ...start.next ? { next: start.next } : {} };
+}
+function savedStartPlan(start) {
+  const normalized = validateSavedStart(start);
+  return [
+    ...normalized.profile ? [{ action: "switch_profile", profile: normalized.profile }] : [],
+    ...normalized.alias ? [{ action: "claim_alias", alias: normalized.alias }] : [],
+    ...normalized.next ? [{ action: "host_instruction", next: normalized.next }] : []
+  ];
 }
 function parseSavedStarts(text, path = SAVED_START_CATALOG_PATH) {
   const sections = /* @__PURE__ */ new Map();
@@ -6538,7 +6550,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.30";
+var PI_EXTENSION_VERSION = "0.7.31";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -7194,12 +7206,18 @@ async function runSavedStart(pi, ctx, start, signal) {
   const cwd = ctx.cwd || process.cwd();
   let profileResult;
   let aliasResult;
-  if (start.profile) profileResult = await switchProfile(pi, ctx, start.profile, signal);
-  if (start.alias) {
-    const cfg = configForLiveRuntime(resolveConfig2(cwd));
-    aliasResult = await useSessionAlias(pi, ctx, cfg, start.alias, signal);
+  for (const step of savedStartPlan(start)) {
+    if (step.action === "switch_profile") {
+      profileResult = await switchProfile(pi, ctx, step.profile, signal);
+      continue;
+    }
+    if (step.action === "claim_alias") {
+      const cfg = configForLiveRuntime(resolveConfig2(cwd));
+      aliasResult = await useSessionAlias(pi, ctx, cfg, step.alias, signal);
+      continue;
+    }
+    pi.sendUserMessage(step.next);
   }
-  if (start.next) pi.sendUserMessage(start.next);
   return {
     name: start.name,
     ...start.profile ? { profile: start.profile, profileChanged: profileResult?.switched === true } : {},
@@ -7971,67 +7989,89 @@ function parleExtension(pi) {
         const cwd = ctx.cwd || process.cwd();
         const cfg = configForLiveRuntime(resolveConfig2(cwd));
         const path = savedStartCatalogPath(cfg.profilesPath.value);
-        const input = (args || "").trim();
-        const [action, ...rest] = input.split(/\s+/).filter(Boolean);
-        const name = rest.join(" ");
-        if (!action || action === "list") {
-          const starts2 = [...readSavedStarts(path).values()];
-          const text = starts2.length ? [
+        const tokens = (args || "").trim().split(/\s+/).filter(Boolean);
+        const showSavedStarts = () => {
+          const starts = [...readSavedStarts(path).values()];
+          const text = starts.length ? [
             "Saved Parle starts:",
             "",
-            "These reusable shortcuts connect you to a Parle room and can begin a role or instruction.",
+            "Saved starts can select a profile, claim an alias, and queue a host instruction.",
             "",
-            ...starts2.map((start2) => `- ${start2.name}`),
+            ...starts.map((start2) => `- ${start2.name}`),
             "",
             "Start one:",
-            "  /parle <name>",
+            "  /parle start <name>",
             "",
             `Example:
-  /parle ${starts2[0].name}`,
+  /parle start ${starts[0].name}`,
             "",
-            "See details:",
-            "  /parle show <name>",
-            "",
-            "Create another:",
-            "  /parle save <name>",
-            "",
-            "Remove one:",
-            "  /parle delete <name>"
+            "Manage starts:",
+            "  /parle start list",
+            "  /parle start show <name>",
+            "  /parle start save <name>",
+            "  /parle start delete <name>"
           ].join("\n") : [
             "No saved Parle starts yet.",
             "",
-            "Saved starts are reusable shortcuts that connect you to a Parle room and can begin a role or instruction.",
+            "Saved starts can select a profile, claim an alias, and queue a host instruction.",
             "",
             "Create your first:",
-            "  /parle save <name>",
+            "  /parle start save <name>",
             "",
             "Example:",
-            "  /parle save issue-collector",
+            "  /parle start save issue-collector",
             "",
             "Pi will guide you through the rest."
           ].join("\n");
           ctx.ui.notify(text, "info");
+        };
+        if (tokens.length === 0) {
+          showSavedStarts();
           return;
         }
-        if (action === "show") {
-          if (!name) throw new Error("Usage: /parle show <name>");
-          const start2 = loadSavedStart(name, path);
+        if (tokens[0] !== "start") throw new Error("Usage: /parle start [<name>|list|show <name>|save <name>|delete <name>]");
+        const [operation, ...operands] = tokens.slice(1);
+        if (!operation || operation === "list") {
+          if (operands.length > 0) throw new Error("Usage: /parle start list");
+          showSavedStarts();
+          return;
+        }
+        if (operation === "show") {
+          if (operands.length !== 1) throw new Error("Usage: /parle start show <name>");
+          const start2 = loadSavedStart(operands[0], path);
           ctx.ui.notify([`Saved start: ${start2.name}`, `profile: ${start2.profile || "current"}`, `alias: ${start2.alias || "no action"}`, `next: ${start2.next || "none"}`].join("\n"), "info");
           return;
         }
-        if (action === "save") {
-          if (!name) throw new Error("Usage: /parle save <name>");
-          if (!ctx.hasUI) throw new Error("/parle save requires an interactive host. Edit the saved-start catalog or use a host management tool instead.");
-          const profile = (await ctx.ui.input("Optional Parle profile", cfg.profile?.value || "leave blank to keep the current profile"))?.trim();
-          const alias = (await ctx.ui.input("Optional session alias", "leave blank for no alias action"))?.trim();
-          const next = (await ctx.ui.input("Optional next instruction", "for example: say hello!"))?.trim();
+        if (operation === "save") {
+          if (operands.length !== 1) throw new Error("Usage: /parle start save <name>");
+          if (!ctx.hasUI) throw new Error("/parle start save requires an interactive host. Edit the saved-start catalog or use a host management tool instead.");
+          const name = operands[0];
+          const profileInput = await ctx.ui.input("Optional Parle profile", cfg.profile?.value || "leave blank to keep the current profile");
+          if (profileInput === void 0) {
+            ctx.ui.notify("Save cancelled", "info");
+            return;
+          }
+          const aliasInput = await ctx.ui.input("Optional session alias", "leave blank for no alias action");
+          if (aliasInput === void 0) {
+            ctx.ui.notify("Save cancelled", "info");
+            return;
+          }
+          const nextInput = await ctx.ui.input("Optional next instruction", "for example: say hello!");
+          if (nextInput === void 0) {
+            ctx.ui.notify("Save cancelled", "info");
+            return;
+          }
+          const profile = profileInput.trim();
+          const alias = aliasInput.trim();
+          const next = nextInput.trim();
           const saved = saveSavedStart({ name, ...profile ? { profile } : {}, ...alias ? { alias } : {}, ...next ? { next } : {} }, path);
           ctx.ui.notify(`Saved Parle start ${saved.name}`, "info");
           return;
         }
-        if (action === "delete") {
-          if (!name) throw new Error("Usage: /parle delete <name>");
-          if (!ctx.hasUI) throw new Error("/parle delete requires an interactive host.");
+        if (operation === "delete") {
+          if (operands.length !== 1) throw new Error("Usage: /parle start delete <name>");
+          if (!ctx.hasUI) throw new Error("/parle start delete requires an interactive host.");
+          const name = operands[0];
           const confirmed = await ctx.ui.confirm("Delete saved Parle start?", name);
           if (!confirmed) {
             ctx.ui.notify("Delete cancelled", "info");
@@ -8040,15 +8080,8 @@ function parleExtension(pi) {
           ctx.ui.notify(deleteSavedStart(name, path) ? `Deleted Parle saved start ${name}` : `Parle saved start ${name} was not found`, "info");
           return;
         }
-        const starts = readSavedStarts(path);
-        if (!starts.has(input) && /\s/.test(input)) {
-          pi.sendUserMessage(`Carry out this Parle start request using the installed Parle tools. Treat profile and alias as optional, run requested steps in order, stop at the first failure, and do not send a room message unless explicitly requested:
-
-${input}`);
-          ctx.ui.notify("Parle start request queued for normal Pi interpretation", "info");
-          return;
-        }
-        const start = loadSavedStart(input, path);
+        if (operands.length > 0) throw new Error("Usage: /parle start <name>");
+        const start = loadSavedStart(operation, path);
         const result = await runSavedStart(pi, ctx, start);
         ctx.ui.notify(`Parle saved start ${result.name} ready${result.nextQueued ? "; next instruction queued" : ""}`, "info");
       } catch (error) {

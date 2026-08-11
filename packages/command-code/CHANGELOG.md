@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.6 (2026-08-11)
+
+- Refresh the native bundle with shared saved-start planning and harness-neutral missing-start errors.
+
 ## 0.7.5 (2026-08-11)
 
 - Recover responsive-delivery status after wake-stream disruption: a successful wake reopen now clears the stale error and republishes healthy `watching` evidence instead of retaining the most recent failure.
