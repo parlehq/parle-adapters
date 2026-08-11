@@ -85,6 +85,11 @@ export class NativeResponsiveDelivery {
       this.refreshStatus();
       return "intentionally_skipped" as const;
     }
+    // LIMITATION: Messages appended here are deferred until the next user turn.
+    // Command Code's mod API has no way to trigger an automatic assistant turn.
+    // The message sits in `this.pending` until `onTurnStart` folds it into state.
+    // For true reactive behavior, the host would need an API to wake/start a turn.
+    // See: discussion with Ahmad on reactive delivery architecture.
     if (!this.cmd.session?.appendCustomMessageEntry) throw new Error("Command Code session persistence is unavailable");
     const reply = responsiveReplyPresentation(input.message);
     const content = formatResponsiveMessage(input.message, reply.lines);
