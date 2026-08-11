@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, loadProfile, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, saveSavedStart, savedStartCatalogPath, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.27";
+const PI_EXTENSION_VERSION = "0.7.28";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -994,6 +994,24 @@ async function switchProfile(pi: any, ctx: any, profile: string, signal?: AbortS
 // pre-claim guard, claim recovery, supersession, and publication. Pi keeps
 // the rate-limit recovery choreography and its watcher lifecycle, plus its
 // own tool-facing recovery phrasing.
+async function runSavedStart(pi: any, ctx: any, start: SavedStart, signal?: AbortSignal) {
+  const cwd = ctx.cwd || process.cwd();
+  let profileResult: any;
+  let aliasResult: any;
+  if (start.profile) profileResult = await switchProfile(pi, ctx, start.profile, signal);
+  if (start.alias) {
+    const cfg = configForLiveRuntime(resolveConfig(cwd));
+    aliasResult = await useSessionAlias(pi, ctx, cfg, start.alias, signal);
+  }
+  if (start.next) pi.sendUserMessage(start.next);
+  return {
+    name: start.name,
+    ...(start.profile ? { profile: start.profile, profileChanged: profileResult?.switched === true } : {}),
+    ...(start.alias ? { alias: start.alias, sessionAddress: aliasResult?.sessionAddress ?? aliasResult?.address } : {}),
+    nextQueued: Boolean(start.next),
+  };
+}
+
 async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal) {
   assertLifecycleActive();
   const live = agentClient(ctx, cfg);
@@ -1837,6 +1855,73 @@ export default function parleExtension(pi: any) {
   pi.on("session_shutdown", (_event: any, ctx: any) => {
     const cfg = resolveLifecycleConfig(ctx);
     return shutdownLifecycle(ctx, cfg);
+  });
+
+  pi.registerCommand("parle", {
+    description: "Run or manage a saved Parle start.",
+    handler: async (args: string, ctx: any) => {
+      lastCtx = ctx;
+      try {
+        const cwd = ctx.cwd || process.cwd();
+        const cfg = configForLiveRuntime(resolveConfig(cwd));
+        const path = savedStartCatalogPath(cfg.profilesPath.value);
+        const input = (args || "").trim();
+        const [action, ...rest] = input.split(/\s+/).filter(Boolean);
+        const name = rest.join(" ");
+
+        if (!action || action === "list") {
+          const starts = [...readSavedStarts(path).values()];
+          const text = starts.length
+            ? starts.map((start) => `${start.name}${start.profile ? `  profile=${start.profile}` : ""}${start.alias ? `  alias=${start.alias}` : ""}${start.next ? "  next=yes" : ""}`).join("\n")
+            : "No saved Parle starts. Use /parle save <name> to create one.";
+          ctx.ui.notify(text, "info");
+          return;
+        }
+
+        if (action === "show") {
+          if (!name) throw new Error("Usage: /parle show <name>");
+          const start = loadSavedStart(name, path);
+          ctx.ui.notify([`Saved start: ${start.name}`, `profile: ${start.profile || "current"}`, `alias: ${start.alias || "no action"}`, `next: ${start.next || "none"}`].join("\n"), "info");
+          return;
+        }
+
+        if (action === "save") {
+          if (!name) throw new Error("Usage: /parle save <name>");
+          if (!ctx.hasUI) throw new Error("/parle save requires an interactive host. Edit the saved-start catalog or use a host management tool instead.");
+          const profile = (await ctx.ui.input("Optional Parle profile", cfg.profile?.value || "leave blank to keep the current profile"))?.trim();
+          const alias = (await ctx.ui.input("Optional session alias", "leave blank for no alias action"))?.trim();
+          const next = (await ctx.ui.input("Optional next instruction", "for example: say hello!"))?.trim();
+          const saved = saveSavedStart({ name, ...(profile ? { profile } : {}), ...(alias ? { alias } : {}), ...(next ? { next } : {}) }, path);
+          ctx.ui.notify(`Saved Parle start ${saved.name}`, "info");
+          return;
+        }
+
+        if (action === "delete") {
+          if (!name) throw new Error("Usage: /parle delete <name>");
+          if (!ctx.hasUI) throw new Error("/parle delete requires an interactive host.");
+          const confirmed = await ctx.ui.confirm("Delete saved Parle start?", name);
+          if (!confirmed) {
+            ctx.ui.notify("Delete cancelled", "info");
+            return;
+          }
+          ctx.ui.notify(deleteSavedStart(name, path) ? `Deleted Parle saved start ${name}` : `Parle saved start ${name} was not found`, "info");
+          return;
+        }
+
+        const starts = readSavedStarts(path);
+        if (!starts.has(input) && /\s/.test(input)) {
+          pi.sendUserMessage(`Carry out this Parle start request using the installed Parle tools. Treat profile and alias as optional, run requested steps in order, stop at the first failure, and do not send a room message unless explicitly requested:\n\n${input}`);
+          ctx.ui.notify("Parle start request queued for normal Pi interpretation", "info");
+          return;
+        }
+        const start = loadSavedStart(input, path);
+        const result = await runSavedStart(pi, ctx, start);
+        ctx.ui.notify(`Parle saved start ${result.name} ready${result.nextQueued ? "; next instruction queued" : ""}`, "info");
+      } catch (error) {
+        if (!ctx.hasUI) throw error instanceof Error ? error : new Error(String(error));
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    },
   });
 
   pi.registerCommand("parle-watch", {

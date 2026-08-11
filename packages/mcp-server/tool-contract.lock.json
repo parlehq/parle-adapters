@@ -300,6 +300,25 @@
     "input": [],
     "required": []
   },
+  "parle_saved_start": {
+    "title": "Manage Parle Saved Starts",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "input": [
+      "action",
+      "alias",
+      "confirmMutation",
+      "name",
+      "next",
+      "profile"
+    ],
+    "required": [
+      "action"
+    ]
+  },
   "parle_send": {
     "title": "Parle Send",
     "annotations": {
@@ -315,6 +334,20 @@
     ],
     "required": [
       "body"
+    ]
+  },
+  "parle_session_alias": {
+    "title": "Use Parle Session Alias",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "alias"
+    ],
+    "required": [
+      "alias"
     ]
   },
   "parle_setup": {

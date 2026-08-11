@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.23 (2026-08-11)
+
+- Add a credential-free saved-start catalog with safe list, load, save, and delete primitives for optional profile, alias, and opaque next instructions (#107).
+
 ## 0.8.22 (2026-08-10)
 
 - Bound zero-wait responsive delivery drains so optional hook bridge startup cannot wait forever on a stalled request.

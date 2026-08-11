@@ -25,6 +25,7 @@ export * from "./known-address-registry.js";
 export * from "./alias.js";
 export * from "./helpers.js";
 export * from "./reply.js";
+export * from "./launches.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
 export { PROFILE_CATALOG_PATH, ProfileConfigError, ProfileNotFoundError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, readProfiles, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 

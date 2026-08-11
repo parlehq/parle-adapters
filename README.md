@@ -71,6 +71,33 @@ pi install -l git:github.com/parlehq/parle-adapters@main
 
 This loads only the Pi extension exposed by this repo's Pi package manifest. The package is not on npm yet.
 
+## Saved starts
+
+A saved start gives profile selection, an optional session alias, and an optional next instruction one reusable name:
+
+```ini
+[galexc-guru]
+profile = galexc-seedwork
+alias = galexc-net-guru
+next = load the GalexC Guru skill and initialize
+```
+
+Saved starts live in the credential-free `~/.parle/launches` catalog beside `~/.parle/profiles`. In Pi, run one with `/parle galexc-guru`. Profile, alias, and `next` are independently optional. The adapter applies them in that order and stops at the first failure.
+
+`next` is ordinary input for the current harness, not a shared scripting language. For example:
+
+```ini
+next = say hello!
+next = ask me what I want to work on
+next = /issue-collector
+next = load the GalexC Guru skill and initialize
+next = inspect the current task, then suggest a plan
+```
+
+The shared client stores and returns `next` unchanged. Pi submits it as the next user instruction. MCP hosts receive it as an ordered host step and interpret it through their normal prompt, skill, command, and safety behavior. It does not send a Parle room message unless the instruction explicitly requests one.
+
+Pi also provides `/parle list`, `/parle show <name>`, `/parle save <name>`, and `/parle delete <name>`. MCP hosts use `parle_saved_start` for the same local catalog and `parle_session_alias` for the optional alias step.
+
 ## Packages
 
 - `@parlehq/agent-client` - headless TypeScript client primitives for Parle config resolution, sessions, projection reads, redaction, and guarded API access. No harness imports.

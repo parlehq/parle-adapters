@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.24 (2026-08-11)
+
+- Add `parle_saved_start` local catalog management and `parle_session_alias` so MCP hosts can execute optional profile, alias, and opaque host-instruction steps without shared role parsing (#107).
+
 ## 0.7.23 (2026-08-10)
 
 - Export the shared native tool runtime for host adapters and keep `parle_setup` guidance byte-stable across configured and degraded states. Detailed profile diagnostics remain in the `parle_setup` and `parle_status` results.

@@ -17,6 +17,7 @@ Store adapter configuration and account state under one `~/.parle` directory.
 The current layout is:
 
 - profile catalog: `~/.parle/profiles`, defined by `PROFILE_CATALOG_PATH` in `packages/client/src/profiles.ts`
+- credential-free saved-start catalog: `~/.parle/launches`, resolved beside the selected profile catalog
 - human session record: `dirname(catalogPath)/session`, resolved in `packages/client/src/account.ts`
 - invitation handoffs: `dirname(catalogPath)/invites/`, resolved in `packages/client/src/account.ts`
 - account-hardening ceremony state: beside the resolved catalog through the same account state directory
@@ -24,7 +25,7 @@ The current layout is:
 
 `PARLE_PROFILES_PATH` selects a replacement catalog file. It does not layer another catalog over the default. Relative overrides resolve against the adapter working directory. Because account state follows `dirname(catalogPath)`, one override relocates the credential-bearing adapter state together.
 
-The default safety posture is 0700 directories, 0600 credential files, bounded reads, and atomic temporary-file replacement. The known-address registry uses the shared safe-file mechanics and is same-owner-readable convenience data, not a security boundary or routing authority. Symlink handling and ownership checks remain implementation details that must fail closed. Issue #37 owns the pending decision about refusing loose catalog permissions and remediating git exposure. Its outcome should update the consequences here without changing the one-root decision.
+The default safety posture is 0700 directories, 0600 credential and saved-start files, bounded reads, and atomic temporary-file replacement. Saved starts keep optional profile, alias, and opaque next-instruction references separate from room-bound credentials. Several starts can reuse one profile without copying its token. The known-address registry uses the shared safe-file mechanics and is same-owner-readable convenience data, not a security boundary or routing authority. Symlink handling and ownership checks remain implementation details that must fail closed. Issue #37 owns the pending decision about refusing loose catalog permissions and remediating git exposure. Its outcome should update the consequences here without changing the one-root decision.
 
 Per-process runtime snapshots currently live at `<cwd>/.parle/runtime/<pid>.json`. They are display-safe, expiring rendezvous files rather than credential state. Issue #34 owns whether they remain workspace-local or move to a user-scoped runtime root.
 

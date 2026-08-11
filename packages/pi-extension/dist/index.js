@@ -1,10 +1,10 @@
 // src/index.ts
-import { existsSync as existsSync7, lstatSync as lstatSync6, readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
-import { dirname as dirname6, join as join8 } from "node:path";
+import { existsSync as existsSync8, lstatSync as lstatSync7, readFileSync as readFileSync6, statSync as statSync3 } from "node:fs";
+import { dirname as dirname7, join as join9 } from "node:path";
 
 // ../client/dist/index.js
-import { readFileSync as readFileSync4, existsSync as existsSync6 } from "node:fs";
-import { join as join7 } from "node:path";
+import { readFileSync as readFileSync5, existsSync as existsSync7 } from "node:fs";
+import { join as join8 } from "node:path";
 import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
@@ -4242,6 +4242,170 @@ var ResponsiveDeliveryController = class {
   }
 };
 
+// ../client/dist/launches.js
+import { existsSync as existsSync6, lstatSync as lstatSync6, readFileSync as readFileSync4 } from "node:fs";
+import { dirname as dirname6, join as join7 } from "node:path";
+var SAVED_START_CATALOG_MAX_BYTES = 256 * 1024;
+var SAVED_START_NEXT_MAX_BYTES = 16 * 1024;
+var SAVED_START_CATALOG_PATH = join7(dirname6(PROFILE_CATALOG_PATH), "launches");
+var LABEL2 = "Parle saved-start catalog";
+var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+var ALLOWED_KEYS2 = /* @__PURE__ */ new Set(["profile", "alias", "next"]);
+var SavedStartConfigError = class extends Error {
+  code;
+  constructor(message, code = "saved_start_config_error") {
+    super(message);
+    this.name = "SavedStartConfigError";
+    this.code = code;
+  }
+};
+var SavedStartNotFoundError = class extends SavedStartConfigError {
+  selector;
+  availableSavedStarts;
+  constructor(selector, availableSavedStarts, path) {
+    const available = availableSavedStarts.join(", ") || "none";
+    super(`Parle saved start ${selector} was not found in ${path}. Available saved starts: ${available}`, "saved_start_not_found");
+    this.name = "SavedStartNotFoundError";
+    this.selector = selector;
+    this.availableSavedStarts = availableSavedStarts;
+  }
+};
+function savedStartCatalogPath(profileCatalogPath2 = PROFILE_CATALOG_PATH) {
+  return join7(dirname6(profileCatalogPath2), "launches");
+}
+function assertName(value, label) {
+  if (!NAME_RE.test(value)) {
+    throw new SavedStartConfigError(`${label} must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.`);
+  }
+}
+function assertValue(value, label) {
+  if (!value)
+    throw new SavedStartConfigError(`${label} must not be empty.`);
+  if (/\r|\n/.test(value))
+    throw new SavedStartConfigError(`${label} must fit on one line.`);
+}
+function validateSavedStart(start) {
+  assertName(start.name, "Parle saved-start name");
+  if (start.profile !== void 0) {
+    assertValue(start.profile, `Parle saved start ${start.name} profile`);
+    assertName(start.profile, `Parle saved start ${start.name} profile`);
+  }
+  if (start.alias !== void 0) {
+    assertValue(start.alias, `Parle saved start ${start.name} alias`);
+    if (start.alias.length < 2 || start.alias.length > 40 || !ALIAS_RE.test(start.alias)) {
+      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be 2 to 40 lowercase letters, digits, and single hyphens.`);
+    }
+  }
+  if (start.next !== void 0) {
+    assertValue(start.next, `Parle saved start ${start.name} next`);
+    if (Buffer.byteLength(start.next, "utf8") > SAVED_START_NEXT_MAX_BYTES) {
+      throw new SavedStartConfigError(`Parle saved start ${start.name} next exceeds ${SAVED_START_NEXT_MAX_BYTES} bytes.`);
+    }
+  }
+  return { name: start.name, ...start.profile ? { profile: start.profile } : {}, ...start.alias ? { alias: start.alias } : {}, ...start.next ? { next: start.next } : {} };
+}
+function parseSavedStarts(text, path = SAVED_START_CATALOG_PATH) {
+  const sections = /* @__PURE__ */ new Map();
+  let current;
+  for (const [index, raw] of text.split(/\r?\n/).entries()) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#") || line.startsWith(";"))
+      continue;
+    const section = line.match(/^\[([^\]\r\n]+)\]$/);
+    if (section) {
+      current = section[1];
+      assertName(current, `${path}:${index + 1}: saved-start name`);
+      if (sections.has(current))
+        throw new SavedStartConfigError(`${path}:${index + 1}: duplicate saved start ${current}`);
+      sections.set(current, {});
+      continue;
+    }
+    const equals = line.indexOf("=");
+    if (!current || equals <= 0)
+      throw new SavedStartConfigError(`${path}:${index + 1}: expected a saved-start section or key=value`);
+    const key = line.slice(0, equals).trim();
+    const value = line.slice(equals + 1).trim();
+    if (!ALLOWED_KEYS2.has(key))
+      throw new SavedStartConfigError(`${path}:${index + 1}: unknown saved-start key ${key}`);
+    if (!value)
+      throw new SavedStartConfigError(`${path}:${index + 1}: ${key} must not be empty`);
+    const fields = sections.get(current);
+    if (fields[key] !== void 0)
+      throw new SavedStartConfigError(`${path}:${index + 1}: duplicate ${key} in saved start ${current}`);
+    fields[key] = value;
+  }
+  const starts = /* @__PURE__ */ new Map();
+  for (const [name, fields] of sections) {
+    starts.set(name, validateSavedStart({ name, profile: fields.profile, alias: fields.alias, next: fields.next }));
+  }
+  return starts;
+}
+function serializeSavedStarts(starts) {
+  const normalized = [...starts].map(validateSavedStart).sort((left, right) => left.name.localeCompare(right.name));
+  return normalized.map((start) => [
+    `[${start.name}]`,
+    ...start.profile ? [`profile = ${start.profile}`] : [],
+    ...start.alias ? [`alias = ${start.alias}`] : [],
+    ...start.next ? [`next = ${start.next}`] : []
+  ].join("\n")).join("\n\n") + (normalized.length ? "\n" : "");
+}
+function savedStartCatalogExists(path) {
+  try {
+    lstatSync6(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR")
+      return false;
+    throw new SavedStartConfigError(`Parle saved-start catalog cannot be inspected: ${path}${error?.code ? ` (${error.code})` : ""}.`);
+  }
+}
+function readSavedStarts(path = SAVED_START_CATALOG_PATH) {
+  if (!savedStartCatalogExists(path))
+    return /* @__PURE__ */ new Map();
+  const text = readOwnerOnlyTextFile(path, { label: LABEL2, maxBytes: SAVED_START_CATALOG_MAX_BYTES });
+  return parseSavedStarts(text, path);
+}
+function loadSavedStart(name, path = SAVED_START_CATALOG_PATH) {
+  assertName(name, "Parle saved-start name");
+  const starts = readSavedStarts(path);
+  const start = starts.get(name);
+  if (start)
+    return start;
+  throw new SavedStartNotFoundError(name, [...starts.keys()], path);
+}
+function saveSavedStart(start, path = SAVED_START_CATALOG_PATH) {
+  const normalized = validateSavedStart(start);
+  ensureOwnerOnlyDirectory(dirname6(path), { label: `${LABEL2} directory` });
+  return withOwnerOnlyFileLock(path, { label: LABEL2, durability: "best-effort" }, () => {
+    const starts = readSavedStarts(path);
+    starts.set(normalized.name, normalized);
+    atomicReplaceOwnerOnlyFile(path, serializeSavedStarts(starts.values()), {
+      label: LABEL2,
+      maxBytes: SAVED_START_CATALOG_MAX_BYTES,
+      durability: "best-effort"
+    });
+    return normalized;
+  });
+}
+function deleteSavedStart(name, path = SAVED_START_CATALOG_PATH) {
+  assertName(name, "Parle saved-start name");
+  if (!savedStartCatalogExists(path))
+    return false;
+  ensureOwnerOnlyDirectory(dirname6(path), { label: `${LABEL2} directory`, create: false });
+  return withOwnerOnlyFileLock(path, { label: LABEL2, durability: "best-effort" }, () => {
+    const starts = readSavedStarts(path);
+    if (!starts.delete(name))
+      return false;
+    atomicReplaceOwnerOnlyFile(path, serializeSavedStarts(starts.values()), {
+      label: LABEL2,
+      maxBytes: SAVED_START_CATALOG_MAX_BYTES,
+      durability: "best-effort"
+    });
+    return true;
+  });
+}
+
 // ../client/dist/index.js
 var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
@@ -4388,9 +4552,9 @@ function parseKeyValueFile(text) {
   return out;
 }
 function readKeyValueFile(path) {
-  if (!existsSync6(path))
+  if (!existsSync7(path))
     return {};
-  return parseKeyValueFile(readFileSync4(path, "utf8"));
+  return parseKeyValueFile(readFileSync5(path, "utf8"));
 }
 function firstConfigValue(name, sources, fallback) {
   for (const source of sources) {
@@ -4419,7 +4583,7 @@ function versionConfig(env, dotEnv, warnings) {
   return { value: DEFAULT_VERSION, source: "default" };
 }
 function resolveConfig(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join7(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join8(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -4479,7 +4643,7 @@ function requestOrigin(value) {
   }
 }
 function resolveRoomSet(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join7(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join8(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -4814,7 +4978,7 @@ var ParleAgentClient = class _ParleAgentClient {
   constructor(options = {}) {
     this.env = options.env || process.env;
     this.cwd = options.cwd ?? process.cwd();
-    const dotEnv = readKeyValueFile(join7(this.cwd, ".env"));
+    const dotEnv = readKeyValueFile(join8(this.cwd, ".env"));
     this.registryCatalogPath = resolveProfileCatalogPath(this.env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, this.cwd, this.env);
     const roomSet = resolveRoomSet(this.cwd, this.env);
     this.roomConfigs = roomSet.rooms;
@@ -4895,7 +5059,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!current)
       return void 0;
     try {
-      const onDisk = readKeyValueFile(join7(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
+      const onDisk = readKeyValueFile(join8(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
       if (onDisk === void 0 || onDisk === "")
         return void 0;
       if (onDisk === current)
@@ -6372,7 +6536,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.27";
+var PI_EXTENSION_VERSION = "0.7.28";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -6583,8 +6747,8 @@ function automaticGateClosed(cfg) {
   return Boolean(runtime.nextRetryAt && Date.parse(runtime.nextRetryAt) > wallNowMs());
 }
 function readKeyValueFile2(path) {
-  if (!existsSync7(path)) return {};
-  return parseKeyValueFile(readFileSync5(path, "utf8"));
+  if (!existsSync8(path)) return {};
+  return parseKeyValueFile(readFileSync6(path, "utf8"));
 }
 function firstConfigValue2(candidates) {
   return candidates.find((candidate) => candidate && candidate.value !== "");
@@ -6594,7 +6758,7 @@ function makeValue(value, source, key, secret = false, warning) {
   return { value, source, key, secret, warning };
 }
 function resolveConfig2(cwd, profileOverride = activeProfileOverride) {
-  const projectEnv = readKeyValueFile2(join8(cwd, ".env"));
+  const projectEnv = readKeyValueFile2(join9(cwd, ".env"));
   const sourceCandidates = (key, secret = false) => [
     makeValue(process.env[key], "env", key, secret),
     makeValue(projectEnv[key], "project_env", key, secret, secret ? "secret comes from project .env" : void 0)
@@ -6765,16 +6929,16 @@ function mutationScope(method, pathOrUrl) {
   }
 }
 function sessionCookieFilePath2(catalogPath) {
-  return join8(dirname6(catalogPath), "session");
+  return join9(dirname7(catalogPath), "session");
 }
 function readSessionCookieFile(path) {
   try {
-    if (!existsSync7(path)) return void 0;
-    const link = lstatSync6(path);
+    if (!existsSync8(path)) return void 0;
+    const link = lstatSync7(path);
     const stat = link.isSymbolicLink() ? statSync3(path) : link;
     if (!stat.isFile()) return void 0;
     if (process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 63) !== 0)) return void 0;
-    const value = readFileSync5(path, "utf8").trim();
+    const value = readFileSync6(path, "utf8").trim();
     return value || void 0;
   } catch {
     return void 0;
@@ -7022,6 +7186,23 @@ async function switchProfile(pi, ctx, profile, signal) {
     cursor: view.cursor,
     ephemeral: true,
     next: result.switched ? "This profile selection lasts for the current Pi process only. Use parle_switch_profile to move again; a cold restart returns to configured PARLE_PROFILE/default selection." : "The requested profile already owns the active room binding."
+  };
+}
+async function runSavedStart(pi, ctx, start, signal) {
+  const cwd = ctx.cwd || process.cwd();
+  let profileResult;
+  let aliasResult;
+  if (start.profile) profileResult = await switchProfile(pi, ctx, start.profile, signal);
+  if (start.alias) {
+    const cfg = configForLiveRuntime(resolveConfig2(cwd));
+    aliasResult = await useSessionAlias(pi, ctx, cfg, start.alias, signal);
+  }
+  if (start.next) pi.sendUserMessage(start.next);
+  return {
+    name: start.name,
+    ...start.profile ? { profile: start.profile, profileChanged: profileResult?.switched === true } : {},
+    ...start.alias ? { alias: start.alias, sessionAddress: aliasResult?.sessionAddress ?? aliasResult?.address } : {},
+    nextQueued: Boolean(start.next)
   };
 }
 async function useSessionAlias(pi, ctx, cfg, alias, signal) {
@@ -7779,6 +7960,67 @@ function parleExtension(pi) {
   pi.on("session_shutdown", (_event, ctx) => {
     const cfg = resolveLifecycleConfig(ctx);
     return shutdownLifecycle(ctx, cfg);
+  });
+  pi.registerCommand("parle", {
+    description: "Run or manage a saved Parle start.",
+    handler: async (args, ctx) => {
+      lastCtx = ctx;
+      try {
+        const cwd = ctx.cwd || process.cwd();
+        const cfg = configForLiveRuntime(resolveConfig2(cwd));
+        const path = savedStartCatalogPath(cfg.profilesPath.value);
+        const input = (args || "").trim();
+        const [action, ...rest] = input.split(/\s+/).filter(Boolean);
+        const name = rest.join(" ");
+        if (!action || action === "list") {
+          const starts2 = [...readSavedStarts(path).values()];
+          const text = starts2.length ? starts2.map((start2) => `${start2.name}${start2.profile ? `  profile=${start2.profile}` : ""}${start2.alias ? `  alias=${start2.alias}` : ""}${start2.next ? "  next=yes" : ""}`).join("\n") : "No saved Parle starts. Use /parle save <name> to create one.";
+          ctx.ui.notify(text, "info");
+          return;
+        }
+        if (action === "show") {
+          if (!name) throw new Error("Usage: /parle show <name>");
+          const start2 = loadSavedStart(name, path);
+          ctx.ui.notify([`Saved start: ${start2.name}`, `profile: ${start2.profile || "current"}`, `alias: ${start2.alias || "no action"}`, `next: ${start2.next || "none"}`].join("\n"), "info");
+          return;
+        }
+        if (action === "save") {
+          if (!name) throw new Error("Usage: /parle save <name>");
+          if (!ctx.hasUI) throw new Error("/parle save requires an interactive host. Edit the saved-start catalog or use a host management tool instead.");
+          const profile = (await ctx.ui.input("Optional Parle profile", cfg.profile?.value || "leave blank to keep the current profile"))?.trim();
+          const alias = (await ctx.ui.input("Optional session alias", "leave blank for no alias action"))?.trim();
+          const next = (await ctx.ui.input("Optional next instruction", "for example: say hello!"))?.trim();
+          const saved = saveSavedStart({ name, ...profile ? { profile } : {}, ...alias ? { alias } : {}, ...next ? { next } : {} }, path);
+          ctx.ui.notify(`Saved Parle start ${saved.name}`, "info");
+          return;
+        }
+        if (action === "delete") {
+          if (!name) throw new Error("Usage: /parle delete <name>");
+          if (!ctx.hasUI) throw new Error("/parle delete requires an interactive host.");
+          const confirmed = await ctx.ui.confirm("Delete saved Parle start?", name);
+          if (!confirmed) {
+            ctx.ui.notify("Delete cancelled", "info");
+            return;
+          }
+          ctx.ui.notify(deleteSavedStart(name, path) ? `Deleted Parle saved start ${name}` : `Parle saved start ${name} was not found`, "info");
+          return;
+        }
+        const starts = readSavedStarts(path);
+        if (!starts.has(input) && /\s/.test(input)) {
+          pi.sendUserMessage(`Carry out this Parle start request using the installed Parle tools. Treat profile and alias as optional, run requested steps in order, stop at the first failure, and do not send a room message unless explicitly requested:
+
+${input}`);
+          ctx.ui.notify("Parle start request queued for normal Pi interpretation", "info");
+          return;
+        }
+        const start = loadSavedStart(input, path);
+        const result = await runSavedStart(pi, ctx, start);
+        ctx.ui.notify(`Parle saved start ${result.name} ready${result.nextQueued ? "; next instruction queued" : ""}`, "info");
+      } catch (error) {
+        if (!ctx.hasUI) throw error instanceof Error ? error : new Error(String(error));
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    }
   });
   pi.registerCommand("parle-watch", {
     description: "Control the Parle responsive delivery watcher: status, start, or stop.",

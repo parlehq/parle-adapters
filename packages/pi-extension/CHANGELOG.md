@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.28 (2026-08-11)
+
+- Add `/parle` saved starts with ordered optional profile, alias, and opaque next-instruction handling plus local list, show, save, and delete management (#107).
+
 ## 0.7.27 (2026-08-10)
 
 - Refresh the native shared-client bundle with bounded responsive delivery drains.

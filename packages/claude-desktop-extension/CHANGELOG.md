@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.24 (2026-08-11)
+
+- Refresh the bundled MCP runtime with local saved-start management and live session aliases (#107).
+
 ## 0.8.23 (2026-08-10)
 
 - Refresh the bundled MCP runtime with the shared native tool registry and stable setup guidance.

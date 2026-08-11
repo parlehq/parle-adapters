@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, ResponsiveDeliveryRecorder, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -17,6 +17,7 @@ export type ParleMcpClientLike = {
   getOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
   disableOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
   switchProfile?(profile: string, signal?: AbortSignal): Promise<unknown>;
+  switchSessionAlias?(alias: string, signal?: AbortSignal): Promise<unknown>;
   // Optional lifecycle surface (present on ParleAgentClient); guarded so
   // minimal fake clients keep working.
   ensureReadySafe?(signal?: AbortSignal): Promise<boolean>;
@@ -92,6 +93,19 @@ const statusSchema = {
 const switchProfileSchema = {
   profile: z.string(),
   watcherStopped: z.boolean(),
+};
+
+const sessionAliasSchema = {
+  alias: z.string(),
+};
+
+const savedStartSchema = {
+  action: z.enum(["list", "show", "save", "delete"]),
+  name: z.string().optional(),
+  profile: z.string().optional(),
+  alias: z.string().optional(),
+  next: z.string().optional(),
+  confirmMutation: z.boolean().optional(),
 };
 
 export type ParleAccountClientLike = {
@@ -270,6 +284,56 @@ export function registerParleTools(
       };
     }
     return summary;
+  }));
+
+  registerTool("parle_saved_start", {
+    title: "Manage Parle Saved Starts",
+    description: "List, show, save, or delete credential-free saved starts from the local catalog beside ~/.parle/profiles. A saved start has independently optional profile, alias, and next fields. Show returns an ordered host plan; the shared client never interprets next. Save and delete require confirmMutation=true.",
+    inputSchema: savedStartSchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
+    const path = resolveSavedStartCatalogPath(process.cwd(), process.env);
+    if (params.action === "list") {
+      return { savedStarts: [...readSavedStarts(path).values()] };
+    }
+    if (!params.name) throw new Error(`parle_saved_start action ${params.action} requires name.`);
+    if (params.action === "show") {
+      const savedStart = loadSavedStart(params.name, path);
+      return {
+        savedStart,
+        steps: [
+          ...(savedStart.profile ? [{ action: "switch_profile", profile: savedStart.profile }] : []),
+          ...(savedStart.alias ? [{ action: "claim_alias", alias: savedStart.alias }] : []),
+          ...(savedStart.next ? [{ action: "host_instruction", next: savedStart.next }] : []),
+        ],
+        next: "Run the returned steps in order. Stop at the first failure. Pass host_instruction.next through the host's normal instruction path without parsing it in shared code.",
+      };
+    }
+    if (params.confirmMutation !== true) throw new Error(`parle_saved_start action ${params.action} requires confirmMutation=true.`);
+    if (params.action === "save") {
+      const savedStart = saveSavedStart({
+        name: params.name,
+        ...(params.profile ? { profile: params.profile } : {}),
+        ...(params.alias ? { alias: params.alias } : {}),
+        ...(params.next ? { next: params.next } : {}),
+      }, path);
+      return { saved: true, savedStart };
+    }
+    return { deleted: deleteSavedStart(params.name, path), name: params.name };
+  }));
+
+  registerTool("parle_session_alias", {
+    title: "Use Parle Session Alias",
+    description: "Move this live host session to a durable Parle session alias without changing persistent profile or saved-start configuration.",
+    inputSchema: sessionAliasSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
+    if (typeof client.switchSessionAlias !== "function") throw new Error("This Parle client does not support live session aliases.");
+    const result = await client.switchSessionAlias(params.alias);
+    if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
+    return result;
   }));
 
   registerTool("parle_switch_profile", {

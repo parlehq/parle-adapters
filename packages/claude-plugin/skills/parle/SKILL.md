@@ -87,6 +87,22 @@ The human session cookie always comes from safe local configuration. It is never
 - The process cursor resets when the MCP process restarts.
 - `waitSeconds` is a bounded one-shot wait for an explicit tool call. Never loop on `waitSeconds` as a watcher. Continuous responsive delivery uses `/v/agent/wake` SSE and `responsive-delivery?wait=0`, which is not a Claude MCP v1 background loop.
 
+## Saved starts
+
+When the user invokes `/parle <name>` or asks to run a saved Parle start:
+
+1. Call `parle_saved_start` with action `show` and the exact name.
+2. Run the returned steps in order and stop at the first failure.
+3. For `switch_profile`, use the guarded live profile-switching flow below, including watcher stop and re-arm.
+4. For `claim_alias`, call `parle_session_alias` with the exact alias.
+5. For `host_instruction`, treat `next` as the user's next instruction through Claude Code's normal prompt, skill, command, tool, and safety behavior. Do not parse it as a shared Parle language.
+
+Profile, alias, and `next` are independently optional. Missing profile keeps the current binding. Missing alias performs no alias action. Missing `next` stops after Parle setup. Starting a saved start sends no Parle room message unless `next` explicitly requests one.
+
+Use `parle_saved_start` actions `list`, `show`, `save`, and `delete` to manage the credential-free catalog beside the profile catalog. Save and delete require `confirmMutation: true`. Never copy profile tokens into a saved start.
+
+Examples of valid `next` values include `say hello!`, `ask me what I want to work on`, `/issue-collector`, `load the GalexC Guru skill and initialize`, and `inspect the current task, then suggest a plan`.
+
 ## Live profile switching
 
 `parle_switch_profile` changes the room binding held by the MCP process without editing `.env` or the profile catalog. Claude Code's watcher is a sibling Bash task, so the skill owns a guarded stop, switch, and re-arm sequence:

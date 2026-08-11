@@ -26,7 +26,7 @@ function installHarness(cwd) {
   };
   mod.default(pi);
   const statuses = [];
-  const ctx = { cwd, ui: { setStatus(id, label) { statuses.push({ id, label }); }, notify() {} } };
+  const ctx = { cwd, hasUI: true, ui: { setStatus(id, label) { statuses.push({ id, label }); }, notify() {} } };
   __testing.bindContext(ctx);
   return {
     tools,
@@ -139,6 +139,52 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   const defaultStatus = await installHarness(cwd).call("parle_status");
   assert.equal(defaultStatus.details.profile.value, "default");
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
+});
+
+test("/parle sends an opaque next instruction through Pi without posting to Parle", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(catalogDir, "launches"), "[hello]\nnext = say hello!\n", { mode: 0o600 });
+  globalThis.fetch = async () => { throw new Error("a next-only saved start must not use the network"); };
+  const harness = installHarness(cwd);
+
+  await harness.commands.parle.handler("hello", harness.ctx);
+
+  assert.deepEqual(harness.injected, ["say hello!"]);
+});
+
+test("/parle passes unmatched free-form requests to normal Pi interpretation", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  globalThis.fetch = async () => { throw new Error("free-form interpretation must not use the network before the model acts"); };
+  const harness = installHarness(cwd);
+
+  await harness.commands.parle.handler("Join #room as @principal.agent and ask what to do next", harness.ctx);
+
+  assert.equal(harness.injected.length, 1);
+  assert.match(harness.injected[0], /Join #room as @principal\.agent and ask what to do next/);
+  assert.match(harness.injected[0], /do not send a room message unless explicitly requested/);
+});
+
+test("/parle surfaces saved-start errors when UI notifications are unavailable", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const harness = installHarness(cwd);
+  harness.ctx.hasUI = false;
+
+  await assert.rejects(harness.commands.parle.handler("missing", harness.ctx), /saved start missing was not found/);
+});
+
+test("/parle stops before next when an earlier saved-start step fails", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(catalogDir, "launches"), "[broken]\nprofile = missing\nnext = this must not run\n", { mode: 0o600 });
+  globalThis.fetch = async () => { throw new Error("profile resolution should fail before network access"); };
+  const harness = installHarness(cwd);
+
+  await harness.commands.parle.handler("broken", harness.ctx);
+
+  assert.deepEqual(harness.injected, []);
 });
 
 test("profile access denial does not reject Pi lifecycle startup or shutdown cleanup", { skip: process.platform === "win32" || process.getuid?.() === 0 }, async () => {
@@ -750,7 +796,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.27" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.28" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1164,6 +1210,12 @@ test("failed parle_session_alias preserves the active session and watcher", asyn
   assert.equal(after.sessionAddress, before.sessionAddress);
   assert.equal(after.bootstrapped, true);
   assert.equal(after.watcherState, "watching");
+
+  const catalogDir = join(process.env.HOME, ".parle");
+  mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(catalogDir, "launches"), "[reserved]\nalias = reserved-alias\nnext = this must not run\n", { mode: 0o600 });
+  await harness.commands.parle.handler("reserved", harness.ctx);
+  assert.deepEqual(harness.injected, [], "alias failure stops the saved start before next");
   __testing.resetRuntime();
 });
 
@@ -1424,7 +1476,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.27");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.28");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

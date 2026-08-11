@@ -30,7 +30,9 @@ const expectedTools = [
   "parle_read",
   "parle_reply",
   "parle_rooms",
+  "parle_saved_start",
   "parle_send",
+  "parle_session_alias",
   "parle_setup",
   "parle_status",
   "parle_switch_profile",
@@ -519,6 +521,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
     submitReply: async (params) => { calls.push(["reply", params]); return { event_id: "evt-reply", idempotencyKey: params.idempotencyKey, interaction: { interaction_id: "interaction-1", reply_hop: 3 } }; },
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", participantId: "participant-target", roomHandle: "target-room" }; },
+    switchSessionAlias: async (alias) => { calls.push(["session-alias", alias]); return { alias, sessionAddress: `@p.a.${alias}` }; },
   };
   const fakeAccount = {
     listRooms: async (active) => { calls.push(["rooms", active]); return { active, configured: { state: "complete", rows: [] }, account: { state: "complete", rows: [] }, rooms: [], compactText: "Account rooms" }; },
@@ -567,6 +570,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(switched.structuredContent.roomHandle, "target-room");
     assert.equal(switched.structuredContent.watcher.participantId, "participant-target");
     assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target", "participant-target"]);
+    const aliased = await client.callTool({ name: "parle_session_alias", arguments: { alias: "galexc-guru" } });
+    assert.equal(aliased.structuredContent.sessionAddress, "@p.a.galexc-guru");
     const login = await client.callTool({ name: "parle_login", arguments: { action: "start", email: "user@example.test" } });
     assert.equal(login.structuredContent.status, "code_requested");
     const room = await client.callTool({ name: "parle_create_room", arguments: { kind: "shared", confirmMutation: true, reason: "create" } });
@@ -586,6 +591,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
       ["reply", { body: "reply", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", idempotencyKey: "idem-reply" }],
       ["switch", "target"],
+      ["session-alias", "galexc-guru"],
       ["login", { action: "start", email: "user@example.test" }],
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
       ["add-own-agent-seat", { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" }],
@@ -596,6 +602,60 @@ test("in-memory server maps read, send, and errors through fake client", async (
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("MCP saved starts keep next opaque and require confirmation for local mutations", async () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-mcp-launches-"));
+  const parleDir = join(root, ".parle");
+  mkdirSync(parleDir, { mode: 0o700 });
+  const priorPath = process.env.PARLE_PROFILES_PATH;
+  process.env.PARLE_PROFILES_PATH = join(parleDir, "profiles");
+  const fakeClient = {
+    status: () => ({ ok: true }),
+    setup: () => ({ ok: true }),
+    connect: async () => ({ ok: true }),
+    guidance: async () => ({ ok: true }),
+    readProjection: async () => ({ messages: [] }),
+    readInbox: async () => ({ messages: [] }),
+    affordances: async () => ({ affordances: [] }),
+    send: async () => ({ ok: true }),
+    submitReply: async () => ({ ok: true }),
+  };
+  const server = createParleMcpServer(fakeClient);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-saved-start", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const refused = await client.callTool({ name: "parle_saved_start", arguments: { action: "save", name: "galexc-guru", next: "say hello!" } });
+    assert.equal(refused.isError, true);
+    assert.match(refused.structuredContent.error, /confirmMutation=true/);
+
+    const saved = await client.callTool({ name: "parle_saved_start", arguments: {
+      action: "save",
+      name: "galexc-guru",
+      profile: "galexc-seedwork",
+      alias: "galexc-net-guru",
+      next: "say hello!",
+      confirmMutation: true,
+    } });
+    assert.equal(saved.structuredContent.saved, true);
+    const shown = await client.callTool({ name: "parle_saved_start", arguments: { action: "show", name: "galexc-guru" } });
+    assert.deepEqual(shown.structuredContent.steps, [
+      { action: "switch_profile", profile: "galexc-seedwork" },
+      { action: "claim_alias", alias: "galexc-net-guru" },
+      { action: "host_instruction", next: "say hello!" },
+    ]);
+    const listed = await client.callTool({ name: "parle_saved_start", arguments: { action: "list" } });
+    assert.deepEqual(listed.structuredContent.savedStarts, [{ name: "galexc-guru", profile: "galexc-seedwork", alias: "galexc-net-guru", next: "say hello!" }]);
+    const deleted = await client.callTool({ name: "parle_saved_start", arguments: { action: "delete", name: "galexc-guru", confirmMutation: true } });
+    assert.equal(deleted.structuredContent.deleted, true);
+  } finally {
+    await client.close();
+    await server.close();
+    if (priorPath === undefined) delete process.env.PARLE_PROFILES_PATH;
+    else process.env.PARLE_PROFILES_PATH = priorPath;
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -842,7 +902,7 @@ test("parle_status works against minimal fake clients without lifecycle methods"
   }
 });
 
-test("stdio server lists the twenty-two tools and setup works without secrets", async () => {
+test("stdio server lists the full tool contract and setup works without secrets", async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
