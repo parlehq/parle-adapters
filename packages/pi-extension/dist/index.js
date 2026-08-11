@@ -6538,7 +6538,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.29";
+var PI_EXTENSION_VERSION = "0.7.30";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -7976,7 +7976,40 @@ function parleExtension(pi) {
         const name = rest.join(" ");
         if (!action || action === "list") {
           const starts2 = [...readSavedStarts(path).values()];
-          const text = starts2.length ? starts2.map((start2) => `${start2.name}${start2.profile ? `  profile=${start2.profile}` : ""}${start2.alias ? `  alias=${start2.alias}` : ""}${start2.next ? "  next=yes" : ""}`).join("\n") : "No saved Parle starts. Use /parle save <name> to create one.";
+          const text = starts2.length ? [
+            "Saved Parle starts:",
+            "",
+            "These reusable shortcuts connect you to a Parle room and can begin a role or instruction.",
+            "",
+            ...starts2.map((start2) => `- ${start2.name}`),
+            "",
+            "Start one:",
+            "  /parle <name>",
+            "",
+            `Example:
+  /parle ${starts2[0].name}`,
+            "",
+            "See details:",
+            "  /parle show <name>",
+            "",
+            "Create another:",
+            "  /parle save <name>",
+            "",
+            "Remove one:",
+            "  /parle delete <name>"
+          ].join("\n") : [
+            "No saved Parle starts yet.",
+            "",
+            "Saved starts are reusable shortcuts that connect you to a Parle room and can begin a role or instruction.",
+            "",
+            "Create your first:",
+            "  /parle save <name>",
+            "",
+            "Example:",
+            "  /parle save issue-collector",
+            "",
+            "Pi will guide you through the rest."
+          ].join("\n");
           ctx.ui.notify(text, "info");
           return;
         }

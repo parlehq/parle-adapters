@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.29";
+const PI_EXTENSION_VERSION = "0.7.30";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1872,8 +1872,40 @@ export default function parleExtension(pi: any) {
         if (!action || action === "list") {
           const starts = [...readSavedStarts(path).values()];
           const text = starts.length
-            ? starts.map((start) => `${start.name}${start.profile ? `  profile=${start.profile}` : ""}${start.alias ? `  alias=${start.alias}` : ""}${start.next ? "  next=yes" : ""}`).join("\n")
-            : "No saved Parle starts. Use /parle save <name> to create one.";
+            ? [
+                "Saved Parle starts:",
+                "",
+                "These reusable shortcuts connect you to a Parle room and can begin a role or instruction.",
+                "",
+                ...starts.map((start) => `- ${start.name}`),
+                "",
+                "Start one:",
+                "  /parle <name>",
+                "",
+                `Example:\n  /parle ${starts[0].name}`,
+                "",
+                "See details:",
+                "  /parle show <name>",
+                "",
+                "Create another:",
+                "  /parle save <name>",
+                "",
+                "Remove one:",
+                "  /parle delete <name>",
+              ].join("\n")
+            : [
+                "No saved Parle starts yet.",
+                "",
+                "Saved starts are reusable shortcuts that connect you to a Parle room and can begin a role or instruction.",
+                "",
+                "Create your first:",
+                "  /parle save <name>",
+                "",
+                "Example:",
+                "  /parle save issue-collector",
+                "",
+                "Pi will guide you through the rest.",
+              ].join("\n");
           ctx.ui.notify(text, "info");
           return;
         }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.30 (2026-08-11)
+
+- Make bare `/parle` output task-oriented, with clear commands to run, inspect, create, and remove saved starts.
+
 ## 0.7.29 (2026-08-11)
 
 - Show missing saved starts one per line and tell users how to create the first one.

@@ -141,6 +141,71 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
 });
 
+test("/parle lists saved starts with clear next steps", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(catalogDir, "launches"), "[galexc-net-guru]\nprofile = galexc-dev\nalias = galexc-net-guru\nnext = share expertise\n\n[issue-collector]\nprofile = galexc-intercom\nalias = issue-collector\nnext = /issue-collector\n", { mode: 0o600 });
+  const harness = installHarness(cwd);
+  const notifications = [];
+  harness.ctx.ui.notify = (message, type) => notifications.push({ message, type });
+
+  await harness.commands.parle.handler("", harness.ctx);
+
+  assert.deepEqual(notifications, [{
+    type: "info",
+    message: [
+      "Saved Parle starts:",
+      "",
+      "These reusable shortcuts connect you to a Parle room and can begin a role or instruction.",
+      "",
+      "- galexc-net-guru",
+      "- issue-collector",
+      "",
+      "Start one:",
+      "  /parle <name>",
+      "",
+      "Example:",
+      "  /parle galexc-net-guru",
+      "",
+      "See details:",
+      "  /parle show <name>",
+      "",
+      "Create another:",
+      "  /parle save <name>",
+      "",
+      "Remove one:",
+      "  /parle delete <name>",
+    ].join("\n"),
+  }]);
+});
+
+test("/parle explains how to create the first saved start", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const harness = installHarness(cwd);
+  const notifications = [];
+  harness.ctx.ui.notify = (message, type) => notifications.push({ message, type });
+
+  await harness.commands.parle.handler("list", harness.ctx);
+
+  assert.deepEqual(notifications, [{
+    type: "info",
+    message: [
+      "No saved Parle starts yet.",
+      "",
+      "Saved starts are reusable shortcuts that connect you to a Parle room and can begin a role or instruction.",
+      "",
+      "Create your first:",
+      "  /parle save <name>",
+      "",
+      "Example:",
+      "  /parle save issue-collector",
+      "",
+      "Pi will guide you through the rest.",
+    ].join("\n"),
+  }]);
+});
+
 test("/parle sends an opaque next instruction through Pi without posting to Parle", async () => {
   const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
   const catalogDir = join(process.env.HOME, ".parle");
@@ -796,7 +861,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.29" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.30" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1476,7 +1541,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.29");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.30");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
