@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.29 (2026-08-11)
+
+- Show missing saved starts one per line and tell users how to create the first one.
+
 ## 0.7.28 (2026-08-11)
 
 - Add `/parle` saved starts with ordered optional profile, alias, and opaque next-instruction handling plus local list, show, save, and delete management (#107).

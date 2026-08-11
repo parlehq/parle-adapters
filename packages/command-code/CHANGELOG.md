@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4 (2026-08-11)
+
+- Surface clearer saved-start not-found guidance from the shared client.
+
 ## 0.7.3 (2026-08-11)
 
 - Register saved-start and session-alias tools through the native mod and guide ordered opaque next-instruction handling (#107).

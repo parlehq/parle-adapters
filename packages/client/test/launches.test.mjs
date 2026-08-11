@@ -79,10 +79,20 @@ test("saved starts reject unknown fields, invalid aliases, duplicate names, and 
 test("save, load, list, replace, and delete use one owner-only catalog", () => {
   const { root, path } = fixture();
   try {
+    assert.throws(
+      () => loadSavedStart("missing", path),
+      (error) => error instanceof SavedStartNotFoundError && error.message === `Parle saved start missing was not found in ${path}.\nNo saved starts are configured. Create one with /parle save <name>.`,
+    );
+
     saveSavedStart({ name: "galexc-guru", profile: "galexc-seedwork", alias: "galexc-net-guru", next: "/galexc-guru" }, path);
     saveSavedStart({ name: "issue-collector", profile: "galexc-seedwork", alias: "issue-collector", next: "/issue-collector" }, path);
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.deepEqual([...readSavedStarts(path).keys()], ["galexc-guru", "issue-collector"]);
+    assert.throws(
+      () => loadSavedStart("missing", path),
+      (error) => error instanceof SavedStartNotFoundError
+        && error.message === `Parle saved start missing was not found in ${path}.\nAvailable saved starts:\n- galexc-guru\n- issue-collector`,
+    );
     assert.equal(loadSavedStart("galexc-guru", path).next, "/galexc-guru");
 
     saveSavedStart({ name: "galexc-guru", profile: "galexc-seedwork", next: "say hello!" }, path);
@@ -92,7 +102,12 @@ test("save, load, list, replace, and delete use one owner-only catalog", () => {
     assert.equal(deleteSavedStart("galexc-guru", path), true);
     assert.equal(deleteSavedStart("galexc-guru", path), false);
     assert.deepEqual([...readSavedStarts(path).keys()], ["issue-collector"]);
-    assert.throws(() => loadSavedStart("missing", path), (error) => error instanceof SavedStartNotFoundError && error.availableSavedStarts.join(",") === "issue-collector");
+    assert.throws(
+      () => loadSavedStart("missing", path),
+      (error) => error instanceof SavedStartNotFoundError
+        && error.availableSavedStarts.join(",") === "issue-collector"
+        && error.message === `Parle saved start missing was not found in ${path}.\nAvailable saved starts:\n- issue-collector`,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

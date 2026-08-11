@@ -4633,8 +4633,10 @@ var SavedStartNotFoundError = class extends SavedStartConfigError {
   selector;
   availableSavedStarts;
   constructor(selector, availableSavedStarts, path) {
-    const available = availableSavedStarts.join(", ") || "none";
-    super(`Parle saved start ${selector} was not found in ${path}. Available saved starts: ${available}`, "saved_start_not_found");
+    const guidance = availableSavedStarts.length ? `Available saved starts:
+${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured. Create one with /parle save <name>.";
+    super(`Parle saved start ${selector} was not found in ${path}.
+${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
     this.selector = selector;
     this.availableSavedStarts = availableSavedStarts;
@@ -21994,7 +21996,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.3";
+var ADAPTER_VERSION = "0.7.4";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

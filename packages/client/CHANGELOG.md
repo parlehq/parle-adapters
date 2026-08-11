@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.24 (2026-08-11)
+
+- Render missing saved starts as a readable list and give empty catalogs a direct creation prompt.
+
 ## 0.8.23 (2026-08-11)
 
 - Add a credential-free saved-start catalog with safe list, load, save, and delete primitives for optional profile, alias, and opaque next instructions (#107).

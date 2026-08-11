@@ -4264,8 +4264,10 @@ var SavedStartNotFoundError = class extends SavedStartConfigError {
   selector;
   availableSavedStarts;
   constructor(selector, availableSavedStarts, path) {
-    const available = availableSavedStarts.join(", ") || "none";
-    super(`Parle saved start ${selector} was not found in ${path}. Available saved starts: ${available}`, "saved_start_not_found");
+    const guidance = availableSavedStarts.length ? `Available saved starts:
+${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured. Create one with /parle save <name>.";
+    super(`Parle saved start ${selector} was not found in ${path}.
+${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
     this.selector = selector;
     this.availableSavedStarts = availableSavedStarts;
@@ -6536,7 +6538,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.28";
+var PI_EXTENSION_VERSION = "0.7.29";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

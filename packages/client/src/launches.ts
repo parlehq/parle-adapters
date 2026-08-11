@@ -34,8 +34,10 @@ export class SavedStartNotFoundError extends SavedStartConfigError {
   readonly availableSavedStarts: string[];
 
   constructor(selector: string, availableSavedStarts: string[], path: string) {
-    const available = availableSavedStarts.join(", ") || "none";
-    super(`Parle saved start ${selector} was not found in ${path}. Available saved starts: ${available}`, "saved_start_not_found");
+    const guidance = availableSavedStarts.length
+      ? `Available saved starts:\n${availableSavedStarts.map((name) => `- ${name}`).join("\n")}`
+      : "No saved starts are configured. Create one with /parle save <name>.";
+    super(`Parle saved start ${selector} was not found in ${path}.\n${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
     this.selector = selector;
     this.availableSavedStarts = availableSavedStarts;

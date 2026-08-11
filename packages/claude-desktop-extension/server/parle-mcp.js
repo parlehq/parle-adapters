@@ -35626,8 +35626,10 @@ var SavedStartNotFoundError = class extends SavedStartConfigError {
   selector;
   availableSavedStarts;
   constructor(selector, availableSavedStarts, path) {
-    const available = availableSavedStarts.join(", ") || "none";
-    super(`Parle saved start ${selector} was not found in ${path}. Available saved starts: ${available}`, "saved_start_not_found");
+    const guidance = availableSavedStarts.length ? `Available saved starts:
+${availableSavedStarts.map((name) => `- ${name}`).join("\n")}` : "No saved starts are configured. Create one with /parle save <name>.";
+    super(`Parle saved start ${selector} was not found in ${path}.
+${guidance}`, "saved_start_not_found");
     this.name = "SavedStartNotFoundError";
     this.selector = selector;
     this.availableSavedStarts = availableSavedStarts;
@@ -38825,7 +38827,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.24";
+var MCP_CLIENT_VERSION = "0.7.25";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.25 (2026-08-11)
+
+- Surface clearer saved-start not-found guidance from the shared client.
+
 ## 0.7.24 (2026-08-11)
 
 - Add `parle_saved_start` local catalog management and `parle_session_alias` so MCP hosts can execute optional profile, alias, and opaque host-instruction steps without shared role parsing (#107).

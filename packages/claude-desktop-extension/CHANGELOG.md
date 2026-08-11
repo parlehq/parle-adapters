@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.25 (2026-08-11)
+
+- Surface clearer saved-start not-found guidance from the bundled MCP server.
+
 ## 0.8.24 (2026-08-11)
 
 - Refresh the bundled MCP runtime with local saved-start management and live session aliases (#107).
