@@ -2036,16 +2036,132 @@ test("switchSessionAlias claims a durable alias with commit-guard, synthesis, an
     assert.equal(first.warning, undefined, "the first claim replaces nothing");
     assert.equal(client.roomRuntime(ROOM).cursor, 14, "an alias switch preserves the room cursor");
     assert.ok(guards.includes("alias_switch"), "the pre-claim commit guard sees the alias switch");
-    assert.deepEqual(ended, ["as-1"], "the anonymous predecessor is retired after handoff");
+    // parle-adapters#115: an anonymous live session claims IN PLACE. Replacing
+    // it would end the exact-session reply-route target and rotate every
+    // participant row (parlehq/parle#797).
+    assert.equal(creates, 1, "an anonymous claim mints no candidate session");
+    assert.equal(client.runtime.agentSessionId, "as-1", "the live session survives its own claim");
+    assert.deepEqual(ended, [], "an in-place claim retires nothing");
 
     const second = await client.switchSessionAlias("standup");
     assert.equal(second.priorAlias, "workshop");
     assert.match(second.warning, /left the alias workshop/);
+    assert.equal(creates, 2, "an aliased predecessor keeps the candidate machinery");
+    assert.deepEqual(ended, [], "an aliased predecessor is never retired by the client");
     await assert.rejects(client.switchSessionAlias("BAD ALIAS"), /unreserved 2-32 character/);
     await assert.rejects(client.switchSessionAlias("system"), /unreserved 2-32 character/);
     await assert.rejects(client.switchSessionAlias("abcdefghijklmno2"), /anonymous 16-character session shape/);
   } finally {
     unsubscribe();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// parle-adapters#115 acceptance: the in-place branch keeps the candidate
+// path's fail-closed edge, recovers a lost claim response authoritatively,
+// publishes exactly one revision, and leaves rollover claiming the runtime
+// alias on the next genuine incarnation replacement.
+test("in-place alias claim preserves the live session and its fences", async () => {
+  const ROOM = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const home = mkdtempSync(join(tmpdir(), "parle-alias-inplace-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-alias-inplace-project-"));
+  let creates = 0;
+  let claims = 0;
+  let entries = 0;
+  let wakes = 0;
+  let aliasFactsCalls = 0;
+  let failFirstClaim = false;
+  const ended = [];
+  const claimedAliases = [];
+  const fetchImpl = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+      creates += 1;
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, session_credential: `parle_ses_${creates}`, session_handle: `raw-${creates}`, expires_at: "2099-01-01T00:00:00Z" }), { status: 201 });
+    }
+    if (path === "/v/agent/sessions") {
+      // Inventory confirmation for lost-response recovery.
+      return new Response(JSON.stringify({ sessions: [{ agent_session_id: "as-1", alias: "workshop", generation: 2 }], next: null }), { status: 200 });
+    }
+    if (path.endsWith("/participants")) {
+      entries += 1;
+      return new Response(JSON.stringify({ participant_id: `p-${creates}`, room_handle: "alias-room" }), { status: 201 });
+    }
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 3, messages: [] }), { status: 200 });
+    if (path === "/v/agent/wake") {
+      wakes += 1;
+      return new Response(": ready\n\n", { status: 200 });
+    }
+    if (path.startsWith("/v/agent/session-aliases/")) {
+      aliasFactsCalls += 1;
+      const alias = path.split("/").at(-1);
+      // After a swallowed claim response the durable fence already shows the
+      // live session as the generation-2 owner.
+      if (failFirstClaim && claims > 0) {
+        return new Response(JSON.stringify({ alias, generation: 2, current_agent_session_id: "as-1" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ alias, generation: 1, current_agent_session_id: "prior" }), { status: 200 });
+    }
+    if (path.endsWith("/claim-alias")) {
+      claims += 1;
+      claimedAliases.push(JSON.parse(String(init.body)).alias);
+      if (failFirstClaim) return new Response(null, { status: 500 });
+      return new Response(JSON.stringify({ agent_session_id: "as-1", alias: JSON.parse(String(init.body)).alias, generation: 2, expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
+    }
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
+    if (path.endsWith("/end")) {
+      ended.push(path.split("/").at(-2));
+      return new Response(null, { status: 204 });
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+  const client = new ParleAgentClient({
+    cwd,
+    env: { HOME: home, PARLE_ROOM_ID: ROOM, PARLE_ROOM_AGENT_TOKEN: "parle_agt_inplace" },
+    fetch: fetchImpl,
+    synthesizeSessionAddress: (route, serverAddress) => {
+      const path = route.alias || route.sessionHandle;
+      return path ? `@p.a.${path}` : serverAddress;
+    },
+  });
+  const revisions = [];
+  const offRevision = client.onSessionRevision((event) => revisions.push(event));
+  try {
+    await client.connect();
+    const entriesAfterConnect = entries;
+    const wakesAfterConnect = wakes;
+
+    // A commit-guard rejection is proven to precede the claim request.
+    const deferral = client.onBeforeSessionCommit(() => { throw new Error("deferred by test guard"); });
+    await assert.rejects(client.switchSessionAlias("workshop"), /deferred by test guard/);
+    deferral();
+    assert.equal(claims, 0, "a rejected commit guard sends no claim request");
+    assert.equal(client.runtime.sessionAlias, undefined, "a rejected switch leaves the session anonymous");
+    assert.equal(client.runtime.agentSessionId, "as-1", "a rejected switch leaves the live session untouched");
+
+    // Lost-response recovery resolves against the durable alias fence and
+    // still commits in place.
+    failFirstClaim = true;
+    const result = await client.switchSessionAlias("workshop");
+    assert.equal(result.alias, "workshop");
+    assert.equal(result.generation, 2);
+    assert.equal(result.sessionAddress, "@p.a.workshop");
+    assert.equal(client.runtime.agentSessionId, "as-1", "recovery confirms the same live session");
+    assert.equal(creates, 1, "no candidate session exists anywhere in the flow");
+    assert.equal(entries, entriesAfterConnect, "no room re-entry happens on an in-place claim");
+    assert.equal(wakes, wakesAfterConnect, "the open wake stream is never replaced");
+    assert.deepEqual(ended, [], "nothing is retired");
+    assert.equal(revisions.filter((event) => event.reason === "alias_switch").length, 1, "exactly one revision publishes");
+    assert.ok(aliasFactsCalls >= 2, "recovery consulted the durable alias fence");
+
+    // The next genuine incarnation replacement re-claims the runtime alias.
+    failFirstClaim = false;
+    await client.performProactiveRollover();
+    assert.equal(creates, 2, "rollover still replaces the incarnation");
+    assert.equal(claimedAliases.at(-1), "workshop", "rollover re-claims the runtime alias, not the configured one");
+  } finally {
+    offRevision();
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }

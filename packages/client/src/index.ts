@@ -1973,6 +1973,18 @@ export class ParleAgentClient {
       const priorAlias = old.sessionAlias;
       const priorAddress = old.sessionAddress;
       this.assertConfigured();
+      // An anonymous live session claims the alias IN PLACE (parle-adapters#115,
+      // parlehq/parle#797): core's claim precondition (alias-free, generation 0)
+      // admits exactly this session, and replacing it would end the exact-session
+      // reply-route target Parle froze at delivery and rotate every participant
+      // row. No new session, no room re-entry, no wake replacement, no
+      // retirement: outstanding exact-session routes stay redeemable by
+      // construction. An aliased predecessor keeps the candidate machinery
+      // below -- core forbids re-claim on an aliased session, and alias-scoped
+      // continuity is owned by generation fencing plus reissue.
+      if (!priorAlias && old.bootstrapped && old.agentSessionId && old.sessionHandle) {
+        return this.claimAliasInPlace(alias, old, epoch, signal);
+      }
       let prepared: PreparedCandidate;
       this.preClaimGuard = (candidate) => {
         this.assertLifecycleActive(epoch);
@@ -2003,6 +2015,62 @@ export class ParleAgentClient {
           : {}),
       };
     });
+  }
+
+  // In-place claim for an anonymous live session. The publication barrier and
+  // the pre-claim commit guard keep the candidate path's fail-closed edge: a
+  // guard rejection (including the active responsive-read deferral, whose
+  // cursor authority would flip from exact-session to alias mid-read) throws
+  // BEFORE any claim request leaves the process, leaving the session exactly
+  // as it was. A thrown claim (409 conflict, outcome-unknown) likewise leaves
+  // the live session untouched -- there is no candidate to retire and the
+  // session itself is never ended. Lost-response recovery stays authoritative
+  // via claimAliasWithRecovery's alias-fence confirmation.
+  private async claimAliasInPlace(alias: string, old: RuntimeState, epoch: number, signal?: AbortSignal): Promise<{
+    status: "alias_active";
+    alias?: string;
+    generation?: number;
+    sessionAddress: string | null;
+    expiresAt: string;
+  }> {
+    const { claimed, expectedGeneration } = await this.withPublicationBarrier("alias switch", async () => {
+      const aliasFacts = await this.ownAliasFacts(alias, signal);
+      // Last fail-closed edge, identical in position to the candidate path's
+      // preClaimGuard: everything after this line transfers alias authority.
+      this.assertLifecycleActive(epoch);
+      this.assertSessionCommitAllowed(old, { ...old, sessionAlias: alias, responsiveContinuity: "alias" }, "alias_switch");
+      const result = await this.claimAliasWithRecovery(old, alias, aliasFacts.generation, signal);
+      return { claimed: result, expectedGeneration: aliasFacts.generation };
+    });
+    this.assertLifecycleActive(epoch);
+    const claimedAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
+    this.runtime = {
+      ...this.runtime,
+      sessionAlias: claimedAlias,
+      sessionGeneration: Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1,
+      sessionAddress: this.deriveSessionAddress(
+        { alias: claimedAlias },
+        typeof claimed.address === "string" ? claimed.address : old.sessionAddress ?? null,
+      ),
+      createdAt: String(claimed.created_at || this.runtime.createdAt),
+      expiresAt: String(claimed.expires_at || this.runtime.expiresAt),
+      responsiveContinuity: "alias",
+      sessionRevision: this.runtime.sessionRevision + 1,
+    };
+    // Same incarnation: the lifecycle epoch, room runtimes, cursors, and the
+    // open wake stream all carry forward. Publication and revision fire exactly
+    // once; rollover reschedules against the possibly-extended expiry and will
+    // re-claim the runtime alias on its next incarnation replacement.
+    this.publishRuntimeState();
+    this.scheduleRollover();
+    this.publishSessionRevision("alias_switch");
+    return {
+      status: "alias_active" as const,
+      alias: this.runtime.sessionAlias,
+      generation: this.runtime.sessionGeneration,
+      sessionAddress: this.runtime.sessionAddress ?? null,
+      expiresAt: this.runtime.expiresAt,
+    };
   }
 
   private async retireSession(state: RuntimeState, signal?: AbortSignal): Promise<void> {

@@ -876,7 +876,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.35" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.36" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -907,7 +907,10 @@ test("footer prefers alias route when session uses an alias", async () => {
   assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
 });
 
-test("parle_session_alias prepares the replacement before retiring the active session", async () => {
+// parle-adapters#115: an anonymous live session claims its alias IN PLACE.
+// Replacing it would end the exact-session reply-route target Parle froze at
+// delivery and rotate every participant row (parlehq/parle#797).
+test("parle_session_alias claims in place on the anonymous live session", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_WATCH_ENABLED=0\n");
   let sessionCreates = 0;
   const order = [];
@@ -939,7 +942,8 @@ test("parle_session_alias prepares the replacement before retiring the active se
   await harness.call("parle_status");
   __testing.patchRuntime({ cursor: 14 });
   const result = await harness.call("parle_session_alias", { alias: "parle-landing" });
-  assert.deepEqual(order, ["create:unaliased", "create:unaliased", "claim:parle-landing", "retire:as-1"]);
+  assert.deepEqual(order, ["create:unaliased", "claim:parle-landing"],
+    "the bootstrap session claims its own alias; no candidate is minted and nothing is retired");
   assert.equal(result.details.sessionAddress, "@p.a.parle-landing");
   assert.equal(result.details.alias, "parle-landing");
   assert.equal(result.details.generation, 3);
@@ -1282,9 +1286,11 @@ test("failed parle_session_alias preserves the active session and watcher", asyn
 
   await assert.rejects(harness.call("parle_session_alias", { alias: "reserved-alias" }), /session alias is reserved/);
   const after = __testing.runtimeState();
-  assert.equal(sessionCreates, 2);
-  assert.equal(endCalls, 1, "the failed anonymous candidate is retired without touching the old current session");
-  assert.equal(wakeOpens, 2);
+  // parle-adapters#115: the in-place claim mints no candidate, so a claim
+  // rejection has nothing to retire and never replaces the wake stream.
+  assert.equal(sessionCreates, 1, "a failed in-place claim minted no candidate session");
+  assert.equal(endCalls, 0, "a failed in-place claim retires nothing");
+  assert.equal(wakeOpens, 1, "the live wake stream is never replaced");
   assert.equal(after.agentSessionId, before.agentSessionId);
   assert.equal(after.sessionHandle, before.sessionHandle);
   assert.equal(after.sessionAddress, before.sessionAddress);
@@ -1556,7 +1562,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.35");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.36");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

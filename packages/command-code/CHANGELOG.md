@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.11 (2026-08-12)
+
+- Inherit the shared client's in-place durable alias claim for anonymous live sessions (#115, parlehq/parle#797): a first claim now preserves the session, its participants, its wake stream, and outstanding exact-session opaque reply routes.
+
 ## 0.7.10 (2026-08-12)
 
 - Enforce complete core durable-alias validation and refresh the native runtime.

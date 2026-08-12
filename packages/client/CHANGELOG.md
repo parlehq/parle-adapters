@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.30 (2026-08-12)
+
+- Claim a durable alias in place when the live session is anonymous (#115, parlehq/parle#797): switchSessionAlias no longer mints a candidate session, re-enters rooms, replaces the wake stream, or retires the predecessor for a first claim, so exact-session opaque reply routes issued against that session stay redeemable. Alias-to-alias switches keep the candidate machinery and its supersession semantics.
+
 ## 0.8.29 (2026-08-12)
 
 - Enforce the complete core durable-alias policy locally: 2 to 32 characters, shared grammar and reserved words, and exclusion of the anonymous 16-character session-handle shape.

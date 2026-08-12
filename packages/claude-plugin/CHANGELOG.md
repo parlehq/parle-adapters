@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.33 (2026-08-12)
+
+- Inherit the shared client's in-place durable alias claim for anonymous live sessions (#115, parlehq/parle#797): a first claim now preserves the session, its participants, its wake stream, and outstanding exact-session opaque reply routes.
+
 ## 0.9.32 (2026-08-12)
 
 - Refresh the bundled MCP runtime with complete core durable-alias validation.

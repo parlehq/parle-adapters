@@ -5946,6 +5946,9 @@ var ParleAgentClient = class _ParleAgentClient {
       const priorAlias = old.sessionAlias;
       const priorAddress = old.sessionAddress;
       this.assertConfigured();
+      if (!priorAlias && old.bootstrapped && old.agentSessionId && old.sessionHandle) {
+        return this.claimAliasInPlace(alias, old, epoch, signal);
+      }
       let prepared;
       this.preClaimGuard = (candidate) => {
         this.assertLifecycleActive(epoch);
@@ -5973,6 +5976,46 @@ var ParleAgentClient = class _ParleAgentClient {
         } : {}
       };
     });
+  }
+  // In-place claim for an anonymous live session. The publication barrier and
+  // the pre-claim commit guard keep the candidate path's fail-closed edge: a
+  // guard rejection (including the active responsive-read deferral, whose
+  // cursor authority would flip from exact-session to alias mid-read) throws
+  // BEFORE any claim request leaves the process, leaving the session exactly
+  // as it was. A thrown claim (409 conflict, outcome-unknown) likewise leaves
+  // the live session untouched -- there is no candidate to retire and the
+  // session itself is never ended. Lost-response recovery stays authoritative
+  // via claimAliasWithRecovery's alias-fence confirmation.
+  async claimAliasInPlace(alias, old, epoch, signal) {
+    const { claimed, expectedGeneration } = await this.withPublicationBarrier("alias switch", async () => {
+      const aliasFacts = await this.ownAliasFacts(alias, signal);
+      this.assertLifecycleActive(epoch);
+      this.assertSessionCommitAllowed(old, { ...old, sessionAlias: alias, responsiveContinuity: "alias" }, "alias_switch");
+      const result = await this.claimAliasWithRecovery(old, alias, aliasFacts.generation, signal);
+      return { claimed: result, expectedGeneration: aliasFacts.generation };
+    });
+    this.assertLifecycleActive(epoch);
+    const claimedAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
+    this.runtime = {
+      ...this.runtime,
+      sessionAlias: claimedAlias,
+      sessionGeneration: Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1,
+      sessionAddress: this.deriveSessionAddress({ alias: claimedAlias }, typeof claimed.address === "string" ? claimed.address : old.sessionAddress ?? null),
+      createdAt: String(claimed.created_at || this.runtime.createdAt),
+      expiresAt: String(claimed.expires_at || this.runtime.expiresAt),
+      responsiveContinuity: "alias",
+      sessionRevision: this.runtime.sessionRevision + 1
+    };
+    this.publishRuntimeState();
+    this.scheduleRollover();
+    this.publishSessionRevision("alias_switch");
+    return {
+      status: "alias_active",
+      alias: this.runtime.sessionAlias,
+      generation: this.runtime.sessionGeneration,
+      sessionAddress: this.runtime.sessionAddress ?? null,
+      expiresAt: this.runtime.expiresAt
+    };
   }
   async retireSession(state, signal) {
     if (!state.agentSessionId || !state.sessionHandle)
@@ -6519,7 +6562,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.35";
+var PI_EXTENSION_VERSION = "0.7.36";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
