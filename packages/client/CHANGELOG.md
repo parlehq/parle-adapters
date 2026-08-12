@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.8.29 (2026-08-12)
+
+- Enforce the complete core durable-alias policy locally: 2 to 32 characters, shared grammar and reserved words, and exclusion of the anonymous 16-character session-handle shape.
+
 ## 0.8.28 (2026-08-12)
 
-- Use one shared address policy and normalize durable session aliases to 2 to 32 characters while ordinary principal, agent, room, and session handles remain 2 to 20.
+- Use one shared address policy and normalize durable session aliases to 2 to 32 characters while ordinary principal, agent, room, and session handles remain 2 to 20. Client-side alias validation also enforces the shared reserved-word policy and excludes the anonymous 16-character session-handle shape.
 
 ## 0.8.27 (2026-08-11)
 

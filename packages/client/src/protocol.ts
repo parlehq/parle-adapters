@@ -48,3 +48,20 @@ export const ADDRESS_HANDLE_MIN_LENGTH = 2;
 export const ADDRESS_HANDLE_MAX_LENGTH = 20;
 export const SESSION_ALIAS_MAX_LENGTH = 32;
 export const ADDRESS_HANDLE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export const ANONYMOUS_SESSION_HANDLE_PATTERN = /^[a-z2-7]{16}$/;
+export const RESERVED_ADDRESS_HANDLES = new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
+
+export function isValidAddressHandle(value: string): boolean {
+  return value.length >= ADDRESS_HANDLE_MIN_LENGTH
+    && value.length <= ADDRESS_HANDLE_MAX_LENGTH
+    && ADDRESS_HANDLE_PATTERN.test(value)
+    && !RESERVED_ADDRESS_HANDLES.has(value);
+}
+
+export function isValidSessionAlias(value: string): boolean {
+  return value.length >= ADDRESS_HANDLE_MIN_LENGTH
+    && value.length <= SESSION_ALIAS_MAX_LENGTH
+    && ADDRESS_HANDLE_PATTERN.test(value)
+    && !RESERVED_ADDRESS_HANDLES.has(value)
+    && !ANONYMOUS_SESSION_HANDLE_PATTERN.test(value);
+}

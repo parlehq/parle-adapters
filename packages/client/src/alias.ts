@@ -1,4 +1,4 @@
-import { ADDRESS_HANDLE_MIN_LENGTH, ADDRESS_HANDLE_PATTERN, ParleApiError, SESSION_ALIAS_MAX_LENGTH, redactString } from "./protocol.js";
+import { ParleApiError, isValidSessionAlias, redactString } from "./protocol.js";
 
 // Durable session-alias authority, shared by every adapter (issue #63 S5).
 //
@@ -35,7 +35,7 @@ export type AliasRoomOfflineDelivery = AliasOfflineDelivery & {
 
 function validAlias(alias: string): string {
   const value = alias.trim().toLowerCase();
-  if (value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH || !ADDRESS_HANDLE_PATTERN.test(value)) {
+  if (!isValidSessionAlias(value)) {
     throw new ParleApiError("Parle durable session alias is invalid", { code: "validation_failed", action: "fix_client", scope: "request" });
   }
   return value;

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.30 (2026-08-12)
+
+- Refresh the bundled MCP runtime with complete core durable-alias validation.
+
 ## 0.8.29 (2026-08-12)
 
 - Refresh the bundled MCP runtime with the 2 to 32 character durable session-alias contract.

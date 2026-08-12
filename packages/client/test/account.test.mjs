@@ -699,6 +699,17 @@ test("owned alias delivery and release use guarded exact human-session operation
   } finally { f.cleanup(); }
 });
 
+test("owned alias controls reject reserved and anonymous-shape aliases locally", async () => {
+  const f = fixture();
+  try {
+    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { throw new Error("fetch must not run"); } });
+    for (const alias of ["system", "abcdefghijklmno2"]) {
+      await assert.rejects(client.ownedAliasDelivery({ action: "get_global", agentId: AGENT_ID, alias }), /unreserved 2-32 character/);
+      await assert.rejects(client.ownedAliasRelease({ action: "preview", agentId: AGENT_ID, alias }), /unreserved 2-32 character/);
+    }
+  } finally { f.cleanup(); }
+});
+
 test("owned alias release reports ambiguous complete outcomes as unknown and preserves definite refusals", async () => {
   const f = fixture();
   const complete = { action: "complete", agentId: AGENT_ID, alias: "durable", expectedAliasGeneration: 3, idempotencyKey: "release-key", confirmMutation: true, reason: "release" };

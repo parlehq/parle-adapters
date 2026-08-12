@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
-import { ADDRESS_HANDLE_MIN_LENGTH, ADDRESS_HANDLE_PATTERN, DEFAULT_VERSION, ParleApiError, SESSION_ALIAS_MAX_LENGTH, isParleCredential, redactString } from "./protocol.js";
+import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { ProfileConfigError, catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
@@ -1963,8 +1963,8 @@ export class ParleAgentClient {
     warning?: string;
     recovery?: string;
   }> {
-    if (!ADDRESS_HANDLE_PATTERN.test(alias) || alias.length < ADDRESS_HANDLE_MIN_LENGTH || alias.length > SESSION_ALIAS_MAX_LENGTH) {
-      throw new ParleApiError("Parle session alias must be 2-32 lowercase letters, digits, and single hyphens.", { code: "validation_failed", action: "fix_client", scope: "request" });
+    if (!isValidSessionAlias(alias)) {
+      throw new ParleApiError("Parle session alias must be an unreserved 2-32 character durable alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.", { code: "validation_failed", action: "fix_client", scope: "request" });
     }
     return this.withLifecycleExclusion(async () => {
       this.assertLifecycleActive();

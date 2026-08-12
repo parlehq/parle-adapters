@@ -73,8 +73,10 @@ profile = default
 test("saved starts reject unknown fields, invalid aliases, reserved names, duplicate names, and multiline next values", () => {
   assert.throws(() => parseSavedStarts("[bad]\nscript = run\n"), SavedStartConfigError);
   assert.doesNotThrow(() => parseSavedStarts(`[long]\nalias = ${"a".repeat(32)}\n`));
-  assert.throws(() => parseSavedStarts(`[bad]\nalias = ${"a".repeat(33)}\n`), /alias must be 2 to 32/);
+  assert.throws(() => parseSavedStarts(`[bad]\nalias = ${"a".repeat(33)}\n`), /alias must be an unreserved 2 to 32 character/);
   assert.throws(() => parseSavedStarts("[bad]\nalias = Not Valid\n"), /alias must be/);
+  assert.throws(() => parseSavedStarts("[bad]\nalias = system\n"), /alias must be/);
+  assert.throws(() => parseSavedStarts("[bad]\nalias = abcdefghijklmno2\n"), /anonymous 16-character session shape/);
   assert.throws(() => parseSavedStarts("[list]\nnext = unavailable\n"), /name list is reserved/);
   assert.throws(() => saveSavedStart({ name: "delete", next: "unavailable" }), /name delete is reserved/);
   assert.throws(() => parseSavedStarts("[same]\n[same]\n"), /duplicate saved start/);

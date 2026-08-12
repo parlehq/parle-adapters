@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.30 (2026-08-12)
+
+- Bundle complete durable-alias validation from the shared client, including reserved words and anonymous session-shape exclusion.
+
 ## 0.7.29 (2026-08-12)
 
 - Bundle the shared client durable session-alias normalization to 2 to 32 characters.

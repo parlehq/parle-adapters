@@ -653,15 +653,24 @@ function redactString(input) {
   return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
 var ADDRESS_HANDLE_MIN_LENGTH = 2;
+var ADDRESS_HANDLE_MAX_LENGTH = 20;
 var SESSION_ALIAS_MAX_LENGTH = 32;
 var ADDRESS_HANDLE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+var ANONYMOUS_SESSION_HANDLE_PATTERN = /^[a-z2-7]{16}$/;
+var RESERVED_ADDRESS_HANDLES = /* @__PURE__ */ new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
+function isValidAddressHandle(value) {
+  return value.length >= ADDRESS_HANDLE_MIN_LENGTH && value.length <= ADDRESS_HANDLE_MAX_LENGTH && ADDRESS_HANDLE_PATTERN.test(value) && !RESERVED_ADDRESS_HANDLES.has(value);
+}
+function isValidSessionAlias(value) {
+  return value.length >= ADDRESS_HANDLE_MIN_LENGTH && value.length <= SESSION_ALIAS_MAX_LENGTH && ADDRESS_HANDLE_PATTERN.test(value) && !RESERVED_ADDRESS_HANDLES.has(value) && !ANONYMOUS_SESSION_HANDLE_PATTERN.test(value);
+}
 
 // ../client/dist/alias.js
 var SESSION_INVENTORY_MAX_PAGES = 100;
 var CLAIM_RECOVERY_ATTEMPTS = 3;
 function validAlias(alias) {
   const value = alias.trim().toLowerCase();
-  if (value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH || !ADDRESS_HANDLE_PATTERN.test(value)) {
+  if (!isValidSessionAlias(value)) {
     throw new ParleApiError("Parle durable session alias is invalid", { code: "validation_failed", action: "fix_client", scope: "request" });
   }
   return value;
@@ -2365,7 +2374,6 @@ var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
 var SESSION_COOKIE_RE = /^__Host-parle_session=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
 var LOGIN_CHALLENGE_COOKIE_RE = /^__Host-parle_login=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
-var RESERVED_HANDLES = /* @__PURE__ */ new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
 var MINT_DENIAL_NEXT_ACTION = {
   unhardened: "set a password, then enroll a second factor",
   cooldown: "wait for the post-recovery cooldown to lapse",
@@ -2522,14 +2530,14 @@ function validateUUID(raw, label) {
 }
 function validateAlias(raw) {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!ADDRESS_HANDLE_PATTERN.test(value) || value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH) {
-    throw new Error("alias must normalize to 2-32 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
+  if (!isValidSessionAlias(value)) {
+    throw new Error("alias must normalize to an unreserved 2-32 character durable session alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.");
   }
   return value;
 }
 function validateHandle(raw, label = "principalHandle") {
   const value = raw.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-]{0,18}[a-z0-9]$/.test(value) || /-{2}/.test(value) || RESERVED_HANDLES.has(value)) {
+  if (!isValidAddressHandle(value)) {
     throw new Error(`${label} must normalize to an unreserved 2-20 character handle using lowercase letters, digits, and hyphens with no leading, trailing, or consecutive hyphens.`);
   }
   return value;
@@ -4651,8 +4659,8 @@ function validateSavedStart(start) {
   }
   if (start.alias !== void 0) {
     assertValue(start.alias, `Parle saved start ${start.name} alias`);
-    if (start.alias.length < ADDRESS_HANDLE_MIN_LENGTH || start.alias.length > SESSION_ALIAS_MAX_LENGTH || !ADDRESS_HANDLE_PATTERN.test(start.alias)) {
-      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be 2 to 32 lowercase letters, digits, and single hyphens.`);
+    if (!isValidSessionAlias(start.alias)) {
+      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be an unreserved 2 to 32 character durable session alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.`);
     }
   }
   if (start.next !== void 0) {
@@ -6319,8 +6327,8 @@ var ParleAgentClient = class _ParleAgentClient {
   // later proactive rollover re-claims the switched alias because rollover
   // prefers the runtime alias over the configured one.
   async switchSessionAlias(alias, signal) {
-    if (!ADDRESS_HANDLE_PATTERN.test(alias) || alias.length < ADDRESS_HANDLE_MIN_LENGTH || alias.length > SESSION_ALIAS_MAX_LENGTH) {
-      throw new ParleApiError("Parle session alias must be 2-32 lowercase letters, digits, and single hyphens.", { code: "validation_failed", action: "fix_client", scope: "request" });
+    if (!isValidSessionAlias(alias)) {
+      throw new ParleApiError("Parle session alias must be an unreserved 2-32 character durable alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.", { code: "validation_failed", action: "fix_client", scope: "request" });
     }
     return this.withLifecycleExclusion(async () => {
       this.assertLifecycleActive();
@@ -21964,7 +21972,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.9";
+var ADAPTER_VERSION = "0.7.10";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

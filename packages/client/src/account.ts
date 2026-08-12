@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { ADDRESS_HANDLE_MIN_LENGTH, ADDRESS_HANDLE_PATTERN, DEFAULT_VERSION, SESSION_ALIAS_MAX_LENGTH } from "./protocol.js";
+import { DEFAULT_VERSION, isValidAddressHandle, isValidSessionAlias } from "./protocol.js";
 import { CredentialProfile, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
 import { ParleHardeningClient, type HardenAccountParams } from "./hardening.js";
 import { atomicReplaceOwnerOnlyFile, readOwnerOnlyTextFile, withOwnerOnlyFileLock } from "./safe-file.js";
@@ -20,7 +20,6 @@ const INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 const INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
 const SESSION_COOKIE_RE = /^__Host-parle_session=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
 const LOGIN_CHALLENGE_COOKIE_RE = /^__Host-parle_login=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
-const RESERVED_HANDLES = new Set(["admin", "agent", "agents", "api", "me", "null", "parle", "room", "rooms", "root", "support", "system", "www"]);
 const MINT_DENIAL_NEXT_ACTION = {
   unhardened: "set a password, then enroll a second factor",
   cooldown: "wait for the post-recovery cooldown to lapse",
@@ -298,15 +297,15 @@ function validateUUID(raw: unknown, label: string): string {
 
 function validateAlias(raw: unknown): string {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!ADDRESS_HANDLE_PATTERN.test(value) || value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH) {
-    throw new Error("alias must normalize to 2-32 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
+  if (!isValidSessionAlias(value)) {
+    throw new Error("alias must normalize to an unreserved 2-32 character durable session alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.");
   }
   return value;
 }
 
 function validateHandle(raw: string, label = "principalHandle"): string {
   const value = raw.trim().toLowerCase();
-  if (!/^[a-z0-9][a-z0-9-]{0,18}[a-z0-9]$/.test(value) || /-{2}/.test(value) || RESERVED_HANDLES.has(value)) {
+  if (!isValidAddressHandle(value)) {
     throw new Error(`${label} must normalize to an unreserved 2-20 character handle using lowercase letters, digits, and hyphens with no leading, trailing, or consecutive hyphens.`);
   }
   return value;
