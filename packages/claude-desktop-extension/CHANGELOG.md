@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.29 (2026-08-12)
+
+- Refresh the bundled MCP runtime with the 2 to 32 character durable session-alias contract.
+
 ## 0.8.28 (2026-08-11)
 
 - Bundle target-proof handle-or-email person invitation minting (#113).

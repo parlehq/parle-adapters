@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.28 (2026-08-12)
+
+- Use one shared address policy and normalize durable session aliases to 2 to 32 characters while ordinary principal, agent, room, and session handles remain 2 to 20.
+
 ## 0.8.27 (2026-08-11)
 
 - Move principal invitation minting to the target-proof person endpoint with leading-at handle or email targets, idempotency keys, strict handle results, and honest privacy-flat email outcomes (#113).

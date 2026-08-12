@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PROFILE_CATALOG_PATH, resolveProfileCatalogPath } from "./profiles.js";
+import { ADDRESS_HANDLE_MIN_LENGTH, ADDRESS_HANDLE_PATTERN, SESSION_ALIAS_MAX_LENGTH } from "./protocol.js";
 import { atomicReplaceOwnerOnlyFile, ensureOwnerOnlyDirectory, readOwnerOnlyTextFile, withOwnerOnlyFileLock } from "./safe-file.js";
 
 export const SAVED_START_CATALOG_MAX_BYTES = 256 * 1024;
@@ -9,7 +10,6 @@ export const SAVED_START_CATALOG_PATH = join(dirname(PROFILE_CATALOG_PATH), "lau
 
 const LABEL = "Parle saved-start catalog";
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ALLOWED_KEYS = new Set(["profile", "alias", "next"]);
 const RESERVED_SAVED_START_NAMES = new Set(["list", "show", "save", "delete"]);
 
@@ -95,8 +95,8 @@ function validateSavedStart(start: SavedStart): SavedStart {
   }
   if (start.alias !== undefined) {
     assertValue(start.alias, `Parle saved start ${start.name} alias`);
-    if (start.alias.length < 2 || start.alias.length > 40 || !ALIAS_RE.test(start.alias)) {
-      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be 2 to 40 lowercase letters, digits, and single hyphens.`);
+    if (start.alias.length < ADDRESS_HANDLE_MIN_LENGTH || start.alias.length > SESSION_ALIAS_MAX_LENGTH || !ADDRESS_HANDLE_PATTERN.test(start.alias)) {
+      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be 2 to 32 lowercase letters, digits, and single hyphens.`);
     }
   }
   if (start.next !== undefined) {

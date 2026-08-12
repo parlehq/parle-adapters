@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
-import { DEFAULT_VERSION } from "./protocol.js";
+import { ADDRESS_HANDLE_MIN_LENGTH, ADDRESS_HANDLE_PATTERN, DEFAULT_VERSION, SESSION_ALIAS_MAX_LENGTH } from "./protocol.js";
 import { CredentialProfile, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
 import { ParleHardeningClient, type HardenAccountParams } from "./hardening.js";
 import { atomicReplaceOwnerOnlyFile, readOwnerOnlyTextFile, withOwnerOnlyFileLock } from "./safe-file.js";
@@ -298,8 +298,8 @@ function validateUUID(raw: unknown, label: string): string {
 
 function validateAlias(raw: unknown): string {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || value.length < 2 || value.length > 40) {
-    throw new Error("alias must normalize to 2-40 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
+  if (!ADDRESS_HANDLE_PATTERN.test(value) || value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH) {
+    throw new Error("alias must normalize to 2-32 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
   }
   return value;
 }

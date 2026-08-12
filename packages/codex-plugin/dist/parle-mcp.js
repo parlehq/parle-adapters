@@ -31606,13 +31606,16 @@ function redactString(input) {
   PARLE_CREDENTIAL_RE.lastIndex = 0;
   return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
+var ADDRESS_HANDLE_MIN_LENGTH = 2;
+var SESSION_ALIAS_MAX_LENGTH = 32;
+var ADDRESS_HANDLE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 // ../client/dist/alias.js
 var SESSION_INVENTORY_MAX_PAGES = 100;
 var CLAIM_RECOVERY_ATTEMPTS = 3;
 function validAlias(alias) {
   const value = alias.trim().toLowerCase();
-  if (value.length < 2 || value.length > 40 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+  if (value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH || !ADDRESS_HANDLE_PATTERN.test(value)) {
     throw new ParleApiError("Parle durable session alias is invalid", { code: "validation_failed", action: "fix_client", scope: "request" });
   }
   return value;
@@ -33512,8 +33515,8 @@ function validateUUID(raw, label) {
 }
 function validateAlias(raw) {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) || value.length < 2 || value.length > 40) {
-    throw new Error("alias must normalize to 2-40 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
+  if (!ADDRESS_HANDLE_PATTERN.test(value) || value.length < ADDRESS_HANDLE_MIN_LENGTH || value.length > SESSION_ALIAS_MAX_LENGTH) {
+    throw new Error("alias must normalize to 2-32 lowercase letters, digits, and single hyphens with no leading or trailing hyphen.");
   }
   return value;
 }
@@ -35571,7 +35574,6 @@ var SAVED_START_NEXT_MAX_BYTES = 16 * 1024;
 var SAVED_START_CATALOG_PATH = join8(dirname6(PROFILE_CATALOG_PATH), "launches");
 var LABEL2 = "Parle saved-start catalog";
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var ALIAS_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var ALLOWED_KEYS2 = /* @__PURE__ */ new Set(["profile", "alias", "next"]);
 var RESERVED_SAVED_START_NAMES = /* @__PURE__ */ new Set(["list", "show", "save", "delete"]);
 var SavedStartConfigError = class extends Error {
@@ -35642,8 +35644,8 @@ function validateSavedStart(start) {
   }
   if (start.alias !== void 0) {
     assertValue(start.alias, `Parle saved start ${start.name} alias`);
-    if (start.alias.length < 2 || start.alias.length > 40 || !ALIAS_RE.test(start.alias)) {
-      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be 2 to 40 lowercase letters, digits, and single hyphens.`);
+    if (start.alias.length < ADDRESS_HANDLE_MIN_LENGTH || start.alias.length > SESSION_ALIAS_MAX_LENGTH || !ADDRESS_HANDLE_PATTERN.test(start.alias)) {
+      throw new SavedStartConfigError(`Parle saved start ${start.name} alias must be 2 to 32 lowercase letters, digits, and single hyphens.`);
     }
   }
   if (start.next !== void 0) {
@@ -37310,8 +37312,8 @@ var ParleAgentClient = class _ParleAgentClient {
   // later proactive rollover re-claims the switched alias because rollover
   // prefers the runtime alias over the configured one.
   async switchSessionAlias(alias, signal) {
-    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(alias) || alias.length < 2 || alias.length > 40) {
-      throw new ParleApiError("Parle session alias must be 2-40 lowercase letters, digits, and single hyphens.", { code: "validation_failed", action: "fix_client", scope: "request" });
+    if (!ADDRESS_HANDLE_PATTERN.test(alias) || alias.length < ADDRESS_HANDLE_MIN_LENGTH || alias.length > SESSION_ALIAS_MAX_LENGTH) {
+      throw new ParleApiError("Parle session alias must be 2-32 lowercase letters, digits, and single hyphens.", { code: "validation_failed", action: "fix_client", scope: "request" });
     }
     return this.withLifecycleExclusion(async () => {
       this.assertLifecycleActive();
@@ -38793,7 +38795,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.28";
+var MCP_CLIENT_VERSION = "0.7.29";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {

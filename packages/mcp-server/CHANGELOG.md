@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.29 (2026-08-12)
+
+- Bundle the shared client durable session-alias normalization to 2 to 32 characters.
+
 ## 0.7.28 (2026-08-11)
 
 - Expose the target-proof person mint contract with one handle-or-email target and privacy-flat email guidance (#113).

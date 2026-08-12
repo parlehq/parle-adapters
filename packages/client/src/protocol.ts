@@ -43,3 +43,8 @@ export function redactString(input: string): string {
   return out.replace(PARLE_CREDENTIAL_RE, "<redacted-token>");
 }
 
+
+export const ADDRESS_HANDLE_MIN_LENGTH = 2;
+export const ADDRESS_HANDLE_MAX_LENGTH = 20;
+export const SESSION_ALIAS_MAX_LENGTH = 32;
+export const ADDRESS_HANDLE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;

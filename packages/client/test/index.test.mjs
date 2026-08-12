@@ -2041,7 +2041,7 @@ test("switchSessionAlias claims a durable alias with commit-guard, synthesis, an
     const second = await client.switchSessionAlias("standup");
     assert.equal(second.priorAlias, "workshop");
     assert.match(second.warning, /left the alias workshop/);
-    await assert.rejects(client.switchSessionAlias("BAD ALIAS"), /2-40 lowercase/);
+    await assert.rejects(client.switchSessionAlias("BAD ALIAS"), /2-32 lowercase/);
   } finally {
     unsubscribe();
     rmSync(home, { recursive: true, force: true });

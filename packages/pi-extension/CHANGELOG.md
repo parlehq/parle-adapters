@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.34 (2026-08-12)
+
+- Normalize durable session aliases to the core 2 to 32 character contract and refresh the native runtime.
+
 ## 0.7.33 (2026-08-11)
 
 - Expose target-proof handle-or-email person invitation minting and privacy-flat email results (#113).
