@@ -619,7 +619,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-08-09";
+var DEFAULT_VERSION = "2026-08-10";
 var ParleApiError = class extends Error {
   status;
   code;
@@ -3448,76 +3448,9 @@ var ParleAccountClient = class {
     return handoff;
   }
   async claimPrincipalInvite(params, signal) {
-    if (params.action !== "preview" && params.action !== "complete")
-      throw new Error('parle_claim_principal_invite action must be "preview" or "complete".');
-    if (params.action === "complete" && (params.confirmMutation !== true || !params.reason?.trim()))
-      throw new Error("parle_claim_principal_invite complete requires confirmMutation=true and a reason.");
-    const config = this.config();
-    const handoff = this.readHandoff(params.handoffPath, config);
-    const response = await this.request(config, `/v/claim/${params.action}`, {
-      method: "POST",
-      body: { secret: handoff.secret, code: handoff.code },
-      signal,
-      secrets: [handoff.secret, handoff.code]
-    });
-    if (params.action === "preview") {
-      const roomId = validateUUID(String(response.room_id || ""), "preview room_id");
-      const offeredRights = assertStringArray(response.offered_rights, "preview offered_rights");
-      if (roomId !== handoff.roomId || response.seat_type !== "principal" || offeredRights.length !== 0)
-        throw new Error("Parle claim preview did not match the private handoff terms.");
-      return {
-        action: "preview",
-        inviteId: handoff.inviteId,
-        roomId,
-        seatType: "principal",
-        targetPrincipalId: handoff.targetPrincipalId,
-        targetHandle: handoff.targetHandle,
-        offeredRights,
-        expiresAt: response.expires_at,
-        historyVisible: response.history_visible === true,
-        assurance: typeof response.assurance === "string" ? response.assurance : void 0,
-        facts: Array.isArray(response.facts) ? response.facts : [],
-        handoffPath: params.handoffPath,
-        next: "Review these server-authored admission terms with the intended principal. Complete the claim only after explicit approval."
-      };
-    }
-    const warnings = [];
-    const responseRoomId = optionalUUID(response.room_id);
-    const seatId = optionalUUID(response.seat_id);
-    const participantId = optionalUUID(response.participant_id);
-    if (responseRoomId !== handoff.roomId)
-      warnings.push("Parle claim succeeded, but the response room identifier was missing or did not match the handoff.");
-    if (!seatId)
-      warnings.push("Parle claim succeeded without a valid seat identifier in the response.");
-    if (!participantId)
-      warnings.push("Parle claim succeeded without a valid participant identifier in the response.");
-    if (response.state !== "seated")
-      warnings.push("Parle claim succeeded without the expected seated state label in the response.");
-    const deleteHandoff = params.deleteHandoffOnSuccess !== false;
-    let handoffDeleted = false;
-    let cleanupWarning;
-    if (deleteHandoff) {
-      try {
-        unlinkSync3(params.handoffPath);
-        handoffDeleted = true;
-      } catch {
-        cleanupWarning = `Claim succeeded, but the private handoff could not be deleted. Remove it manually: ${params.handoffPath}`;
-      }
-    }
-    return {
-      action: "complete",
-      inviteId: handoff.inviteId,
-      roomId: handoff.roomId,
-      ...seatId ? { seatId } : {},
-      ...participantId ? { participantId } : {},
-      state: response.state === "seated" ? "seated" : "completed",
-      targetPrincipalId: handoff.targetPrincipalId,
-      targetHandle: handoff.targetHandle,
-      handoffDeleted,
-      ...warnings.length ? { warnings } : {},
-      ...cleanupWarning ? { cleanupWarning } : {},
-      next: "The principal now holds an ordinary direct seat. Agent seating and room-bound agent credentials are separate follow-up actions."
-    };
+    void params;
+    void signal;
+    throw new Error("parle_claim_principal_invite is retired: ADR-0100 removed bearer capability invitations. Use parle_accept_room_invitation with a registered-principal room invitation, or parle_connect_own_agent for agent seats.");
   }
   async invitationStatus(config, invitation, signal) {
     const inviteId = parseInvitationReference(invitation);
@@ -6550,7 +6483,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.31";
+var PI_EXTENSION_VERSION = "0.7.32";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

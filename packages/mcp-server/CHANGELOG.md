@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.27 (2026-08-11)
+
+- Bundle @parlehq/agent-client 0.8.26: 2026-08-10 wire default and terminal retirement of the bearer capability claim surface (ADR-0100).
+
 ## 0.7.26 (2026-08-11)
 
 - Return the shared-client saved-start plan and remove harness-specific missing-start guidance from the bundled runtime.

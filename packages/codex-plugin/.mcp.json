@@ -10,7 +10,7 @@
         "PARLE_RESPONSIVE_DELIVERY": "hook-bridge",
         "PARLE_HOOK_BRIDGE_SCOPE": "codex-plugin",
         "PARLE_INTEGRATION_NAME": "@parlehq/codex-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.6.26"
+        "PARLE_INTEGRATION_VERSION": "0.6.27"
       }
     }
   }

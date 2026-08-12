@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.32 (2026-08-11)
+
+- Bundle the 2026-08-10 wire default and capability-claim retirement (ADR-0100).
+
 ## 0.7.31 (2026-08-11)
 
 - Move saved starts under the explicit `/parle start` namespace, execute the shared plan, reject loose free-text fallbacks, and abort cleanly when the save dialog is cancelled.

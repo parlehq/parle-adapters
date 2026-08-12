@@ -433,116 +433,26 @@ test("target-session mint rejects authority material and immutable target drift"
   } finally { f.cleanup(); }
 });
 
-test("principal invite preview and complete use the private bundle and delete it only after success", async () => {
-  const f = fixture();
-  const calls = [];
-  try {
-    const inviteDir = join(f.home, ".parle", "invites");
-    mkdirSync(inviteDir, { mode: 0o700 });
-    const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({
-      schemaVersion: 1,
-      kind: "parle-principal-invite",
-      apiVersion: "2026-08-09",
-      inviteId: INVITE_ID,
-      roomId: ROOM_ID,
-      secret: SECRET,
-      code: CODE,
-      seatType: "principal",
-      targetPrincipalId: PRINCIPAL_ID,
-      targetHandle: "kljensen",
-      offeredRights: [],
-      createdAt: "2026-07-19T20:00:00.000Z",
-      expiresAt: "2026-07-26T20:00:00.000Z",
-    }), { mode: 0o600 });
-    const client = new ParleAccountClient({
-      cwd: f.cwd,
-      env: f.env,
-      fetch: async (url, init) => {
-        const path = new URL(url).pathname;
-        calls.push({ path, body: JSON.parse(init.body), cookie: init.headers.Cookie });
-        if (path.endsWith("/preview")) return response({ room_id: ROOM_ID, assurance: "unhardened", facts: [], seat_type: "principal", offered_rights: [], expires_at: "2026-07-26T20:00:00Z", history_visible: true });
-        return response({ room_id: ROOM_ID, seat_id: SEAT_ID, participant_id: PARTICIPANT_ID, state: "seated", generation: "g0", since_seq: 0, actor: null }, 201);
-      },
-    });
-    const preview = await client.claimPrincipalInvite({ action: "preview", handoffPath });
-    assert.equal(preview.roomId, ROOM_ID);
-    assert.equal(preview.historyVisible, true);
-    assert.equal(existsSync(handoffPath), true);
-    const complete = await client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "Kyle approved admission" });
-    assert.equal(complete.seatId, SEAT_ID);
-    assert.equal(complete.handoffDeleted, true);
-    assert.equal(existsSync(handoffPath), false);
-    assert.deepEqual(calls, [
-      { path: "/v/claim/preview", body: { secret: SECRET, code: CODE }, cookie: "__Host-parle_session=human-cookie" },
-      { path: "/v/claim/complete", body: { secret: SECRET, code: CODE }, cookie: "__Host-parle_session=human-cookie" },
-    ]);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test("a successful claim consumes the handoff even when advisory response fields drift", async () => {
-  const f = fixture();
-  try {
-    const inviteDir = join(f.home, ".parle", "invites");
-    mkdirSync(inviteDir, { mode: 0o700 });
-    const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-09", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
-    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ accepted: true }, 201) });
-    const result = await client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "claim" });
-    assert.equal(result.state, "completed");
-    assert.equal(result.roomId, ROOM_ID);
-    assert.equal(result.handoffDeleted, true);
-    assert.equal(result.warnings.length, 4);
-    assert.equal(existsSync(handoffPath), false);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test("claim failures redact the capability and preserve the handoff", async () => {
-  const f = fixture();
-  try {
-    const inviteDir = join(f.home, ".parle", "invites");
-    mkdirSync(inviteDir, { mode: 0o700 });
-    const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
-    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", apiVersion: "2026-08-09", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE, seatType: "principal", targetPrincipalId: PRINCIPAL_ID, targetHandle: "kljensen", offeredRights: [], createdAt: "2026-07-19T20:00:00Z", expiresAt: "2026-07-26T20:00:00Z" }), { mode: 0o600 });
-    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ error: { code: "unauthenticated", message: `bad ${SECRET} ${CODE}` } }, 401) });
-    await assert.rejects(client.claimPrincipalInvite({ action: "complete", confirmMutation: true, reason: "test", handoffPath, confirmMutation: true, reason: "claim" }), (error) => {
-      assert.equal(error.message.includes(SECRET), false);
-      assert.equal(error.message.includes(CODE), false);
-      assert.match(error.message, /<redacted>/);
-      return true;
-    });
-    assert.equal(existsSync(handoffPath), true);
-  } finally {
-    f.cleanup();
-  }
-});
-
-test("claim rejects symlinked and permissive handoff files before network access", { skip: process.platform === "win32" }, async () => {
+test("claimPrincipalInvite is terminally retired and never touches handoff or network", async () => {
   const f = fixture();
   let called = false;
   try {
     const inviteDir = join(f.home, ".parle", "invites");
     mkdirSync(inviteDir, { mode: 0o700 });
-    const real = join(inviteDir, `${INVITE_ID}.json`);
-    const link = join(inviteDir, "019f7c00-0000-7000-8000-000000000099.json");
-    writeFileSync(real, "{}", { mode: 0o600 });
-    symlinkSync(real, link);
+    const handoffPath = join(inviteDir, `${INVITE_ID}.json`);
+    writeFileSync(handoffPath, JSON.stringify({ schemaVersion: 1, kind: "parle-principal-invite", inviteId: INVITE_ID, roomId: ROOM_ID, secret: SECRET, code: CODE }), { mode: 0o600 });
     const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { called = true; return response({}); } });
-    const outside = join(f.home, "019f7c00-0000-7000-8000-000000000088.json");
-    writeFileSync(outside, "{}", { mode: 0o600 });
-    await assert.rejects(client.claimPrincipalInvite({ action: "preview", handoffPath: outside }), /must resolve directly inside/);
-    await assert.rejects(client.claimPrincipalInvite({ action: "preview", handoffPath: link }), /must not be a symbolic link/);
-    unlinkSync(link);
-    chmodSync(real, 0o644);
-    await assert.rejects(client.claimPrincipalInvite({ action: "preview", handoffPath: real }), /must be mode 0600/);
-    chmodSync(real, 0o600);
-    chmodSync(inviteDir, 0o755);
-    await assert.rejects(client.claimPrincipalInvite({ action: "preview", handoffPath: real }), /invite directory must be mode 0700/);
+    for (const action of ["preview", "complete"]) {
+      await assert.rejects(client.claimPrincipalInvite({ action, handoffPath, confirmMutation: true, reason: "retired" }), (error) => {
+        assert.match(error.message, /retired/);
+        assert.match(error.message, /parle_accept_room_invitation/);
+        assert.equal(error.message.includes(SECRET), false);
+        assert.equal(error.message.includes(CODE), false);
+        return true;
+      });
+    }
     assert.equal(called, false);
+    assert.equal(existsSync(handoffPath), true);
   } finally {
     f.cleanup();
   }

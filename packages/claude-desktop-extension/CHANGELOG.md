@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.27 (2026-08-11)
+
+- Bundle the 2026-08-10 wire default and capability-claim retirement (ADR-0100).
+
 ## 0.8.26 (2026-08-11)
 
 - Refresh the bundled MCP runtime with shared saved-start planning and harness-neutral missing-start errors.

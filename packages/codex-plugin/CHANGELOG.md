@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.27 (2026-08-11)
+
+- Bundle the 2026-08-10 wire default and capability-claim retirement (ADR-0100).
+
 ## 0.6.26 (2026-08-11)
 
 - Document the canonical `/parle start` namespace and refresh the MCP bundle with shared saved-start planning.
