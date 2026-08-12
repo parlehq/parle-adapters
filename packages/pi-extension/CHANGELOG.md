@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.33 (2026-08-11)
+
+- Expose target-proof handle-or-email person invitation minting and privacy-flat email results (#113).
+
 ## 0.7.32 (2026-08-11)
 
 - Bundle the 2026-08-10 wire default and capability-claim retirement (ADR-0100).

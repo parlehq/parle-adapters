@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.27 (2026-08-11)
+
+- Move principal invitation minting to the target-proof person endpoint with leading-at handle or email targets, idempotency keys, strict handle results, and honest privacy-flat email outcomes (#113).
+
 ## 0.8.26 (2026-08-11)
 
 - ADR-0100 hard cut: default Parle-Version advances to 2026-08-10; parle_claim_principal_invite fails fast as terminally retired (capability claims answer 410 invite_capability_retired server-side) and directs callers to parle_accept_room_invitation / parle_connect_own_agent.

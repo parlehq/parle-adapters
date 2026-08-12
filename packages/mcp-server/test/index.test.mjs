@@ -324,7 +324,7 @@ test("account-tool errors preserve actionable invitation denial fields", async (
   try {
     const result = await client.callTool({ name: "parle_mint_principal_invite", arguments: {
       roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261",
-      principalHandle: "kljensen",
+      target: "@kljensen",
       confirmMutation: true,
       reason: "Invite Kyle",
     } });
@@ -580,7 +580,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(seat.structuredContent.seat_id, "seat-1");
     const hardening = await client.callTool({ name: "parle_harden_account", arguments: { action: "status" } });
     assert.equal(hardening.structuredContent.state, "needs_password");
-    const minted = await client.callTool({ name: "parle_mint_principal_invite", arguments: { roomId: "room-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" } });
+    const minted = await client.callTool({ name: "parle_mint_principal_invite", arguments: { roomId: "room-1", target: "@kyle", confirmMutation: true, reason: "invite" } });
     assert.equal(minted.structuredContent.handoffPath, "/private/invite.json");
     const previewed = await client.callTool({ name: "parle_claim_principal_invite", arguments: { action: "preview", handoffPath: "/private/invite.json" } });
     assert.equal(previewed.structuredContent.action, "preview");
@@ -596,7 +596,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
       ["add-own-agent-seat", { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" }],
       ["harden-account", { action: "status" }],
-      ["mint-invite", { roomId: "room-1", principalHandle: "kyle", confirmMutation: true, reason: "invite" }],
+      ["mint-invite", { roomId: "room-1", target: "@kyle", confirmMutation: true, reason: "invite" }],
       ["claim-invite", { action: "preview", handoffPath: "/private/invite.json" }],
     ]);
   } finally {

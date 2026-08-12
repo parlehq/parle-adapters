@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.28 (2026-08-11)
+
+- Expose the target-proof person mint contract with one handle-or-email target and privacy-flat email guidance (#113).
+
 ## 0.7.27 (2026-08-11)
 
 - Bundle @parlehq/agent-client 0.8.26: 2026-08-10 wire default and terminal retirement of the bearer capability claim surface (ADR-0100).

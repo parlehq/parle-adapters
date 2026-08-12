@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.30 (2026-08-11)
+
+- Bundle target-proof handle-or-email person invitation minting and update operator guidance (#113).
+
 ## 0.9.29 (2026-08-11)
 
 - Bundle the 2026-08-10 wire default and capability-claim retirement (ADR-0100).

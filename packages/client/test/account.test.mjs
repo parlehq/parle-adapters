@@ -323,42 +323,54 @@ test("shared account client creates rooms and admits own agents through fixed hu
   } finally { f.cleanup(); }
 });
 
-test("principal invite mint resolves a handle and returns a non-secret target-session locator", async () => {
+test("principal invite mint supports target-proof handle and privacy-flat email targets", async () => {
   const f = fixture();
   const calls = [];
   try {
+    const responses = [
+      response({
+        invite_id: INVITE_ID,
+        invitation_url: `https://app.parle.sh/room-invitations/${INVITE_ID}`,
+        target_kind: "principal",
+        target_principal_id: PRINCIPAL_ID,
+        target_agent_id: null,
+        target_display: { handle: "kljensen" },
+        agent_admission: null,
+        offered_rights: [],
+        expires_at: "2026-07-26T20:00:00Z",
+        replayed: false,
+      }, 201),
+      response({ status: "accepted" }, 202),
+    ];
     const client = new ParleAccountClient({
       cwd: f.cwd,
       env: f.env,
       fetch: async (url, init) => {
         calls.push({ url: String(url), method: init.method, headers: init.headers, body: JSON.parse(init.body) });
-        return response({
-          invite_id: INVITE_ID,
-          room_id: ROOM_ID,
-          claim_mode: "target_session",
-          invitation_url: `https://app.parle.sh/room-invitations/${INVITE_ID}`,
-          seat_type: "principal",
-          target_principal_id: PRINCIPAL_ID,
-          target_display: { handle: "kljensen" },
-          offered_rights: [],
-          expires_at: "2026-07-26T20:00:00Z",
-        }, 201);
+        return responses.shift();
       },
     });
-    const result = await client.mintPrincipalInvite({ roomId: ROOM_ID, principalHandle: "KLJENSEN", confirmMutation: true, reason: "Invite Kyle" });
-    assert.equal(result.targetPrincipalId, PRINCIPAL_ID);
-    assert.equal(result.targetHandle, "kljensen");
-    assert.equal(result.invitationUrl, `https://app.parle.sh/room-invitations/${INVITE_ID}`);
-    assert.equal(result.sensitive, false);
-    assert.equal(JSON.stringify(result).includes("secret"), false);
-    assert.deepEqual(calls[0].body, { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen" } });
+    const handle = await client.mintPrincipalInvite({ roomId: ROOM_ID, target: "@KLJENSEN", confirmMutation: true, reason: "Invite Kyle" });
+    assert.equal(handle.targetPrincipalId, PRINCIPAL_ID);
+    assert.equal(handle.targetHandle, "kljensen");
+    assert.equal(handle.invitationUrl, `https://app.parle.sh/room-invitations/${INVITE_ID}`);
+    assert.equal(handle.sensitive, false);
+    assert.equal(JSON.stringify(handle).includes("secret"), false);
+    assert.equal(new URL(calls[0].url).pathname, `/v/rooms/${ROOM_ID}/invites/person`);
+    assert.deepEqual(calls[0].body, { target: "@kljensen", offered_rights: [] });
+    assert.match(calls[0].headers["Idempotency-Key"], /^[0-9a-f-]{36}$/);
 
-    await client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "Invite exact Kyle" });
-    assert.deepEqual(calls[1].body, { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen", principal_id: PRINCIPAL_ID } });
+    const email = await client.mintPrincipalInvite({ roomId: ROOM_ID, target: "Gilman+test2@PARLE.SH.", confirmMutation: true, reason: "Invite by email" });
+    assert.deepEqual(calls[1].body, { target: "Gilman+test2@parle.sh", offered_rights: [] });
+    assert.equal(email.status, "accepted");
+    assert.equal(email.privacyFlat, true);
+    assert.equal(email.expiresInDays, 30);
+    assert.match(email.next, /without disclosing account existence/);
+    assert.equal(JSON.stringify(email).includes("inviteId"), false);
 
     await assert.rejects(
-      client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: "", principalHandle: "kljensen", confirmMutation: true, reason: "Reject an empty exact target" }),
-      /principalId must be a non-zero UUID/,
+      client.mintPrincipalInvite({ roomId: ROOM_ID, target: "kljensen", confirmMutation: true, reason: "Reject bare handle" }),
+      /leading-at principal handle or one email address/,
     );
     assert.equal(calls.length, 2);
     assert.equal(existsSync(join(f.home, ".parle", "invites")), false);
@@ -383,7 +395,7 @@ test("principal invite mint preserves recognized actionable human policy denials
       } }, 403),
     });
     await assert.rejects(
-      client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "Invite Kyle" }),
+      client.mintPrincipalInvite({ roomId: ROOM_ID, target: "@kljensen", confirmMutation: true, reason: "Invite Kyle" }),
       (error) => {
         assert.equal(error.status, 403);
         assert.equal(error.code, "forbidden");
@@ -411,7 +423,7 @@ test("principal invite mint ignores unrecognized denial hints", async () => {
       } }, 403),
     });
     await assert.rejects(
-      client.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "Invite Kyle" }),
+      client.mintPrincipalInvite({ roomId: ROOM_ID, target: "@kljensen", confirmMutation: true, reason: "Invite Kyle" }),
       (error) => {
         assert.equal(error.reason, undefined);
         assert.equal(error.nextAction, undefined);
@@ -422,14 +434,16 @@ test("principal invite mint ignores unrecognized denial hints", async () => {
   } finally { f.cleanup(); }
 });
 
-test("target-session mint rejects authority material and immutable target drift", async () => {
+test("target-proof handle mint rejects authority material and immutable target drift", async () => {
   const f = fixture();
   try {
-    const base = { invite_id: INVITE_ID, room_id: ROOM_ID, claim_mode: "target_session", invitation_url: `https://app.parle.sh/room-invitations/${INVITE_ID}`, seat_type: "principal", target_principal_id: PRINCIPAL_ID, target_display: { handle: "kljensen" }, offered_rights: [], expires_at: "2026-07-26T20:00:00Z" };
+    const base = { invite_id: INVITE_ID, invitation_url: `https://app.parle.sh/room-invitations/${INVITE_ID}`, target_kind: "principal", target_principal_id: PRINCIPAL_ID, target_agent_id: null, target_display: { handle: "kljensen" }, agent_admission: null, offered_rights: [], expires_at: "2026-07-26T20:00:00Z", replayed: false };
     const secret = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ ...base, secret: SECRET }, 201) });
-    await assert.rejects(secret.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "invite" }), /authority material/);
-    const mismatch = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ ...base, target_principal_id: "019f3894-bb87-726a-8deb-17d367054427" }, 201) });
-    await assert.rejects(mismatch.mintPrincipalInvite({ roomId: ROOM_ID, principalId: PRINCIPAL_ID, principalHandle: "kljensen", confirmMutation: true, reason: "invite" }), /did not match/);
+    await assert.rejects(secret.mintPrincipalInvite({ roomId: ROOM_ID, target: "@kljensen", confirmMutation: true, reason: "invite" }), /authority material/);
+    const mismatch = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ ...base, target_display: { handle: "someone-else" } }, 201) });
+    await assert.rejects(mismatch.mintPrincipalInvite({ roomId: ROOM_ID, target: "@kljensen", confirmMutation: true, reason: "invite" }), /did not match/);
+    const leakingEmail = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ status: "accepted", invite_id: INVITE_ID }, 202) });
+    await assert.rejects(leakingEmail.mintPrincipalInvite({ roomId: ROOM_ID, target: "test@example.test", confirmMutation: true, reason: "invite" }), /privacy-flat accepted outcome/);
   } finally { f.cleanup(); }
 });
 

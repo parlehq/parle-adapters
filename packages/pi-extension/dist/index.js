@@ -2586,6 +2586,24 @@ function validateHandle(raw, label = "principalHandle") {
   }
   return value;
 }
+function normalizePersonInviteTarget(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (value.startsWith("@")) {
+    if (value.indexOf("@", 1) !== -1)
+      throw new Error("target must be one leading-at principal handle or one email address.");
+    const handle = validateHandle(value.slice(1), "target handle");
+    return { target: `@${handle}`, kind: "handle", handle };
+  }
+  const at = value.lastIndexOf("@");
+  if (at <= 0 || at === value.length - 1)
+    throw new Error("target must be one leading-at principal handle or one email address.");
+  const local = value.slice(0, at);
+  let domain = value.slice(at + 1);
+  domain = domain.endsWith(".") ? domain.slice(0, -1) : domain;
+  if (!domain || domain.endsWith(".") || /[^\x00-\x7f]/.test(domain))
+    throw new Error("target email domain must be non-empty ASCII with at most one trailing root dot.");
+  return { target: `${local}@${domain.toLowerCase()}`, kind: "email" };
+}
 function scrub(value, secrets) {
   let safe = value;
   for (const secret of secrets)
@@ -3366,47 +3384,55 @@ var ParleAccountClient = class {
     if (params.confirmMutation !== true || !params.reason?.trim())
       throw new Error("parle_mint_principal_invite requires confirmMutation=true and a reason.");
     const roomId = validateUUID(params.roomId, "roomId");
-    const principalId = params.principalId === void 0 ? void 0 : validateUUID(params.principalId, "principalId");
-    const principalHandle = validateHandle(params.principalHandle);
-    const target = {
-      kind: "principal",
-      principal_handle: principalHandle,
-      ...principalId ? { principal_id: principalId } : {}
-    };
+    const target = normalizePersonInviteTarget(params.target);
     const config = this.config();
-    const response = await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/invites`, {
+    const response = await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/invites/person`, {
       method: "POST",
-      body: { claim_mode: "target_session", seat_type: "principal", target },
+      headers: { "Idempotency-Key": randomUUID3() },
+      body: { target: target.target, offered_rights: [] },
       signal
     });
+    if (target.kind === "email") {
+      if (response.status !== "accepted" || Object.keys(response).some((key) => key !== "status"))
+        throw new Error("Parle email invitation response was not the expected privacy-flat accepted outcome.");
+      return {
+        status: "accepted",
+        targetKind: "email",
+        privacyFlat: true,
+        expiresInDays: 30,
+        sensitive: false,
+        next: "The request was accepted without disclosing account existence or an invitation locator. Parle sends any locator out of band through the mailer; do not infer delivery or registration from this result."
+      };
+    }
     const inviteId = validateUUID(String(response.invite_id || ""), "response invite_id");
-    const responseRoomId = validateUUID(String(response.room_id || ""), "response room_id");
     const targetPrincipalId = validateUUID(String(response.target_principal_id || ""), "response target_principal_id");
-    if (responseRoomId !== roomId || principalId && targetPrincipalId !== principalId || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
-      throw new Error("Parle invite response did not match the requested immutable target-session principal admission.");
+    if (response.target_kind !== "principal" || response.target_agent_id !== null || response.agent_admission !== null) {
+      throw new Error("Parle person invitation response did not match the requested immutable principal target.");
     }
     if (response.secret || response.code)
-      throw new Error("Parle target-session invite response unexpectedly contained capability authority material.");
+      throw new Error("Parle target-proof invite response unexpectedly contained capability authority material.");
     const offeredRights = assertStringArray(response.offered_rights, "offered_rights");
     if (offeredRights.length !== 0)
       throw new Error("Parle invite response unexpectedly offered elevated room rights.");
     const display = normalizeTargetDisplay(response.target_display);
     const resolvedHandle = validateHandle(display.handle);
-    if (resolvedHandle !== principalHandle)
+    if (resolvedHandle !== target.handle)
       throw new Error("Parle invite response target handle did not match the requested confirmation label.");
     const invitationUrl = String(response.invitation_url || "");
     if (parseInvitationReference(invitationUrl) !== inviteId)
       throw new Error("Parle invite response did not contain a canonical invitation URL.");
+    if (typeof response.replayed !== "boolean" || typeof response.expires_at !== "string")
+      throw new Error("Parle invite response omitted replay or expiry state.");
     return {
       inviteId,
       roomId,
-      claimMode: "target_session",
       invitationUrl,
-      seatType: "principal",
+      targetKind: "principal",
       targetPrincipalId,
       targetHandle: resolvedHandle,
       offeredRights: [],
       expiresAt: response.expires_at,
+      replayed: response.replayed,
       sensitive: false,
       next: "Share the ordinary locator URL out of band. Possession grants no authority; only the authenticated immutable target principal can preview or accept it."
     };
@@ -6483,7 +6509,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.32";
+var PI_EXTENSION_VERSION = "0.7.33";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -8269,12 +8295,11 @@ function parleExtension(pi) {
   pi.registerTool({
     name: "parle_mint_principal_invite",
     label: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. Pass the principal handle for server-side resolution and immutable binding at mint time; optionally pass a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical room-invitation URL for out-of-band sharing; possession grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
+    description: "Mint one target-proof ordinary person invitation through the human-session room endpoint. Pass target as a leading-at principal handle or an email address. Handle targets return a non-secret locator for the resolved immutable principal. Email targets return only a privacy-flat accepted result: account existence is not disclosed, expiry is fixed at 30 days, and Parle sends any locator out of band through the mailer. Possession of a locator grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
     parameters: Type.Object({
       roomId: Type.String({ description: "Shared room UUID." }),
-      principalId: Type.Optional(Type.String({ description: "Optional immutable UUID for a previously resolved high-assurance target. Omit for server-side handle resolution." })),
-      principalHandle: Type.String({ description: "Registered principal handle to resolve at mint time, or the expected handle label when principalId is supplied." }),
-      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm minting the identity-bound ordinary-member invite." })),
+      target: Type.String({ description: "Leading-at principal handle or email address." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm minting the target-proof ordinary-member invite." })),
       reason: Type.Optional(Type.String({ description: "Required explanation for minting the invite." }))
     }),
     async execute(_id, params, signal, _update, ctx) {

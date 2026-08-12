@@ -203,14 +203,13 @@
     },
     "input": [
       "confirmMutation",
-      "principalHandle",
-      "principalId",
       "reason",
-      "roomId"
+      "roomId",
+      "target"
     ],
     "required": [
-      "principalHandle",
-      "roomId"
+      "roomId",
+      "target"
     ]
   },
   "parle_owned_alias_delivery": {

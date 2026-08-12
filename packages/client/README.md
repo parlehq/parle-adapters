@@ -73,7 +73,7 @@ A configured `PARLE_SESSION_ALIAS` is carried across the switch. The target cand
 
 `ParleAccountClient` provides shared registered-principal invitation and exact-agent connection workflows. It resolves the human session only from safe local configuration, fixes mint to an immutable principal UUID and an ordinary principal seat, and keeps generic human-session HTTP closed.
 
-Mint returns a non-secret target-session locator whose possession grants no authority. Acceptance uses the authenticated immutable target and remains separate from agent connection. Each connection operation selects one owned durable agent or deliberately creates an additional one, resumes missing seat and credential steps, and atomically publishes a no-clobber local profile without returning token material.
+Person mint accepts a leading-at handle or email target. Handle mint returns a non-secret target-proof locator whose possession grants no authority. Email mint returns only a privacy-flat accepted result, uses fixed 30-day expiry, and leaves locator delivery to the mailer. Acceptance uses authenticated target proof and remains separate from agent connection. Each connection operation selects one owned durable agent or deliberately creates an additional one, resumes missing seat and credential steps, and atomically publishes a no-clobber local profile without returning token material.
 
 Legacy private capability claims remain supported. They accept only an absolute owner-owned, non-symlink, bounded, mode-`0600` handoff file. Preview preserves it; complete deletes the recipient copy after confirmed success by default. Handoff content never selects the API host or local session source.
 

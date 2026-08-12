@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.32";
+const PI_EXTENSION_VERSION = "0.7.33";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2246,12 +2246,11 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_mint_principal_invite",
     label: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session room endpoint. Pass the principal handle for server-side resolution and immutable binding at mint time; optionally pass a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical room-invitation URL for out-of-band sharing; possession grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
+    description: "Mint one target-proof ordinary person invitation through the human-session room endpoint. Pass target as a leading-at principal handle or an email address. Handle targets return a non-secret locator for the resolved immutable principal. Email targets return only a privacy-flat accepted result: account existence is not disclosed, expiry is fixed at 30 days, and Parle sends any locator out of band through the mailer. Possession of a locator grants no authority. A definite human account-policy 403 may include a coarse reason and next action; follow it and do not retry until the operator resolves it.",
     parameters: Type.Object({
       roomId: Type.String({ description: "Shared room UUID." }),
-      principalId: Type.Optional(Type.String({ description: "Optional immutable UUID for a previously resolved high-assurance target. Omit for server-side handle resolution." })),
-      principalHandle: Type.String({ description: "Registered principal handle to resolve at mint time, or the expected handle label when principalId is supplied." }),
-      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm minting the identity-bound ordinary-member invite." })),
+      target: Type.String({ description: "Leading-at principal handle or email address." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm minting the target-proof ordinary-member invite." })),
       reason: Type.Optional(Type.String({ description: "Required explanation for minting the invite." })),
     }),
     async execute(_id, params: ParleMintPrincipalInviteParams, signal, _update, ctx) {

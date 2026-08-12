@@ -876,7 +876,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.32" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.33" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1556,7 +1556,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.32");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.33");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1698,19 +1698,20 @@ test("principal invite tools expose link-first mint and separate guided acceptan
   writeFileSync(join(stateDir, "profiles"), "[default]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_fixture\n", { mode: 0o600 });
   writeFileSync(join(stateDir, "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
   globalThis.fetch = async (url, init) => {
-    assert.equal(String(url), "https://api.parle.sh/v/rooms/019f7b46-178f-7a5a-9f7b-b4af2e045261/invites");
-    assert.deepEqual(JSON.parse(init.body), { claim_mode: "target_session", seat_type: "principal", target: { kind: "principal", principal_handle: "kljensen" } });
-    return new Response(JSON.stringify({ invite_id: "019f7c00-0000-7000-8000-000000000010", room_id: "019f7b46-178f-7a5a-9f7b-b4af2e045261", claim_mode: "target_session", invitation_url: "https://app.parle.sh/room-invitations/019f7c00-0000-7000-8000-000000000010", seat_type: "principal", target_principal_id: "019f3894-bb87-726a-8deb-17d367054426", target_display: { handle: "kljensen" }, offered_rights: [], expires_at: "2026-07-26T20:00:00Z" }), { status: 201 });
+    assert.equal(String(url), "https://api.parle.sh/v/rooms/019f7b46-178f-7a5a-9f7b-b4af2e045261/invites/person");
+    assert.deepEqual(JSON.parse(init.body), { target: "@kljensen", offered_rights: [] });
+    assert.match(init.headers["Idempotency-Key"], /^[0-9a-f-]{36}$/);
+    return new Response(JSON.stringify({ invite_id: "019f7c00-0000-7000-8000-000000000010", invitation_url: "https://app.parle.sh/room-invitations/019f7c00-0000-7000-8000-000000000010", target_kind: "principal", target_principal_id: "019f3894-bb87-726a-8deb-17d367054426", target_agent_id: null, target_display: { handle: "kljensen" }, agent_admission: null, offered_rights: [], expires_at: "2026-07-26T20:00:00Z", replayed: false }), { status: 201 });
   };
   const harness = installHarness(cwd);
-  const result = await harness.call("parle_mint_principal_invite", { roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261", principalHandle: "kljensen", confirmMutation: true, reason: "Invite Kyle" });
+  const result = await harness.call("parle_mint_principal_invite", { roomId: "019f7b46-178f-7a5a-9f7b-b4af2e045261", target: "@kljensen", confirmMutation: true, reason: "Invite Kyle" });
   assert.equal(result.details.targetHandle, "kljensen");
   assert.equal(result.details.invitationUrl, "https://app.parle.sh/room-invitations/019f7c00-0000-7000-8000-000000000010");
   assert.equal(result.details.sensitive, false);
   assert.deepEqual(Object.keys(harness.tools.parle_harden_account.parameters.properties).sort(), ["action", "confirmMutation", "reason"]);
   assert.doesNotMatch(JSON.stringify(harness.tools.parle_harden_account.parameters), /password|recovery|provisioning|path/i);
-  assert.deepEqual(Object.keys(harness.tools.parle_mint_principal_invite.parameters.properties).sort(), ["confirmMutation", "principalHandle", "principalId", "reason", "roomId"]);
-  assert.deepEqual([...harness.tools.parle_mint_principal_invite.parameters.required].sort(), ["principalHandle", "roomId"]);
+  assert.deepEqual(Object.keys(harness.tools.parle_mint_principal_invite.parameters.properties).sort(), ["confirmMutation", "reason", "roomId", "target"]);
+  assert.deepEqual([...harness.tools.parle_mint_principal_invite.parameters.required].sort(), ["roomId", "target"]);
   assert.deepEqual(Object.keys(harness.tools.parle_claim_principal_invite.parameters.properties).sort(), ["action", "confirmMutation", "deleteHandoffOnSuccess", "handoffPath", "reason"]);
   assert.deepEqual(Object.keys(harness.tools.parle_accept_room_invitation.parameters.properties).sort(), ["action", "confirmMutation", "invitation", "reason"]);
   assert.deepEqual(Object.keys(harness.tools.parle_connect_own_agent.parameters.properties).sort(), ["action", "agentHandle", "agentId", "confirmMutation", "createAgentHandle", "invitation", "profileLabel", "reason"]);

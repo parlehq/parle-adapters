@@ -453,11 +453,10 @@ export function registerParleTools(
 
   registerTool("parle_mint_principal_invite", {
     title: "Parle Mint Principal Invite",
-    description: "Mint one registered-principal ordinary-seat invitation through the fixed human-session endpoint. Pass a principal handle for server-side resolution and immutable binding at mint time, or optionally include a previously trusted principal UUID for a high-assurance exact target. Returns the resolved identity snapshot and a non-secret canonical room-invitation URL for out-of-band sharing. Possession grants no authority; only the immutable target principal's authenticated session can preview or accept it. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
+    description: "Mint one target-proof ordinary person invitation through the human-session endpoint. Pass target as a leading-at principal handle or an email address. Handle targets return a non-secret locator for the resolved immutable principal. Email targets return only a privacy-flat accepted result: account existence is not disclosed, expiry is fixed at 30 days, and Parle sends any locator out of band through the mailer. Possession of a locator grants no authority. A definite human account-policy 403 may include a coarse reason and nextAction; follow it and do not retry until the operator resolves it.",
     inputSchema: {
       roomId: z.string(),
-      principalId: z.string().optional(),
-      principalHandle: z.string(),
+      target: z.string(),
       confirmMutation: z.boolean().optional(),
       reason: z.string().optional(),
     },

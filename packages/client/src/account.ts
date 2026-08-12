@@ -38,8 +38,7 @@ export type AccountClientOptions = {
 
 export type MintPrincipalInviteParams = {
   roomId: string;
-  principalId?: string;
-  principalHandle: string;
+  target: string;
   confirmMutation?: boolean;
   reason?: string;
 };
@@ -311,6 +310,22 @@ function validateHandle(raw: string, label = "principalHandle"): string {
     throw new Error(`${label} must normalize to an unreserved 2-20 character handle using lowercase letters, digits, and hyphens with no leading, trailing, or consecutive hyphens.`);
   }
   return value;
+}
+
+function normalizePersonInviteTarget(raw: unknown): { target: string; kind: "handle" | "email"; handle?: string } {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (value.startsWith("@")) {
+    if (value.indexOf("@", 1) !== -1) throw new Error("target must be one leading-at principal handle or one email address.");
+    const handle = validateHandle(value.slice(1), "target handle");
+    return { target: `@${handle}`, kind: "handle", handle };
+  }
+  const at = value.lastIndexOf("@");
+  if (at <= 0 || at === value.length - 1) throw new Error("target must be one leading-at principal handle or one email address.");
+  const local = value.slice(0, at);
+  let domain = value.slice(at + 1);
+  domain = domain.endsWith(".") ? domain.slice(0, -1) : domain;
+  if (!domain || domain.endsWith(".") || /[^\x00-\x7f]/.test(domain)) throw new Error("target email domain must be non-empty ASCII with at most one trailing root dot.");
+  return { target: `${local}@${domain.toLowerCase()}`, kind: "email" };
 }
 
 function scrub(value: string, secrets: string[]): string {
@@ -1063,43 +1078,49 @@ export class ParleAccountClient {
   async mintPrincipalInvite(params: MintPrincipalInviteParams, signal?: AbortSignal) {
     if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_mint_principal_invite requires confirmMutation=true and a reason.");
     const roomId = validateUUID(params.roomId, "roomId");
-    const principalId = params.principalId === undefined ? undefined : validateUUID(params.principalId, "principalId");
-    const principalHandle = validateHandle(params.principalHandle);
-    const target = {
-      kind: "principal",
-      principal_handle: principalHandle,
-      ...(principalId ? { principal_id: principalId } : {}),
-    };
+    const target = normalizePersonInviteTarget(params.target);
     const config = this.config();
-    const response = await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/invites`, {
+    const response = await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/invites/person`, {
       method: "POST",
-      body: { claim_mode: "target_session", seat_type: "principal", target },
+      headers: { "Idempotency-Key": randomUUID() },
+      body: { target: target.target, offered_rights: [] },
       signal,
     });
-    const inviteId = validateUUID(String(response.invite_id || ""), "response invite_id");
-    const responseRoomId = validateUUID(String(response.room_id || ""), "response room_id");
-    const targetPrincipalId = validateUUID(String(response.target_principal_id || ""), "response target_principal_id");
-    if (responseRoomId !== roomId || (principalId && targetPrincipalId !== principalId) || response.seat_type !== "principal" || response.claim_mode !== "target_session") {
-      throw new Error("Parle invite response did not match the requested immutable target-session principal admission.");
+    if (target.kind === "email") {
+      if (response.status !== "accepted" || Object.keys(response).some((key) => key !== "status")) throw new Error("Parle email invitation response was not the expected privacy-flat accepted outcome.");
+      return {
+        status: "accepted",
+        targetKind: "email",
+        privacyFlat: true,
+        expiresInDays: 30,
+        sensitive: false,
+        next: "The request was accepted without disclosing account existence or an invitation locator. Parle sends any locator out of band through the mailer; do not infer delivery or registration from this result.",
+      };
     }
-    if (response.secret || response.code) throw new Error("Parle target-session invite response unexpectedly contained capability authority material.");
+    const inviteId = validateUUID(String(response.invite_id || ""), "response invite_id");
+    const targetPrincipalId = validateUUID(String(response.target_principal_id || ""), "response target_principal_id");
+    if (response.target_kind !== "principal" || response.target_agent_id !== null || response.agent_admission !== null) {
+      throw new Error("Parle person invitation response did not match the requested immutable principal target.");
+    }
+    if (response.secret || response.code) throw new Error("Parle target-proof invite response unexpectedly contained capability authority material.");
     const offeredRights = assertStringArray(response.offered_rights, "offered_rights");
     if (offeredRights.length !== 0) throw new Error("Parle invite response unexpectedly offered elevated room rights.");
     const display = normalizeTargetDisplay(response.target_display);
     const resolvedHandle = validateHandle(display.handle);
-    if (resolvedHandle !== principalHandle) throw new Error("Parle invite response target handle did not match the requested confirmation label.");
+    if (resolvedHandle !== target.handle) throw new Error("Parle invite response target handle did not match the requested confirmation label.");
     const invitationUrl = String(response.invitation_url || "");
     if (parseInvitationReference(invitationUrl) !== inviteId) throw new Error("Parle invite response did not contain a canonical invitation URL.");
+    if (typeof response.replayed !== "boolean" || typeof response.expires_at !== "string") throw new Error("Parle invite response omitted replay or expiry state.");
     return {
       inviteId,
       roomId,
-      claimMode: "target_session",
       invitationUrl,
-      seatType: "principal",
+      targetKind: "principal",
       targetPrincipalId,
       targetHandle: resolvedHandle,
       offeredRights: [],
       expiresAt: response.expires_at,
+      replayed: response.replayed,
       sensitive: false,
       next: "Share the ordinary locator URL out of band. Possession grants no authority; only the authenticated immutable target principal can preview or accept it.",
     };
