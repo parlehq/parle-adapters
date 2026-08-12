@@ -26,6 +26,8 @@
 
 ## 0.8.21 (2026-08-10)
 
+<!-- public-wire-lint: allow wire-version -- historical release note -->
+
 - Pin `Parle-Version: 2026-08-09` for the unified exact-seat admission hard cut.
 
 ## 0.8.20 (2026-08-09)
