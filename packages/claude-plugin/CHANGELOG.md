@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.34 (2026-08-13)
+
+- Own responsive delivery through the bundled hook bridge (#117). `.mcp.json` sets `PARLE_RESPONSIVE_DELIVERY=hook-bridge` with a cwd-derived scope, and hooks run at `SessionStart` (bind plus known-address context), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`. Draining the responsive cursor is what causes core to issue an opaque reply route, so before this release a Claude session was never issued one and `parle_reply` could never be supplied a `replyRouteId`.
+- Keep the standalone watcher as wake-only infrastructure. It polls projection on a dedicated unaliased session and never touches the responsive cursor, so it cannot double-drain or double-acknowledge alongside the bridge.
+- Stop presenting `parle_inbox` as the delivery path in skill guidance. It is an attention read that carries no reply route; injected deliveries are the only route-bearing surface on this host.
+- Requires a Claude Code restart: `.mcp.json` environment is snapshotted at launch.
+
 ## 0.9.33 (2026-08-12)
 
 - Inherit the shared client's in-place durable alias claim for anonymous live sessions (#115, parlehq/parle#797): a first claim now preserves the session, its participants, its wake stream, and outstanding exact-session opaque reply routes.

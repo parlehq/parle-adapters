@@ -1,12 +1,56 @@
 {
-  "description": "Restore bounded Parle known-address context at session boundaries, including compaction restarts.",
+  "description": "Bind the Claude host session to the Parle hook delivery bridge, restore bounded known-address context at session boundaries, and inject queued responsive delivery with its opaque reply route at supported Claude lifecycle boundaries.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --known-address-context",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind --known-address-context",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind",
             "timeout": 5
           }
         ]
