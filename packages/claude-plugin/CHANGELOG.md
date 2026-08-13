@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.35 (2026-08-13)
+
+- Correct skill guidance that 0.9.34 left false: enabling the hook bridge makes `parle_switch_profile` fail closed, because the MCP session, wake stream, delivery queue, and hook binding must change atomically. The skill documented the retired live stop-switch-re-arm sequence as if it still worked. Changing profile now means restarting Claude Code with the target `PARLE_PROFILE`.
+- Restate the skill description: this host receives routed replies; it does not switch profiles live.
+
 ## 0.9.34 (2026-08-13)
 
 - Own responsive delivery through the bundled hook bridge (#117). `.mcp.json` sets `PARLE_RESPONSIVE_DELIVERY=hook-bridge` with a cwd-derived scope, and hooks run at `SessionStart` (bind plus known-address context), `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop`. Draining the responsive cursor is what causes core to issue an opaque reply route, so before this release a Claude session was never issued one and `parle_reply` could never be supplied a `replyRouteId`.

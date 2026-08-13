@@ -1,6 +1,6 @@
 ---
 name: parle
-description: Coordinate through Parle rooms, switch profiles safely, accept link-first principal invitations, and connect owned agents using the Parle MCP tools.
+description: Coordinate through Parle rooms, receive routed replies, accept link-first principal invitations, and connect owned agents using the Parle MCP tools.
 ---
 
 # Parle Claude Plugin Skill
@@ -103,9 +103,13 @@ Use `parle_saved_start` actions `list`, `show`, `save`, and `delete` to manage t
 
 Examples of valid `next` values include `say hello!`, `ask me what I want to work on`, `/issue-collector`, `load the GalexC Guru skill and initialize`, and `inspect the current task, then suggest a plan`.
 
-## Live profile switching
+## Profile switching
 
-`parle_switch_profile` changes the room binding held by the MCP process without editing `.env` or the profile catalog. Claude Code's watcher is a sibling Bash task, so the skill owns a guarded stop, switch, and re-arm sequence:
+**Live switching is unavailable on this host.** The hook bridge owns responsive delivery, so `parle_switch_profile` fails closed with a message telling you to restart. The MCP session, wake stream, delivery queue, and hook binding must change atomically; a live rebind would strand queued rows against the old binding. This is a deliberate trade for receiving opaque reply routes at all (#117), and it replaced the guarded stop-switch-re-arm sequence documented through 0.9.33.
+
+To change profile: stop the watcher, restart Claude Code with the target `PARLE_PROFILE`, then `parle_connect` and arm a fresh watch from the returned cursor and identities. Do not report a switch as done because a tool call was attempted; read the error.
+
+The retired live sequence is preserved below only to explain what the error replaced. Do not follow it on this host:
 
 1. Call `parle_status` and capture the current profile, cursor, `agentSessionId`, and room participant id. If the target is already active, leave the watcher untouched and report the no-op. Live switching requires a named profile. A configured `PARLE_SESSION_ALIAS` is carried across the switch: the target candidate is prepared without claiming and the claim is activated only at the pre-claim edge, so a failed preparation cannot supersede the active named route. Alias authority is scoped by durable agent, so a switch to a profile on a different durable agent produces a different address and retires the source route explicitly. If the current binding is direct configuration, stop and recommend moving it into the profile catalog or restarting Claude with the target binding.
 2. Stop the active `parle-watch.sh` background task and verify that task is gone. Do not claim it stopped merely because a stop was requested.
@@ -115,7 +119,7 @@ Examples of valid `next` values include `say hello!`, `ask me what I want to wor
 
 The watcher is intentionally stopped before the single-phase switch. This creates a few seconds of bounded watcher downtime but no message loss: the re-armed watcher resumes from the captured or target cursor. Do not build an ad hoc two-phase prepared-session flow.
 
-Profile switches last only for the current MCP process. A Claude restart returns to configured profile selection.
+Profile switches last only for the current MCP process. A Claude restart returns to configured profile selection. On this host the restart IS the switch.
 
 ## Responsive watch (pre-channels)
 
