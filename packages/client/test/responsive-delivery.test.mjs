@@ -60,6 +60,18 @@ test("resolver correlates only agent session and applies deterministic selection
   const predecessor = active("watching", 10, "agent-a");
   const successor = active("watching", 11, "agent-a");
   assert.equal(resolveResponsiveDelivery([predecessor, successor], "agent-a", { now: now(), inspectPid: live }).state, "conflict");
+  const hookBridge = { ...predecessor, publisher: { ...predecessor.publisher, name: "@parlehq/mcp-server:hook-bridge" } };
+  const secondHookBridge = { ...successor, publisher: { ...successor.publisher, name: "@parlehq/mcp-server:hook-bridge" } };
+  const wakeOnly = { ...successor, publisher: { ...successor.publisher, name: "@parlehq/mcp-server:standalone-watch" } };
+  const secondWakeOnly = { ...predecessor, publisher: { ...predecessor.publisher, name: "@parlehq/mcp-server:standalone-watch" } };
+  const bridged = resolveResponsiveDelivery([hookBridge, wakeOnly], "agent-a", { now: now(), inspectPid: live });
+  assert.equal(bridged.state, "watching", "a wake-only helper does not conflict with the delivery owner");
+  assert.equal(bridged.publisher?.name, "@parlehq/mcp-server:hook-bridge");
+  assert.equal(resolveResponsiveDelivery([hookBridge, secondHookBridge, wakeOnly], "agent-a", { now: now(), inspectPid: live }).state, "conflict", "multiple delivery owners still conflict");
+  assert.equal(resolveResponsiveDelivery([wakeOnly, secondWakeOnly], "agent-a", { now: now(), inspectPid: live }).state, "watching", "multiple wake-only helpers are not delivery-owner conflicts");
+  assert.equal(resolveResponsiveDelivery([wakeOnly], "agent-a", { now: now(), inspectPid: live }).state, "watching", "wake-only evidence remains a backward-compatible fallback");
+  const terminalHook = buildResponsiveDeliverySnapshot({ ...base(12), publisher: hookBridge.publisher }, "terminal", { reason: "bridge stopped" }, now());
+  assert.equal(resolveResponsiveDelivery([terminalHook, wakeOnly], "agent-a", { now: now(), inspectPid: live }).state, "terminal", "wake-only evidence never masks owner failure");
   assert.deepEqual(resolveResponsiveDelivery([predecessor], "agent-b", { now: now(), inspectPid: live }), { state: "unknown", reason: "no_evidence_for_session" });
   assert.deepEqual(resolveResponsiveDelivery([], "agent-a", { now: now(), inspectPid: live }), { state: "unknown", reason: "no_evidence_for_session" });
   assert.equal(resolveResponsiveDelivery([predecessor, active("watching", 13, "agent-b")], "agent-a", { now: now(), inspectPid: live }).state, "watching", "a foreign live owner does not create a conflict");

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.15 (2026-08-14)
+
+- Refresh the shared responsive-delivery resolver so wake-only helpers do not create false owner conflicts.
+
 ## 0.7.14 (2026-08-14)
 
 - Refresh the native Parle runtime with typed local profile deletion and definite adapter response-contract errors (#124, #125).

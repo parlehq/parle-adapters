@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.35 (2026-08-14)
+
+- Resolve hook-bridge delivery as healthy when the same session also has the expected wake-only standalone watcher.
+
 ## 0.7.34 (2026-08-14)
 
 - Expose degraded-safe `parle_delete_profile` through the shared local profile lifecycle and preserve adapter response-contract provenance separately from server error codes (#124, #125).

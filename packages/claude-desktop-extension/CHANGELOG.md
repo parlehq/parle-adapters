@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.35 (2026-08-14)
+
+- Refresh the bundled MCP runtime so wake-only helpers do not create false responsive-delivery owner conflicts.
+
 ## 0.8.34 (2026-08-14)
 
 - Refresh the bundled MCP runtime with degraded-safe local profile deletion and definite adapter response-contract errors (#124, #125).

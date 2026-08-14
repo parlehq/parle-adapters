@@ -69,6 +69,10 @@ export type ResponsiveDeliveryRecorderOptions = {
 
 const ACTIVE = new Set<ResponsiveDeliveryPublishedState>(["starting", "watching", "backoff"]);
 const PUBLISHED = new Set<ResponsiveDeliveryPublishedState>(["starting", "watching", "backoff", "stopped", "terminal"]);
+// Legacy publisher identity for the MCP helper that wakes a host but never
+// drains or acknowledges responsive delivery. Explicit evidence roles can
+// replace this compatibility classification if more helper types appear.
+const STANDALONE_WAKE_ONLY_PUBLISHER = "@parlehq/mcp-server:standalone-watch";
 const ISO = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 const string = (value: unknown, max = 256): string | undefined => typeof value === "string" && value.length > 0 && value.length <= max ? value : undefined;
 const pruneCursor = new Map<string, number>();
@@ -218,15 +222,22 @@ function result(state: ResponsiveDeliveryState, snapshot?: ResponsiveDeliverySna
 export function resolveResponsiveDelivery(snapshots: readonly ResponsiveDeliverySnapshot[], agentSessionId: string, options: ResponsiveDeliveryResolveOptions = {}): ResponsiveDeliveryResult {
   const now = options.now || new Date();
   const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
-  const active = exact.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
-  if (active.length > 1) return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
-  if (active.length === 1) return result(active[0].state, active[0], now);
-  const tombstones = exact.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
+  const owners = exact.filter((snapshot) => snapshot.publisher.name !== STANDALONE_WAKE_ONLY_PUBLISHER);
+  // Owner evidence always outranks wake-only evidence, including terminal and
+  // stale owner states. Wake helpers are fallback diagnostics, never owners.
+  const selected = owners.length > 0 ? owners : exact;
+  const active = selected.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
+  if (owners.length > 0 && active.length > 1) return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
+  if (active.length > 0) {
+    const newest = active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+    return result(newest.state, newest, now);
+  }
+  const tombstones = selected.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
   if (tombstones.length) {
     const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
     return result(newest.state, newest, now);
   }
-  const stale = exact.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const stale = selected.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return stale.length ? result("stale", stale[0], now) : { state: "unknown", reason: "no_evidence_for_session" };
 }
 

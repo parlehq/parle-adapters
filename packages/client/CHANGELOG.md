@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.34 (2026-08-14)
+
+- Treat the standalone MCP watcher as a wake-only helper when a responsive-delivery owner is active, preventing false delivery conflicts.
+
 ## 0.8.33 (2026-08-14)
 
 - Add exact path-free local profile deletion with confirmation, idempotent missing results, owner-only atomic replacement, fail-closed lock contention, and calling-client profile guards (#125).

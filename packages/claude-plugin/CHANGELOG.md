@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.39 (2026-08-14)
+
+- Stop reporting a delivery conflict when the persistent hook bridge and expected wake-only standalone watcher are both active for one Claude session.
+
 ## 0.9.38 (2026-08-14)
 
 - Refresh the bundled MCP runtime with degraded-safe local profile deletion and definite adapter response-contract errors (#124, #125).

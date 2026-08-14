@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.40 (2026-08-14)
+
+- Refresh the shared responsive-delivery resolver so wake-only helpers do not create false owner conflicts.
+
 ## 0.7.39 (2026-08-14)
 
 - Add native `parle_delete_profile` with degraded-safe local repair, live-client profile refusal, idempotent missing results, and no credential or path disclosure (#125).

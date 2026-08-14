@@ -3958,6 +3958,7 @@ var RESPONSIVE_DELIVERY_PRUNE_LIMIT = 32;
 var RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT = 64;
 var ACTIVE = /* @__PURE__ */ new Set(["starting", "watching", "backoff"]);
 var PUBLISHED = /* @__PURE__ */ new Set(["starting", "watching", "backoff", "stopped", "terminal"]);
+var STANDALONE_WAKE_ONLY_PUBLISHER = "@parlehq/mcp-server:standalone-watch";
 var ISO = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
 var string = (value, max = 256) => typeof value === "string" && value.length > 0 && value.length <= max ? value : void 0;
 var pruneCursor2 = /* @__PURE__ */ new Map();
@@ -4130,17 +4131,21 @@ function result(state, snapshot, now = /* @__PURE__ */ new Date()) {
 function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
   const now = options.now || /* @__PURE__ */ new Date();
   const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
-  const active = exact.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
-  if (active.length > 1)
+  const owners = exact.filter((snapshot) => snapshot.publisher.name !== STANDALONE_WAKE_ONLY_PUBLISHER);
+  const selected = owners.length > 0 ? owners : exact;
+  const active = selected.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
+  if (owners.length > 0 && active.length > 1)
     return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
-  if (active.length === 1)
-    return result(active[0].state, active[0], now);
-  const tombstones = exact.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
+  if (active.length > 0) {
+    const newest = active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+    return result(newest.state, newest, now);
+  }
+  const tombstones = selected.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
   if (tombstones.length) {
     const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
     return result(newest.state, newest, now);
   }
-  const stale = exact.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const stale = selected.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return stale.length ? result("stale", stale[0], now) : { state: "unknown", reason: "no_evidence_for_session" };
 }
 function isDefinitelyGone(snapshot, inspectPid) {
@@ -22224,7 +22229,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.14";
+var ADAPTER_VERSION = "0.7.15";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
