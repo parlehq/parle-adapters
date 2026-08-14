@@ -10,6 +10,7 @@ MCP v1 room tools:
 
 - `parle_status`
 - `parle_switch_profile`
+- `parle_delete_profile`
 - `parle_session_alias`
 - `parle_saved_start`
 - `parle_setup`
@@ -40,6 +41,8 @@ MCP account-plane tools:
 ## Configuration
 
 The stdio server uses the shared client resolver. It supports direct process env and project `.env` configuration, plus atomic `PARLE_PROFILE` bindings from a single profile catalog (`~/.parle/profiles` by default, `PARLE_PROFILES_PATH` to relocate; the override replaces the default entirely). An explicit profile cannot be mixed with direct room-binding values. With no explicit binding, `[default]` is selected when present. See [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md) for the accepted storage rationale.
+
+`parle_delete_profile` removes one exact inactive local credential profile with explicit confirmation. It is available during degraded startup, makes no server request, returns an idempotent missing result, and never returns credential material or resolved filesystem paths.
 
 Saved starts live in the credential-free `launches` catalog beside the resolved profile catalog. `parle_saved_start` lists, shows, saves, and deletes entries with optional `profile`, `alias`, and `next` fields. Save and delete require explicit mutation confirmation. The shared client builds the ordered profile, alias, and host-instruction plan returned by show, so every adapter uses one ordering contract. The MCP server never interprets `next`; the host passes it through its normal instruction path. `parle_session_alias` performs the optional live alias step.
 

@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.38";
+const PI_EXTENSION_VERSION = "0.7.39";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -149,6 +149,7 @@ type ParleLoginParams = LoginParams;
 type ParleCreateRoomParams = CreateRoomParams;
 type ParleCreateOwnAgentParams = CreateOwnAgentParams;
 type ParleDeleteOwnAgentParams = DeleteOwnAgentParams;
+type ParleDeleteProfileParams = DeleteProfileParams;
 type ParleAddOwnAgentSeatParams = AddOwnAgentSeatParams;
 type ParleOwnedAliasDeliveryParams = OwnedAliasDeliveryParams;
 type ParleOwnedAliasReleaseParams = OwnedAliasReleaseParams;
@@ -2084,6 +2085,26 @@ export default function parleExtension(pi: any) {
     async execute(_id, params: ParleSwitchProfileParams, signal, _update, ctx) {
       lastCtx = ctx;
       return formatResult(await switchProfile(pi, ctx, params.profile, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_delete_profile",
+    label: "Parle Delete Profile",
+    description: "Delete one exact local credential profile from the resolved owner-only catalog. This local-only operation makes no server request and never returns credentials or filesystem paths. It requires confirmMutation=true plus a local-only reason, returns removed:false when the profile is absent, and refuses profiles bound by this Pi client's live configuration.",
+    parameters: Type.Object({
+      profile: Type.String({ description: "Exact local profile label to delete." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm local profile deletion." })),
+      reason: Type.Optional(Type.String({ description: "Required local-only explanation for deleting the profile." })),
+    }),
+    async execute(_id, params: ParleDeleteProfileParams, _signal, _update, ctx) {
+      lastCtx = ctx;
+      const cwd = ctx.cwd || process.cwd();
+      const catalogPath = resolveProfileCatalogPathForProcess(cwd, process.env);
+      const details = client && client.registryCatalogPath === catalogPath
+        ? await client.deleteProfile(params)
+        : deleteProfile(params, { catalogPath, protectedProfiles: [] });
+      return formatResult(details);
     },
   });
 

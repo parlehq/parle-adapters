@@ -12,7 +12,7 @@ import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, 
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.33";
+export const MCP_CLIENT_VERSION = "0.7.34";
 const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
 export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 
@@ -108,6 +108,8 @@ export async function runStdio() {
     ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge)
     : createParleMcpServer({} as ParleMcpClientLike, new ParleAccountClient(), undefined, {
         error: configError!,
+        cwd: process.cwd(),
+        env: process.env,
         recover: createRuntime,
         onRecovered(recovered) {
           activateRuntime(recovered as ReturnType<typeof createRuntime>);

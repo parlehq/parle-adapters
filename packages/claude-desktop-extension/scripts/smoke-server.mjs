@@ -28,6 +28,7 @@ try {
     "parle_create_own_agent",
     "parle_create_room",
     "parle_delete_own_agent",
+    "parle_delete_profile",
     "parle_guidance",
     "parle_harden_account",
     "parle_inbox",

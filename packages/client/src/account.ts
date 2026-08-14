@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { DEFAULT_VERSION, isValidAddressHandle, isValidSessionAlias } from "./protocol.js";
-import { CredentialProfile, loadProfile, parseProfiles, profileCatalogHasProfile, resolveProfileCatalogPath } from "./profiles.js";
+import { CredentialProfile, PROFILE_LABEL_RE, loadProfile, parseProfiles, profileCatalogHasProfile, profileSectionRange, resolveProfileCatalogPath } from "./profiles.js";
 import { ParleHardeningClient, type HardenAccountParams } from "./hardening.js";
 import { atomicReplaceOwnerOnlyFile, readOwnerOnlyTextFile, withOwnerOnlyFileLock } from "./safe-file.js";
 import { assertSafeBase, truncateText } from "./helpers.js";
@@ -27,6 +27,17 @@ const MINT_DENIAL_NEXT_ACTION = {
 } as const;
 
 export type AccountFetch = typeof fetch;
+
+export class ParleAccountResponseContractError extends Error {
+  readonly adapterCode = "parle_account_response_contract_mismatch";
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ParleAccountResponseContractError";
+    this.status = status;
+  }
+}
 
 export type AccountClientOptions = {
   cwd?: string;
@@ -374,8 +385,6 @@ function assertStringArray(raw: any, label: string): string[] {
   return raw;
 }
 
-const PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
 function parseInvitationReference(raw: string): string {
   const value = raw.trim();
   if (UUID_RE.test(value)) return validateUUID(value, "invitation");
@@ -481,18 +490,6 @@ function removePendingLoginCookieFile(catalogPath: string): void {
   if (!existsSync(path)) return;
   safeFile(path, "Parle pending login credential", false);
   unlinkSync(path);
-}
-
-function profileSectionRange(text: string, label: string): { start: number; end: number } | undefined {
-  const headers: Array<{ label: string; start: number }> = [];
-  const lineRe = /(?:^|(?<=\n))[^\n]*(?:\n|$)/g;
-  for (const match of text.matchAll(lineRe)) {
-    const raw = match[0].replace(/\r?\n$/, "");
-    const section = raw.trim().match(/^\[([^\]\r\n]+)\]$/);
-    if (section) headers.push({ label: section[1], start: match.index! });
-  }
-  const index = headers.findIndex((header) => header.label === label);
-  return index < 0 ? undefined : { start: headers[index].start, end: headers[index + 1]?.start ?? text.length };
 }
 
 function renderProfile(profile: CredentialProfile): string {
@@ -642,8 +639,15 @@ export class ParleAccountClient {
       body = JSON.stringify(options.body);
     }
     const response = await this.fetchImpl(new URL(path, config.apiBase), { method: options.method || "GET", headers, body, signal: options.signal });
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength > MAX_RESPONSE_BYTES) throw new Error(`Parle API response exceeded ${MAX_RESPONSE_BYTES} bytes.`);
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(await response.arrayBuffer());
+    } catch {
+      throw new ParleAccountResponseContractError("Parle API response body could not be read.", response.status);
+    }
+    if (buffer.byteLength > MAX_RESPONSE_BYTES) {
+      throw new ParleAccountResponseContractError(`Parle API response exceeded ${MAX_RESPONSE_BYTES} bytes.`, response.status);
+    }
     const text = buffer.toString("utf8");
     const json = parseJson(text);
     if (!response.ok) {
@@ -669,14 +673,13 @@ export class ParleAccountClient {
     }
     if (options.expectNoContent) {
       if (response.status !== 204 || buffer.byteLength !== 0) {
-        const mismatch: any = new Error("Parle API returned an invalid no-content response.");
-        mismatch.status = response.status;
-        mismatch.code = "parle_adapter_success_contract_mismatch";
-        throw mismatch;
+        throw new ParleAccountResponseContractError("Parle API returned an invalid no-content response.", response.status);
       }
       return null;
     }
-    if (buffer.byteLength === 0 || !json || typeof json !== "object") throw new Error("Parle API returned an invalid JSON response.");
+    if (buffer.byteLength === 0 || json === null || typeof json !== "object") {
+      throw new ParleAccountResponseContractError("Parle API returned an invalid JSON response.", response.status);
+    }
     return json;
   }
 

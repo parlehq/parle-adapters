@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.34 (2026-08-14)
+
+- Refresh the bundled MCP runtime with degraded-safe local profile deletion and definite adapter response-contract errors (#124, #125).
+
 ## 0.8.33 (2026-08-13)
 
 - Refresh the bundled MCP runtime with shared guarded durable-agent create/delete tools (#122).

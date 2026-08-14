@@ -53,7 +53,7 @@ test("one native mod registers Parle tools, guidance, lifecycle hooks, and statu
   assert.equal(typeof hooks.onRunEnd, "function");
   assert.equal(typeof hooks.onSessionEnd, "function");
   hooks.onSessionStart();
-  assert.deepEqual(activeTools.sort(), ["parle_setup", "parle_status"]);
+  assert.deepEqual(activeTools.sort(), ["parle_delete_profile", "parle_setup", "parle_status"]);
 });
 
 test("root and package manifests expose only the native mod", () => {
@@ -61,7 +61,7 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.13");
+  assert.equal(pkg.version, "0.7.14");
   assert.match(readFileSync(resolve("src/index.ts"), "utf8"), new RegExp(`ADAPTER_VERSION = "${pkg.version}"`));
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
@@ -264,7 +264,7 @@ test("degraded setup recovery restores native tools through the active-tool API"
   try {
     await source.registerCommandCodeMod(cmd, isolatedEnv({ HOME: home, PARLE_PROFILE: "default" }));
     hooks.onSessionStart();
-    assert.deepEqual(activeTools.sort(), ["parle_setup", "parle_status"]);
+    assert.deepEqual(activeTools.sort(), ["parle_delete_profile", "parle_setup", "parle_status"]);
     mkdirSync(join(home, ".parle"), { recursive: true, mode: 0o700 });
     writeFileSync(join(home, ".parle", "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_test\n", { mode: 0o600 });
     const setup = tools.find((tool) => tool.schema.name === "parle_setup");

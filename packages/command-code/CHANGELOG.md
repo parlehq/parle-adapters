@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14 (2026-08-14)
+
+- Refresh the native Parle runtime with typed local profile deletion and definite adapter response-contract errors (#124, #125).
+
 ## 0.7.13 (2026-08-13)
 
 - Refresh the native runtime with shared guarded durable-agent create/delete tools (#122).

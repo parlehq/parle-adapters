@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.34 (2026-08-14)
+
+- Expose degraded-safe `parle_delete_profile` through the shared local profile lifecycle and preserve adapter response-contract provenance separately from server error codes (#124, #125).
+
 ## 0.7.33 (2026-08-13)
 
 - Expose shared `parle_create_own_agent` and `parle_delete_own_agent` account tools for MCP hosts while keeping the human session confined to fixed shared-client methods (#122).

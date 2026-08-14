@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -17,6 +17,7 @@ export type ParleMcpClientLike = {
   getOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
   disableOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
   switchProfile?(profile: string, signal?: AbortSignal): Promise<unknown>;
+  deleteProfile?(params: DeleteProfileParams): Promise<unknown>;
   switchSessionAlias?(alias: string, signal?: AbortSignal): Promise<unknown>;
   // Optional lifecycle surface (present on ParleAgentClient); guarded so
   // minimal fake clients keep working.
@@ -75,6 +76,12 @@ const createOwnAgentSchema = {
 
 const deleteOwnAgentSchema = {
   agentId: z.string(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
+const deleteProfileSchema = {
+  profile: z.string(),
   confirmMutation: z.boolean().optional(),
   reason: z.string().optional(),
 };
@@ -158,6 +165,8 @@ export function hostSessionIdFromMeta(meta: unknown): string | undefined {
 
 export type DegradedMcpBoot = {
   error: ProfileConfigError;
+  cwd?: string;
+  env?: Record<string, string | undefined>;
   recover: () => {
     client: ParleMcpClientLike;
     accountClient?: ParleAccountClientLike;
@@ -345,6 +354,25 @@ export function registerParleTools(
     const result = await client.switchSessionAlias(params.alias);
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
     return result;
+  }));
+
+  registerTool("parle_delete_profile", {
+    title: "Delete Local Parle Profile",
+    description: "Delete one exact local credential profile from the resolved owner-only catalog. This local-only operation makes no server request and never returns credentials or filesystem paths. It requires confirmMutation=true plus a local-only reason, returns removed:false when the profile is absent, and refuses profiles bound by the calling live client.",
+    inputSchema: deleteProfileSchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
+    if (!degradedBoot) {
+      if (typeof client.deleteProfile !== "function") throw new Error("This Parle client does not support local profile deletion.");
+      return client.deleteProfile(params as DeleteProfileParams);
+    }
+    const cwd = degradedBoot.cwd || process.cwd();
+    const env = degradedBoot.env || process.env;
+    return deleteProfile(params as DeleteProfileParams, {
+      catalogPath: resolveProfileCatalogPathForProcess(cwd, env),
+      protectedProfiles: [],
+    });
   }));
 
   registerTool("parle_switch_profile", {
@@ -638,7 +666,7 @@ export function registerParleTools(
 
   if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
-      if (name !== "parle_setup" && name !== "parle_status") tool.disable();
+      if (name !== "parle_setup" && name !== "parle_status" && name !== "parle_delete_profile") tool.disable();
     }
   }
 
@@ -662,6 +690,7 @@ async function safeTool(fn: () => Promise<unknown>, inferError = true): Promise<
     const accountFields = error && typeof error === "object"
       ? {
           ...(typeof error.code === "string" ? { code: error.code } : {}),
+          ...(typeof error.adapterCode === "string" ? { adapterCode: error.adapterCode } : {}),
           ...(typeof error.status === "number" ? { status: error.status } : {}),
           ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
           ...(typeof error.nextAction === "string" ? { nextAction: error.nextAction } : {}),

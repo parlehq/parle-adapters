@@ -279,7 +279,7 @@ Malformed or non-JSON server errors become:
 }
 ```
 
-Malformed success responses become `parle_adapter_success_contract_mismatch`. Raw bodies and filesystem paths are never returned.
+Unreadable or oversized account responses, and malformed successful account responses, become `ParleAccountResponseContractError` with definite HTTP `status` and `adapterCode: parle_account_response_contract_mismatch`. The server-owned `code` field remains unset unless a successfully read server error envelope supplied it. Raw bodies and filesystem paths are never returned.
 
 ### Revoke transport uncertainty
 

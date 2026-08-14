@@ -10,6 +10,7 @@ import {
   DEFAULT_VERSION,
   DEFAULT_WAKE_BASE,
   ParleAgentClient,
+  ProfileDeletionError,
   ProfileNotFoundError,
   processClientInstanceId,
   formatVersionErrorHint,
@@ -17,6 +18,7 @@ import {
   capProjectionMessages,
   clampWaitSeconds,
   compactServerWrappedContent,
+  deleteProfile,
   parseErrorEnvelope,
   parseKeyValueFile,
   parseSSEBlocks,
@@ -145,6 +147,111 @@ test("profile catalog read failures are actionable", { skip: process.platform ==
     );
   } finally {
     chmodSync(catalog, 0o600);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("typed profile deletion is exact, idempotent, owner-only, and path-free", () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-profile-delete-"));
+  const catalog = join(root, "profiles");
+  const secret = "parle_agt_delete_secret";
+  const reason = "reason-must-not-escape";
+  const alpha = `[alpha]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = ${secret}\n\n`;
+  const beta = "[beta]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_beta\n\n";
+  const gamma = "[gamma]\nroom_id = 019f8035-d1f6-7170-8552-0262bce8982f\nagent_token = parle_agt_gamma\n";
+  try {
+    assert.throws(
+      () => deleteProfile({ profile: "alpha", confirmMutation: false, reason }, { catalogPath: catalog }),
+      (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_confirmation_required" && !error.message.includes(reason),
+    );
+    assert.throws(
+      () => deleteProfile({ profile: "alpha*", confirmMutation: true, reason }, { catalogPath: catalog }),
+      (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_invalid" && !error.message.includes(reason),
+    );
+
+    writeFileSync(catalog, alpha + beta + gamma, { mode: 0o644 });
+    const missing = deleteProfile({ profile: "missing", confirmMutation: true, reason }, { catalogPath: catalog });
+    assert.deepEqual(missing, { profile: "missing", removed: false });
+    assert.equal(readFileSync(catalog, "utf8"), alpha + beta + gamma);
+
+    assert.deepEqual(deleteProfile({ profile: "beta", confirmMutation: true, reason }, { catalogPath: catalog }), { profile: "beta", removed: true });
+    assert.equal(readFileSync(catalog, "utf8"), alpha + gamma);
+    if (process.platform !== "win32") assert.equal(statSync(catalog).mode & 0o777, 0o600);
+
+    deleteProfile({ profile: "alpha", confirmMutation: true, reason }, { catalogPath: catalog });
+    assert.equal(readFileSync(catalog, "utf8"), gamma);
+    deleteProfile({ profile: "gamma", confirmMutation: true, reason }, { catalogPath: catalog });
+    assert.equal(readFileSync(catalog, "utf8"), "");
+    assert.deepEqual(deleteProfile({ profile: "gamma", confirmMutation: true, reason }, { catalogPath: catalog }), { profile: "gamma", removed: false });
+
+    writeFileSync(catalog, alpha, { mode: 0o600 });
+    writeFileSync(`${catalog}.lock`, `${JSON.stringify({ version: 1, token: "00000000-0000-4000-8000-000000000001", pid: process.pid, createdAt: new Date().toISOString() })}\n`, { mode: 0o600 });
+    assert.throws(
+      () => deleteProfile({ profile: "alpha", confirmMutation: true, reason }, { catalogPath: catalog }),
+      (error) => error instanceof ProfileDeletionError
+        && error.code === "profile_delete_lock_contended"
+        && !error.message.includes(root)
+        && !error.message.includes(secret)
+        && !error.message.includes(reason),
+    );
+    assert.equal(readFileSync(catalog, "utf8"), alpha);
+    rmSync(`${catalog}.lock`, { force: true });
+
+    const target = join(root, "target");
+    writeFileSync(target, alpha, { mode: 0o600 });
+    rmSync(catalog, { force: true });
+    symlinkSync(target, catalog);
+    assert.throws(
+      () => deleteProfile({ profile: "alpha", confirmMutation: true, reason }, { catalogPath: catalog }),
+      (error) => error instanceof ProfileDeletionError
+        && error.code === "profile_delete_failed"
+        && !error.message.includes(root)
+        && !error.message.includes(secret)
+        && !error.message.includes(reason),
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("agent client protects only its own profile bindings across runtime states", async () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-profile-client-delete-"));
+  const catalogDir = join(root, ".parle");
+  const catalog = join(catalogDir, "profiles");
+  const profile = (name, roomId) => `[${name}]\nroom_id = ${roomId}\nagent_token = parle_agt_${name}\n`;
+  try {
+    mkdirSync(catalogDir, { mode: 0o700 });
+    writeFileSync(catalog, profile("alpha", "019f2946-aef5-77ad-a41d-747ce0fd6a1e") + profile("beta", "019f7b46-178f-7a5a-9f7b-b4af2e045261") + profile("gamma", "019f8035-d1f6-7170-8552-0262bce8982f"), { mode: 0o600 });
+    const alpha = new ParleAgentClient({ cwd: root, env: { HOME: root, PARLE_PROFILE: "alpha" } });
+    const beta = new ParleAgentClient({ cwd: root, env: { HOME: root, PARLE_PROFILE: "beta" } });
+
+    for (const state of ["unstarted", "bootstrapping", "failed", "ready"]) {
+      alpha.runtime.bootstrapState = state;
+      await assert.rejects(
+        alpha.deleteProfile({ profile: "alpha", confirmMutation: true, reason: "active refusal" }),
+        (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_active",
+      );
+    }
+    alpha.profileSwitchInFlight = true;
+    await assert.rejects(
+      alpha.deleteProfile({ profile: "gamma", confirmMutation: true, reason: "switch refusal" }),
+      (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_switch_in_flight",
+    );
+    alpha.profileSwitchInFlight = false;
+
+    assert.deepEqual(await alpha.deleteProfile({ profile: "beta", confirmMutation: true, reason: "instance scoped" }), { profile: "beta", removed: true });
+    assert.equal(beta.status().config.profile.value, "beta", "a second client is intentionally outside the calling instance guard");
+
+    writeFileSync(catalog, profile("alpha", "019f2946-aef5-77ad-a41d-747ce0fd6a1e") + profile("beta", "019f7b46-178f-7a5a-9f7b-b4af2e045261") + profile("gamma", "019f8035-d1f6-7170-8552-0262bce8982f"), { mode: 0o600 });
+    const multi = new ParleAgentClient({ cwd: root, env: { HOME: root, PARLE_PROFILES: "alpha,beta" } });
+    for (const selected of ["alpha", "beta"]) {
+      await assert.rejects(
+        multi.deleteProfile({ profile: selected, confirmMutation: true, reason: "multi refusal" }),
+        (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_active",
+      );
+    }
+    assert.deepEqual(await multi.deleteProfile({ profile: "gamma", confirmMutation: true, reason: "inactive delete" }), { profile: "gamma", removed: true });
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });

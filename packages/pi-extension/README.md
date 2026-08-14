@@ -119,6 +119,7 @@ The extension registers these Pi tools:
 
 - `parle_status` - show redacted config provenance and runtime state.
 - `parle_switch_profile` - atomically switch this live Pi process to another named profile without editing `.env` or persistent configuration.
+- `parle_delete_profile` - delete one exact inactive local profile with explicit confirmation, including during degraded setup, without returning credentials or filesystem paths.
 - `parle_setup` - diagnose missing configuration.
 - `parle_login` - request and complete email login. Unhardened accounts persist the human session immediately; hardened accounts persist opaque pending state and continue through `complete-factor` with TOTP. Then `mint-from-session` requires the selected exact agent's active seat before separately minting and saving a named room-bound profile. A missing seat returns `seat_required` and names the separately confirmed admission step. Credential-consuming operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.

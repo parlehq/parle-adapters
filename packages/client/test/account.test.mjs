@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ParleAccountClient } from "../dist/index.js";
+import { ParleAccountClient, ParleAccountResponseContractError } from "../dist/index.js";
 
 const ROOM_ID = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
 const PRINCIPAL_ID = "019f3894-bb87-726a-8deb-17d367054426";
@@ -504,7 +504,10 @@ test("own-agent lifecycle fails closed and reports delete transport uncertainty 
     const emptyJsonClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => new Response(null, { status: 204 }) });
     await assert.rejects(
       emptyJsonClient.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "reject empty JSON success" }),
-      /invalid JSON response/,
+      (error) => error instanceof ParleAccountResponseContractError
+        && error.status === 204
+        && error.adapterCode === "parle_account_response_contract_mismatch"
+        && error.code === undefined,
     );
 
     const unknown = await client.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "delete" });
@@ -520,7 +523,10 @@ test("own-agent lifecycle fails closed and reports delete transport uncertainty 
       const protocolClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => definiteResponse });
       await assert.rejects(
         protocolClient.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "reject malformed delete success" }),
-        (error) => error.status === definiteResponse.status && error.code === "parle_adapter_success_contract_mismatch",
+        (error) => error instanceof ParleAccountResponseContractError
+          && error.status === definiteResponse.status
+          && error.adapterCode === "parle_account_response_contract_mismatch"
+          && error.code === undefined,
       );
     }
 
@@ -529,6 +535,65 @@ test("own-agent lifecycle fails closed and reports delete transport uncertainty 
       (error) => error.status === 404 && error.code === "not_found" && error.action === "stop",
     );
     assert.equal(calls, 2);
+  } finally { f.cleanup(); }
+});
+
+test("account response failures stay definite after fetch resolves and preserve array compatibility", async () => {
+  const f = fixture();
+  try {
+    for (const body of [null, "text", 1, true]) {
+      const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response(body, 200) });
+      await assert.rejects(
+        client.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "reject primitive" }),
+        (error) => error instanceof ParleAccountResponseContractError && error.status === 200 && error.code === undefined,
+      );
+    }
+
+    const invalidJsonClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => new Response("{", { status: 200 }) });
+    await assert.rejects(
+      invalidJsonClient.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "reject invalid JSON" }),
+      (error) => error instanceof ParleAccountResponseContractError && error.status === 200 && error.code === undefined,
+    );
+
+    const arrayClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response([], 200) });
+    await assert.rejects(
+      arrayClient.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "array reaches endpoint validation" }),
+      (error) => !(error instanceof ParleAccountResponseContractError) && /created agent_id must be a non-zero UUID/.test(error.message),
+    );
+
+    for (const status of [204, 503]) {
+      let calls = 0;
+      const client = new ParleAccountClient({
+        cwd: f.cwd,
+        env: f.env,
+        fetch: async () => {
+          calls += 1;
+          return { status, ok: status < 400, statusText: "fixture", arrayBuffer: async () => { throw new Error("body read failed"); } };
+        },
+      });
+      await assert.rejects(
+        client.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "body read failure" }),
+        (error) => error instanceof ParleAccountResponseContractError && error.status === status && error.code === undefined,
+      );
+      assert.equal(calls, 1);
+    }
+
+    for (const status of [200, 204]) {
+      let calls = 0;
+      const client = new ParleAccountClient({
+        cwd: f.cwd,
+        env: f.env,
+        fetch: async () => {
+          calls += 1;
+          return { status, ok: true, statusText: "fixture", arrayBuffer: async () => Buffer.alloc(65_537) };
+        },
+      });
+      await assert.rejects(
+        client.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "oversized response" }),
+        (error) => error instanceof ParleAccountResponseContractError && error.status === status && error.code === undefined,
+      );
+      assert.equal(calls, 1);
+    }
   } finally { f.cleanup(); }
 });
 

@@ -22,6 +22,7 @@ const expectedTools = [
   "parle_create_own_agent",
   "parle_create_room",
   "parle_delete_own_agent",
+  "parle_delete_profile",
   "parle_guidance",
   "parle_harden_account",
   "parle_inbox",
@@ -429,6 +430,8 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
 
   const server = createParleMcpServer({}, {}, undefined, {
     error: initialError,
+    cwd: home,
+    env,
     recover: () => ({ client: createMcpAgentClient({ cwd: home, env }) }),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -438,7 +441,7 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const initialTools = await client.listTools();
-    assert.deepEqual(initialTools.tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
+    assert.deepEqual(initialTools.tools.map((tool) => tool.name).sort(), ["parle_delete_profile", "parle_setup", "parle_status"]);
     assert.match(initialTools.tools.find((tool) => tool.name === "parle_setup").description, /Diagnose or retry Parle configuration/);
 
     const status = await client.callTool({ name: "parle_status", arguments: {} });
@@ -453,10 +456,23 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
       bootstrapAttempted: false,
     });
 
+    const absent = await client.callTool({ name: "parle_delete_profile", arguments: { profile: "missing", confirmMutation: true, reason: "degraded repair" } });
+    assert.deepEqual(absent.structuredContent, { profile: "missing", removed: false });
+    const removed = await client.callTool({ name: "parle_delete_profile", arguments: { profile: "other", confirmMutation: true, reason: "degraded cleanup" } });
+    assert.deepEqual(removed.structuredContent, { profile: "other", removed: true });
+
     const stillMissing = await client.callTool({ name: "parle_setup", arguments: {} });
     assert.equal(stillMissing.isError, undefined);
     assert.equal(stillMissing.structuredContent.code, "profile_not_found");
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_delete_profile", "parle_setup", "parle_status"]);
+
+    const sensitiveReason = "mcp-reason-must-not-escape";
+    writeFileSync(catalog, "agent_token = parle_agt_mcp_secret\n", { mode: 0o600 });
+    const failedDelete = await client.callTool({ name: "parle_delete_profile", arguments: { profile: "missing", confirmMutation: true, reason: sensitiveReason } });
+    assert.equal(failedDelete.isError, true);
+    assert.equal(failedDelete.structuredContent.code, "profile_delete_failed");
+    const serializedFailure = JSON.stringify(failedDelete);
+    for (const sensitive of [home, catalog, "parle_agt_mcp_secret", sensitiveReason]) assert.equal(serializedFailure.includes(sensitive), false);
 
     writeFileSync(catalog, "[missing]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_missing_secret\n", { mode: 0o600 });
     const recovered = await client.callTool({ name: "parle_setup", arguments: {} });
@@ -492,12 +508,14 @@ test("stdio server handshakes in degraded mode and recovers after profile repair
   const client = new Client({ name: "parle-mcp-degraded-stdio", version: "0.0.0" }, { capabilities: {} });
   try {
     await client.connect(transport);
-    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_setup", "parle_status"]);
+    assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_delete_profile", "parle_setup", "parle_status"]);
     const degraded = await client.callTool({ name: "parle_setup", arguments: {} });
     assert.equal(degraded.isError, undefined);
     assert.equal(degraded.structuredContent.code, "profile_not_found");
     assert.equal(degraded.structuredContent.selector, "missing");
     assert.deepEqual(degraded.structuredContent.availableProfiles, ["other"]);
+    const absent = await client.callTool({ name: "parle_delete_profile", arguments: { profile: "missing", confirmMutation: true, reason: "degraded repair" } });
+    assert.deepEqual(absent.structuredContent, { profile: "missing", removed: false });
 
     writeFileSync(catalog, "[missing]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_missing_secret\napi_base = http://127.0.0.1:9\n", { mode: 0o600 });
     const recovered = await client.callTool({ name: "parle_setup", arguments: {} });
@@ -523,6 +541,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
     submitReply: async (params) => { calls.push(["reply", params]); return { event_id: "evt-reply", idempotencyKey: params.idempotencyKey, interaction: { interaction_id: "interaction-1", reply_hop: 3 } }; },
     switchProfile: async (profile) => { calls.push(["switch", profile]); return { switched: true, profile, cursor: 42, agentSessionId: "as-target", participantId: "participant-target", roomHandle: "target-room" }; },
+    deleteProfile: async (params) => { calls.push(["delete-profile", params]); return { profile: params.profile, removed: true }; },
     switchSessionAlias: async (alias) => { calls.push(["session-alias", alias]); return { alias, sessionAddress: `@p.a.${alias}` }; },
   };
   const fakeAccount = {
@@ -577,6 +596,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(reply.structuredContent.idempotencyKey, "idem-reply");
     assert.equal(reply.structuredContent.interaction.reply_hop, 3);
     assert.deepEqual(calls.find(([kind]) => kind === "reply"), ["reply", { body: "reply", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", idempotencyKey: "idem-reply" }]);
+    const deletedProfile = await client.callTool({ name: "parle_delete_profile", arguments: { profile: "temporary", confirmMutation: true, reason: "cleanup" } });
+    assert.deepEqual(deletedProfile.structuredContent, { profile: "temporary", removed: true });
     const refused = await client.callTool({ name: "parle_switch_profile", arguments: { profile: "target", watcherStopped: false } });
     assert.equal(refused.isError, true);
     assert.match(refused.structuredContent.error, /watcherStopped=true/);
@@ -608,6 +629,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["rooms", { state: "unavailable", reason: "runtime_not_bootstrapped" }],
       ["send", { body: "hello", to: "@p.a.s1", idempotencyKey: "idem-1" }],
       ["reply", { body: "reply", replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", idempotencyKey: "idem-reply" }],
+      ["delete-profile", { profile: "temporary", confirmMutation: true, reason: "cleanup" }],
       ["switch", "target"],
       ["session-alias", "galexc-guru"],
       ["login", { action: "start", email: "user@example.test" }],
@@ -619,6 +641,31 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["mint-invite", { roomId: "room-1", target: "@kyle", confirmMutation: true, reason: "invite" }],
       ["claim-invite", { action: "preview", handoffPath: "/private/invite.json" }],
     ]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("MCP preserves adapter response provenance without manufacturing a server code", async () => {
+  const error = Object.assign(new Error("invalid response contract"), {
+    adapterCode: "parle_account_response_contract_mismatch",
+    status: 204,
+  });
+  const server = createParleMcpServer({}, { deleteOwnAgent: async () => { throw error; } });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-adapter-error", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const result = await client.callTool({ name: "parle_delete_own_agent", arguments: { agentId: "agent-1", confirmMutation: true, reason: "test" } });
+    assert.equal(result.isError, true);
+    assert.deepEqual(result.structuredContent, {
+      ok: false,
+      error: "invalid response contract",
+      adapterCode: "parle_account_response_contract_mismatch",
+      status: 204,
+    });
+    assert.equal(result.structuredContent.code, undefined);
   } finally {
     await client.close();
     await server.close();

@@ -163,6 +163,22 @@
       "agentId"
     ]
   },
+  "parle_delete_profile": {
+    "title": "Delete Local Parle Profile",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false
+    },
+    "input": [
+      "confirmMutation",
+      "profile",
+      "reason"
+    ],
+    "required": [
+      "profile"
+    ]
+  },
   "parle_guidance": {
     "title": "Parle Guidance",
     "annotations": {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.33 (2026-08-14)
+
+- Add exact path-free local profile deletion with confirmation, idempotent missing results, owner-only atomic replacement, fail-closed lock contention, and calling-client profile guards (#125).
+- Preserve definite HTTP status and adapter provenance for every account response failure after fetch resolves, while retaining server codes and top-level array compatibility (#124).
+
 ## 0.8.32 (2026-08-13)
 
 - Add guarded shared account-client methods for creating and terminally deleting principal-owned durable agents, including fixed endpoint validation, canonical no-content handling, and outcome-unknown deletion reporting without automatic retry (#122).

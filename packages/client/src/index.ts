@@ -6,7 +6,7 @@ import { assertClientInstanceId, assertClientName, assertClientVersion, processC
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
 import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
-import { ProfileConfigError, catalogGitExposureWarning, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
+import { ProfileConfigError, ProfileDeletionError, catalogGitExposureWarning, deleteProfile as deleteProfileFromCatalog, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile, type DeleteProfileParams } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
 import { enrollKnownAddress, shortenKnownAddressAfterUnprocessable } from "./known-address-registry.js";
@@ -27,7 +27,7 @@ export * from "./helpers.js";
 export * from "./reply.js";
 export * from "./launches.js";
 export { parseErrorEnvelope, type ErrorAction, type ErrorScope, type ParsedErrorEnvelope } from "./error-envelope.js";
-export { PROFILE_CATALOG_PATH, ProfileConfigError, ProfileNotFoundError, catalogGitExposureWarning, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, readProfiles, resolveProfileCatalogPath, type CredentialProfile } from "./profiles.js";
+export { PROFILE_CATALOG_PATH, PROFILE_LABEL_RE, ProfileConfigError, ProfileDeletionError, ProfileNotFoundError, catalogGitExposureWarning, deleteProfile, loadProfile, parseProfiles, profileCatalogExists, profileCatalogHasProfile, profileCatalogPath, profileSectionRange, readProfiles, resolveProfileCatalogPath, type CredentialProfile, type DeleteProfileOptions, type DeleteProfileParams } from "./profiles.js";
 
 export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
@@ -496,6 +496,11 @@ function versionConfig(env: Record<string, string | undefined>, dotEnv: Record<s
   return { value: DEFAULT_VERSION, source: "default" };
 }
 
+export function resolveProfileCatalogPathForProcess(cwd = process.cwd(), env: Record<string, string | undefined> = process.env): string {
+  const dotEnv = readKeyValueFile(join(cwd, ".env"));
+  return resolveProfileCatalogPath(env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, cwd, env);
+}
+
 export function resolveConfig(cwd = process.cwd(), env: Record<string, string | undefined> = process.env): ParleConfig {
   const dotEnv = readKeyValueFile(join(cwd, ".env"));
   const sources = [
@@ -928,13 +933,12 @@ export class ParleAgentClient {
   // connect/read/send and raw requestJson calls remain recovery paths.
   private automaticTerminalBinding?: string;
   private missingAliasWarning?: string;
-  private readonly registryCatalogPath: string;
+  readonly registryCatalogPath: string;
 
   constructor(options: ClientOptions = {}) {
     this.env = options.env || process.env;
     this.cwd = options.cwd ?? process.cwd();
-    const dotEnv = readKeyValueFile(join(this.cwd, ".env"));
-    this.registryCatalogPath = resolveProfileCatalogPath(this.env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, this.cwd, this.env);
+    this.registryCatalogPath = resolveProfileCatalogPathForProcess(this.cwd, this.env);
     const roomSet = resolveRoomSet(this.cwd, this.env);
     this.roomConfigs = roomSet.rooms;
     // The first configured room supplies the session-auth bearer and, in
@@ -1662,6 +1666,20 @@ export class ParleAgentClient {
       agentSessionId: this.runtime.agentSessionId,
       sessionCredential: this.runtime.sessionHandle,
     };
+  }
+
+  async deleteProfile(params: DeleteProfileParams): Promise<{ profile: string; removed: boolean }> {
+    if (this.profileSwitchInFlight) {
+      throw new ProfileDeletionError("profile_delete_switch_in_flight", "Parle profile deletion is unavailable while a profile switch is in flight.");
+    }
+    return this.withLifecycleExclusion(async () => {
+      if (this.profileSwitchInFlight) {
+        throw new ProfileDeletionError("profile_delete_switch_in_flight", "Parle profile deletion is unavailable while a profile switch is in flight.");
+      }
+      const protectedProfiles = this.roomConfigs.flatMap((cfg) => cfg.profile?.value ? [cfg.profile.value] : []);
+      if (this.activeProfile) protectedProfiles.push(this.activeProfile);
+      return deleteProfileFromCatalog(params, { catalogPath: this.registryCatalogPath, protectedProfiles });
+    });
   }
 
   async switchProfile(profile: string, signal?: AbortSignal): Promise<ClientProfileSwitchResult> {

@@ -826,6 +826,16 @@ function catalogGitExposureWarning(path) {
     return void 0;
   }
 }
+var PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
+var ProfileDeletionError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "ProfileDeletionError";
+    this.code = code;
+  }
+};
 var ProfileConfigError = class extends Error {
   code;
   constructor(message, code = "profile_config_error") {
@@ -847,6 +857,18 @@ var ProfileNotFoundError = class extends ProfileConfigError {
 };
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var ALLOWED_KEYS = /* @__PURE__ */ new Set(["room_id", "agent_token", "agent_token_id", "api_base", "wake_base"]);
+function profileSectionRange(text, label) {
+  const headers = [];
+  const lineRe = /(?:^|(?<=\n))[^\n]*(?:\n|$)/g;
+  for (const match of text.matchAll(lineRe)) {
+    const raw = match[0].replace(/\r?\n$/, "");
+    const section = raw.trim().match(/^\[([^\]\r\n]+)\]$/);
+    if (section)
+      headers.push({ label: section[1], start: match.index });
+  }
+  const index = headers.findIndex((header) => header.label === label);
+  return index < 0 ? void 0 : { start: headers[index].start, end: headers[index + 1]?.start ?? text.length };
+}
 function catalogAccessError(path, operation, error51) {
   const code = typeof error51?.code === "string" ? ` (${error51.code})` : "";
   return new ProfileConfigError(`Parle profile catalog cannot be ${operation}: ${path}${code}. Check that the catalog and its parent directories are accessible to the current user.`);
@@ -942,6 +964,48 @@ function profileCatalogHasProfile(name, path = PROFILE_CATALOG_PATH) {
     return false;
   assertSafeCatalog(path, link);
   return parseProfiles(readCatalog(path), path).has(name);
+}
+function deleteProfile(params, options) {
+  const profile = typeof params.profile === "string" ? params.profile.trim() : "";
+  if (!PROFILE_LABEL_RE.test(profile)) {
+    throw new ProfileDeletionError("profile_delete_invalid", "Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
+  }
+  if (params.confirmMutation !== true || !params.reason?.trim()) {
+    throw new ProfileDeletionError("profile_delete_confirmation_required", "parle_delete_profile requires confirmMutation=true and a reason.");
+  }
+  const protectedProfiles = new Set(options.protectedProfiles || []);
+  try {
+    if (!inspectCatalog(options.catalogPath))
+      return { profile, removed: false };
+    return withOwnerOnlyFileLock(options.catalogPath, { label: "Parle profile catalog", durability: "none" }, () => {
+      if (!inspectCatalog(options.catalogPath))
+        return { profile, removed: false };
+      const original = readOwnerOnlyTextFile(options.catalogPath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" });
+      const profiles = parseProfiles(original, "Parle profile catalog");
+      const range = profileSectionRange(original, profile);
+      if (!profiles.has(profile) || !range)
+        return { profile, removed: false };
+      if (protectedProfiles.has(profile)) {
+        throw new ProfileDeletionError("profile_delete_active", `Parle profile ${profile} is bound by the calling client and cannot be deleted.`);
+      }
+      const updated = original.slice(0, range.start) + original.slice(range.end);
+      parseProfiles(updated, "Parle profile catalog");
+      atomicReplaceOwnerOnlyFile(options.catalogPath, updated, {
+        label: "Parle profile catalog",
+        maxBytes: MAX_PROFILE_CATALOG_BYTES,
+        durability: "best-effort",
+        existingMode: "replace"
+      });
+      return { profile, removed: true };
+    });
+  } catch (error51) {
+    if (error51 instanceof ProfileDeletionError)
+      throw error51;
+    if (error51 instanceof SafeFileError && error51.code === "lock_contended") {
+      throw new ProfileDeletionError("profile_delete_lock_contended", `Parle profile ${profile} could not be deleted because another writer holds the catalog lock. Retry with a fresh confirmed action.`);
+    }
+    throw new ProfileDeletionError("profile_delete_failed", `Parle profile ${profile} could not be deleted safely.`);
+  }
 }
 function loadProfile(name, path = PROFILE_CATALOG_PATH) {
   let profiles;
@@ -2366,7 +2430,7 @@ function roomInventoryResult(active, configured, account) {
 var DEFAULT_API_BASE2 = "https://api.parle.sh";
 var MAX_RESPONSE_BYTES2 = 64 * 1024;
 var MAX_HANDOFF_BYTES = 32 * 1024;
-var MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
+var MAX_PROFILE_CATALOG_BYTES2 = 1024 * 1024;
 var MAX_ACCOUNT_ROOM_ROWS = 2e3;
 var MAX_ACCOUNT_ROOM_PAGES = 10;
 var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -2378,6 +2442,15 @@ var MINT_DENIAL_NEXT_ACTION = {
   unhardened: "set a password, then enroll a second factor",
   cooldown: "wait for the post-recovery cooldown to lapse",
   account_restricted: "this account cannot expand its reach right now"
+};
+var ParleAccountResponseContractError = class extends Error {
+  adapterCode = "parle_account_response_contract_mismatch";
+  status;
+  constructor(message, status) {
+    super(message);
+    this.name = "ParleAccountResponseContractError";
+    this.status = status;
+  }
 };
 function parseDotEnv2(text) {
   const values = {};
@@ -2593,7 +2666,6 @@ function assertStringArray(raw, label) {
     throw new Error(`Parle response ${label} is invalid.`);
   return raw;
 }
-var PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 function parseInvitationReference(raw) {
   const value = raw.trim();
   if (UUID_RE3.test(value))
@@ -2711,18 +2783,6 @@ function removePendingLoginCookieFile(catalogPath) {
   safeFile(path, "Parle pending login credential", false);
   unlinkSync3(path);
 }
-function profileSectionRange(text, label) {
-  const headers = [];
-  const lineRe = /(?:^|(?<=\n))[^\n]*(?:\n|$)/g;
-  for (const match of text.matchAll(lineRe)) {
-    const raw = match[0].replace(/\r?\n$/, "");
-    const section = raw.trim().match(/^\[([^\]\r\n]+)\]$/);
-    if (section)
-      headers.push({ label: section[1], start: match.index });
-  }
-  const index = headers.findIndex((header) => header.label === label);
-  return index < 0 ? void 0 : { start: headers[index].start, end: headers[index + 1]?.start ?? text.length };
-}
 function renderProfile(profile) {
   return [
     `[${profile.name}]`,
@@ -2759,7 +2819,7 @@ function writeProfile(profile, force, catalogPath) {
   const directory = ensureProfileDirectory(catalogPath);
   const writePath = safeProfileWritePath(join6(directory, basename2(catalogPath)));
   return withOwnerOnlyFileLock(writePath, { label: "Parle profile catalog", durability: "none" }, () => {
-    const original = existsSync5(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" }) : "";
+    const original = existsSync5(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
     const profiles = original ? parseProfiles(original, catalogPath) : /* @__PURE__ */ new Map();
     const range = profileSectionRange(original, profile.name);
     if (range && !force)
@@ -2770,7 +2830,7 @@ function writeProfile(profile, force, catalogPath) {
     if (ensureProfileDirectory(catalogPath) !== directory)
       throw new Error("Parle credential directory changed during profile persistence.");
     safeProfileWritePath(writePath);
-    atomicReplaceOwnerOnlyFile(writePath, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, durability: "best-effort", existingMode: "replace" });
+    atomicReplaceOwnerOnlyFile(writePath, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, durability: "best-effort", existingMode: "replace" });
     return { path: catalogPath, replaced: Boolean(range), priorAgentTokenId: profiles.get(profile.name)?.agentTokenId };
   });
 }
@@ -2785,7 +2845,7 @@ function preflightNewProfile(path, profileName) {
 }
 function publishNewProfile(path, original, profile) {
   withOwnerOnlyFileLock(path, { label: "Parle profile catalog", durability: "none" }, () => {
-    const current = existsSync5(path) ? readOwnerOnlyTextFile(path, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" }) : "";
+    const current = existsSync5(path) ? readOwnerOnlyTextFile(path, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
     if (current !== original)
       throw new Error("Parle profile catalog changed after preflight. No credential was published.");
     const profiles = current ? parseProfiles(current, path) : /* @__PURE__ */ new Map();
@@ -2795,7 +2855,7 @@ function publishNewProfile(path, original, profile) {
     parseProfiles(updated, path);
     ensureProfileDirectory(path);
     safeProfileWritePath(path);
-    atomicReplaceOwnerOnlyFile(path, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, durability: "best-effort", existingMode: "replace" });
+    atomicReplaceOwnerOnlyFile(path, updated, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, durability: "best-effort", existingMode: "replace" });
   });
 }
 function publicAgents(raw) {
@@ -2877,9 +2937,15 @@ var ParleAccountClient = class {
       body = JSON.stringify(options.body);
     }
     const response = await this.fetchImpl(new URL(path, config2.apiBase), { method: options.method || "GET", headers, body, signal: options.signal });
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.byteLength > MAX_RESPONSE_BYTES2)
-      throw new Error(`Parle API response exceeded ${MAX_RESPONSE_BYTES2} bytes.`);
+    let buffer;
+    try {
+      buffer = Buffer.from(await response.arrayBuffer());
+    } catch {
+      throw new ParleAccountResponseContractError("Parle API response body could not be read.", response.status);
+    }
+    if (buffer.byteLength > MAX_RESPONSE_BYTES2) {
+      throw new ParleAccountResponseContractError(`Parle API response exceeded ${MAX_RESPONSE_BYTES2} bytes.`, response.status);
+    }
     const text = buffer.toString("utf8");
     const json2 = parseJson2(text);
     if (!response.ok) {
@@ -2905,15 +2971,13 @@ var ParleAccountClient = class {
     }
     if (options.expectNoContent) {
       if (response.status !== 204 || buffer.byteLength !== 0) {
-        const mismatch = new Error("Parle API returned an invalid no-content response.");
-        mismatch.status = response.status;
-        mismatch.code = "parle_adapter_success_contract_mismatch";
-        throw mismatch;
+        throw new ParleAccountResponseContractError("Parle API returned an invalid no-content response.", response.status);
       }
       return null;
     }
-    if (buffer.byteLength === 0 || !json2 || typeof json2 !== "object")
-      throw new Error("Parle API returned an invalid JSON response.");
+    if (buffer.byteLength === 0 || json2 === null || typeof json2 !== "object") {
+      throw new ParleAccountResponseContractError("Parle API returned an invalid JSON response.", response.status);
+    }
     return json2;
   }
   async readAccountRooms(config2, signal) {
@@ -5027,6 +5091,10 @@ function versionConfig(env, dotEnv, warnings) {
     warnings.push(`Ignoring PARLE_VERSION from .env (${dotEnv.PARLE_VERSION}); the adapter default is ${DEFAULT_VERSION}. Use process env only for advanced version overrides.`);
   return { value: DEFAULT_VERSION, source: "default" };
 }
+function resolveProfileCatalogPathForProcess(cwd = process.cwd(), env = process.env) {
+  const dotEnv = readKeyValueFile(join9(cwd, ".env"));
+  return resolveProfileCatalogPath(env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, cwd, env);
+}
 function resolveConfig(cwd = process.cwd(), env = process.env) {
   const dotEnv = readKeyValueFile(join9(cwd, ".env"));
   const sources = [
@@ -5423,8 +5491,7 @@ var ParleAgentClient = class _ParleAgentClient {
   constructor(options = {}) {
     this.env = options.env || process.env;
     this.cwd = options.cwd ?? process.cwd();
-    const dotEnv = readKeyValueFile(join9(this.cwd, ".env"));
-    this.registryCatalogPath = resolveProfileCatalogPath(this.env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, this.cwd, this.env);
+    this.registryCatalogPath = resolveProfileCatalogPathForProcess(this.cwd, this.env);
     const roomSet = resolveRoomSet(this.cwd, this.env);
     this.roomConfigs = roomSet.rooms;
     this.cfg = roomSet.rooms[0];
@@ -6145,6 +6212,20 @@ var ParleAgentClient = class _ParleAgentClient {
       agentSessionId: this.runtime.agentSessionId,
       sessionCredential: this.runtime.sessionHandle
     };
+  }
+  async deleteProfile(params) {
+    if (this.profileSwitchInFlight) {
+      throw new ProfileDeletionError("profile_delete_switch_in_flight", "Parle profile deletion is unavailable while a profile switch is in flight.");
+    }
+    return this.withLifecycleExclusion(async () => {
+      if (this.profileSwitchInFlight) {
+        throw new ProfileDeletionError("profile_delete_switch_in_flight", "Parle profile deletion is unavailable while a profile switch is in flight.");
+      }
+      const protectedProfiles = this.roomConfigs.flatMap((cfg) => cfg.profile?.value ? [cfg.profile.value] : []);
+      if (this.activeProfile)
+        protectedProfiles.push(this.activeProfile);
+      return deleteProfile(params, { catalogPath: this.registryCatalogPath, protectedProfiles });
+    });
   }
   async switchProfile(profile, signal) {
     if (this.multiRoom) {
@@ -21580,6 +21661,11 @@ var deleteOwnAgentSchema = {
   confirmMutation: external_exports.boolean().optional(),
   reason: external_exports.string().optional()
 };
+var deleteProfileSchema = {
+  profile: external_exports.string(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
 var ownedAliasDeliverySchema = {
   action: external_exports.enum(["get_global", "set_global", "get_room", "set_room", "restore_everywhere"]),
   agentId: external_exports.string(),
@@ -21796,6 +21882,25 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     if (deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
     return result2;
+  }));
+  registerTool("parle_delete_profile", {
+    title: "Delete Local Parle Profile",
+    description: "Delete one exact local credential profile from the resolved owner-only catalog. This local-only operation makes no server request and never returns credentials or filesystem paths. It requires confirmMutation=true plus a local-only reason, returns removed:false when the profile is absent, and refuses profiles bound by the calling live client.",
+    inputSchema: deleteProfileSchema,
+    annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
+  }, async (params, extra) => safeTool(async () => {
+    observeRequest(extra);
+    if (!degradedBoot) {
+      if (typeof client.deleteProfile !== "function")
+        throw new Error("This Parle client does not support local profile deletion.");
+      return client.deleteProfile(params);
+    }
+    const cwd = degradedBoot.cwd || process.cwd();
+    const env = degradedBoot.env || process.env;
+    return deleteProfile(params, {
+      catalogPath: resolveProfileCatalogPathForProcess(cwd, env),
+      protectedProfiles: []
+    });
   }));
   registerTool("parle_switch_profile", {
     title: "Switch Parle Profile",
@@ -22078,7 +22183,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   });
   if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
-      if (name !== "parle_setup" && name !== "parle_status")
+      if (name !== "parle_setup" && name !== "parle_status" && name !== "parle_delete_profile")
         tool.disable();
     }
   }
@@ -22099,6 +22204,7 @@ async function safeTool(fn, inferError = true) {
   } catch (error51) {
     const accountFields = error51 && typeof error51 === "object" ? {
       ...typeof error51.code === "string" ? { code: error51.code } : {},
+      ...typeof error51.adapterCode === "string" ? { adapterCode: error51.adapterCode } : {},
       ...typeof error51.status === "number" ? { status: error51.status } : {},
       ...typeof error51.reason === "string" ? { reason: error51.reason } : {},
       ...typeof error51.nextAction === "string" ? { nextAction: error51.nextAction } : {},
@@ -22115,7 +22221,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.13";
+var ADAPTER_VERSION = "0.7.14";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

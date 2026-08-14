@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.39 (2026-08-14)
+
+- Add native `parle_delete_profile` with degraded-safe local repair, live-client profile refusal, idempotent missing results, and no credential or path disclosure (#125).
+
 ## 0.7.38 (2026-08-13)
 
 - Expose native `parle_create_own_agent` and `parle_delete_own_agent` tools backed by the shared account client, with explicit mutation confirmation and terminal-deletion guidance (#122).

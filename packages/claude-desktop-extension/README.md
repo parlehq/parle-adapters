@@ -16,7 +16,7 @@ Desktop connection bootstrap is env-only in v1. Project `.env` discovery is not 
 
 ## Account tools and credential locations
 
-The shared Desktop bundle intentionally exposes `parle_login`, `parle_create_room`, `parle_create_own_agent`, `parle_delete_own_agent`, and `parle_add_own_agent_seat`. These are separate account-plane operations, not Desktop connection bootstrap. Credential-persisting `parle_login` operations require `confirmMutation: true` plus a nonempty reason before they can write a protected human-session record and room-bound profile under the resolved `~/.parle` account-state root. They do not replace Desktop's injected room token or change the live Desktop connection automatically.
+The shared Desktop bundle intentionally exposes the `parle_login`, `parle_create_room`, `parle_create_own_agent`, `parle_delete_own_agent`, and `parle_add_own_agent_seat` account-plane operations plus the local-only `parle_delete_profile` lifecycle tool. These are separate from Desktop connection bootstrap. Credential-persisting `parle_login` operations require `confirmMutation: true` plus a nonempty reason before they can write a protected human-session record and room-bound profile under the resolved `~/.parle` account-state root. They do not replace Desktop's injected room token or change the live Desktop connection automatically.
 
 Desktop therefore has two explicit credential custody locations: host-managed sensitive configuration for the active MCP process, and `~/.parle` only when a user deliberately invokes an account tool that persists credentials. The profile and session files remain available to CLI and coding-harness adapters. See [the accepted storage decision](../../docs/design/storage-layout.md).
 

@@ -141,6 +141,41 @@ test("status resolves explicit and default profiles with shared atomic-mode sema
   assert.equal(defaultStatus.details.roomId.source, "profile:default");
 });
 
+test("parle_delete_profile is degraded-safe, idempotent, and protects the live Pi binding", async () => {
+  const cwd = tempProject("PARLE_PROFILE=missing\nPARLE_WATCH_ENABLED=0\n");
+  const catalogDir = join(process.env.HOME, ".parle");
+  const catalog = join(catalogDir, "profiles");
+  mkdirSync(catalogDir, { recursive: true, mode: 0o700 });
+  writeFileSync(catalog, "[other]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_other\n", { mode: 0o600 });
+  const degraded = installHarness(cwd);
+  assert.deepEqual(Object.keys(degraded.tools.parle_delete_profile.parameters.properties).sort(), ["confirmMutation", "profile", "reason"]);
+  assert.deepEqual((await degraded.call("parle_delete_profile", { profile: "missing", confirmMutation: true, reason: "repair" })).details, { profile: "missing", removed: false });
+  assert.deepEqual((await degraded.call("parle_delete_profile", { profile: "other", confirmMutation: true, reason: "cleanup" })).details, { profile: "other", removed: true });
+  assert.equal(readFileSync(catalog, "utf8"), "");
+
+  const sensitiveReason = "pi-reason-must-not-escape";
+  writeFileSync(catalog, "agent_token = parle_agt_pi_secret\n", { mode: 0o600 });
+  await assert.rejects(
+    degraded.call("parle_delete_profile", { profile: "missing", confirmMutation: true, reason: sensitiveReason }),
+    (error) => error.code === "profile_delete_failed"
+      && !error.message.includes(process.env.HOME)
+      && !error.message.includes(catalog)
+      && !error.message.includes("parle_agt_pi_secret")
+      && !error.message.includes(sensitiveReason),
+  );
+
+  writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=default\nPARLE_WATCH_ENABLED=0\n");
+  writeFileSync(catalog, "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_default\n\n[stale]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_stale\n", { mode: 0o600 });
+  globalThis.fetch = async () => { throw new Error("offline fixture"); };
+  const live = installHarness(cwd);
+  await live.call("parle_status");
+  await assert.rejects(
+    live.call("parle_delete_profile", { profile: "default", confirmMutation: true, reason: "must refuse" }),
+    /bound by the calling client/,
+  );
+  assert.deepEqual((await live.call("parle_delete_profile", { profile: "stale", confirmMutation: true, reason: "cleanup" })).details, { profile: "stale", removed: true });
+});
+
 test("/parle lists saved starts with clear next steps", async () => {
   const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
   const catalogDir = join(process.env.HOME, ".parle");
@@ -876,7 +911,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.38" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.39" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1562,7 +1597,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.38");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.39");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

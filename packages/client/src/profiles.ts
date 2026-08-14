@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { SafeFileError, atomicReplaceOwnerOnlyFile, readOwnerOnlyTextFile, withOwnerOnlyFileLock } from "./safe-file.js";
 
 export const PROFILE_CATALOG_PATH = join(homedir(), ".parle", "profiles");
 
@@ -45,6 +46,30 @@ export type CredentialProfile = {
   wakeBase?: string;
 };
 
+export type DeleteProfileParams = {
+  profile: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
+export type DeleteProfileOptions = {
+  catalogPath: string;
+  protectedProfiles?: Iterable<string>;
+};
+
+export const PROFILE_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
+
+export class ProfileDeletionError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "ProfileDeletionError";
+    this.code = code;
+  }
+}
+
 export class ProfileConfigError extends Error {
   readonly code: string;
 
@@ -70,6 +95,18 @@ export class ProfileNotFoundError extends ProfileConfigError {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_KEYS = new Set(["room_id", "agent_token", "agent_token_id", "api_base", "wake_base"]);
+
+export function profileSectionRange(text: string, label: string): { start: number; end: number } | undefined {
+  const headers: Array<{ label: string; start: number }> = [];
+  const lineRe = /(?:^|(?<=\n))[^\n]*(?:\n|$)/g;
+  for (const match of text.matchAll(lineRe)) {
+    const raw = match[0].replace(/\r?\n$/, "");
+    const section = raw.trim().match(/^\[([^\]\r\n]+)\]$/);
+    if (section) headers.push({ label: section[1], start: match.index! });
+  }
+  const index = headers.findIndex((header) => header.label === label);
+  return index < 0 ? undefined : { start: headers[index].start, end: headers[index + 1]?.start ?? text.length };
+}
 
 function catalogAccessError(path: string, operation: string, error: unknown): ProfileConfigError {
   const code = typeof (error as any)?.code === "string" ? ` (${(error as any).code})` : "";
@@ -156,6 +193,45 @@ export function profileCatalogHasProfile(name: string, path: string = PROFILE_CA
   if (!link) return false;
   assertSafeCatalog(path, link);
   return parseProfiles(readCatalog(path), path).has(name);
+}
+
+export function deleteProfile(params: DeleteProfileParams, options: DeleteProfileOptions): { profile: string; removed: boolean } {
+  const profile = typeof params.profile === "string" ? params.profile.trim() : "";
+  if (!PROFILE_LABEL_RE.test(profile)) {
+    throw new ProfileDeletionError("profile_delete_invalid", "Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
+  }
+  if (params.confirmMutation !== true || !params.reason?.trim()) {
+    throw new ProfileDeletionError("profile_delete_confirmation_required", "parle_delete_profile requires confirmMutation=true and a reason.");
+  }
+  const protectedProfiles = new Set(options.protectedProfiles || []);
+  try {
+    if (!inspectCatalog(options.catalogPath)) return { profile, removed: false };
+    return withOwnerOnlyFileLock(options.catalogPath, { label: "Parle profile catalog", durability: "none" }, () => {
+      if (!inspectCatalog(options.catalogPath)) return { profile, removed: false };
+      const original = readOwnerOnlyTextFile(options.catalogPath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES, modePolicy: "ignore" });
+      const profiles = parseProfiles(original, "Parle profile catalog");
+      const range = profileSectionRange(original, profile);
+      if (!profiles.has(profile) || !range) return { profile, removed: false };
+      if (protectedProfiles.has(profile)) {
+        throw new ProfileDeletionError("profile_delete_active", `Parle profile ${profile} is bound by the calling client and cannot be deleted.`);
+      }
+      const updated = original.slice(0, range.start) + original.slice(range.end);
+      parseProfiles(updated, "Parle profile catalog");
+      atomicReplaceOwnerOnlyFile(options.catalogPath, updated, {
+        label: "Parle profile catalog",
+        maxBytes: MAX_PROFILE_CATALOG_BYTES,
+        durability: "best-effort",
+        existingMode: "replace",
+      });
+      return { profile, removed: true };
+    });
+  } catch (error) {
+    if (error instanceof ProfileDeletionError) throw error;
+    if (error instanceof SafeFileError && error.code === "lock_contended") {
+      throw new ProfileDeletionError("profile_delete_lock_contended", `Parle profile ${profile} could not be deleted because another writer holds the catalog lock. Retry with a fresh confirmed action.`);
+    }
+    throw new ProfileDeletionError("profile_delete_failed", `Parle profile ${profile} could not be deleted safely.`);
+  }
 }
 
 export function loadProfile(name: string, path: string = PROFILE_CATALOG_PATH): CredentialProfile {

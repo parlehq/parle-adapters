@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "parle-claude-desktop-extension",
   "display_name": "Parle",
-  "version": "0.8.33",
+  "version": "0.8.34",
   "description": "Claude Desktop extension for Parle room tools through a bundled local MCP server",
   "author": {
     "name": "Parle"
@@ -30,7 +30,7 @@
         "PARLE_ROOM_ID": "${user_config.parle_room_id}",
         "PARLE_ROOM_AGENT_TOKEN": "${user_config.parle_agent_token}",
         "PARLE_INTEGRATION_NAME": "@parlehq/claude-desktop-extension",
-        "PARLE_INTEGRATION_VERSION": "0.8.33"
+        "PARLE_INTEGRATION_VERSION": "0.8.34"
       }
     }
   },
