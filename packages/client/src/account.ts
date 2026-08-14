@@ -890,6 +890,30 @@ export class ParleAccountClient {
       };
     }
 
+    const roomDetails = await this.request(authenticated, `/v/rooms/${encodeURIComponent(room.room_id)}`, { signal });
+    const agentSeats = roomDetails?.roster?.agent_seats;
+    if (!Array.isArray(agentSeats)) throw new Error("Parle room response is invalid: roster.agent_seats must be an array.");
+    const exactSeat = agentSeats.find((item: any) => item?.agent_id === agent.agent_id);
+    if (exactSeat) {
+      try {
+        validateUUID(String(exactSeat.seat_id || ""), "room agent seat_id");
+      } catch {
+        throw new Error("Parle room response is invalid: the matching roster.agent_seats entry must include a valid seat_id.");
+      }
+    }
+    if (!exactSeat) {
+      return {
+        status: "seat_required",
+        wroteCredentials: false,
+        wroteSessionCookie: false,
+        profile: profileName,
+        room: { room_id: room.room_id, room_handle: room.room_handle },
+        agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
+        secrets: "redacted; no session cookie or agent token was returned",
+        next: `Call parle_add_own_agent_seat with roomId:'${room.room_id}', agentId:'${agent.agent_id}', confirmMutation:true, and a reason. Then rerun parle_login with action:'mint-from-session' and the same room and agent selectors.`,
+      };
+    }
+
     if (action === "mint-from-session") writeSessionCookieFile(config.catalogPath, sessionCookie!);
     let tokenBody: any;
     try {

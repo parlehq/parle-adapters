@@ -363,7 +363,7 @@ export function registerParleTools(
 
   registerTool("parle_login", {
     title: "Parle Login",
-    description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session performs the non-idempotent token mint and profile publication. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
+    description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it performs the non-idempotent token mint and profile publication. A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
     inputSchema: {
       action: z.enum(["start", "complete", "complete-factor", "mint-from-session"]).optional(),
       email: z.string().optional(),
@@ -402,7 +402,7 @@ export function registerParleTools(
 
   registerTool("parle_add_own_agent_seat", {
     title: "Parle Add Own Agent Seat",
-    description: "Admit one authenticated principal-owned durable agent to a shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
+    description: "Admit one authenticated principal-owned durable agent to a private or shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
     inputSchema: {
       roomId: z.string(),
       agentId: z.string(),

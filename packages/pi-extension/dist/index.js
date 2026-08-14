@@ -3200,6 +3200,30 @@ var ParleAccountClient = class {
         next: "Call parle_login with action:'mint-from-session' and either roomId or roomHandle plus either agentId or agentHandle. The previously completed human session remains saved."
       };
     }
+    const roomDetails = await this.request(authenticated, `/v/rooms/${encodeURIComponent(room.room_id)}`, { signal });
+    const agentSeats = roomDetails?.roster?.agent_seats;
+    if (!Array.isArray(agentSeats))
+      throw new Error("Parle room response is invalid: roster.agent_seats must be an array.");
+    const exactSeat = agentSeats.find((item) => item?.agent_id === agent.agent_id);
+    if (exactSeat) {
+      try {
+        validateUUID(String(exactSeat.seat_id || ""), "room agent seat_id");
+      } catch {
+        throw new Error("Parle room response is invalid: the matching roster.agent_seats entry must include a valid seat_id.");
+      }
+    }
+    if (!exactSeat) {
+      return {
+        status: "seat_required",
+        wroteCredentials: false,
+        wroteSessionCookie: false,
+        profile: profileName,
+        room: { room_id: room.room_id, room_handle: room.room_handle },
+        agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
+        secrets: "redacted; no session cookie or agent token was returned",
+        next: `Call parle_add_own_agent_seat with roomId:'${room.room_id}', agentId:'${agent.agent_id}', confirmMutation:true, and a reason. Then rerun parle_login with action:'mint-from-session' and the same room and agent selectors.`
+      };
+    }
     if (action === "mint-from-session")
       writeSessionCookieFile(config.catalogPath, sessionCookie);
     let tokenBody;
@@ -6562,7 +6586,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.36";
+var PI_EXTENSION_VERSION = "0.7.37";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -8234,7 +8258,7 @@ function parleExtension(pi) {
   pi.registerTool({
     name: "parle_login",
     label: "Parle Login",
-    description: "First-class Parle email login and local credential bootstrap. Complete persists either the human session or an opaque pending-login cookie beside the resolved profile catalog. For a hardened account, complete-factor spends TOTP and promotes pending state to the human session. mint-from-session separately mints one room-bound agent token and atomically writes a named 0600 profile (~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate). Credential-consuming actions require confirmMutation=true plus a reason. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Cookies, proofs, and tokens are never returned in tool output.",
+    description: "First-class Parle email login and local credential bootstrap. Complete persists either the human session or an opaque pending-login cookie beside the resolved profile catalog. For a hardened account, complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it mints one room-bound agent token and atomically writes a named 0600 profile (~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate). A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Cookies, proofs, and tokens are never returned in tool output.",
     parameters: Type.Object({
       action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete", "complete-factor", "mint-from-session"] })),
       email: Type.Optional(Type.String()),
@@ -8280,9 +8304,9 @@ function parleExtension(pi) {
   pi.registerTool({
     name: "parle_add_own_agent_seat",
     label: "Parle Add Own Agent Seat",
-    description: "Admit one of the authenticated principal's own durable agents onto a shared room's seat plane through the fixed POST /v/rooms/{roomID}/seats human-session endpoint. The session cookie is read only from resolved local configuration and never accepted or returned. This operation does not mint tokens, enter the room, or invite another principal.",
+    description: "Admit one of the authenticated principal's own durable agents onto a private or shared room's seat plane through the fixed POST /v/rooms/{roomID}/seats human-session endpoint. The session cookie is read only from resolved local configuration and never accepted or returned. This operation does not mint tokens, enter the room, or invite another principal.",
     parameters: Type.Object({
-      roomId: Type.String({ description: "Shared room UUID." }),
+      roomId: Type.String({ description: "Room UUID." }),
       agentId: Type.String({ description: "UUID of an unrevoked durable agent owned by the authenticated principal." }),
       confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm the fixed own-agent seat admission mutation." })),
       reason: Type.Optional(Type.String({ description: "Required explanation for admitting the agent." }))

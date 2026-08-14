@@ -548,6 +548,11 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(rooms.structuredContent.compactText, "Account rooms");
     assert.deepEqual(rooms.structuredContent.active, { state: "unavailable", reason: "runtime_not_bootstrapped" });
     const tools = await client.listTools();
+    const loginTool = tools.tools.find((tool) => tool.name === "parle_login");
+    assert.match(loginTool.description, /exact agent to have an active seat/);
+    assert.match(loginTool.description, /separately confirmed parle_add_own_agent_seat/);
+    const seatTool = tools.tools.find((tool) => tool.name === "parle_add_own_agent_seat");
+    assert.match(seatTool.description, /private or shared room/);
     const sendTool = tools.tools.find((tool) => tool.name === "parle_send");
     assert.match(sendTool.description, /Successful sends return server-authored routing and attention/);
     assert.match(sendTool.description, /Broadcast is likewise not a substitute for direct addressing/);

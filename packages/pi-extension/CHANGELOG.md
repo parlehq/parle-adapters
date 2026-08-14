@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.37 (2026-08-13)
+
+- Return `seat_required` before returning-login token mint when the selected exact agent lacks a room seat, and describe the separate confirmed admission operation for private and shared rooms (#121, parlehq/parle#800).
+
 ## 0.7.36 (2026-08-12)
 
 - Inherit the shared client's in-place durable alias claim for anonymous live sessions (#115, parlehq/parle#797): a first claim now preserves the session, its participants, its wake stream, and outstanding exact-session opaque reply routes.

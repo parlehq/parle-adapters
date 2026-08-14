@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.32 (2026-08-13)
+
+- Refresh the bundled MCP runtime with exact-seat preflight for returning-login profile bootstrap and every-room own-agent seat guidance (#121, parlehq/parle#800).
+
 ## 0.8.31 (2026-08-12)
 
 - Inherit the shared client's in-place durable alias claim for anonymous live sessions (#115, parlehq/parle#797): a first claim now preserves the session, its participants, its wake stream, and outstanding exact-session opaque reply routes.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.31 (2026-08-13)
+
+- Require the selected exact agent's active room seat before returning-login profile bootstrap mints a token. Missing admission now returns structured `seat_required` guidance for the separately confirmed seat mutation without minting or publishing credentials (#121, parlehq/parle#800).
+
 ## 0.8.30 (2026-08-12)
 
 - Claim a durable alias in place when the live session is anonymous (#115, parlehq/parle#797): switchSessionAlias no longer mints a candidate session, re-enters rooms, replaces the wake stream, or retires the predecessor for a first claim, so exact-session opaque reply routes issued against that session stay redeemable. Alias-to-alias switches keep the candidate machinery and its supersession semantics.

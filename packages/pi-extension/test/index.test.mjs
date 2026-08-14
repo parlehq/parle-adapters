@@ -876,7 +876,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.36" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.37" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1562,7 +1562,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.36");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.37");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1675,6 +1675,8 @@ test("parle_add_own_agent_seat uses only validated IDs, the configured cookie, a
     admitted_at: "2026-07-19T16:50:00Z",
   });
   assert.equal(JSON.stringify(result).includes("must-not-escape"), false);
+  assert.match(harness.tools.parle_add_own_agent_seat.description, /private or shared room/);
+  assert.equal(harness.tools.parle_add_own_agent_seat.parameters.properties.roomId.description, "Room UUID.");
   assert.deepEqual(Object.keys(harness.tools.parle_add_own_agent_seat.parameters.properties).sort(), ["agentId", "confirmMutation", "reason", "roomId"]);
 });
 
@@ -1775,6 +1777,32 @@ test("parle_login starts email login without requiring raw request plumbing", as
   assert.match(result.details.next, /code/);
 });
 
+test("parle_login mint-from-session returns seat_required without minting or publishing a profile", async () => {
+  const cwd = tempProject("PARLE_SESSION_COOKIE=__Host-parle_session=parle_ses_existing\n");
+  const paths = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const path = new URL(u).pathname;
+    paths.push(`${init.method || "GET"} ${path}`);
+    if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "room-one"]])), { status: 200 });
+    if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "pi" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms/019f2946-aef5-77ad-a41d-747ce0fd6a1e")) return new Response(JSON.stringify({ roster: { agent_seats: [] } }), { status: 200 });
+    throw new Error("unexpected " + u);
+  };
+  const harness = installHarness(cwd);
+
+  const result = await harness.call("parle_login", { action: "mint-from-session", confirmMutation: true, reason: "test seat preflight", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", agentId: LOGIN_AGENT_ID });
+  assert.equal(result.details.status, "seat_required");
+  assert.equal(result.details.wroteCredentials, false);
+  assert.equal(result.details.wroteSessionCookie, false);
+  assert.match(result.details.next, /parle_add_own_agent_seat/);
+  assert.match(result.details.next, /confirmMutation:true/);
+  assert.equal(JSON.stringify(result.details).includes("parle_ses_existing"), false);
+  assert.equal(existsSync(join(process.env.HOME, ".parle", "profiles")), false);
+  assert.deepEqual(paths, ["GET /v/rooms", "GET /v/agents", "GET /v/rooms/019f2946-aef5-77ad-a41d-747ce0fd6a1e"]);
+  assert.match(harness.tools.parle_login.description, /exact agent to have an active seat/);
+});
+
 test("parle_login complete saves only the session, then mint-from-session saves a profile without exposing secrets", async () => {
   const cwd = tempProject();
   const seen = [];
@@ -1795,6 +1823,9 @@ test("parle_login complete saves only the session, then mint-from-session saves 
     if (u.endsWith("/v/agents")) {
       assert.equal(init.headers.Cookie, "__Host-parle_session=parle_ses_cookie-secret");
       return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "pi" }] }), { status: 200 });
+    }
+    if (u.endsWith("/v/rooms/019f2946-aef5-77ad-a41d-747ce0fd6a1e")) {
+      return new Response(JSON.stringify({ roster: { agent_seats: [{ seat_id: "019f2946-aef5-77ad-a41d-747ce0fd6a22", agent_id: LOGIN_AGENT_ID }] } }), { status: 200 });
     }
     if (u.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)) {
       assert.equal(init.headers.Cookie, "__Host-parle_session=parle_ses_cookie-secret");
@@ -1845,6 +1876,7 @@ test("parle_login validates labels and requires force before replacing a profile
     const u = String(url);
     if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"]])), { status: 200 });
     if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "pi" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms/019f2946-aef5-77ad-a41d-747ce0fd6a1e")) return new Response(JSON.stringify({ roster: { agent_seats: [{ seat_id: "019f2946-aef5-77ad-a41d-747ce0fd6a22", agent_id: LOGIN_AGENT_ID }] } }), { status: 200 });
     if (u.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", agent_id: LOGIN_AGENT_ID, room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", token: "parle_agt_new-credential-1234" }), { status: 201 });
     throw new Error("unexpected " + u + String(init.body || ""));
   };
@@ -1974,6 +2006,7 @@ test("parle_login routes persistence through PARLE_PROFILES_PATH", async () => {
     const u = String(url);
     if (u.endsWith("/v/rooms")) return new Response(JSON.stringify(accountRoomsBody([["019f2946-aef5-77ad-a41d-747ce0fd6a1e", "one"]])), { status: 200 });
     if (u.endsWith("/v/agents")) return new Response(JSON.stringify({ agents: [{ agent_id: LOGIN_AGENT_ID, agent_handle: "a" }] }), { status: 200 });
+    if (u.endsWith("/v/rooms/019f2946-aef5-77ad-a41d-747ce0fd6a1e")) return new Response(JSON.stringify({ roster: { agent_seats: [{ seat_id: "019f2946-aef5-77ad-a41d-747ce0fd6a22", agent_id: LOGIN_AGENT_ID }] } }), { status: 200 });
     if (u.endsWith(`/v/agents/${LOGIN_AGENT_ID}/tokens`)) return new Response(JSON.stringify({ agent_token_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1f", agent_id: LOGIN_AGENT_ID, room_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", token: "parle_agt_override-secret-1234" }), { status: 201 });
     throw new Error("unexpected " + u);
   };

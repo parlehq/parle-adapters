@@ -65,9 +65,13 @@ pending-login cookie to a transient `login` file beside the resolved profile
 catalog. `complete-factor` then spends TOTP and atomically promotes that pending
 state to the human session (`~/.parle/session` by default; one
 `PARLE_PROFILES_PATH` override relocates the whole secrets home). A separate
-`mint-from-session` call with exact room and agent selectors mints a room-bound
-token and atomically writes the selected profile with `0600` permissions.
-Credential-consuming operations require `confirmMutation: true` plus a nonempty
+`mint-from-session` call with exact room and agent selectors first verifies that
+the exact agent has an active seat in the selected private or shared room, then
+mints a room-bound token and atomically writes the selected profile with `0600`
+permissions. A missing seat returns `seat_required` without minting or publishing
+a profile and directs the operator to run the separately confirmed
+`parle_add_own_agent_seat` mutation before retrying. Credential-consuming
+operations require `confirmMutation: true` plus a nonempty
 `reason`, and `writeCredentials: false` is rejected. `profile`
 defaults to `default`. Labels are 1 to 64 characters, start with a letter or
 number, and contain only letters, numbers, dot, underscore, or hyphen. Replacing
@@ -116,9 +120,9 @@ The extension registers these Pi tools:
 - `parle_status` - show redacted config provenance and runtime state.
 - `parle_switch_profile` - atomically switch this live Pi process to another named profile without editing `.env` or persistent configuration.
 - `parle_setup` - diagnose missing configuration.
-- `parle_login` - request and complete email login. Unhardened accounts persist the human session immediately; hardened accounts persist opaque pending state and continue through `complete-factor` with TOTP. Then `mint-from-session` separately mints and saves a named room-bound profile. Credential-consuming operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
+- `parle_login` - request and complete email login. Unhardened accounts persist the human session immediately; hardened accounts persist opaque pending state and continue through `complete-factor` with TOTP. Then `mint-from-session` requires the selected exact agent's active seat before separately minting and saving a named room-bound profile. A missing seat returns `seat_required` and names the separately confirmed admission step. Credential-consuming operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
-- `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a shared room's seat plane.
+- `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a private or shared room's seat plane.
 - `parle_harden_account` - perform one typed account-hardening transition without accepting a secret or path. The human separately runs `parle-hardening-secret` on a controlling TTY; it is never auto-launched.
 - `parle_mint_principal_invite` - mint one target-proof ordinary person invitation by leading-at handle or email. Handle targets return a resolved immutable identity and non-secret locator. Email targets return only a privacy-flat accepted result with fixed 30-day expiry while the mailer handles locator delivery. Possession of a locator grants no authority.
 - `parle_accept_room_invitation` - preview or accept the locator as its immutable authenticated target.

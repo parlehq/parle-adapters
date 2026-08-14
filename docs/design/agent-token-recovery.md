@@ -183,9 +183,11 @@ Pi and MCP expose the same action contract:
 - `start`: request a returning-login email code
 - `complete`: exchange the code and atomically persist either the protected human session or an opaque pending-login cookie when the account requires a strong factor
 - `complete-factor`: spend TOTP against protected pending state and persist the resulting human session
-- `mint-from-session`: select an existing room and agent, mint a token, and persist a profile
+- `mint-from-session`: select an existing room and agent, verify that exact agent's active seat from authenticated room details, then mint a token and persist a profile
 
 `complete` must never continue into factor completion or token minting. Each proof remains one explicit confirmed operation. Pending state lives in a protected transient `login` file beside the resolved profile catalog, is never rendered, and survives only retryable TOTP refusal or infrastructure failure. Success or terminal rejection removes it.
+
+A missing exact-agent seat returns structured `seat_required` with the selected non-secret room and agent identifiers before token mint or profile publication. It directs the operator to the separately confirmed `parle_add_own_agent_seat` mutation and never admits the agent implicitly. After explicit admission, the operator reruns the same `mint-from-session` request. The server's mint check remains authoritative if seat state changes after this adapter preflight.
 
 `complete`, `complete-factor`, and `mint-from-session` require `confirmMutation: true` and a non-empty `reason`. They never retry automatically. Until `parlehq/parle#451` lands, a lost or malformed post-dispatch mint response remains outcome-unknown and the adapter must say so without attempting compensation.
 

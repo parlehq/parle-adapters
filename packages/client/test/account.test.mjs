@@ -54,17 +54,29 @@ function response(json, status = 200) {
   return new Response(JSON.stringify(json), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function accountRoomPage(roomId = ROOM_ID, roomHandle = "room-one") {
+function accountRoomPage(roomId = ROOM_ID, roomHandle = "room-one", privateRoom = false) {
   return {
     rooms: [{
       room_id: roomId,
       room_handle: roomHandle,
-      private: false,
+      private: privateRoom,
       created_at: "2026-08-01T12:00:00Z",
       relationship: "owner",
       owner: { principal_id: PRINCIPAL_ID, principal_handle: "owner" },
     }],
     next: null,
+  };
+}
+
+function roomDetails(agentIds = [AGENT_ID]) {
+  return {
+    roster: {
+      agent_seats: agentIds.map((agentId, index) => ({
+        seat_id: index === 0 ? SEAT_ID : `019f7c00-0000-7000-8000-0000000000${index + 10}`,
+        agent_id: agentId,
+        admitted_at: "2026-08-03T12:00:00Z",
+      })),
+    },
   };
 }
 
@@ -200,6 +212,118 @@ test("login credential mutations require explicit confirmation and reason before
   } finally { f.cleanup(); }
 });
 
+test("login mint-from-session returns seat_required before token mint or credential publication", async () => {
+  const f = loginFixture();
+  const state = join(f.home, ".parle");
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  const sessionPath = join(state, "session");
+  writeFileSync(sessionPath, "__Host-parle_session=human-cookie\n", { mode: 0o600 });
+  const calls = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init = {}) => {
+        const path = new URL(url).pathname;
+        calls.push(`${init.method || "GET"} ${path}`);
+        if (path === "/v/rooms") return response(accountRoomPage(ROOM_ID, "private-room", true));
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/rooms/${ROOM_ID}`) return response(roomDetails([ADDITIONAL_AGENT_ID]));
+        throw new Error(`unexpected ${init.method || "GET"} ${path}`);
+      },
+    });
+
+    const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "test missing seat", profile: "new-profile", roomId: ROOM_ID, agentId: AGENT_ID });
+    assert.equal(result.status, "seat_required");
+    assert.equal(result.wroteCredentials, false);
+    assert.equal(result.wroteSessionCookie, false);
+    assert.deepEqual(result.room, { room_id: ROOM_ID, room_handle: "private-room" });
+    assert.deepEqual(result.agent, { agent_id: AGENT_ID, agent_handle: "agent-one" });
+    assert.match(result.next, new RegExp(`parle_add_own_agent_seat.*${ROOM_ID}.*${AGENT_ID}`));
+    assert.match(result.next, /confirmMutation:true/);
+    assert.equal(JSON.stringify(result).includes("human-cookie"), false);
+    assert.equal(existsSync(join(state, "profiles")), false);
+    assert.equal(readFileSync(sessionPath, "utf8"), "__Host-parle_session=human-cookie\n");
+    assert.deepEqual(calls, ["GET /v/rooms", "GET /v/agents", `GET /v/rooms/${ROOM_ID}`]);
+  } finally { f.cleanup(); }
+});
+
+test("login mint-from-session rejects malformed room seat evidence before mint or publication", async (t) => {
+  const cases = [
+    ["malformed roster", { roster: {} }],
+    ["malformed matching seat", { roster: { agent_seats: [{ agent_id: AGENT_ID, seat_id: "garbage" }] } }],
+  ];
+  for (const [name, details] of cases) {
+    await t.test(name, async () => {
+      const f = loginFixture();
+      const state = join(f.home, ".parle");
+      mkdirSync(state, { recursive: true, mode: 0o700 });
+      const sessionPath = join(state, "session");
+      const catalogPath = join(state, "profiles");
+      const originalSession = "__Host-parle_session=human-cookie\n";
+      const originalProfiles = `[keep]\nroom_id = ${ROOM_ID}\nagent_token = parle_agt_keep\n`;
+      writeFileSync(sessionPath, originalSession, { mode: 0o600 });
+      writeFileSync(catalogPath, originalProfiles, { mode: 0o600 });
+      const calls = [];
+      try {
+        const client = new ParleAccountClient({
+          cwd: f.cwd,
+          env: f.env,
+          fetch: async (url, init = {}) => {
+            const path = new URL(url).pathname;
+            calls.push(`${init.method || "GET"} ${path}`);
+            if (path === "/v/rooms") return response(accountRoomPage());
+            if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+            if (path === `/v/rooms/${ROOM_ID}`) return response(details);
+            throw new Error(`unexpected ${init.method || "GET"} ${path}`);
+          },
+        });
+
+        await assert.rejects(
+          client.login({ action: "mint-from-session", confirmMutation: true, reason: "test malformed seat evidence", profile: "new-profile", roomId: ROOM_ID, agentId: AGENT_ID }),
+          /Parle room response is invalid/,
+        );
+        assert.deepEqual(calls, ["GET /v/rooms", "GET /v/agents", `GET /v/rooms/${ROOM_ID}`]);
+        assert.equal(readFileSync(sessionPath, "utf8"), originalSession);
+        assert.equal(readFileSync(catalogPath, "utf8"), originalProfiles);
+      } finally { f.cleanup(); }
+    });
+  }
+});
+
+test("login mint-from-session accepts exact seats in private and shared rooms", async (t) => {
+  for (const privateRoom of [true, false]) {
+    await t.test(privateRoom ? "private room" : "shared room", async () => {
+      const f = loginFixture();
+      const state = join(f.home, ".parle");
+      mkdirSync(state, { recursive: true, mode: 0o700 });
+      writeFileSync(join(state, "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
+      let mintCalls = 0;
+      try {
+        const client = new ParleAccountClient({
+          cwd: f.cwd,
+          env: f.env,
+          fetch: async (url, init = {}) => {
+            const path = new URL(url).pathname;
+            if (path === "/v/rooms") return response(accountRoomPage(ROOM_ID, privateRoom ? "private-room" : "shared-room", privateRoom));
+            if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+            if (path === `/v/rooms/${ROOM_ID}`) return response(roomDetails());
+            if (path === `/v/agents/${AGENT_ID}/tokens` && init.method === "POST") {
+              mintCalls += 1;
+              return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
+            }
+            throw new Error(`unexpected ${init.method || "GET"} ${path}`);
+          },
+        });
+
+        const result = await client.login({ action: "mint-from-session", confirmMutation: true, reason: "test exact seat", profile: privateRoom ? "private" : "shared", roomId: ROOM_ID, agentId: AGENT_ID });
+        assert.equal(result.status, "credentials_saved");
+        assert.equal(mintCalls, 1);
+      } finally { f.cleanup(); }
+    });
+  }
+});
+
 test("login can bootstrap a missing selected profile while other account operations fail closed", async () => {
   const f = loginFixture();
   const state = join(f.home, ".parle");
@@ -216,6 +340,7 @@ test("login can bootstrap a missing selected profile while other account operati
         const path = new URL(url).pathname;
         if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/rooms/${ROOM_ID}`) return response(roomDetails());
         if (path === `/v/agents/${AGENT_ID}/tokens`) return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
         throw new Error(`unexpected ${path}`);
       },
@@ -251,6 +376,7 @@ test("login profile publication reports a known token without automatic cleanup 
         if (method === "DELETE") deleteCalls += 1;
         if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/rooms/${ROOM_ID}`) return response(roomDetails());
         if (path === `/v/agents/${AGENT_ID}/tokens` && method === "POST") {
           writeFileSync(lockPath, "other-writer\n", { mode: 0o600, flag: "wx" });
           return response({ agent_token_id: AGENT_TOKEN_ID, agent_id: AGENT_ID, room_id: ROOM_ID, token: `parle_agt_${"x".repeat(43)}` }, 201);
@@ -282,6 +408,7 @@ test("login treats token-mint transport loss as outcome unknown and never retrie
         const path = new URL(url).pathname;
         if (path === "/v/rooms") return response(accountRoomPage());
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "agent-one" }] });
+        if (path === `/v/rooms/${ROOM_ID}`) return response(roomDetails());
         if (path === `/v/agents/${AGENT_ID}/tokens` && init.method === "POST") {
           mintCalls += 1;
           throw new TypeError("connection reset after request dispatch");

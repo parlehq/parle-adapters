@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.36 (2026-08-13)
+
+- Refresh the bundled MCP runtime with exact-seat preflight for returning-login profile bootstrap and every-room own-agent seat guidance (#121, parlehq/parle#800).
+
 ## 0.9.35 (2026-08-13)
 
 - Correct skill guidance that 0.9.34 left false: enabling the hook bridge makes `parle_switch_profile` fail closed, because the MCP session, wake stream, delivery queue, and hook binding must change atomically. The skill documented the retired live stop-switch-re-arm sequence as if it still worked. Changing profile now means restarting Claude Code with the target `PARLE_PROFILE`.

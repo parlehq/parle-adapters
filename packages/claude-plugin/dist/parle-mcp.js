@@ -34138,6 +34138,30 @@ var ParleAccountClient = class {
         next: "Call parle_login with action:'mint-from-session' and either roomId or roomHandle plus either agentId or agentHandle. The previously completed human session remains saved."
       };
     }
+    const roomDetails = await this.request(authenticated, `/v/rooms/${encodeURIComponent(room.room_id)}`, { signal });
+    const agentSeats = roomDetails?.roster?.agent_seats;
+    if (!Array.isArray(agentSeats))
+      throw new Error("Parle room response is invalid: roster.agent_seats must be an array.");
+    const exactSeat = agentSeats.find((item) => item?.agent_id === agent.agent_id);
+    if (exactSeat) {
+      try {
+        validateUUID(String(exactSeat.seat_id || ""), "room agent seat_id");
+      } catch {
+        throw new Error("Parle room response is invalid: the matching roster.agent_seats entry must include a valid seat_id.");
+      }
+    }
+    if (!exactSeat) {
+      return {
+        status: "seat_required",
+        wroteCredentials: false,
+        wroteSessionCookie: false,
+        profile: profileName,
+        room: { room_id: room.room_id, room_handle: room.room_handle },
+        agent: { agent_id: agent.agent_id, agent_handle: agent.agent_handle },
+        secrets: "redacted; no session cookie or agent token was returned",
+        next: `Call parle_add_own_agent_seat with roomId:'${room.room_id}', agentId:'${agent.agent_id}', confirmMutation:true, and a reason. Then rerun parle_login with action:'mint-from-session' and the same room and agent selectors.`
+      };
+    }
     if (action === "mint-from-session")
       writeSessionCookieFile(config2.catalogPath, sessionCookie);
     let tokenBody;
@@ -38587,7 +38611,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }));
   registerTool("parle_login", {
     title: "Parle Login",
-    description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session performs the non-idempotent token mint and profile publication. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
+    description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it performs the non-idempotent token mint and profile publication. A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
     inputSchema: {
       action: external_exports.enum(["start", "complete", "complete-factor", "mint-from-session"]).optional(),
       email: external_exports.string().optional(),
@@ -38624,7 +38648,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   });
   registerTool("parle_add_own_agent_seat", {
     title: "Parle Add Own Agent Seat",
-    description: "Admit one authenticated principal-owned durable agent to a shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
+    description: "Admit one authenticated principal-owned durable agent to a private or shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
     inputSchema: {
       roomId: external_exports.string(),
       agentId: external_exports.string(),
@@ -38846,7 +38870,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.31";
+var MCP_CLIENT_VERSION = "0.7.32";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
