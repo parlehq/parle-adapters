@@ -3,7 +3,7 @@
 ## 0.8.33 (2026-08-14)
 
 - Add exact path-free local profile deletion with confirmation, idempotent missing results, owner-only atomic replacement, fail-closed lock contention, and calling-client profile guards (#125).
-- Preserve definite HTTP status and adapter provenance for every account response failure after fetch resolves, while retaining server codes and top-level array compatibility (#124).
+- Preserve definite HTTP status and adapter provenance for every account response failure after fetch resolves; JSON endpoints now reject empty, invalid, null, string, number, and boolean success bodies while retaining server codes and top-level array compatibility (#124).
 
 ## 0.8.32 (2026-08-13)
 

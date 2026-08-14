@@ -2101,10 +2101,22 @@ export default function parleExtension(pi: any) {
       lastCtx = ctx;
       const cwd = ctx.cwd || process.cwd();
       const catalogPath = resolveProfileCatalogPathForProcess(cwd, process.env);
-      const details = client && client.registryCatalogPath === catalogPath
-        ? await client.deleteProfile(params)
-        : deleteProfile(params, { catalogPath, protectedProfiles: [] });
-      return formatResult(details);
+      if (client && client.registryCatalogPath === catalogPath) return formatResult(await client.deleteProfile(params));
+      let cfg: ParleConfig | undefined;
+      try {
+        cfg = configForLiveRuntime(resolveConfig(cwd));
+      } catch {
+        return formatResult(deleteProfile(params, { catalogPath, protectedProfiles: [] }));
+      }
+      if (!cfg.profile?.value && !cfg.profiles?.value) {
+        return formatResult(deleteProfile(params, { catalogPath, protectedProfiles: [] }));
+      }
+      try {
+        return formatResult(await agentClient(ctx, cfg).deleteProfile(params));
+      } catch (error) {
+        if (client) throw error;
+        return formatResult(deleteProfile(params, { catalogPath, protectedProfiles: [] }));
+      }
     },
   });
 

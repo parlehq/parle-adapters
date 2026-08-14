@@ -160,6 +160,9 @@ test("typed profile deletion is exact, idempotent, owner-only, and path-free", (
   const beta = "[beta]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_beta\n\n";
   const gamma = "[gamma]\nroom_id = 019f8035-d1f6-7170-8552-0262bce8982f\nagent_token = parle_agt_gamma\n";
   try {
+    assert.deepEqual(deleteProfile({ profile: "missing", confirmMutation: true, reason }, { catalogPath: catalog }), { profile: "missing", removed: false });
+    assert.equal(existsSync(catalog), false);
+
     assert.throws(
       () => deleteProfile({ profile: "alpha", confirmMutation: false, reason }, { catalogPath: catalog }),
       (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_confirmation_required" && !error.message.includes(reason),
@@ -168,6 +171,18 @@ test("typed profile deletion is exact, idempotent, owner-only, and path-free", (
       () => deleteProfile({ profile: "alpha*", confirmMutation: true, reason }, { catalogPath: catalog }),
       (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_invalid" && !error.message.includes(reason),
     );
+
+    const malformed = `agent_token = ${secret}\n`;
+    writeFileSync(catalog, malformed, { mode: 0o600 });
+    assert.throws(
+      () => deleteProfile({ profile: "alpha", confirmMutation: true, reason }, { catalogPath: catalog }),
+      (error) => error instanceof ProfileDeletionError
+        && error.code === "profile_delete_failed"
+        && !error.message.includes(root)
+        && !error.message.includes(secret)
+        && !error.message.includes(reason),
+    );
+    assert.equal(readFileSync(catalog, "utf8"), malformed);
 
     writeFileSync(catalog, alpha + beta + gamma, { mode: 0o644 });
     const missing = deleteProfile({ profile: "missing", confirmMutation: true, reason }, { catalogPath: catalog });
@@ -209,6 +224,20 @@ test("typed profile deletion is exact, idempotent, owner-only, and path-free", (
         && !error.message.includes(secret)
         && !error.message.includes(reason),
     );
+
+    const directoryCatalog = join(root, "directory-catalog");
+    mkdirSync(directoryCatalog, { mode: 0o700 });
+    assert.throws(
+      () => deleteProfile({ profile: "alpha", confirmMutation: true, reason }, { catalogPath: directoryCatalog }),
+      (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_failed" && !error.message.includes(root),
+    );
+
+    const oversizedCatalog = join(root, "oversized-catalog");
+    writeFileSync(oversizedCatalog, Buffer.alloc(1024 * 1024 + 1, 0x61), { mode: 0o600 });
+    assert.throws(
+      () => deleteProfile({ profile: "alpha", confirmMutation: true, reason }, { catalogPath: oversizedCatalog }),
+      (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_failed" && !error.message.includes(root),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -222,7 +251,12 @@ test("agent client protects only its own profile bindings across runtime states"
   try {
     mkdirSync(catalogDir, { mode: 0o700 });
     writeFileSync(catalog, profile("alpha", "019f2946-aef5-77ad-a41d-747ce0fd6a1e") + profile("beta", "019f7b46-178f-7a5a-9f7b-b4af2e045261") + profile("gamma", "019f8035-d1f6-7170-8552-0262bce8982f"), { mode: 0o600 });
-    const alpha = new ParleAgentClient({ cwd: root, env: { HOME: root, PARLE_PROFILE: "alpha" } });
+    let rejectSwitchFetch;
+    const alpha = new ParleAgentClient({
+      cwd: root,
+      env: { HOME: root, PARLE_PROFILE: "alpha" },
+      fetch: async () => new Promise((_resolve, reject) => { rejectSwitchFetch = reject; }),
+    });
     const beta = new ParleAgentClient({ cwd: root, env: { HOME: root, PARLE_PROFILE: "beta" } });
 
     for (const state of ["unstarted", "bootstrapping", "failed", "ready"]) {
@@ -232,12 +266,15 @@ test("agent client protects only its own profile bindings across runtime states"
         (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_active",
       );
     }
-    alpha.profileSwitchInFlight = true;
+    const switching = alpha.switchProfile("gamma");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(typeof rejectSwitchFetch, "function");
     await assert.rejects(
       alpha.deleteProfile({ profile: "gamma", confirmMutation: true, reason: "switch refusal" }),
       (error) => error instanceof ProfileDeletionError && error.code === "profile_delete_switch_in_flight",
     );
-    alpha.profileSwitchInFlight = false;
+    rejectSwitchFetch(new Error("stop switch fixture"));
+    await assert.rejects(switching, /stop switch fixture/);
 
     assert.deepEqual(await alpha.deleteProfile({ profile: "beta", confirmMutation: true, reason: "instance scoped" }), { profile: "beta", removed: true });
     assert.equal(beta.status().config.profile.value, "beta", "a second client is intentionally outside the calling instance guard");

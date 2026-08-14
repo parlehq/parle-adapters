@@ -516,6 +516,20 @@ test("own-agent lifecycle fails closed and reports delete transport uncertainty 
     assert.match(unknown.next, /Do not retry blindly/);
     assert.equal(calls, 1);
 
+    let abortCalls = 0;
+    const abortedClient = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => {
+        abortCalls += 1;
+        throw new DOMException("aborted before response", "AbortError");
+      },
+    });
+    const aborted = await abortedClient.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "pre-response abort" });
+    assert.equal(aborted.outcome, "unknown");
+    assert.equal(aborted.retry_attempted, false);
+    assert.equal(abortCalls, 1);
+
     for (const definiteResponse of [
       new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
       { ok: true, status: 204, statusText: "No Content", arrayBuffer: async () => Buffer.from("{}") },
@@ -559,6 +573,25 @@ test("account response failures stay definite after fetch resolves and preserve 
     await assert.rejects(
       arrayClient.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "array reaches endpoint validation" }),
       (error) => !(error instanceof ParleAccountResponseContractError) && /created agent_id must be a non-zero UUID/.test(error.message),
+    );
+
+    let mutableStatus = 204;
+    const capturedStatusClient = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => ({
+        get status() { return mutableStatus; },
+        get ok() { return mutableStatus < 400; },
+        get statusText() { return "fixture"; },
+        async arrayBuffer() {
+          mutableStatus = 599;
+          throw new DOMException("aborted while reading response", "AbortError");
+        },
+      }),
+    });
+    await assert.rejects(
+      capturedStatusClient.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "capture response status" }),
+      (error) => error instanceof ParleAccountResponseContractError && error.status === 204 && error.code === undefined,
     );
 
     for (const status of [204, 503]) {

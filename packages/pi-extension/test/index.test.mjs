@@ -164,16 +164,30 @@ test("parle_delete_profile is degraded-safe, idempotent, and protects the live P
       && !error.message.includes(sensitiveReason),
   );
 
+  writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=broken\nPARLE_ENABLED=0\nPARLE_WATCH_ENABLED=0\n");
+  writeFileSync(catalog, "[broken]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_broken\n", { mode: 0o600 });
+  const broken = installHarness(cwd);
+  assert.deepEqual((await broken.call("parle_delete_profile", { profile: "broken", confirmMutation: true, reason: "repair broken profile" })).details, { profile: "broken", removed: true });
+
   writeFileSync(join(cwd, ".env"), "PARLE_PROFILE=default\nPARLE_WATCH_ENABLED=0\n");
-  writeFileSync(catalog, "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_default\n\n[stale]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_stale\n", { mode: 0o600 });
-  globalThis.fetch = async () => { throw new Error("offline fixture"); };
+  const twoProfiles = "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_default\n\n[stale]\nroom_id = 019f7b46-178f-7a5a-9f7b-b4af2e045261\nagent_token = parle_agt_stale\n";
+  writeFileSync(catalog, twoProfiles, { mode: 0o600 });
   const live = installHarness(cwd);
-  await live.call("parle_status");
   await assert.rejects(
-    live.call("parle_delete_profile", { profile: "default", confirmMutation: true, reason: "must refuse" }),
+    live.call("parle_delete_profile", { profile: "default", confirmMutation: true, reason: "must refuse before status" }),
     /bound by the calling client/,
   );
   assert.deepEqual((await live.call("parle_delete_profile", { profile: "stale", confirmMutation: true, reason: "cleanup" })).details, { profile: "stale", removed: true });
+
+  writeFileSync(join(cwd, ".env"), "PARLE_PROFILES=default,stale\nPARLE_WATCH_ENABLED=0\n");
+  writeFileSync(catalog, twoProfiles, { mode: 0o600 });
+  const multi = installHarness(cwd);
+  for (const profile of ["default", "stale"]) {
+    await assert.rejects(
+      multi.call("parle_delete_profile", { profile, confirmMutation: true, reason: "multi binding refusal before status" }),
+      /bound by the calling client/,
+    );
+  }
 });
 
 test("/parle lists saved starts with clear next steps", async () => {

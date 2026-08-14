@@ -639,26 +639,29 @@ export class ParleAccountClient {
       body = JSON.stringify(options.body);
     }
     const response = await this.fetchImpl(new URL(path, config.apiBase), { method: options.method || "GET", headers, body, signal: options.signal });
+    const status = response.status;
+    const ok = response.ok;
+    const statusText = response.statusText;
     let buffer: Buffer;
     try {
       buffer = Buffer.from(await response.arrayBuffer());
     } catch {
-      throw new ParleAccountResponseContractError("Parle API response body could not be read.", response.status);
+      throw new ParleAccountResponseContractError("Parle API response body could not be read.", status);
     }
     if (buffer.byteLength > MAX_RESPONSE_BYTES) {
-      throw new ParleAccountResponseContractError(`Parle API response exceeded ${MAX_RESPONSE_BYTES} bytes.`, response.status);
+      throw new ParleAccountResponseContractError(`Parle API response exceeded ${MAX_RESPONSE_BYTES} bytes.`, status);
     }
     const text = buffer.toString("utf8");
     const json = parseJson(text);
-    if (!response.ok) {
+    if (!ok) {
       const error = json?.error && typeof json.error === "object" ? json.error : {};
       const rawReason = typeof error.reason === "string" ? error.reason : "";
       const expectedNextAction = MINT_DENIAL_NEXT_ACTION[rawReason as keyof typeof MINT_DENIAL_NEXT_ACTION];
-      const denialIsRecognized = Boolean(response.status === 403 && error.code === "forbidden" && expectedNextAction && error.unlock === expectedNextAction);
-      const baseMessage = scrub(String(error.message || text || response.statusText), [config.sessionCookie, ...(options.secrets || [])]).slice(0, 4096);
+      const denialIsRecognized = Boolean(status === 403 && error.code === "forbidden" && expectedNextAction && error.unlock === expectedNextAction);
+      const baseMessage = scrub(String(error.message || text || statusText), [config.sessionCookie, ...(options.secrets || [])]).slice(0, 4096);
       const message = denialIsRecognized ? `${baseMessage}. Reason: ${rawReason}. Next action: ${expectedNextAction}` : baseMessage;
-      const raised: any = new Error(`Parle API ${response.status}: ${message}`);
-      raised.status = response.status;
+      const raised: any = new Error(`Parle API ${status}: ${message}`);
+      raised.status = status;
       raised.code = typeof error.code === "string" ? error.code : undefined;
       raised.action = typeof error.action === "string" ? error.action : undefined;
       raised.scope = typeof error.scope === "string" ? error.scope : undefined;
@@ -672,13 +675,13 @@ export class ParleAccountClient {
       throw raised;
     }
     if (options.expectNoContent) {
-      if (response.status !== 204 || buffer.byteLength !== 0) {
-        throw new ParleAccountResponseContractError("Parle API returned an invalid no-content response.", response.status);
+      if (status !== 204 || buffer.byteLength !== 0) {
+        throw new ParleAccountResponseContractError("Parle API returned an invalid no-content response.", status);
       }
       return null;
     }
     if (buffer.byteLength === 0 || json === null || typeof json !== "object") {
-      throw new ParleAccountResponseContractError("Parle API returned an invalid JSON response.", response.status);
+      throw new ParleAccountResponseContractError("Parle API returned an invalid JSON response.", status);
     }
     return json;
   }
