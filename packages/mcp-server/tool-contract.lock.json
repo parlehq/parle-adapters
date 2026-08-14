@@ -113,6 +113,23 @@
       "invitation"
     ]
   },
+  "parle_create_own_agent": {
+    "title": "Parle Create Own Agent",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "agentHandle",
+      "confirmMutation",
+      "displayName",
+      "reason"
+    ],
+    "required": [
+      "agentHandle"
+    ]
+  },
   "parle_create_room": {
     "title": "Parle Create Room",
     "annotations": {
@@ -128,6 +145,22 @@
     ],
     "required": [
       "kind"
+    ]
+  },
+  "parle_delete_own_agent": {
+    "title": "Parle Delete Own Agent",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "agentId",
+      "confirmMutation",
+      "reason"
+    ],
+    "required": [
+      "agentId"
     ]
   },
   "parle_guidance": {

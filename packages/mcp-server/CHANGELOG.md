@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.33 (2026-08-13)
+
+- Expose shared `parle_create_own_agent` and `parle_delete_own_agent` account tools for MCP hosts while keeping the human session confined to fixed shared-client methods (#122).
+
 ## 0.7.32 (2026-08-13)
 
 - Bundle exact-seat preflight for returning-login profile bootstrap and describe own-agent seat admission consistently for private and shared rooms (#121, parlehq/parle#800).

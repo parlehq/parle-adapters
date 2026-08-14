@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.38 (2026-08-13)
+
+- Expose native `parle_create_own_agent` and `parle_delete_own_agent` tools backed by the shared account client, with explicit mutation confirmation and terminal-deletion guidance (#122).
+
 ## 0.7.37 (2026-08-13)
 
 - Return `seat_required` before returning-login token mint when the selected exact agent lacks a room seat, and describe the separate confirmed admission operation for private and shared rooms (#121, parlehq/parle#800).

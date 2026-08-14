@@ -33896,7 +33896,16 @@ var ParleAccountClient = class {
       }
       throw raised;
     }
-    if (!json2 || typeof json2 !== "object")
+    if (options.expectNoContent) {
+      if (response.status !== 204 || buffer.byteLength !== 0) {
+        const mismatch = new Error("Parle API returned an invalid no-content response.");
+        mismatch.status = response.status;
+        mismatch.code = "parle_adapter_success_contract_mismatch";
+        throw mismatch;
+      }
+      return null;
+    }
+    if (buffer.byteLength === 0 || !json2 || typeof json2 !== "object")
       throw new Error("Parle API returned an invalid JSON response.");
     return json2;
   }
@@ -34335,6 +34344,44 @@ var ParleAccountClient = class {
     if (params.kind === "shared" && typeof response.seat_id !== "string")
       throw new Error("Parle shared-room creation succeeded without an owner seat_id.");
     return { room_id: response.room_id, room_handle: response.room_handle, kind: response.kind, seat_id: response.seat_id };
+  }
+  async createOwnAgent(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_create_own_agent requires confirmMutation=true and a reason for POST /v/agents.");
+    const agentHandle = validateHandle(params.agentHandle, "parle_create_own_agent agentHandle");
+    const displayName = params.displayName?.trim();
+    if (params.displayName !== void 0 && !displayName)
+      throw new Error("parle_create_own_agent displayName must not be empty when provided.");
+    const config2 = this.config();
+    const response = await this.request(config2, "/v/agents", {
+      method: "POST",
+      body: { agent_handle: agentHandle, ...displayName ? { display_name: displayName } : {} },
+      signal
+    });
+    const agentId = validateUUID(String(response.agent_id || ""), "created agent_id");
+    if (response.agent_handle !== agentHandle || typeof response.display_name !== "string" || !response.display_name) {
+      throw new Error("Parle agent creation succeeded without the expected agent_id, agent_handle, and display_name.");
+    }
+    return { agent_id: agentId, agent_handle: response.agent_handle, display_name: response.display_name };
+  }
+  async deleteOwnAgent(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_delete_own_agent requires confirmMutation=true and a reason for DELETE /v/agents/{agentID}.");
+    const agentId = validateUUID(params.agentId, "agentId");
+    const config2 = this.config();
+    try {
+      await this.request(config2, `/v/agents/${encodeURIComponent(agentId)}`, { method: "DELETE", signal, expectNoContent: true });
+      return { agent_id: agentId, http_status: 204 };
+    } catch (error51) {
+      if (typeof error51?.status === "number")
+        throw error51;
+      return {
+        agent_id: agentId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Agent deletion outcome is unknown. Do not retry blindly; inspect the owned-agent inventory before taking another action."
+      };
+    }
   }
   async addOwnAgentSeat(params, signal) {
     if (params.confirmMutation !== true || !params.reason?.trim())
@@ -38380,6 +38427,17 @@ var aliasDeliverySchema = {
   alias: external_exports.string(),
   roomId: external_exports.string().optional()
 };
+var createOwnAgentSchema = {
+  agentHandle: external_exports.string(),
+  displayName: external_exports.string().optional(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
+var deleteOwnAgentSchema = {
+  agentId: external_exports.string(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
 var ownedAliasDeliverySchema = {
   action: external_exports.enum(["get_global", "set_global", "get_room", "set_room", "restore_everywhere"]),
   agentId: external_exports.string(),
@@ -38646,6 +38704,24 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     observeRequest(extra);
     return safeTool(() => accountClient.createRoom(params));
   });
+  registerTool("parle_create_own_agent", {
+    title: "Parle Create Own Agent",
+    description: "Create one durable agent owned by the authenticated principal through the fixed human-session endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not create a room, seat the agent, or mint a token. The mutation requires confirmMutation=true plus a reason.",
+    inputSchema: createOwnAgentSchema,
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.createOwnAgent(params));
+  });
+  registerTool("parle_delete_own_agent", {
+    title: "Parle Delete Own Agent",
+    description: "Terminally delete one durable agent owned by the authenticated principal through the fixed human-session endpoint. Deletion releases the handle, revokes active tokens, ends live sessions, removes active seats, and preserves audit history. The session cookie is resolved only from safe local configuration and is never accepted or returned. Mutations require confirmMutation=true plus a reason.",
+    inputSchema: deleteOwnAgentSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.deleteOwnAgent(params));
+  });
   registerTool("parle_add_own_agent_seat", {
     title: "Parle Add Own Agent Seat",
     description: "Admit one authenticated principal-owned durable agent to a private or shared room through the fixed human-session seat endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not mint tokens, enter the room, or invite another principal.",
@@ -38870,7 +38946,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.32";
+var MCP_CLIENT_VERSION = "0.7.33";
 var inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : void 0;
 var MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {

@@ -2958,7 +2958,16 @@ var ParleAccountClient = class {
       }
       throw raised;
     }
-    if (!json || typeof json !== "object")
+    if (options.expectNoContent) {
+      if (response.status !== 204 || buffer.byteLength !== 0) {
+        const mismatch = new Error("Parle API returned an invalid no-content response.");
+        mismatch.status = response.status;
+        mismatch.code = "parle_adapter_success_contract_mismatch";
+        throw mismatch;
+      }
+      return null;
+    }
+    if (buffer.byteLength === 0 || !json || typeof json !== "object")
       throw new Error("Parle API returned an invalid JSON response.");
     return json;
   }
@@ -3397,6 +3406,44 @@ var ParleAccountClient = class {
     if (params.kind === "shared" && typeof response.seat_id !== "string")
       throw new Error("Parle shared-room creation succeeded without an owner seat_id.");
     return { room_id: response.room_id, room_handle: response.room_handle, kind: response.kind, seat_id: response.seat_id };
+  }
+  async createOwnAgent(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_create_own_agent requires confirmMutation=true and a reason for POST /v/agents.");
+    const agentHandle = validateHandle(params.agentHandle, "parle_create_own_agent agentHandle");
+    const displayName = params.displayName?.trim();
+    if (params.displayName !== void 0 && !displayName)
+      throw new Error("parle_create_own_agent displayName must not be empty when provided.");
+    const config = this.config();
+    const response = await this.request(config, "/v/agents", {
+      method: "POST",
+      body: { agent_handle: agentHandle, ...displayName ? { display_name: displayName } : {} },
+      signal
+    });
+    const agentId = validateUUID(String(response.agent_id || ""), "created agent_id");
+    if (response.agent_handle !== agentHandle || typeof response.display_name !== "string" || !response.display_name) {
+      throw new Error("Parle agent creation succeeded without the expected agent_id, agent_handle, and display_name.");
+    }
+    return { agent_id: agentId, agent_handle: response.agent_handle, display_name: response.display_name };
+  }
+  async deleteOwnAgent(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_delete_own_agent requires confirmMutation=true and a reason for DELETE /v/agents/{agentID}.");
+    const agentId = validateUUID(params.agentId, "agentId");
+    const config = this.config();
+    try {
+      await this.request(config, `/v/agents/${encodeURIComponent(agentId)}`, { method: "DELETE", signal, expectNoContent: true });
+      return { agent_id: agentId, http_status: 204 };
+    } catch (error) {
+      if (typeof error?.status === "number")
+        throw error;
+      return {
+        agent_id: agentId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Agent deletion outcome is unknown. Do not retry blindly; inspect the owned-agent inventory before taking another action."
+      };
+    }
   }
   async addOwnAgentSeat(params, signal) {
     if (params.confirmMutation !== true || !params.reason?.trim())
@@ -6586,7 +6633,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.37";
+var PI_EXTENSION_VERSION = "0.7.38";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -7745,7 +7792,7 @@ function statusDetails(ctx) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue2(cfg.sessionAlias),
@@ -8299,6 +8346,39 @@ function parleExtension(pi) {
       assertEnabled(cfg);
       const details = await accountClient(ctx.cwd || process.cwd()).createRoom(params, signal);
       return formatResult(details);
+    }
+  });
+  pi.registerTool({
+    name: "parle_create_own_agent",
+    label: "Parle Create Own Agent",
+    description: "Create one durable agent owned by the authenticated principal through the fixed POST /v/agents human-session endpoint. The session cookie is read only from resolved local configuration and never accepted or returned. This operation does not create a room, seat the agent, or mint a token. The mutation requires confirmMutation=true plus a reason.",
+    parameters: Type.Object({
+      agentHandle: Type.String({ description: "Agent handle. Trimmed and normalized to lowercase, then validated as an unreserved 2-20 character handle using letters, digits, and hyphens with no leading, trailing, or consecutive hyphens." }),
+      displayName: Type.Optional(Type.String({ description: "Optional nonempty display name. Defaults to the agent handle when omitted." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm the fixed POST /v/agents mutation." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for creating the durable agent." }))
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig2(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).createOwnAgent(params, signal));
+    }
+  });
+  pi.registerTool({
+    name: "parle_delete_own_agent",
+    label: "Parle Delete Own Agent",
+    description: "Terminally delete one durable agent owned by the authenticated principal through the fixed DELETE /v/agents/{agentID} human-session endpoint. Deletion releases the handle, revokes active tokens, ends live sessions, removes active seats, and preserves audit history. The session cookie is read only from resolved local configuration and never accepted or returned.",
+    parameters: Type.Object({
+      agentId: Type.String({ description: "Exact UUID of the owned durable agent to delete." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm terminal durable-agent deletion." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for deleting the durable agent." }))
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig2(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).deleteOwnAgent(params, signal));
     }
   });
   pi.registerTool({

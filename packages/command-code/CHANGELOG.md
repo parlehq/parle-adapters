@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.13 (2026-08-13)
+
+- Refresh the native runtime with shared guarded durable-agent create/delete tools (#122).
+
 ## 0.7.12 (2026-08-13)
 
 - Refresh the native runtime with exact-seat preflight for returning-login profile bootstrap and every-room own-agent seat guidance (#121, parlehq/parle#800).

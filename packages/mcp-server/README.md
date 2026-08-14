@@ -25,6 +25,8 @@ MCP account-plane tools:
 
 - `parle_login`
 - `parle_create_room`
+- `parle_create_own_agent`
+- `parle_delete_own_agent`
 - `parle_add_own_agent_seat`
 - `parle_harden_account`
 - `parle_mint_principal_invite`

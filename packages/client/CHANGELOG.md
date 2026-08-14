@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.32 (2026-08-13)
+
+- Add guarded shared account-client methods for creating and terminally deleting principal-owned durable agents, including fixed endpoint validation, canonical no-content handling, and outcome-unknown deletion reporting without automatic retry (#122).
+
 ## 0.8.31 (2026-08-13)
 
 - Require the selected exact agent's active room seat before returning-login profile bootstrap mints a token. Missing admission now returns structured `seat_required` guidance for the separately confirmed seat mutation without minting or publishing credentials (#121, parlehq/parle#800).

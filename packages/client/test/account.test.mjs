@@ -450,6 +450,88 @@ test("shared account client creates rooms and admits own agents through fixed hu
   } finally { f.cleanup(); }
 });
 
+test("shared account client creates and deletes own durable agents through fixed human-session endpoints", async () => {
+  const f = fixture();
+  const calls = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, method: init.method, body: init.body && JSON.parse(init.body), cookie: init.headers.Cookie });
+        if (path === "/v/agents") return response({ agent_id: AGENT_ID, agent_handle: "testagent1", display_name: "Test Agent 1" }, 201);
+        if (path === `/v/agents/${AGENT_ID}`) return new Response(null, { status: 204 });
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    const created = await client.createOwnAgent({ agentHandle: " TestAgent1 ", displayName: " Test Agent 1 ", confirmMutation: true, reason: "smoke test" });
+    const deleted = await client.deleteOwnAgent({ agentId: AGENT_ID.toUpperCase(), confirmMutation: true, reason: "smoke cleanup" });
+    assert.deepEqual(created, { agent_id: AGENT_ID, agent_handle: "testagent1", display_name: "Test Agent 1" });
+    assert.deepEqual(deleted, { agent_id: AGENT_ID, http_status: 204 });
+    assert.deepEqual(calls, [
+      { path: "/v/agents", method: "POST", body: { agent_handle: "testagent1", display_name: "Test Agent 1" }, cookie: "__Host-parle_session=human-cookie" },
+      { path: `/v/agents/${AGENT_ID}`, method: "DELETE", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+    ]);
+  } finally { f.cleanup(); }
+});
+
+test("own-agent lifecycle fails closed and reports delete transport uncertainty without retry", async () => {
+  const f = fixture();
+  let calls = 0;
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url) => {
+        calls += 1;
+        const path = new URL(url).pathname;
+        if (path === `/v/agents/${AGENT_ID}` && calls === 1) throw new TypeError("connection reset after dispatch");
+        return response({ error: { code: "not_found", message: "not found", action: "stop", retryable: false, scope: "account" } }, 404);
+      },
+    });
+    await assert.rejects(client.createOwnAgent({ agentHandle: "testagent1", reason: "missing confirmation" }), /confirmMutation=true/);
+    await assert.rejects(client.createOwnAgent({ agentHandle: "bad_handle", confirmMutation: true, reason: "invalid handle" }), /agentHandle must normalize/);
+    await assert.rejects(client.createOwnAgent({ agentHandle: "testagent1", displayName: " ", confirmMutation: true, reason: "invalid display" }), /displayName must not be empty/);
+    await assert.rejects(client.deleteOwnAgent({ agentId: "not-a-uuid", confirmMutation: true, reason: "invalid id" }), /agentId must be a non-zero UUID/);
+    assert.equal(calls, 0);
+
+    const malformedClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ agent_id: AGENT_ID }, 201) });
+    await assert.rejects(
+      malformedClient.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "reject malformed success" }),
+      /expected agent_id, agent_handle, and display_name/,
+    );
+    const emptyJsonClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => new Response(null, { status: 204 }) });
+    await assert.rejects(
+      emptyJsonClient.createOwnAgent({ agentHandle: "testagent1", confirmMutation: true, reason: "reject empty JSON success" }),
+      /invalid JSON response/,
+    );
+
+    const unknown = await client.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "delete" });
+    assert.equal(unknown.outcome, "unknown");
+    assert.equal(unknown.retry_attempted, false);
+    assert.match(unknown.next, /Do not retry blindly/);
+    assert.equal(calls, 1);
+
+    for (const definiteResponse of [
+      new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+      { ok: true, status: 204, statusText: "No Content", arrayBuffer: async () => Buffer.from("{}") },
+    ]) {
+      const protocolClient = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => definiteResponse });
+      await assert.rejects(
+        protocolClient.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "reject malformed delete success" }),
+        (error) => error.status === definiteResponse.status && error.code === "parle_adapter_success_contract_mismatch",
+      );
+    }
+
+    await assert.rejects(
+      client.deleteOwnAgent({ agentId: AGENT_ID, confirmMutation: true, reason: "delete missing" }),
+      (error) => error.status === 404 && error.code === "not_found" && error.action === "stop",
+    );
+    assert.equal(calls, 2);
+  } finally { f.cleanup(); }
+});
+
 test("principal invite mint supports target-proof handle and privacy-flat email targets", async () => {
   const f = fixture();
   const calls = [];

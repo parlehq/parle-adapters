@@ -122,6 +122,8 @@ The extension registers these Pi tools:
 - `parle_setup` - diagnose missing configuration.
 - `parle_login` - request and complete email login. Unhardened accounts persist the human session immediately; hardened accounts persist opaque pending state and continue through `complete-factor` with TOTP. Then `mint-from-session` requires the selected exact agent's active seat before separately minting and saving a named room-bound profile. A missing seat returns `seat_required` and names the separately confirmed admission step. Credential-consuming operations require `confirmMutation: true` plus a reason. Pass `force: true` only when intentionally replacing that profile.
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
+- `parle_create_own_agent` - create one durable agent owned by the authenticated principal without seating it or minting credentials.
+- `parle_delete_own_agent` - terminally delete one owned durable agent, including its active tokens, sessions, and seats.
 - `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a private or shared room's seat plane.
 - `parle_harden_account` - perform one typed account-hardening transition without accepting a secret or path. The human separately runs `parle-hardening-secret` on a controlling TTY; it is never auto-launched.
 - `parle_mint_principal_invite` - mint one target-proof ordinary person invitation by leading-at handle or email. Handle targets return a resolved immutable identity and non-secret locator. Email targets return only a privacy-flat accepted result with fixed 30-day expiry while the mailer handles locator delivery. Possession of a locator grants no authority.

@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateRoomParams, type CredentialProfile, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.37";
+const PI_EXTENSION_VERSION = "0.7.38";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -147,6 +147,8 @@ type RuntimeState = PiWatchRuntime & {
 
 type ParleLoginParams = LoginParams;
 type ParleCreateRoomParams = CreateRoomParams;
+type ParleCreateOwnAgentParams = CreateOwnAgentParams;
+type ParleDeleteOwnAgentParams = DeleteOwnAgentParams;
 type ParleAddOwnAgentSeatParams = AddOwnAgentSeatParams;
 type ParleOwnedAliasDeliveryParams = OwnedAliasDeliveryParams;
 type ParleOwnedAliasReleaseParams = OwnedAliasReleaseParams;
@@ -1577,7 +1579,7 @@ function statusDetails(ctx: any) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -2168,6 +2170,41 @@ export default function parleExtension(pi: any) {
       assertEnabled(cfg);
       const details = await accountClient(ctx.cwd || process.cwd()).createRoom(params, signal);
       return formatResult(details);
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_create_own_agent",
+    label: "Parle Create Own Agent",
+    description: "Create one durable agent owned by the authenticated principal through the fixed POST /v/agents human-session endpoint. The session cookie is read only from resolved local configuration and never accepted or returned. This operation does not create a room, seat the agent, or mint a token. The mutation requires confirmMutation=true plus a reason.",
+    parameters: Type.Object({
+      agentHandle: Type.String({ description: "Agent handle. Trimmed and normalized to lowercase, then validated as an unreserved 2-20 character handle using letters, digits, and hyphens with no leading, trailing, or consecutive hyphens." }),
+      displayName: Type.Optional(Type.String({ description: "Optional nonempty display name. Defaults to the agent handle when omitted." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm the fixed POST /v/agents mutation." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for creating the durable agent." })),
+    }),
+    async execute(_id, params: ParleCreateOwnAgentParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).createOwnAgent(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_delete_own_agent",
+    label: "Parle Delete Own Agent",
+    description: "Terminally delete one durable agent owned by the authenticated principal through the fixed DELETE /v/agents/{agentID} human-session endpoint. Deletion releases the handle, revokes active tokens, ends live sessions, removes active seats, and preserves audit history. The session cookie is read only from resolved local configuration and never accepted or returned.",
+    parameters: Type.Object({
+      agentId: Type.String({ description: "Exact UUID of the owned durable agent to delete." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm terminal durable-agent deletion." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for deleting the durable agent." })),
+    }),
+    async execute(_id, params: ParleDeleteOwnAgentParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).deleteOwnAgent(params, signal));
     },
   });
 

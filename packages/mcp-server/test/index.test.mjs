@@ -19,7 +19,9 @@ const expectedTools = [
   "parle_claim_principal_invite",
   "parle_connect",
   "parle_connect_own_agent",
+  "parle_create_own_agent",
   "parle_create_room",
+  "parle_delete_own_agent",
   "parle_guidance",
   "parle_harden_account",
   "parle_inbox",
@@ -527,6 +529,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     listRooms: async (active) => { calls.push(["rooms", active]); return { active, configured: { state: "complete", rows: [] }, account: { state: "complete", rows: [] }, rooms: [], compactText: "Account rooms" }; },
     login: async (params) => { calls.push(["login", params]); return { status: "code_requested" }; },
     createRoom: async (params) => { calls.push(["create-room", params]); return { room_id: "room-1" }; },
+    createOwnAgent: async (params) => { calls.push(["create-own-agent", params]); return { agent_id: "agent-1", agent_handle: params.agentHandle, display_name: params.displayName || params.agentHandle }; },
+    deleteOwnAgent: async (params) => { calls.push(["delete-own-agent", params]); return { agent_id: params.agentId, http_status: 204 }; },
     addOwnAgentSeat: async (params) => { calls.push(["add-own-agent-seat", params]); return { seat_id: "seat-1" }; },
     hardenAccount: async (params) => { calls.push(["harden-account", params]); return { action: params.action, state: "needs_password", next: "human helper" }; },
     mintPrincipalInvite: async (params) => { calls.push(["mint-invite", params]); return { inviteId: "invite-1", handoffPath: "/private/invite.json" }; },
@@ -551,6 +555,11 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const loginTool = tools.tools.find((tool) => tool.name === "parle_login");
     assert.match(loginTool.description, /exact agent to have an active seat/);
     assert.match(loginTool.description, /separately confirmed parle_add_own_agent_seat/);
+    const createAgentTool = tools.tools.find((tool) => tool.name === "parle_create_own_agent");
+    assert.match(createAgentTool.description, /does not create a room, seat the agent, or mint a token/);
+    const deleteAgentTool = tools.tools.find((tool) => tool.name === "parle_delete_own_agent");
+    assert.match(deleteAgentTool.description, /Terminally delete/);
+    assert.match(deleteAgentTool.description, /revokes active tokens/);
     const seatTool = tools.tools.find((tool) => tool.name === "parle_add_own_agent_seat");
     assert.match(seatTool.description, /private or shared room/);
     const sendTool = tools.tools.find((tool) => tool.name === "parle_send");
@@ -581,6 +590,10 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(login.structuredContent.status, "code_requested");
     const room = await client.callTool({ name: "parle_create_room", arguments: { kind: "shared", confirmMutation: true, reason: "create" } });
     assert.equal(room.structuredContent.room_id, "room-1");
+    const createdAgent = await client.callTool({ name: "parle_create_own_agent", arguments: { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" } });
+    assert.equal(createdAgent.structuredContent.agent_id, "agent-1");
+    const deletedAgent = await client.callTool({ name: "parle_delete_own_agent", arguments: { agentId: "agent-1", confirmMutation: true, reason: "delete agent" } });
+    assert.equal(deletedAgent.structuredContent.http_status, 204);
     const seat = await client.callTool({ name: "parle_add_own_agent_seat", arguments: { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" } });
     assert.equal(seat.structuredContent.seat_id, "seat-1");
     const hardening = await client.callTool({ name: "parle_harden_account", arguments: { action: "status" } });
@@ -599,6 +612,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["session-alias", "galexc-guru"],
       ["login", { action: "start", email: "user@example.test" }],
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
+      ["create-own-agent", { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" }],
+      ["delete-own-agent", { agentId: "agent-1", confirmMutation: true, reason: "delete agent" }],
       ["add-own-agent-seat", { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" }],
       ["harden-account", { action: "status" }],
       ["mint-invite", { roomId: "room-1", target: "@kyle", confirmMutation: true, reason: "invite" }],

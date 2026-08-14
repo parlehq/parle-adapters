@@ -91,6 +91,19 @@ export type CreateRoomParams = {
   reason?: string;
 };
 
+export type CreateOwnAgentParams = {
+  agentHandle: string;
+  displayName?: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
+export type DeleteOwnAgentParams = {
+  agentId: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
 export type AddOwnAgentSeatParams = {
   roomId: string;
   agentId: string;
@@ -616,7 +629,7 @@ export class ParleAccountClient {
     return resolveAccountConfig(this.cwd, this.env);
   }
 
-  private async request(config: AccountConfig, path: string, options: { method?: string; body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; secrets?: string[] } = {}): Promise<any> {
+  private async request(config: AccountConfig, path: string, options: { method?: string; body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; secrets?: string[]; expectNoContent?: boolean } = {}): Promise<any> {
     const headers: Record<string, string> = {
       ...(options.headers || {}),
       Accept: "application/json",
@@ -654,7 +667,16 @@ export class ParleAccountClient {
       }
       throw raised;
     }
-    if (!json || typeof json !== "object") throw new Error("Parle API returned an invalid JSON response.");
+    if (options.expectNoContent) {
+      if (response.status !== 204 || buffer.byteLength !== 0) {
+        const mismatch: any = new Error("Parle API returned an invalid no-content response.");
+        mismatch.status = response.status;
+        mismatch.code = "parle_adapter_success_contract_mismatch";
+        throw mismatch;
+      }
+      return null;
+    }
+    if (buffer.byteLength === 0 || !json || typeof json !== "object") throw new Error("Parle API returned an invalid JSON response.");
     return json;
   }
 
@@ -1076,6 +1098,42 @@ export class ParleAccountClient {
     if (roomHandle && response.room_handle !== roomHandle) throw new Error("Parle room creation returned an unexpected room_handle.");
     if (params.kind === "shared" && typeof response.seat_id !== "string") throw new Error("Parle shared-room creation succeeded without an owner seat_id.");
     return { room_id: response.room_id, room_handle: response.room_handle, kind: response.kind, seat_id: response.seat_id };
+  }
+
+  async createOwnAgent(params: CreateOwnAgentParams, signal?: AbortSignal) {
+    if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_create_own_agent requires confirmMutation=true and a reason for POST /v/agents.");
+    const agentHandle = validateHandle(params.agentHandle, "parle_create_own_agent agentHandle");
+    const displayName = params.displayName?.trim();
+    if (params.displayName !== undefined && !displayName) throw new Error("parle_create_own_agent displayName must not be empty when provided.");
+    const config = this.config();
+    const response = await this.request(config, "/v/agents", {
+      method: "POST",
+      body: { agent_handle: agentHandle, ...(displayName ? { display_name: displayName } : {}) },
+      signal,
+    });
+    const agentId = validateUUID(String(response.agent_id || ""), "created agent_id");
+    if (response.agent_handle !== agentHandle || typeof response.display_name !== "string" || !response.display_name) {
+      throw new Error("Parle agent creation succeeded without the expected agent_id, agent_handle, and display_name.");
+    }
+    return { agent_id: agentId, agent_handle: response.agent_handle, display_name: response.display_name };
+  }
+
+  async deleteOwnAgent(params: DeleteOwnAgentParams, signal?: AbortSignal) {
+    if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_delete_own_agent requires confirmMutation=true and a reason for DELETE /v/agents/{agentID}.");
+    const agentId = validateUUID(params.agentId, "agentId");
+    const config = this.config();
+    try {
+      await this.request(config, `/v/agents/${encodeURIComponent(agentId)}`, { method: "DELETE", signal, expectNoContent: true });
+      return { agent_id: agentId, http_status: 204 };
+    } catch (error: any) {
+      if (typeof error?.status === "number") throw error;
+      return {
+        agent_id: agentId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Agent deletion outcome is unknown. Do not retry blindly; inspect the owned-agent inventory before taking another action.",
+      };
+    }
   }
 
   async addOwnAgentSeat(params: AddOwnAgentSeatParams, signal?: AbortSignal) {

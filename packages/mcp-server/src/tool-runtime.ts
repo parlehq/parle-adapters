@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -66,6 +66,19 @@ const aliasDeliverySchema = {
   roomId: z.string().optional(),
 };
 
+const createOwnAgentSchema = {
+  agentHandle: z.string(),
+  displayName: z.string().optional(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
+const deleteOwnAgentSchema = {
+  agentId: z.string(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
 const ownedAliasDeliverySchema = {
   action: z.enum(["get_global", "set_global", "get_room", "set_room", "restore_everywhere"]),
   agentId: z.string(),
@@ -112,6 +125,8 @@ export type ParleAccountClientLike = {
   listRooms(active: RoomInventorySection<ActiveRoomInventoryRow>, signal?: AbortSignal): Promise<ParleRoomsInventory>;
   login(params: LoginParams): Promise<unknown>;
   createRoom(params: CreateRoomParams): Promise<unknown>;
+  createOwnAgent(params: CreateOwnAgentParams): Promise<unknown>;
+  deleteOwnAgent(params: DeleteOwnAgentParams): Promise<unknown>;
   addOwnAgentSeat(params: AddOwnAgentSeatParams): Promise<unknown>;
   mintPrincipalInvite(params: MintPrincipalInviteParams): Promise<unknown>;
   claimPrincipalInvite(params: ClaimPrincipalInviteParams): Promise<unknown>;
@@ -398,6 +413,26 @@ export function registerParleTools(
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => accountClient.createRoom(params as CreateRoomParams));
+  });
+
+  registerTool("parle_create_own_agent", {
+    title: "Parle Create Own Agent",
+    description: "Create one durable agent owned by the authenticated principal through the fixed human-session endpoint. The session cookie is resolved only from safe local configuration and is never accepted or returned. This does not create a room, seat the agent, or mint a token. The mutation requires confirmMutation=true plus a reason.",
+    inputSchema: createOwnAgentSchema,
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.createOwnAgent(params as CreateOwnAgentParams));
+  });
+
+  registerTool("parle_delete_own_agent", {
+    title: "Parle Delete Own Agent",
+    description: "Terminally delete one durable agent owned by the authenticated principal through the fixed human-session endpoint. Deletion releases the handle, revokes active tokens, ends live sessions, removes active seats, and preserves audit history. The session cookie is resolved only from safe local configuration and is never accepted or returned. Mutations require confirmMutation=true plus a reason.",
+    inputSchema: deleteOwnAgentSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.deleteOwnAgent(params as DeleteOwnAgentParams));
   });
 
   registerTool("parle_add_own_agent_seat", {

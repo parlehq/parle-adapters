@@ -876,7 +876,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.37" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.38" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1562,7 +1562,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.37");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.38");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1638,6 +1638,57 @@ test("parle_create_room fails closed before fetch for missing confirmation, cook
   await assert.rejects(harness.call("parle_create_room", { kind: "private", confirmMutation: true, reason: "test" }), /requires roomHandle/);
   await assert.rejects(harness.call("parle_create_room", { roomHandle: "galexc-kyleops", kind: "shared", confirmMutation: true, reason: "test" }), /requires PARLE_SESSION_COOKIE/);
   assert.equal(called, false);
+});
+
+test("own-agent lifecycle tools use only the configured cookie and fixed endpoints", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const secretsDir = join(process.env.HOME, ".parle");
+  mkdirSync(secretsDir, { recursive: true });
+  writeFileSync(join(secretsDir, "session"), "__Host-parle_session=parle_sess_agent-secret\n", { mode: 0o600 });
+  const agentId = "019f2946-b010-7c7e-81ca-9830e6d1fc8b";
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (init.method === "POST") return new Response(JSON.stringify({ agent_id: agentId, agent_handle: "testagent1", display_name: "Test Agent 1", token: "parle_agt_must-not-escape" }), { status: 201 });
+    return new Response(null, { status: 204 });
+  };
+  const harness = installHarness(cwd);
+
+  const created = await harness.call("parle_create_own_agent", {
+    agentHandle: " TestAgent1 ", displayName: " Test Agent 1 ", confirmMutation: true, reason: "Create smoke agent",
+  });
+  const deleted = await harness.call("parle_delete_own_agent", {
+    agentId: agentId.toUpperCase(), confirmMutation: true, reason: "Delete smoke agent",
+  });
+
+  assert.deepEqual(created.details, { agent_id: agentId, agent_handle: "testagent1", display_name: "Test Agent 1" });
+  assert.deepEqual(deleted.details, { agent_id: agentId, http_status: 204 });
+  assert.equal(JSON.stringify(created).includes("must-not-escape"), false);
+  assert.deepEqual(requests.map(({ url, init }) => ({ url, method: init.method, cookie: init.headers.Cookie, body: init.body && JSON.parse(init.body) })), [
+    { url: "https://api.parle.sh/v/agents", method: "POST", cookie: "__Host-parle_session=parle_sess_agent-secret", body: { agent_handle: "testagent1", display_name: "Test Agent 1" } },
+    { url: `https://api.parle.sh/v/agents/${agentId}`, method: "DELETE", cookie: "__Host-parle_session=parle_sess_agent-secret", body: undefined },
+  ]);
+  assert.deepEqual(Object.keys(harness.tools.parle_create_own_agent.parameters.properties).sort(), ["agentHandle", "confirmMutation", "displayName", "reason"]);
+  assert.deepEqual(Object.keys(harness.tools.parle_delete_own_agent.parameters.properties).sort(), ["agentId", "confirmMutation", "reason"]);
+});
+
+test("own-agent lifecycle tools fail closed before fetch and preserve delete uncertainty", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const secretsDir = join(process.env.HOME, ".parle");
+  mkdirSync(secretsDir, { recursive: true });
+  writeFileSync(join(secretsDir, "session"), "__Host-parle_session=parle_sess_agent-secret\n", { mode: 0o600 });
+  const agentId = "019f2946-b010-7c7e-81ca-9830e6d1fc8b";
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; throw new TypeError("connection reset after dispatch"); };
+  const harness = installHarness(cwd);
+
+  await assert.rejects(harness.call("parle_create_own_agent", { agentHandle: "testagent1", reason: "test" }), /confirmMutation=true/);
+  await assert.rejects(harness.call("parle_delete_own_agent", { agentId: "not-a-uuid", confirmMutation: true, reason: "test" }), /agentId must be a non-zero UUID/);
+  assert.equal(calls, 0);
+  const unknown = await harness.call("parle_delete_own_agent", { agentId, confirmMutation: true, reason: "delete" });
+  assert.equal(unknown.details.outcome, "unknown");
+  assert.equal(unknown.details.retry_attempted, false);
+  assert.equal(calls, 1);
 });
 
 test("parle_add_own_agent_seat uses only validated IDs, the configured cookie, and the fixed seat endpoint", async () => {
@@ -1757,7 +1808,7 @@ test("generic parle_request honestly excludes human-session auth", async () => {
 
   const status = await harness.call("parle_status");
   assert.equal(status.details.humanSession.genericRequest, "unsupported");
-  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_login", "parle_create_room", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
+  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
 });
 
 test("parle_login starts email login without requiring raw request plumbing", async () => {
