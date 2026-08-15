@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.35 (2026-08-15)
+
+- Preserve redacted Parle API error details across send and reply failures, and omit generic runtime errors that only duplicate bootstrap history (#126, #127).
+
 ## 0.8.34 (2026-08-14)
 
 - Treat the standalone MCP watcher as a wake-only helper when a responsive-delivery owner is active, preventing false delivery conflicts.

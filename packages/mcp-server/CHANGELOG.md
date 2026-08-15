@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.37 (2026-08-15)
+
+- Preserve redacted typed API error details in MCP tool results and bundle truthful bootstrap-error status projection (#126, #127).
+
 ## 0.7.36 (2026-08-15)
 
 - Replace the standalone Claude network watcher with one owner-only local hook-bridge wait. The shared responsive controller remains the sole owner of wake SSE, durable drains, eligibility, and acknowledgement.

@@ -8,7 +8,7 @@
       "env": {
         "PARLE_RESPONSIVE_DELIVERY": "hook-bridge",
         "PARLE_INTEGRATION_NAME": "@parlehq/claude-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.9.40"
+        "PARLE_INTEGRATION_VERSION": "0.9.41"
       },
       "alwaysLoad": true
     }
