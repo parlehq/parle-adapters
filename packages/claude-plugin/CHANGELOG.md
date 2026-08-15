@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.40 (2026-08-15)
+
+- Replace the dedicated projection long-poll watcher with an owner-only local hook-bridge wait. Claude now wakes only after the existing SSE-driven responsive controller queues target work, with no second Parle session, network watcher, copied relevance filter, or nonzero recurring wait.
+
 ## 0.9.39 (2026-08-14)
 
 - Stop reporting a delivery conflict when the persistent hook bridge and expected wake-only standalone watcher are both active for one Claude session.

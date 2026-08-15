@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient, ProfileNotFoundError } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, applyWatcherStateLine, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, reportResponsiveEvidence, resolveWatcherEnvironment, scheduleEagerBootstrap, watcherExitRequiresInternalRestart, watcherRequestWire } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, scheduleEagerBootstrap } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -40,35 +40,6 @@ const expectedTools = [
   "parle_status",
   "parle_switch_profile",
 ];
-
-test("watcher evidence protocol ignores malformed values and maps bounded lifecycle events", () => {
-  const events = [];
-  const sink = {
-    watching: (event) => events.push(["watching", event]),
-    backoff: (event) => events.push(["backoff", event]),
-    stopped: (event) => events.push(["stopped", event]),
-    terminal: (event) => events.push(["terminal", event]),
-    retarget: (target) => events.push(["target", target]),
-  };
-  const now = Date.parse("2026-08-09T20:00:00Z");
-  applyWatcherStateLine("backoff\tnot-a-number", sink, now);
-  applyWatcherStateLine("unknown\tignored", sink, now);
-  assert.deepEqual(events, []);
-  applyWatcherStateLine("watching", sink, now);
-  applyWatcherStateLine("backoff\t12", sink, now);
-  applyWatcherStateLine("target\tnext-session", sink, now);
-  applyWatcherStateLine("wake", sink, now);
-  applyWatcherStateLine("terminal\tretry_exhausted", sink, now);
-  assert.deepEqual(events.map(([kind]) => kind), ["watching", "backoff", "target", "stopped", "terminal"]);
-  assert.equal(events[1][1].retryAt, "2026-08-09T20:00:12.000Z");
-});
-
-test("responsive evidence failures remain best-effort", () => {
-  const warnings = [];
-  assert.equal(reportResponsiveEvidence(() => { throw new Error("disk full token=secret"); }, (message) => warnings.push(message)), false);
-  assert.equal(warnings.length, 1);
-  assert.doesNotMatch(warnings[0], /token=secret/);
-});
 
 test("eager MCP bootstrap retries autonomously at the shared-client deadline", async () => {
   let now = 1_000;
@@ -180,104 +151,11 @@ test("Codex request metadata resolves an exact host session binding", () => {
   assert.equal(hostSessionIdFromMeta({}), undefined);
 });
 
-test("simultaneous relevant exit and watcher revision is final without exact internal-stop provenance", () => {
-  assert.equal(watcherExitRequiresInternalRestart(4, 5), false, "revision advancement alone cannot suppress natural exit 0");
-  assert.equal(watcherExitRequiresInternalRestart(4, 5, 5), true, "the exact live child stop request permits an internal restart");
-  assert.equal(watcherExitRequiresInternalRestart(5, 5, 5), false, "a stale request cannot restart a later child");
-});
-
-test("watcher arguments accept only documented positional and profile forms", () => {
-  assert.deepEqual(parseWatcherArgs(["0"]), { workerArgs: ["0"] });
-  assert.deepEqual(parseWatcherArgs(["007"]), { workerArgs: ["007"] });
-  assert.deepEqual(parseWatcherArgs(["7"]), { workerArgs: ["7"] });
-  assert.deepEqual(parseWatcherArgs(["7", "as-1"]), { workerArgs: ["7", "as-1"] });
-  assert.deepEqual(parseWatcherArgs(["7", "as-1", "participant-1"]), { workerArgs: ["7", "as-1", "participant-1"] });
-  assert.deepEqual(parseWatcherArgs(["--profile", "target", "7"]), { profile: "target", workerArgs: ["7"] });
-  assert.deepEqual(parseWatcherArgs(["--profile", "target", "7", "as-1"]), { profile: "target", workerArgs: ["7", "as-1"] });
-  assert.deepEqual(parseWatcherArgs(["--profile", "target", "7", "as-1", "participant-1"]), { profile: "target", workerArgs: ["7", "as-1", "participant-1"] });
-
-  for (const args of [[], ["--unknown"], ["--profile=x", "7"], ["--profile"], ["--profile", "target"], ["--profile", "--bad", "7"], [""], [" "], ["abc"], ["-1"], ["+1"], ["1.5"], ["1e3"], ["50", "--profile"], ["7", ""], ["7", "as-1", ""], ["7", "as-1", "participant-1", "extra"], ["--profile", "target", "abc"], ["--profile", "target", "7", "--sid"], ["--profile", "target", "7", "as-1", "participant-1", "extra"]]) {
+test("watcher arguments require exactly one agent session id", () => {
+  assert.equal(parseWatcherArgs(["session-1"]), "session-1");
+  for (const args of [[], ["session-1", "extra"], ["--profile"], ["--profile", "target", "session-1"], [""]]) {
     assert.throws(() => parseWatcherArgs(args), (error) => error instanceof WatcherUsageError && error.message === WATCHER_USAGE);
   }
-});
-
-const watcherEnv = {
-  PARLE_API_BASE: "https://api.example",
-  PARLE_ROOM_ID: "room-1",
-  PARLE_ROOM_AGENT_TOKEN: "parle_agt_watch_secret",
-  PARLE_WATCH_AGENT_SESSION: "parle_ses_watch_secret",
-  PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
-  PARLE_VERSION: "2026-08-09",
-  PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
-  PARLE_INTEGRATION_VERSION: "0.5.39",
-};
-
-test("watch request helper retains the owner process identity without exposing credentials", async () => {
-  let requestedUrl;
-  let requestedHeaders;
-  const fetchImpl = (url, options) => {
-    requestedUrl = String(url);
-    requestedHeaders = options.headers;
-    return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
-  };
-  const wire = await watcherRequestWire("7", "hold", { env: watcherEnv, fetchImpl, timeoutMs: 5, parentPid: 0 });
-  assert.equal(wire, '000\n{"watcher_local":{"outcome":"held_deadline"}}');
-  assert.match(requestedUrl, /since_seq=7&wait=25/);
-  assert.equal(requestedHeaders["Parle-Client-Name"], MCP_CLIENT_NAME);
-  assert.equal(requestedHeaders["Parle-Client-Version"], MCP_CLIENT_VERSION);
-  assert.equal(requestedHeaders["Parle-Client-Instance"], MCP_CLIENT_INSTANCE_ID);
-  assert.equal(requestedHeaders["Parle-Integration-Name"], "@parlehq/claude-plugin");
-  assert.equal(requestedHeaders["Parle-Integration-Version"], "0.5.39");
-  assert.equal(wire.includes(watcherEnv.PARLE_ROOM_AGENT_TOKEN), false);
-  assert.equal(wire.includes(watcherEnv.PARLE_WATCH_AGENT_SESSION), false);
-});
-
-test("watch request helper keeps transport, parent abort, and malformed responses distinct from a held deadline", async () => {
-  const transport = await watcherRequestWire("8", "hold", {
-    env: watcherEnv,
-    fetchImpl: async () => { throw new TypeError("fetch failed"); },
-    parentPid: 0,
-  });
-  assert.equal(transport, '000\n{"watcher_local":{"outcome":"network_failure"}}');
-
-  for (const body of ["not-json", "[]", "null", "{}", '{"messages":[],"watermark":-1}']) {
-    const malformed = await watcherRequestWire("9", "hold", {
-      env: watcherEnv,
-      fetchImpl: async () => new Response(body, { status: 200 }),
-      parentPid: 0,
-    });
-    assert.equal(malformed, '000\n{"watcher_local":{"outcome":"malformed_response"}}');
-  }
-
-  const parentAbort = await watcherRequestWire("10", "hold", {
-    env: watcherEnv,
-    fetchImpl: async (_url, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
-    timeoutMs: 2000,
-    parentPid: 99999999,
-  });
-  assert.equal(parentAbort, '000\n{"watcher_local":{"outcome":"parent_gone"}}');
-
-  const probeTimeout = await watcherRequestWire("11", "probe", {
-    env: watcherEnv,
-    fetchImpl: async (_url, options) => new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
-    timeoutMs: 5,
-    parentPid: 0,
-  });
-  assert.equal(probeTimeout, '000\n{"watcher_local":{"outcome":"network_failure"}}');
-
-  const http = await watcherRequestWire("12", "hold", {
-    env: watcherEnv,
-    fetchImpl: async () => new Response(JSON.stringify({ messages: [], watermark: 12 }), { status: 200 }),
-    parentPid: 0,
-  });
-  assert.equal(http, '200\n{"messages":[],"watermark":12}');
-
-  const apiError = await watcherRequestWire("13", "hold", {
-    env: watcherEnv,
-    fetchImpl: async () => new Response(JSON.stringify({ error: { action: "retry_with_backoff", retry_after_ms: 2000 } }), { status: 429 }),
-    parentPid: 0,
-  });
-  assert.equal(apiError, '429\n{"error":{"action":"retry_with_backoff","retry_after_ms":2000}}');
 });
 
 test("MCP client factory keeps one process identity through dedicated session bootstrap", async () => {
@@ -339,41 +217,6 @@ test("account-tool errors preserve actionable invitation denial fields", async (
   } finally {
     await client.close();
     await server.close();
-  }
-});
-
-test("watch launcher uses shared profile resolution and preserves direct config", () => {
-  const home = mkdtempSync(join(tmpdir(), "parle-mcp-watch-home-"));
-  const cwd = mkdtempSync(join(tmpdir(), "parle-mcp-watch-cwd-"));
-  try {
-    mkdirSync(join(home, ".parle"), { mode: 0o700 });
-    writeFileSync(join(home, ".parle", "profiles"), "[watch]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_watch_secret\napi_base = https://profile.example\n", { mode: 0o600 });
-    const profile = resolveWatcherEnvironment(cwd, { HOME: home, PARLE_PROFILE: "watch", SAFE_KEEP: "yes" });
-    assert.equal(profile.PARLE_ROOM_ID, "019f2946-aef5-77ad-a41d-747ce0fd6a1e");
-    assert.equal(profile.PARLE_ROOM_AGENT_TOKEN, "parle_agt_watch_secret");
-    assert.equal(profile.PARLE_API_BASE, "https://profile.example");
-    assert.equal(profile.SAFE_KEEP, "yes");
-    assert.equal(profile.PARLE_PROFILE, undefined);
-    assert.equal(profile.PARLE_WATCH_CLIENT_INSTANCE_ID, MCP_CLIENT_INSTANCE_ID);
-    const explicitProfile = resolveWatcherEnvironment(cwd, { HOME: home, PARLE_PROFILE: "stale-selector" }, undefined, "watch");
-    assert.equal(explicitProfile.PARLE_ROOM_AGENT_TOKEN, "parle_agt_watch_secret");
-    assert.equal(explicitProfile.PARLE_PROFILE, undefined);
-    assert.throws(
-      () => resolveWatcherEnvironment(cwd, { HOME: home, PARLE_PROFILE: "watch", PARLE_ROOM_ID: "stale-direct" }),
-      /conflicts with direct configuration/,
-    );
-
-    writeFileSync(join(home, ".parle", "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_default_secret\n", { mode: 0o600 });
-    const defaultProfile = resolveWatcherEnvironment(cwd, { HOME: home });
-    assert.equal(defaultProfile.PARLE_ROOM_AGENT_TOKEN, "parle_agt_default_secret");
-
-    const direct = resolveWatcherEnvironment(cwd, { PARLE_ROOM_ID: "room-direct", PARLE_ROOM_AGENT_TOKEN: "direct-token", PARLE_API_BASE: "https://direct.example" });
-    assert.equal(direct.PARLE_ROOM_ID, "room-direct");
-    assert.equal(direct.PARLE_ROOM_AGENT_TOKEN, "direct-token");
-    assert.equal(direct.PARLE_API_BASE, "https://direct.example");
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
   }
 });
 

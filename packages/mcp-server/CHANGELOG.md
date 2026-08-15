@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.36 (2026-08-15)
+
+- Replace the standalone Claude network watcher with one owner-only local hook-bridge wait. The shared responsive controller remains the sole owner of wake SSE, durable drains, eligibility, and acknowledgement.
+
 ## 0.7.35 (2026-08-14)
 
 - Resolve hook-bridge delivery as healthy when the same session also has the expected wake-only standalone watcher.

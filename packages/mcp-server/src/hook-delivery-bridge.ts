@@ -41,6 +41,7 @@ export type HookDeliveryBridgeStatus = {
   baselineSkipped: number;
   socketPath: string;
   hostSessionBound: boolean;
+  agentSessionId?: string;
   lastError?: string;
   // Wake hints naming a room this process does not configure. Recorded so an
   // ignored hint is diagnosable instead of looking like lost delivery.
@@ -110,6 +111,7 @@ export class HookDeliveryBridge {
   private baselineSkipped = 0;
   private lastError?: string;
   private hostSessionId?: string;
+  private waiter?: Socket;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
 
@@ -145,6 +147,7 @@ export class HookDeliveryBridge {
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope),
       hostSessionBound: Boolean(this.hostSessionId),
+      ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
       ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
       ...(lastError ? { lastError } : {}),
     };
@@ -169,6 +172,7 @@ export class HookDeliveryBridge {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
     this.unsubscribeCommitGuard?.();
@@ -267,6 +271,7 @@ export class HookDeliveryBridge {
       agentSessionId: String(runtime.agentSessionId || ""),
     });
     this.queuedKeys.add(key);
+    this.finishWaiter({ ok: true, ready: true });
   }
 
   private async listen(): Promise<void> {
@@ -354,15 +359,25 @@ export class HookDeliveryBridge {
       if (newline < 0) return;
       const line = input.slice(0, newline);
       socket.removeAllListeners("data");
-      void this.handleCommand(line).then(
+      let command: any;
+      try {
+        command = JSON.parse(line);
+      } catch (error) {
+        socket.end(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`);
+        return;
+      }
+      if (command?.action === "wait") {
+        this.wait(socket, String(command.agentSessionId || ""));
+        return;
+      }
+      void this.handleCommand(command).then(
         (response) => socket.end(`${JSON.stringify(response)}\n`),
         (error) => socket.end(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`),
       );
     });
   }
 
-  private async handleCommand(line: string): Promise<unknown> {
-    const command = JSON.parse(line);
+  private async handleCommand(command: any): Promise<unknown> {
     if (command?.action === "status") return { ok: true, ...this.status() };
     const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
     if (!sessionId) throw new Error("Host session id is required");
@@ -374,6 +389,32 @@ export class HookDeliveryBridge {
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
     throw new Error("unknown Parle hook bridge action");
+  }
+
+  private wait(socket: Socket, agentSessionId: string): void {
+    const current = String((this.client as any).runtime?.agentSessionId || "");
+    if (!agentSessionId || agentSessionId !== current) {
+      socket.end(`${JSON.stringify({ ok: false, error: "Parle agent session does not own this hook bridge" })}\n`);
+      return;
+    }
+    if (this.pending.length > 0) {
+      socket.end(`${JSON.stringify({ ok: true, ready: true })}\n`);
+      return;
+    }
+    if (this.waiter) {
+      socket.end(`${JSON.stringify({ ok: false, error: "Parle hook bridge already has a waiter" })}\n`);
+      return;
+    }
+    this.waiter = socket;
+    socket.once("close", () => {
+      if (this.waiter === socket) this.waiter = undefined;
+    });
+  }
+
+  private finishWaiter(response: unknown): void {
+    const waiter = this.waiter;
+    this.waiter = undefined;
+    if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}\n`);
   }
 
   private take(): unknown {

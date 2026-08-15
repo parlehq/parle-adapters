@@ -1,20 +1,19 @@
 #!/usr/bin/env node
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { connect } from "node:net";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveResponsiveDelivery, ResponsiveDeliveryRecorder, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
-import { HookDeliveryBridge } from "./hook-delivery-bridge.js";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { HookDeliveryBridge, hookBridgeStateDir } from "./hook-delivery-bridge.js";
 import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.35";
-const inheritedWatcherInstance = process.argv[2] === "--parle-watch-request" ? process.env.PARLE_WATCH_CLIENT_INSTANCE_ID : undefined;
-export const MCP_CLIENT_INSTANCE_ID = inheritedWatcherInstance ? assertClientInstanceId(inheritedWatcherInstance) : processClientInstanceId();
+export const MCP_CLIENT_VERSION = "0.7.36";
+export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -207,32 +206,7 @@ export function isDirectRun(metaUrl: string, argvPath = process.argv[1]): boolea
   return Boolean(argvPath) && metaUrl === pathToFileURL(argvPath).href;
 }
 
-export function resolveWatcherEnvironment(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env, onWarning?: (warning: string) => void, profile?: string): NodeJS.ProcessEnv {
-  const selectedEnv = profile ? { ...env, PARLE_PROFILE: profile } : env;
-  const config = resolveConfig(cwd, selectedEnv);
-  for (const warning of config.warnings) onWarning?.(redactString(warning));
-  const roomId = config.roomId?.value;
-  const agentToken = config.agentToken?.value;
-  if (!roomId || !agentToken) {
-    throw new Error("required host configuration is missing. Set PARLE_PROFILE (profile catalog; PARLE_PROFILES_PATH relocates it) or PARLE_ROOM_ID / PARLE_ROOM_AGENT_TOKEN in env or ./.env (run from the project directory)");
-  }
-  // The child receives fully resolved direct values; drop the selector and
-  // catalog-path settings so it cannot re-resolve against a different catalog.
-  const childEnv = { ...selectedEnv };
-  delete childEnv.PARLE_PROFILE;
-  delete childEnv.PARLE_PROFILES_PATH;
-  return {
-    ...childEnv,
-    PARLE_API_BASE: config.apiBase.value,
-    PARLE_WAKE_BASE: config.wakeBase.value,
-    PARLE_VERSION: config.version.value,
-    PARLE_ROOM_ID: roomId,
-    PARLE_ROOM_AGENT_TOKEN: agentToken,
-    PARLE_WATCH_CLIENT_INSTANCE_ID: MCP_CLIENT_INSTANCE_ID,
-  };
-}
-
-export const WATCHER_USAGE = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]";
+export const WATCHER_USAGE = "Usage: parle-watch.sh <agent_session_id>";
 
 export class WatcherUsageError extends Error {
   constructor() {
@@ -241,292 +215,65 @@ export class WatcherUsageError extends Error {
   }
 }
 
-export function watcherExitRequiresInternalRestart(spawnRevision: number, desiredRevision: number, requestedRevision?: number): boolean {
-  return requestedRevision !== undefined && requestedRevision > spawnRevision && requestedRevision <= desiredRevision;
+export function parseWatcherArgs(args: string[]): string {
+  if (args.length !== 1 || !args[0] || args[0].startsWith("-")) throw new WatcherUsageError();
+  return args[0];
 }
 
-export function parseWatcherArgs(args: string[]): { profile?: string; workerArgs: [string] | [string, string] | [string, string, string] } {
-  let profile: string | undefined;
-  let positional = args;
-  if (args[0]?.startsWith("-")) {
-    if (args[0] !== "--profile" || !args[1] || args[1].startsWith("-")) throw new WatcherUsageError();
-    profile = args[1];
-    positional = args.slice(2);
-  }
-  // since_seq is decimal digits only. Leading zeroes are accepted and retain
-  // the shell worker's existing numeric semantics. Participant identity is
-  // nested under session identity so no ambiguous participant-only form exists.
-  if (positional.length < 1 || positional.length > 3 || !/^[0-9]+$/.test(positional[0])
-    || positional.slice(1).some((value) => !value || value.startsWith("-"))) throw new WatcherUsageError();
-  return { ...(profile ? { profile } : {}), workerArgs: positional as [string] | [string, string] | [string, string, string] };
-}
-
-type WatcherEvidenceSink = Pick<ResponsiveDeliveryRecorder, "watching" | "backoff" | "stopped" | "terminal" | "retarget">;
-
-export function reportResponsiveEvidence(operation: () => void, warn: (message: string) => void = console.error): boolean {
-  try { operation(); return true; } catch (error) {
-    warn(`Parle warning: responsive-delivery evidence unavailable: ${redactResponsiveDeliveryDiagnostic(error instanceof Error ? error.message : String(error)) || "redacted error"}`);
-    return false;
-  }
-}
-
-export function applyWatcherStateLine(line: string, evidence: WatcherEvidenceSink, nowMs = Date.now()): void {
-  const [kind, value] = line.trim().split("\t", 2);
-  if (kind === "watching") evidence.watching({ expectedProgressMs: 75_000, lastSuccessAt: new Date(nowMs).toISOString() });
-  else if (kind === "backoff") {
-    const seconds = Number(value);
-    if (Number.isFinite(seconds) && seconds >= 0) evidence.backoff({ expectedProgressMs: Math.min(seconds * 1000, 570_000), retryAt: new Date(nowMs + seconds * 1000).toISOString() });
-  } else if (kind === "target" && value) evidence.retarget({ agentSessionId: value });
-  else if (kind === "wake") evidence.stopped({ reason: "wake_detected", lastWakeAt: new Date(nowMs).toISOString() });
-  else if (kind === "terminal") evidence.terminal({ reason: value || "watcher_terminal" });
-}
-
-export async function runWatcher(metaUrl: string, args: string[], cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): Promise<number> {
-  const { profile, workerArgs } = parseWatcherArgs(args);
-  const worker = join(dirname(fileURLToPath(metaUrl)), "..", "skills", "parle", "scripts", "parle-watch-worker.sh");
-  if (!existsSync(worker)) throw new Error("bundled watcher worker is missing; reinstall or rebuild the Claude plugin");
-  const childEnv = resolveWatcherEnvironment(cwd, env, (warning) => console.error(`Parle warning: ${warning}`), profile);
-  // Shared rooms require the room-bound token and a live entered agent session.
-  // The watcher owns a dedicated short-lived session so the primary MCP
-  // credential never crosses the stdio process boundary. Its credential moves
-  // only through a private child environment. Superseded credentials are
-  // retired by rollover; the current session is retired on final exit.
-  // Resolve the already-frozen direct binding away from the host cwd so a
-  // project .env profile selector cannot conflict when this helper client
-  // reads configuration a second time.
-  // A watcher session is intentionally anonymous within the agent. It must
-  // never claim or supersede the primary host's singleton named route.
-  delete childEnv.PARLE_SESSION_ALIAS;
-  childEnv.PARLE_UNREAD_POLL_INTERVAL_SECONDS = "0";
-  const watcherClient = createMcpAgentClient({ cwd: dirname(fileURLToPath(metaUrl)), env: childEnv });
-  const watchedAgentSessionId = workerArgs[1];
-  const evidence = watchedAgentSessionId ? new ResponsiveDeliveryRecorder({
-    cwd,
-    persist: true,
-    processStartedAt: processStartedAtIso(),
-    publisher: { name: "@parlehq/mcp-server:standalone-watch", version: MCP_CLIENT_VERSION, clientInstanceId: MCP_CLIENT_INSTANCE_ID },
-    target: { agentSessionId: watchedAgentSessionId, ...(workerArgs[2] ? { participantId: workerArgs[2] } : {}) },
-  }) : undefined;
-  const reportEvidence = (operation: () => void): void => { reportResponsiveEvidence(operation); };
-  if (evidence) reportEvidence(() => evidence.starting({ expectedProgressMs: 75_000 }));
-  let child: ReturnType<typeof spawn> | undefined;
-  let childRevision = 0;
-  let desiredRevision = 0;
-  let externalSignal: NodeJS.Signals | undefined;
-  let forceStop: ReturnType<typeof setTimeout> | undefined;
-  let internalRestart: { child: ReturnType<typeof spawn>; revision: number } | undefined;
-  const signalWorker = (target: ReturnType<typeof spawn>, signal: NodeJS.Signals): void => {
-    // Give the shell and its current one-shot request helper one signal boundary.
-    // A separate process group prevents an old helper from retaining a retired
-    // credential after an internal worker restart.
-    if (process.platform !== "win32" && target.pid) {
-      try {
-        process.kill(-target.pid, signal);
+function hookBridgeRequest(path: string, payload: unknown): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(path);
+    socket.setEncoding("utf8");
+    let response = "";
+    socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
+    socket.on("data", (chunk) => {
+      response += chunk;
+      if (Buffer.byteLength(response, "utf8") > 16 * 1024) {
+        socket.destroy(new Error("Parle hook bridge response exceeded 16 KiB"));
         return;
-      } catch {}
-    }
-    target.kill(signal);
-  };
-  const stopWorker = (signal: NodeJS.Signals): boolean => {
-    if (!child || child.exitCode !== null || child.signalCode !== null) return false;
-    const stoppingChild = child;
-    signalWorker(stoppingChild, signal);
-    if (!forceStop) {
-      forceStop = setTimeout(() => {
-        forceStop = undefined;
-        signalWorker(stoppingChild, "SIGKILL");
-      }, 1000);
-      forceStop.unref();
-    }
-    return true;
-  };
-  const unsubscribeRevision = watcherClient.onSessionRevision((event) => {
-    if (event.revision <= desiredRevision) return;
-    desiredRevision = event.revision;
-    if (!externalSignal && child && event.revision > childRevision && stopWorker("SIGTERM")) {
-      // Provenance belongs to this exact live child. A revision by itself is
-      // never enough to suppress a natural exit that already completed.
-      internalRestart = { child, revision: event.revision };
-    }
-  });
-  const forward = (signal: NodeJS.Signals) => {
-    if (externalSignal) return;
-    externalSignal = signal;
-    stopWorker(signal);
-  };
-  try {
-    await watcherClient.bootstrap();
-    childEnv.PARLE_WATCH_REQUEST_HELPER = fileURLToPath(metaUrl);
-    childEnv.PARLE_WATCH_PARENT_PID = String(process.pid);
-    process.on("SIGINT", forward);
-    process.on("SIGTERM", forward);
-    while (!externalSignal) {
-      const spawnRevision = desiredRevision;
-      const watcherAuth = watcherClient.watcherSessionAuth();
-      const workerEnv = { ...childEnv, PARLE_WATCH_AGENT_SESSION: watcherAuth.sessionCredential };
-      childRevision = spawnRevision;
-      const launchedChild = spawn("sh", [worker, ...workerArgs], {
-        cwd,
-        env: { ...workerEnv, PARLE_WATCH_STATE_FD: "3" },
-        stdio: ["inherit", "inherit", "inherit", "pipe"],
-        detached: process.platform !== "win32",
-      });
-      child = launchedChild;
-      if (evidence) reportEvidence(() => evidence.watching({ expectedProgressMs: 75_000 }));
-      const stateStream = launchedChild.stdio[3] as import("node:stream").Readable | null;
-      if (stateStream) {
-        stateStream.setEncoding("utf8");
-        let stateBuffer = "";
-        stateStream.on("data", (chunk: string) => {
-          stateBuffer += chunk;
-          if (Buffer.byteLength(stateBuffer, "utf8") > 4096) {
-            stateBuffer = "";
-            stateStream.destroy();
-            console.error("Parle warning: watcher state protocol exceeded 4096 bytes; continuing with spawn and exit evidence only");
-            return;
-          }
-          let newline: number;
-          while ((newline = stateBuffer.indexOf("\n")) >= 0) {
-            const line = stateBuffer.slice(0, newline);
-            stateBuffer = stateBuffer.slice(newline + 1);
-            if (evidence) reportEvidence(() => applyWatcherStateLine(line, evidence));
-          }
-        });
       }
-      let result: number;
+      const newline = response.indexOf("\n");
+      if (newline < 0) return;
+      socket.end();
       try {
-        result = await new Promise<number>((resolve, reject) => {
-          launchedChild.once("error", reject);
-          launchedChild.once("close", (code, signal) => resolve(code ?? (signal ? 128 : 2)));
-        });
-      } finally {
-        if (forceStop) clearTimeout(forceStop);
-        forceStop = undefined;
-        child = undefined;
+        resolve(JSON.parse(response.slice(0, newline)));
+      } catch {
+        reject(new Error("Parle hook bridge returned malformed JSON"));
       }
-      const restartWasRequested = internalRestart?.child === launchedChild
-        && watcherExitRequiresInternalRestart(spawnRevision, desiredRevision, internalRestart.revision);
-      if (internalRestart?.child === launchedChild) internalRestart = undefined;
-      if (externalSignal) {
-        if (evidence) reportEvidence(() => evidence.stopped({ reason: "host_signal" }));
-        return result;
-      }
-      if (restartWasRequested) {
-        // The worker cursor is private in-memory shell state. Replaying the
-        // original since_seq after this daily credential rollover is safe:
-        // projection filtering is idempotent and the public argv stays stable.
-        continue;
-      }
-      if (evidence) {
-        if (result === 0) reportEvidence(() => evidence.stopped({ reason: "wake_detected" }));
-        else if (evidence.snapshot()?.state !== "terminal") reportEvidence(() => evidence.terminal({ reason: `watcher_exit_${result}` }));
-      }
-      return result;
-    }
-    if (evidence) reportEvidence(() => evidence.stopped({ reason: "host_signal" }));
-    return 128;
-  } finally {
-    unsubscribeRevision();
-    if (forceStop) clearTimeout(forceStop);
-    process.removeListener("SIGINT", forward);
-    process.removeListener("SIGTERM", forward);
-    if (child && child.exitCode === null && child.signalCode === null) signalWorker(child, "SIGKILL");
-    await watcherClient.endSession().catch(() => {});
-  }
-}
-
-type WatcherRequestOptions = {
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-  parentPid?: number;
-};
-
-type WatcherRequestMode = "hold" | "probe";
-
-function watcherLocalWire(outcome: "held_deadline" | "network_failure" | "malformed_response" | "parent_gone"): string {
-  return `000\n${JSON.stringify({ watcher_local: { outcome } })}`;
-}
-
-export async function watcherRequestWire(since: string, mode: WatcherRequestMode = "hold", options: WatcherRequestOptions = {}): Promise<string> {
-  if (mode !== "hold" && mode !== "probe") throw new Error("watch request mode must be hold or probe");
-  const env = options.env ?? process.env;
-  const apiBase = env.PARLE_API_BASE;
-  const roomId = env.PARLE_ROOM_ID;
-  const token = env.PARLE_ROOM_AGENT_TOKEN;
-  const sessionCredential = env.PARLE_WATCH_AGENT_SESSION;
-  const version = env.PARLE_VERSION;
-  const clientInstanceId = env.PARLE_WATCH_CLIENT_INSTANCE_ID;
-  if (!apiBase || !roomId || !token || !sessionCredential || !version || !clientInstanceId) throw new Error("watch request configuration is missing");
-  const url = new URL(`/v/rooms/${encodeURIComponent(roomId)}/projection`, apiBase);
-  url.searchParams.set("since_seq", since);
-  url.searchParams.set("wait", mode === "probe" ? "0" : "25");
-  const controller = new AbortController();
-  let helperDeadline = false;
-  let parentGone = false;
-  const timeoutMs = options.timeoutMs ?? (mode === "probe" ? 10_000 : 40_000);
-  const timer = setTimeout(() => {
-    helperDeadline = true;
-    controller.abort();
-  }, timeoutMs);
-  const parentPid = options.parentPid ?? Number(env.PARLE_WATCH_PARENT_PID);
-  const parentMonitor = Number.isInteger(parentPid) && parentPid > 0 ? setInterval(() => {
-    try {
-      process.kill(parentPid, 0);
-    } catch {
-      parentGone = true;
-      controller.abort();
-    }
-  }, 500) : undefined;
-  parentMonitor?.unref();
-  const integration = resolveIntegrationMetadata(env);
-  try {
-    const response = await (options.fetchImpl ?? fetch)(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Parle-Agent-Session": sessionCredential,
-        "Parle-Version": version,
-        "Parle-Client-Name": MCP_CLIENT_NAME,
-        "Parle-Client-Version": MCP_CLIENT_VERSION,
-        "Parle-Client-Instance": clientInstanceId,
-        ...(integration.integrationName ? { "Parle-Integration-Name": integration.integrationName } : {}),
-        ...(integration.integrationVersion ? { "Parle-Integration-Version": integration.integrationVersion } : {}),
-        Connection: "close",
-      },
-      signal: controller.signal,
     });
-    const raw = await response.text();
-    const withoutSecrets = raw.split(token).join("<redacted>").split(sessionCredential).join("<redacted>");
-    const body = redactString(withoutSecrets);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(body);
-    } catch {
-      return watcherLocalWire("malformed_response");
-    }
-    if (response.ok) {
-      const projection = parsed as { messages?: unknown; watermark?: unknown } | null;
-      if (!projection || typeof projection !== "object" || Array.isArray(projection)
-        || !Array.isArray(projection.messages)
-        || !Number.isInteger(projection.watermark) || (projection.watermark as number) < 0) {
-        return watcherLocalWire("malformed_response");
-      }
-    }
-    return `${response.status}\n${body}`;
-  } catch {
-    if (parentGone) return watcherLocalWire("parent_gone");
-    if (helperDeadline && mode === "hold") return watcherLocalWire("held_deadline");
-    return watcherLocalWire("network_failure");
-  } finally {
-    clearTimeout(timer);
-    if (parentMonitor) clearInterval(parentMonitor);
-  }
+    socket.once("error", reject);
+    socket.once("end", () => {
+      if (!response.includes("\n")) reject(new Error("Parle hook bridge closed without a response"));
+    });
+  });
 }
 
-async function runWatcherRequest(since: string, mode: string): Promise<void> {
-  if (mode !== "hold" && mode !== "probe") throw new Error("watch request mode must be hold or probe");
-  const wire = await watcherRequestWire(since, mode);
-  await new Promise<void>((resolve) => process.stdout.write(wire, () => resolve()));
+export async function runWatcher(_metaUrl: string, args: string[], cwd = process.cwd()): Promise<number> {
+  const agentSessionId = parseWatcherArgs(args);
+  const stateDir = hookBridgeStateDir(cwd);
+  const state = lstatSync(stateDir);
+  if (!state.isDirectory() || state.isSymbolicLink()
+    || (typeof process.getuid === "function" && state.uid !== process.getuid())
+    || (state.mode & 0o077) !== 0) {
+    throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
+  }
+  const paths = readdirSync(stateDir)
+    .filter((name) => /^\d+\.sock$/.test(name))
+    .map((name) => join(stateDir, name));
+  for (const path of paths) {
+    try {
+      const status = await hookBridgeRequest(path, { action: "status" });
+      if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
+      const result = await hookBridgeRequest(path, { action: "wait", agentSessionId });
+      if (!result?.ok || !result.ready) throw new Error(result?.error || "Parle hook bridge wait failed");
+      console.log("parle-watch: responsive delivery queued");
+      return 0;
+    } catch (error: any) {
+      if (["ENOENT", "ECONNREFUSED", "ECONNRESET"].includes(error?.code)) continue;
+      throw error;
+    }
+  }
+  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. Run parle_connect in this project, then re-arm with its current agent session id.`);
 }
 
 async function runKnownAddressContext(cwd: string): Promise<void> {
@@ -545,19 +292,12 @@ async function runKnownAddressContext(cwd: string): Promise<void> {
 
 if (isDirectRun(import.meta.url)) {
   const command = process.argv[2];
-  const isRequest = command === "--parle-watch-request";
   const task = command === "--parle-watch"
     ? runWatcher(import.meta.url, process.argv.slice(3)).then((code) => { process.exitCode = code; })
-    : isRequest
-      ? runWatcherRequest(process.argv[3] ?? "0", process.argv[4] ?? "hold")
-      : command === "--parle-known-address-context"
-        ? runKnownAddressContext(process.argv[3] || process.cwd())
-        : runStdio();
-  task.then(() => {
-    // Node's global fetch keeps an idle connection alive. The one-shot private
-    // request helper has flushed stdout and must not linger after each poll.
-    if (isRequest) process.exit(0);
-  }).catch((error) => {
+    : command === "--parle-known-address-context"
+      ? runKnownAddressContext(process.argv[3] || process.cwd())
+      : runStdio();
+  task.catch((error) => {
     if (error instanceof WatcherUsageError) console.error(WATCHER_USAGE);
     else console.error(`Parle stopped: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 2;

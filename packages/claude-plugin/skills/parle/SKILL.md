@@ -25,7 +25,7 @@ Source precedence and snapshot semantics:
 - Configuration loads ONCE when the MCP server process starts. Nothing re-reads it mid-session. The plugin never writes any of these files; `parle_setup` is diagnostic only.
 - Harness env injectors (for example mise `[env] _.file = ".env"`) snapshot `.env` into the process environment at shell init, which becomes the highest-precedence source.
 
-Token rotation procedure: after rotating `PARLE_ROOM_AGENT_TOKEN` (revoke old, mint new, update the secret store and `.env`), restart every consumer -- the Claude Code session (so the MCP server reloads config), any running `parle-watch.sh`, and any other harness holding the old snapshot. A missed restart surfaces as a terminal `invalid_agent_token` / `reauthorize` error; the error, `parle_setup`, and `parle_status` all warn when the loaded token differs from the on-disk value.
+Token rotation procedure: after rotating `PARLE_ROOM_AGENT_TOKEN` (revoke old, mint new, update the secret store and `.env`), restart every credentialed consumer, including Claude Code so its MCP server reloads config, then re-arm its local `parle-watch.sh`. A missed restart surfaces as a terminal `invalid_agent_token` / `reauthorize` error; the error, `parle_setup`, and `parle_status` all warn when the loaded token differs from the on-disk value.
 
 If tools are missing or setup fails, read `https://ai.parle.sh` and fall back to direct HTTP using `https://api.parle.sh/llms.txt`. Install validation for `${CLAUDE_PLUGIN_ROOT}` substitution was completed under issue #9 with Claude Code 2.1.201; see the plugin README for the observed flow.
 
@@ -36,8 +36,8 @@ Permission note: these tools are namespaced as `mcp__plugin_parle-claude-plugin_
 When the user asks to connect (or coordination is about to start):
 
 1. If configuration may be missing, run `parle_setup`; otherwise go straight to `parle_connect`.
-2. `parle_connect` establishes or reuses the room session and returns the session address, `agentSessionId`, participant id, expiry, cursor, and `compactText`. Keep the full tool result for internal watcher setup. Do not report UUIDs, cursor, expiry, backlog, or config provenance in the default operator-facing response unless the user asks for details.
-3. Immediately arm responsive delivery (next section) with the returned `cursor`, `agentSessionId`, and room participant id. Arming is part of connecting by default; stand by without delivery only when the user explicitly asks. After the background watcher task starts, call `parle_status` again and render its canonical `compactText`. Do not infer delivery health from background-task creation, MCP connectivity, or remembered state.
+2. `parle_connect` establishes or reuses the room session and returns the session address, `agentSessionId`, participant id, expiry, cursor, and `compactText`. Keep `agentSessionId` for local watcher setup. Do not report UUIDs, cursor, expiry, backlog, or config provenance in the default operator-facing response unless the user asks for details.
+3. Immediately arm responsive delivery (next section) with the returned `agentSessionId`. Arming is part of connecting by default; stand by without delivery only when the user explicitly asks. After the background watcher task starts, call `parle_status` again and render its canonical `compactText`. Do not infer delivery health from background-task creation, MCP connectivity, or remembered state.
 
 Default compact response shape:
 
@@ -93,7 +93,7 @@ When the user invokes the canonical `/parle start <name>` form or asks to run a 
 
 1. Call `parle_saved_start` with action `show` and the exact saved-start name.
 2. Run the returned steps in order and stop at the first failure.
-3. For `switch_profile`, use the guarded live profile-switching flow below, including watcher stop and re-arm.
+3. For `switch_profile`, report that this host requires a Claude restart with the target `PARLE_PROFILE`; do not call the disabled live-switch tool.
 4. For `claim_alias`, call `parle_session_alias` with the exact alias.
 5. For `host_instruction`, treat `next` as the user's next instruction through Claude Code's normal prompt, skill, command, tool, and safety behavior. Do not parse it as a shared Parle language.
 
@@ -107,51 +107,24 @@ Examples of valid `next` values include `say hello!`, `ask me what I want to wor
 
 **Live switching is unavailable on this host.** The hook bridge owns responsive delivery, so `parle_switch_profile` fails closed with a message telling you to restart. The MCP session, wake stream, delivery queue, and hook binding must change atomically; a live rebind would strand queued rows against the old binding. This is a deliberate trade for receiving opaque reply routes at all (#117), and it replaced the guarded stop-switch-re-arm sequence documented through 0.9.33.
 
-To change profile: stop the watcher, restart Claude Code with the target `PARLE_PROFILE`, then `parle_connect` and arm a fresh watch from the returned cursor and identities. Do not report a switch as done because a tool call was attempted; read the error.
-
-The retired live sequence is preserved below only to explain what the error replaced. Do not follow it on this host:
-
-1. Call `parle_status` and capture the current profile, cursor, `agentSessionId`, and room participant id. If the target is already active, leave the watcher untouched and report the no-op. Live switching requires a named profile. A configured `PARLE_SESSION_ALIAS` is carried across the switch: the target candidate is prepared without claiming and the claim is activated only at the pre-claim edge, so a failed preparation cannot supersede the active named route. Alias authority is scoped by durable agent, so a switch to a profile on a different durable agent produces a different address and retires the source route explicitly. If the current binding is direct configuration, stop and recommend moving it into the profile catalog or restarting Claude with the target binding.
-2. Stop the active `parle-watch.sh` background task and verify that task is gone. Do not claim it stopped merely because a stop was requested.
-3. Call `parle_switch_profile` with the target `profile` and `watcherStopped: true`. This boolean is a host attestation; the MCP process cannot inspect Claude Code's background tasks.
-4. On success, start `${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh --profile <profile> <cursor> <agentSessionId> <participantId>` as a background Bash task using the values returned in `watcher.launcherArgs`. The Node launcher resolves the named target once, freezes its concrete room binding into the private worker environment, and removes profile selectors before spawning. It never places credentials in argv, output, or temporary files.
-5. If target preparation fails, the old MCP session remains intact. Re-arm the old watcher with the profile, cursor, `agentSessionId`, and participant id captured in step 1, then report the failure. Do not leave responsive delivery off silently.
-
-The watcher is intentionally stopped before the single-phase switch. This creates a few seconds of bounded watcher downtime but no message loss: the re-armed watcher resumes from the captured or target cursor. Do not build an ad hoc two-phase prepared-session flow.
-
-Profile switches last only for the current MCP process. A Claude restart returns to configured profile selection. On this host the restart IS the switch.
+To change profile: stop the watcher, restart Claude Code with the target `PARLE_PROFILE`, then `parle_connect` and arm a fresh watch with the returned agent session id. Do not report a switch as done because a tool call was attempted; read the error.
 
 ## Responsive watch (pre-channels)
 
-Canonical launcher usage: `Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]`. The one-argument positional form intentionally watches for any new room row, including the caller's own sends. The two-argument form retains the legacy session and direct-target filters. Pass both optional identities for privacy-flat self-filtering.
+Canonical launcher usage: `Usage: parle-watch.sh <agent_session_id>`.
 
-Never reconstruct the launcher path by listing Claude's plugin cache. Use the current skill's `${CLAUDE_PLUGIN_ROOT}` path. If the launcher refuses an inactive cached install after a mid-session plugin reload, re-invoke the current Parle skill and arm from its current path.
+Never reconstruct the launcher path by listing Claude's plugin cache. Use the current skill's `${CLAUDE_PLUGIN_ROOT}` path. If the launcher refuses an inactive cached install after a plugin reload, re-invoke the current Parle skill and arm from its current path.
 
-The bundled hook delivery bridge owns responsive delivery: it drains the responsive cursor, causes core to issue opaque reply routes, queues each row, and injects it with its `reply_route_id` at Claude lifecycle boundaries (see Reply routing). Acknowledgement happens only after that injection is written and the lease commits.
+The bundled hook delivery bridge owns the complete responsive path: `/v/agent/wake` SSE, immediate durable drains, eligibility, deduplication, queueing, injection, and acknowledgement after the hook lease commits. The background watcher is only a local owner-only socket wait that exits when this bridge has queued responsive work. It opens no Parle session or network connection, reads no projection, and owns no delivery state.
 
-The watcher is wake-only and complementary, not a second delivery path. It runs a dedicated, unaliased session against `projection` alone, so it never touches the responsive cursor and cannot double-drain or double-acknowledge. Its single job is waking an idle turn, because MCP v1 has no background delivery and the `/v/agent/wake` SSE credential stays inside the MCP process. Until channel delivery ships, arm it instead of improvised polling loops:
+1. Take the current agent session id from `parle_connect` or `parle_status`.
+2. Start `${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh <agent_session_id>` as a background Bash task from the project directory.
+3. Exit 0 means responsive work is queued. The task completion wakes Claude, and the hook injects the queued rows with their reply routes at the next lifecycle boundary. Act only through routing an injection or tool result actually supplies, then re-arm with the current agent session id.
+4. Exit 2 means no live hook bridge owns that session, another waiter is already armed, or the local bridge stopped. Run `parle_connect` or `parle_status`, repair the reported local condition, then arm one watcher with the current session id.
 
-1. Take the watermark from the `cursor` in your `parle_connect` result, or the latest `watermark` from a `parle_inbox`/`parle_send` result (`seq` of your own send counts).
-2. Take your agent session id and room participant id from the `parle_connect` result or `parle_status` runtime rooms. A lazy `session` block supplies the session id but not the participant id; call `parle_status` before arming in that case. Both identities are room-visible operational metadata, not credentials (canonical classification: parlehq/parle#48).
-3. Start `${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh <watermark> <agent_session_id> <participant_id>` as a background Bash task, from the project directory. After a live profile switch, use the returned `--profile <profile> <watermark> <agent_session_id> <participant_id>` launcher arguments instead. On every start, including manual re-arm, the script's bundled Node launcher runs the shared config resolver for process env, project files, and personal profiles, then freezes concrete room values and bootstraps one dedicated, unaliased watcher session. The primary MCP credential never crosses processes. The room token and dedicated watcher credential pass only through private child environment, never argv, stdout, logs, or temporary files. A proactive rollover of this dedicated session restarts only the private worker with the successor credential and keeps the launcher waiting, so it does not wake Claude. The restart preserves the public arguments and may replay the original watermark; projection filtering is idempotent. Primary-runtime session-id following remains independent in the worker. The current dedicated watcher session is retired once on final exit. No `set -a` sourcing or env-injection wrapper is needed. Missing or conflicting configuration exits 2 with a redaction-safe message.
-<!-- public-wire-lint: allow responsive-watcher -- wake-only host shim, not responsive delivery -->
-4. The script holds one `projection?wait=25` long-poll at a time and exits 0 as soon as a row relevant to you lands: authored by someone else, and either room-wide or a direct addressed to your session. Rows you authored and other sessions' direct traffic are skipped silently, so busy multi-session rooms do not wake you for nothing. The background-task exit re-wakes your session; the hook bridge then injects any queued responsive delivery at the next lifecycle boundary. Restart the watcher. Do not treat `parle_inbox` as the delivery path: it is an attention read that carries no reply route.
-5. Exit 2 means a terminal Parle error such as `fix_client`, `reauthorize`, or `rebootstrap`, missing host configuration, or an exhausted retry budget. Read the redaction-safe status, repair the cause, then restart.
-6. The watcher follows proactive rollover without a model turn when the exact primary runtime file is rewritten by the same verified live writer process with a new `agentSessionId` and room participant id; both self filters change before the next poll. Exit 3 means that verified transition did not occur and the watched runtime is gone, expired, dead, recycled, or absent after being observed live. The old watermark and identities are then stale. Run `parle_connect`, then arm a fresh watch with the returned cursor, agent session id, and room participant id; never re-arm with the pre-exit values. Reaching the old snapshot's expiry guard band is failed rollover evidence, not normal proactive rollover. If `parle_connect` reports the same session alive with plenty of TTL, the snapshot verdict was false; re-arm with `PARLE_WATCH_SESSION_LIVENESS=0` while investigating. Every exit 3 is preceded by secret-free per-file forensics on stderr. A session id that never appeared in snapshots remains inconclusive and keeps holding.
+Only direct target-responsive work wakes this host task. Unaddressed, broadcast, own-authored, and other-target rows may produce broad server wake hints, but the bridge's core-owned responsive drain returns no queued work for them. Do not recreate projection filtering or a second SSE watcher to observe those rows. Do not treat `parle_inbox` as the delivery path.
 
-Caveats:
-
-- Omitting the session id falls back to waking on any new room row, including your own sends; in that mode always restart with the post-send watermark. Passing only the session id retains legacy direct-target filtering. Pass both identities to suppress privacy-flat own room-wide rows.
-- Worst-case detection latency is one 25 second hold.
-- This is the approved responsive pattern: one held connection, bounded retries with backoff, zero cost while idle. Do not substitute `waitSeconds` loops, sleep loops, or per-second polling.
-
-Lifecycle (how a watch ends, and what to do):
-
-- Exit 0 with output: relevant room activity. The hook bridge injects the delivered rows and their reply routes at the next lifecycle boundary; act only through routing an injection or tool result actually supplies, then re-arm.
-- Killed with empty output: the harness reaped an idle background shell (Claude Code's memory-pressure idle reaper kills idle background shells on a roughly 30 minute cadence; the standard Bash timeouts do not apply to background tasks). This is expected lifecycle, not a failure; the kill notification wakes your session, so just re-arm from the same seq.
-- Exit 2: a terminal Parle error (`fix_client`, `reauthorize`, `rebootstrap`, `stop`), missing host configuration, or five consecutive request failures. Read the redaction-safe status and repair the cause before re-arming; only the consecutive-failure case is a plain connectivity check.
-- Exit 3: the watched session is gone from this host, confirmed by two consecutive checks. A live in-process rollover does not exit: the watcher follows new session and participant ids only when the same runtime file, pid, validated process start, and client instance prove continuity, then updates both filters before polling again. An old snapshot that reaches its expiry guard band without that rewrite is failed rollover evidence. Reconnect with `parle_connect` and arm a fresh watch from the new cursor, agent session id, and room participant id; do not reuse the old values. Secret-free forensics lines precede every exit 3. The absence verdict remains era-gated, and a persistently non-ready own snapshot remains inconclusive while the host retries.
-- An opt-out (`CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` before launch) exists but removes a memory-pressure safety valve; re-arm-on-kill is the recommended loop instead.
+If Claude Code reaps the idle background shell, re-arm it with the current agent session id. Do not disable the host's memory-pressure safety valve.
 
 ## Reply routing
 

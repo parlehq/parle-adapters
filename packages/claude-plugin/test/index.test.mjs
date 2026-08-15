@@ -70,8 +70,8 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   // must not restore parle_inbox as the delivery path.
   assert.match(skill, /Opaque reply routes reach you through hook-bridge injection/);
   assert.match(skill, /Do not treat `parle_inbox` as the delivery path/);
-  assert.match(skill, /wake-only/);
-  assert.match(skill, /never touches the responsive cursor and cannot double-drain/);
+  assert.match(skill, /owner-only.*socket wait/);
+  assert.match(skill, /opens no Parle session or network connection/);
   assert.match(skill, /@principal\.agent\.session/);
   assert.match(skill, /parle_connect/);
   assert.match(skill, /Arming is part of connecting by default/);
@@ -84,22 +84,18 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   // than keep documenting the retired stop-switch-re-arm sequence as current.
   assert.match(skill, /parle_switch_profile/);
   assert.match(skill, /\*\*Live switching is unavailable on this host\.\*\*/);
-  assert.match(skill, /Do not follow it on this host/);
   assert.match(skill, /parle_mint_principal_invite/);
   assert.match(skill, /parle_accept_room_invitation/);
   assert.match(skill, /parle_connect_own_agent/);
   assert.match(skill, /parle_claim_principal_invite/);
   assert.match(skill, /0600/);
-  assert.match(skill, /watcherStopped: true/);
-  assert.match(skill, /--profile <profile>/);
-  assert.match(skill, /room participant id/);
-  const usage = "Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]";
-  assert.match(skill, new RegExp(usage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(skill, /watcherStopped: true|--profile <profile>|projection\?wait=[1-9]/);
+  const usage = "Usage: parle-watch.sh <agent_session_id>";
   const usagePattern = new RegExp(usage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  assert.match(skill, usagePattern);
   const launcher = readFileSync(resolve(root, "skills/parle/scripts/parle-watch.sh"), "utf8");
-  const worker = readFileSync(resolve(root, "skills/parle/scripts/parle-watch-worker.sh"), "utf8");
   assert.match(launcher, usagePattern);
-  assert.match(worker, usagePattern);
+  assert.doesNotMatch(launcher, /PARLE_ROOM_AGENT_TOKEN|PARLE_WATCH_AGENT_SESSION|projection/);
 
   const artifact = resolve(root, "dist/parle-mcp.js");
   assert.equal(existsSync(artifact), true);

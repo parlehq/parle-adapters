@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.36 (2026-08-15)
+
+- Refresh the bundled MCP runtime with the owner-only local hook-bridge wait used by Claude host wakeup.
+
 ## 0.8.35 (2026-08-14)
 
 - Refresh the bundled MCP runtime so wake-only helpers do not create false responsive-delivery owner conflicts.

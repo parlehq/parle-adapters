@@ -1,10 +1,9 @@
 #!/bin/sh
-# Public Claude watcher entrypoint. Configuration is resolved afresh on every
-# invocation by the bundled Node resolver, including manual re-arms. After a
-# live MCP switch, `--profile NAME` selects that profile explicitly; the Node
-# launcher freezes its concrete binding for the worker. The room agent token is
-# passed only in the worker child environment.
-# Usage: parle-watch.sh [--profile <name>] <since_seq> [my_agent_session_id [my_participant_id]]
+# Public Claude watcher entrypoint. Each invocation asks the bundled Node
+# helper to wait on the owner-only local hook
+# bridge and exits when responsive delivery is queued, waking the Claude host.
+# No Parle credential or network watcher crosses the MCP process boundary.
+# Usage: parle-watch.sh <agent_session_id>
 set -u
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 2
 plugin_root=$(CDPATH= cd "$script_dir/../../.." && pwd) || exit 2

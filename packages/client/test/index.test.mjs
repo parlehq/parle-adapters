@@ -45,7 +45,8 @@ test("adapter owns one release-pinned DEFAULT_VERSION without a contract bundle"
   assert.match(protocolSrc, /DEFAULT_VERSION = "2026-08-10"/);
   assert.match(piSrc, /DEFAULT_VERSION[^\n]*from "@parlehq\/agent-client"/);
   assert.doesNotMatch(piSrc, /const DEFAULT_VERSION =/);
-  assert.match(mcpSrc, /PARLE_VERSION: config\.version\.value/);
+  assert.doesNotMatch(mcpSrc, /PARLE_VERSION:/);
+  assert.match(mcpSrc, /ParleAgentClient/);
   for (const path of ["../conformance", "../conformance.pin.json", "../src/conformance-data.ts", "../src/error-contract.ts"]) {
     assert.equal(existsSync(new URL(path, import.meta.url)), false, `${path} must stay deleted`);
   }

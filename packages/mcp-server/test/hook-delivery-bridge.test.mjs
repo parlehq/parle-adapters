@@ -173,6 +173,77 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
   }
 });
 
+test("hook bridge wait is race-free, single-waiter, and survives session revision", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-wait-"));
+  const sink = {};
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream(sink, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    const waiting = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
+    await settle(20);
+    assert.deepEqual(
+      await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" }),
+      { ok: false, error: "Parle hook bridge already has a waiter" },
+    );
+
+    fakeClient.runtime.agentSessionId = "session-2";
+    bridge.enqueue({
+      roomId: ROOM,
+      cursorScope: "session",
+      message: { seq: 1, event_id: "evt-wait", content: "queued" },
+    });
+    assert.deepEqual(await waiting, { ok: true, ready: true });
+    assert.deepEqual(
+      await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" }),
+      { ok: false, error: "Parle agent session does not own this hook bridge" },
+    );
+    assert.deepEqual(
+      await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-2" }),
+      { ok: true, ready: true },
+    );
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("hook bridge wait cleans up disconnected clients and reports shutdown", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-wait-cleanup-"));
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  let stopped = false;
+  try {
+    await bridge.start();
+    const abandoned = connect(bridge.status().socketPath);
+    abandoned.once("connect", () => abandoned.write(`${JSON.stringify({ action: "wait", agentSessionId: "session-1" })}\n`));
+    await settle(20);
+    abandoned.destroy();
+    await settle(20);
+
+    const waiting = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
+    await settle(20);
+    await bridge.stop();
+    stopped = true;
+    assert.deepEqual(await waiting, { ok: false, error: "Parle hook bridge stopped" });
+  } finally {
+    if (!stopped) await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("hook delivery bridge restarts its owned wake stream on a client session revision", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-revision-"));
   let revisionListener;
