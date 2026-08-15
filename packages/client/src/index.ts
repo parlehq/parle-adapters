@@ -302,6 +302,12 @@ function terminalCauseFor(api: ParleApiError, occurredAt = new Date().toISOStrin
   };
 }
 
+function projectRuntimeStatus(runtime: RuntimeState): RuntimeState {
+  const projected = { ...runtime };
+  if (projected.lastError === projected.lastBootstrapError) delete projected.lastError;
+  return projected;
+}
+
 // A claim conflict means another session won the alias first. The live profile
 // is untouched, but alias authority may already have moved elsewhere, so the
 // caller is told rather than left to infer it from a bare 409.
@@ -988,7 +994,7 @@ export class ParleAgentClient {
         agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true },
       },
       // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
-      runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
+      runtime: { ...projectRuntimeStatus(this.runtime), sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       rooms: this.roomConfigs.map((cfg) => {
         const roomId = cfg.roomId?.value || "";
         const room = this.roomRuntimes.get(roomId);
@@ -2131,6 +2137,7 @@ export class ParleAgentClient {
   private publishRuntimeState(): void {
     if (!this.publishRuntime) return;
     try {
+      const projectedRuntime = projectRuntimeStatus(this.runtime);
       writeRuntimeFile(this.cwd, {
         schemaVersion: RUNTIME_SCHEMA_VERSION,
         pid: process.pid,
@@ -2633,7 +2640,7 @@ export class ParleAgentClient {
       }, signal));
     } catch (error: any) {
       if (error instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, error: redactString(error.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, error: redactString(error.message) };
       }
       throw error;
     }
