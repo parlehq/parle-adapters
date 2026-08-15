@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ParleAgentClient, ProfileNotFoundError } from "@parlehq/agent-client";
+import { ParleAgentClient, ParleApiError, ProfileNotFoundError } from "@parlehq/agent-client";
 import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, scheduleEagerBootstrap } from "../dist/index.js";
 
 const expectedTools = [
@@ -942,6 +942,22 @@ test("alias delivery tools preserve agent reduction and guarded human release pa
       retryable: false,
       retryAfterMs: 250,
       details: { limit: 256 },
+    });
+
+    fakeAccount.ownedAliasDelivery = async () => {
+      throw new ParleApiError("launch resource limit reached", {
+        code: "resource_limit_exceeded",
+        status: 429,
+        action: "stop",
+        scope: "room",
+        retryable: false,
+        details: { error: { cap: "room_active_participants", used: 25, limit: 25, recovery: "free one participant" } },
+      });
+    };
+    const typedErrorResult = await client.callTool({ name: "parle_owned_alias_delivery", arguments: { action: "get_global", agentId: "agent-1", alias: "durable" } });
+    assert.equal(typedErrorResult.isError, true);
+    assert.deepEqual(typedErrorResult.structuredContent.details, {
+      error: { cap: "room_active_participants", used: 25, limit: 25, recovery: "free one participant" },
     });
   } finally {
     await client.close();

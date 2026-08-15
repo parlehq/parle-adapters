@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
-import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, redactString } from "./protocol.js";
+import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, parleApiErrorFields, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { ProfileConfigError, ProfileDeletionError, catalogGitExposureWarning, deleteProfile as deleteProfileFromCatalog, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile, type DeleteProfileParams } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
@@ -2155,7 +2155,7 @@ export class ParleAgentClient {
         }),
         updatedAt: this.now().toISOString(),
         expiresAt: this.runtime.expiresAt,
-        ...(this.runtime.lastBootstrapError ? { lastError: this.runtime.lastBootstrapError } : {}),
+        ...(projectedRuntime.lastError ? { lastError: projectedRuntime.lastError } : {}),
         adapter: { name: this.publishRuntime.adapterName, version: this.publishRuntime.adapterVersion },
       });
     } catch {
@@ -2603,7 +2603,7 @@ export class ParleAgentClient {
             }, this.now());
           } catch {}
         }
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
       }
       throw error;
     }
