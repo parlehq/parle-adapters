@@ -642,6 +642,17 @@ var ParleApiError = class extends Error {
     this.details = options.details;
   }
 };
+function parleApiErrorFields(error51) {
+  return {
+    code: error51.code,
+    status: error51.status,
+    action: error51.action,
+    scope: error51.scope,
+    retryable: error51.retryable,
+    retryAfterMs: error51.retryAfterMs,
+    ...error51.details && typeof error51.details === "object" ? { details: error51.details } : {}
+  };
+}
 var PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
 function isParleCredential(value) {
   PARLE_CREDENTIAL_RE.lastIndex = 0;
@@ -4982,6 +4993,12 @@ function terminalCauseFor(api, occurredAt = (/* @__PURE__ */ new Date()).toISOSt
     streak: 1
   };
 }
+function projectRuntimeStatus(runtime) {
+  const projected = { ...runtime };
+  if (projected.lastError === projected.lastBootstrapError)
+    delete projected.lastError;
+  return projected;
+}
 function aliasClaimConflictHint(error51, alias) {
   if (!alias || !(error51 instanceof ParleApiError) || error51.status !== 409)
     return error51;
@@ -5542,7 +5559,7 @@ var ParleAgentClient = class _ParleAgentClient {
         agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true }
       },
       // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
-      runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
+      runtime: { ...projectRuntimeStatus(this.runtime), sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       rooms: this.roomConfigs.map((cfg) => {
         const roomId = cfg.roomId?.value || "";
         const room = this.roomRuntimes.get(roomId);
@@ -6610,6 +6627,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!this.publishRuntime)
       return;
     try {
+      const projectedRuntime = projectRuntimeStatus(this.runtime);
       writeRuntimeFile(this.cwd, {
         schemaVersion: RUNTIME_SCHEMA_VERSION,
         pid: process.pid,
@@ -6634,7 +6652,7 @@ var ParleAgentClient = class _ParleAgentClient {
         }),
         updatedAt: this.now().toISOString(),
         expiresAt: this.runtime.expiresAt,
-        ...this.runtime.lastBootstrapError ? { lastError: this.runtime.lastBootstrapError } : {},
+        ...projectedRuntime.lastError ? { lastError: projectedRuntime.lastError } : {},
         adapter: { name: this.publishRuntime.adapterName, version: this.publishRuntime.adapterVersion }
       });
     } catch {
@@ -7060,7 +7078,7 @@ var ParleAgentClient = class _ParleAgentClient {
           } catch {
           }
         }
-        return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error51.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error51), idempotencyKey, addressedTo: params.to, error: redactString(error51.message) };
       }
       throw error51;
     }
@@ -7089,7 +7107,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }, signal));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error51.retryable, code: error51.code, action: error51.action, scope: error51.scope, retryAfterMs: error51.retryAfterMs, idempotencyKey, error: redactString(error51.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error51), idempotencyKey, error: redactString(error51.message) };
       }
       throw error51;
     }
@@ -22222,14 +22240,14 @@ async function safeTool(fn, inferError = true) {
       ...typeof error51.retryAfterMs === "number" ? { retryAfterMs: error51.retryAfterMs } : {},
       ...error51.details && typeof error51.details === "object" ? { details: error51.details } : {}
     } : {};
-    const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, code: error51.code, status: error51.status, action: error51.action, scope: error51.scope, retryable: error51.retryable, retryAfterMs: error51.retryAfterMs } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51), ...accountFields };
+    const payload = error51 instanceof ParleApiError ? { ok: false, error: error51.message, ...parleApiErrorFields(error51) } : { ok: false, error: error51 instanceof Error ? error51.message : String(error51), ...accountFields };
     return { ...toolResult(payload), isError: true };
   }
 }
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.15";
+var ADAPTER_VERSION = "0.7.16";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

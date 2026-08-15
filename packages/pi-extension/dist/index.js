@@ -640,6 +640,17 @@ var ParleApiError = class extends Error {
     this.details = options.details;
   }
 };
+function parleApiErrorFields(error) {
+  return {
+    code: error.code,
+    status: error.status,
+    action: error.action,
+    scope: error.scope,
+    retryable: error.retryable,
+    retryAfterMs: error.retryAfterMs,
+    ...error.details && typeof error.details === "object" ? { details: error.details } : {}
+  };
+}
 var PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
 function isParleCredential(value) {
   PARLE_CREDENTIAL_RE.lastIndex = 0;
@@ -4586,6 +4597,12 @@ function terminalCauseFor(api, occurredAt = (/* @__PURE__ */ new Date()).toISOSt
     streak: 1
   };
 }
+function projectRuntimeStatus(runtime2) {
+  const projected = { ...runtime2 };
+  if (projected.lastError === projected.lastBootstrapError)
+    delete projected.lastError;
+  return projected;
+}
 function aliasClaimConflictHint(error, alias) {
   if (!alias || !(error instanceof ParleApiError) || error.status !== 409)
     return error;
@@ -5146,7 +5163,7 @@ var ParleAgentClient = class _ParleAgentClient {
         agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true }
       },
       // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
-      runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
+      runtime: { ...projectRuntimeStatus(this.runtime), sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       rooms: this.roomConfigs.map((cfg) => {
         const roomId = cfg.roomId?.value || "";
         const room = this.roomRuntimes.get(roomId);
@@ -6214,6 +6231,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!this.publishRuntime)
       return;
     try {
+      const projectedRuntime = projectRuntimeStatus(this.runtime);
       writeRuntimeFile(this.cwd, {
         schemaVersion: RUNTIME_SCHEMA_VERSION,
         pid: process.pid,
@@ -6238,7 +6256,7 @@ var ParleAgentClient = class _ParleAgentClient {
         }),
         updatedAt: this.now().toISOString(),
         expiresAt: this.runtime.expiresAt,
-        ...this.runtime.lastBootstrapError ? { lastError: this.runtime.lastBootstrapError } : {},
+        ...projectedRuntime.lastError ? { lastError: projectedRuntime.lastError } : {},
         adapter: { name: this.publishRuntime.adapterName, version: this.publishRuntime.adapterVersion }
       });
     } catch {
@@ -6664,7 +6682,7 @@ var ParleAgentClient = class _ParleAgentClient {
           } catch {
           }
         }
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
       }
       throw error;
     }
@@ -6693,7 +6711,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }, signal));
     } catch (error) {
       if (error instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, error: redactString(error.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, error: redactString(error.message) };
       }
       throw error;
     }
@@ -6717,7 +6735,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.40";
+var PI_EXTENSION_VERSION = "0.7.41";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

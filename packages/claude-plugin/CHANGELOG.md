@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.41 (2026-08-15)
+
+- Preserve redacted API error details and stop presenting bootstrap history twice as current runtime health (#126, #127).
+
 ## 0.9.40 (2026-08-15)
 
 - Replace the dedicated projection long-poll watcher with an owner-only local hook-bridge wait. Claude now wakes only after the existing SSE-driven responsive controller queues target work, with no second Parle session, network watcher, copied relevance filter, or nonzero recurring wait.

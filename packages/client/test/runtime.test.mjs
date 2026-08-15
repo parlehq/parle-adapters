@@ -148,15 +148,40 @@ test("publishRuntime writes a credential-free 0600 snapshot and endSession remov
   }
 });
 
-test("bootstrap failure publishes a failed snapshot readers reject", async () => {
+test("bootstrap failure publishes a failed snapshot without a generic error alias", async () => {
   const cwd = tempCwd();
   try {
     const client = new ParleAgentClient({ cwd, env: ENV, fetch: async () => json({}, 500), publishRuntime: { adapterName: "test" } });
     await client.ensureReadySafe();
     const snapshot = JSON.parse(readFileSync(runtimeFilePath(cwd, process.pid), "utf8"));
     assert.equal(snapshot.state, "failed");
-    assert.ok(snapshot.lastError);
+    assert.equal(Object.hasOwn(snapshot, "lastError"), false);
     assert.equal(isLiveRuntimeSnapshot(snapshot, new Date()), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("status and runtime publication omit only a duplicated bootstrap error", async () => {
+  const cwd = tempCwd();
+  try {
+    const client = new ParleAgentClient({ cwd, env: ENV, fetch: happyFetch(), publishRuntime: { adapterName: "test" } });
+    await client.connect();
+    client.runtime.lastBootstrapError = "replacement deferred";
+    client.runtime.lastError = "replacement deferred";
+    assert.equal(client.status().runtime.lastBootstrapError, "replacement deferred");
+    assert.equal(Object.hasOwn(client.status().runtime, "lastError"), false);
+
+    await client.observeUnread();
+    let snapshot = JSON.parse(readFileSync(runtimeFilePath(cwd, process.pid), "utf8"));
+    assert.equal(Object.hasOwn(snapshot, "lastError"), false);
+
+    client.runtime.lastError = "distinct lifecycle failure";
+    assert.equal(client.status().runtime.lastError, "distinct lifecycle failure");
+    client.roomRuntime(client.cfg.roomId.value).unreadCount = undefined;
+    await client.observeUnread();
+    snapshot = JSON.parse(readFileSync(runtimeFilePath(cwd, process.pid), "utf8"));
+    assert.equal(snapshot.lastError, "distinct lifecycle failure");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

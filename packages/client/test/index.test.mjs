@@ -10,6 +10,7 @@ import {
   DEFAULT_VERSION,
   DEFAULT_WAKE_BASE,
   ParleAgentClient,
+  ParleApiError,
   ProfileDeletionError,
   ProfileNotFoundError,
   processClientInstanceId,
@@ -22,6 +23,7 @@ import {
   parseErrorEnvelope,
   parseKeyValueFile,
   parseSSEBlocks,
+  parleApiErrorFields,
   performProfileSwitch,
   profileCatalogHasProfile,
   loadProfile,
@@ -36,6 +38,27 @@ import {
   truncateText,
   updateCursorFromMessages,
 } from "../dist/index.js";
+
+test("Parle API error fields preserve only object details", () => {
+  assert.deepEqual(parleApiErrorFields(new ParleApiError("limited", {
+    status: 429,
+    code: "resource_limit_exceeded",
+    action: "stop",
+    scope: "room",
+    details: { error: { cap: "room_active_participants" } },
+  })), {
+    code: "resource_limit_exceeded",
+    status: 429,
+    action: "stop",
+    scope: "room",
+    retryable: false,
+    retryAfterMs: undefined,
+    details: { error: { cap: "room_active_participants" } },
+  });
+  for (const details of [undefined, null, "detail", 1, false]) {
+    assert.equal(Object.hasOwn(parleApiErrorFields(new ParleApiError("limited", { details })), "details"), false);
+  }
+});
 
 test("adapter owns one release-pinned DEFAULT_VERSION without a contract bundle", () => {
   const protocolSrc = readFileSync(new URL("../src/protocol.ts", import.meta.url), "utf8");
@@ -665,7 +688,7 @@ test("privacy-flat reply failure returns no selector fallback and preserves the 
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
-      if (u.endsWith("/replies")) return json({ error: { code: "not_found", message: "not found", action: "stop", retryable: false, scope: "request", retry_after_ms: null } }, 404);
+      if (u.endsWith("/replies")) return json({ error: { code: "not_found", message: "not found", action: "stop", retryable: false, scope: "request", retry_after_ms: null, recovery: "request a fresh route" } }, 404);
       return json({});
     },
   });
@@ -673,6 +696,7 @@ test("privacy-flat reply failure returns no selector fallback and preserves the 
   assert.equal(result.ok, false);
   assert.equal(result.code, "not_found");
   assert.equal(result.idempotencyKey, "idem-reply-not-found");
+  assert.equal(result.details.error.recovery, "request a fresh route");
   assert.equal(Object.hasOwn(result, "addressedTo"), false);
   assert.equal(requests.some((url) => url.includes("/messages")), false);
 });
@@ -1049,7 +1073,7 @@ test("retryable send errors return idempotency key for byte-identical retry", as
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
       if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
       if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
-      if (u.includes("/messages")) return json({ error: { code: "rate_limited", message: "Bearer secret", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 1000 } }, 429);
+      if (u.includes("/messages")) return json({ error: { code: "rate_limited", message: "Bearer secret", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 1000, cap: "live_agent_sessions", used: 25, limit: 25, diagnostic: "Bearer secret" } }, 429);
       return json({});
     },
   });
@@ -1058,6 +1082,7 @@ test("retryable send errors return idempotency key for byte-identical retry", as
   assert.equal(result.retryable, true);
   assert.equal(result.idempotencyKey, "idem-retry");
   assert.equal(Object.hasOwn(result, "deliveryStatus"), false);
+  assert.deepEqual(result.details, { error: { code: "rate_limited", message: "Bearer <redacted>", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 1000, cap: "live_agent_sessions", used: 25, limit: 25, diagnostic: "Bearer <redacted>" } });
   assert.match(result.error, /Bearer <redacted>/);
 });
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.37 (2026-08-15)
+
+- Preserve redacted API error details and stop presenting bootstrap history twice as current runtime health (#126, #127).
+
 ## 0.8.36 (2026-08-15)
 
 - Refresh the bundled MCP runtime with the owner-only local hook-bridge wait used by Claude host wakeup.

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeRuntimeFile, writeRuntimeFile } from "./runtime-file.js";
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
-import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, redactString } from "./protocol.js";
+import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, parleApiErrorFields, redactString } from "./protocol.js";
 import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
 import { ProfileConfigError, ProfileDeletionError, catalogGitExposureWarning, deleteProfile as deleteProfileFromCatalog, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile, type DeleteProfileParams } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
@@ -300,6 +300,12 @@ function terminalCauseFor(api: ParleApiError, occurredAt = new Date().toISOStrin
     occurredAt,
     streak: 1,
   };
+}
+
+function projectRuntimeStatus(runtime: RuntimeState): RuntimeState {
+  const projected = { ...runtime };
+  if (projected.lastError === projected.lastBootstrapError) delete projected.lastError;
+  return projected;
 }
 
 // A claim conflict means another session won the alias first. The live profile
@@ -988,7 +994,7 @@ export class ParleAgentClient {
         agentTokenId: { ...redactedValue(this.cfg.agentTokenId), optional: true },
       },
       // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
-      runtime: { ...this.runtime, sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
+      runtime: { ...projectRuntimeStatus(this.runtime), sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
       rooms: this.roomConfigs.map((cfg) => {
         const roomId = cfg.roomId?.value || "";
         const room = this.roomRuntimes.get(roomId);
@@ -2131,6 +2137,7 @@ export class ParleAgentClient {
   private publishRuntimeState(): void {
     if (!this.publishRuntime) return;
     try {
+      const projectedRuntime = projectRuntimeStatus(this.runtime);
       writeRuntimeFile(this.cwd, {
         schemaVersion: RUNTIME_SCHEMA_VERSION,
         pid: process.pid,
@@ -2155,7 +2162,7 @@ export class ParleAgentClient {
         }),
         updatedAt: this.now().toISOString(),
         expiresAt: this.runtime.expiresAt,
-        ...(this.runtime.lastBootstrapError ? { lastError: this.runtime.lastBootstrapError } : {}),
+        ...(projectedRuntime.lastError ? { lastError: projectedRuntime.lastError } : {}),
         adapter: { name: this.publishRuntime.adapterName, version: this.publishRuntime.adapterVersion },
       });
     } catch {
@@ -2603,7 +2610,7 @@ export class ParleAgentClient {
             }, this.now());
           } catch {}
         }
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, addressedTo: params.to, error: redactString(error.message) };
       }
       throw error;
     }
@@ -2633,7 +2640,7 @@ export class ParleAgentClient {
       }, signal));
     } catch (error: any) {
       if (error instanceof ParleApiError) {
-        return { ok: false, roomId, retryable: error.retryable, code: error.code, action: error.action, scope: error.scope, retryAfterMs: error.retryAfterMs, idempotencyKey, error: redactString(error.message) };
+        return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, error: redactString(error.message) };
       }
       throw error;
     }

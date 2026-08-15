@@ -24,7 +24,17 @@ export class ParleApiError extends Error {
   }
 }
 
-
+export function parleApiErrorFields(error: ParleApiError) {
+  return {
+    code: error.code,
+    status: error.status,
+    action: error.action,
+    scope: error.scope,
+    retryable: error.retryable,
+    retryAfterMs: error.retryAfterMs,
+    ...(error.details && typeof error.details === "object" ? { details: error.details } : {}),
+  };
+}
 
 const PARLE_CREDENTIAL_RE = /parle_[a-z]+_[A-Za-z0-9_-]{20,}/g;
 
