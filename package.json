@@ -8,6 +8,7 @@
     "build:mcp": "pnpm --filter @parlehq/mcp-server... build",
     "refresh:mcp-artifacts": "pnpm build:mcp && node scripts/copy-responsive-delivery-reader.mjs && pnpm -F @parlehq/pi-extension build && pnpm -F @parlehq/claude-plugin build && pnpm -F @parlehq/claude-desktop-extension build && pnpm -F @parlehq/command-code-adapter build && pnpm -F @parlehq/codex-plugin build",
     "check:mcp-artifacts": "node scripts/check-reproducible-mcp-artifacts.mjs",
+    "check:release-claims": "node scripts/check-release-claims.mjs",
     "pack:desktop": "pnpm build:mcp && pnpm -F @parlehq/claude-desktop-extension pack:mcpb",
     "check:manifests": "node scripts/check-manifest-versions.mjs",
     "typecheck": "pnpm -r typecheck",

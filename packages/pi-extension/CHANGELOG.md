@@ -2,7 +2,7 @@
 
 ## 0.7.44 (2026-08-17)
 
-- Refresh the bundled MCP runtime so plain status preserves healthy responsive-delivery evidence (#120).
+- Release alignment for #120; no Pi runtime behavior changed because Pi does not carry the MCP hook bridge.
 
 ## 0.7.43 (2026-08-17)
 
@@ -10,7 +10,7 @@
 
 ## 0.7.42 (2026-08-16)
 
-- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).
+- Release alignment for #118; no Pi runtime behavior changed because Pi does not carry Claude's MCP hook bridge.
 
 ## 0.7.41 (2026-08-15)
 
@@ -18,7 +18,7 @@
 
 ## 0.7.40 (2026-08-14)
 
-- Refresh the shared responsive-delivery resolver so wake-only helpers do not create false owner conflicts.
+- Release alignment only; no Pi runtime behavior changed because the shared resolver update was not present in Pi's bundle.
 
 ## 0.7.39 (2026-08-14)
 
