@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.19 (2026-08-17)
+
+- Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
+
 ## 0.7.18 (2026-08-17)
 
 - Present email login starts as privacy-flat accepted requests, preserve the server status as data, and distinguish returning login from first-time onboarding.

@@ -925,7 +925,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.43" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.44" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1611,7 +1611,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.43");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.44");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1857,7 +1857,7 @@ test("generic parle_request honestly excludes human-session auth", async () => {
 
   const status = await harness.call("parle_status");
   assert.equal(status.details.humanSession.genericRequest, "unsupported");
-  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
+  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_onboard", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
 });
 
 test("parle_login starts email login without requiring raw request plumbing", async () => {
@@ -1866,7 +1866,11 @@ test("parle_login starts email login without requiring raw request plumbing", as
   globalThis.fetch = async (url, init = {}) => {
     assert.equal(String(url), "https://api.parle.sh/v/auth/email/start");
     startBody = JSON.parse(init.body);
-    return new Response(JSON.stringify({ status: "if_account_exists_code_sent" }), { status: 202 });
+    return new Response(JSON.stringify({
+      status: "if_account_exists_code_sent",
+      guidance: "Request accepted. This does not confirm that an email was sent. If a code arrives, complete returning-account login. Do not retry automatically.",
+      future_field: "preserved",
+    }), { status: 202 });
   };
   const harness = installHarness(cwd);
 
@@ -1876,7 +1880,44 @@ test("parle_login starts email login without requiring raw request plumbing", as
   assert.equal(result.details.status, "start_accepted");
   assert.equal(result.details.serverStatus, "if_account_exists_code_sent");
   assert.match(result.details.next, /does not confirm/);
-  assert.match(result.details.next, /first-time onboarding/);
+  assert.match(result.details.next, /Do not retry automatically/);
+  assert.equal(result.details.serverResponse.future_field, "preserved");
+});
+
+test("parle_onboard starts and completes first-time setup without exposing secrets", async () => {
+  const cwd = tempProject();
+  const seen = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    seen.push({ path, body: JSON.parse(init.body) });
+    if (path === "/v/onboarding/start") {
+      return new Response(JSON.stringify({
+        status: "if_invited_code_sent",
+        guidance: "Request accepted. This does not confirm that an email was sent. If a code arrives, complete first-time onboarding. Do not retry automatically.",
+      }), { status: 202 });
+    }
+    if (path === "/v/onboarding/complete") {
+      return new Response(JSON.stringify({ status: "onboarded", principal_handle: "new-user", display_name: "New User", session_cookie: "__Host-parle_session", setup: null }), {
+        status: 201,
+        headers: { "Set-Cookie": "__Host-parle_session=parle_ses_onboarded; Path=/; HttpOnly; Secure" },
+      });
+    }
+    throw new Error(`unexpected ${path}`);
+  };
+  const harness = installHarness(cwd);
+  const started = await harness.call("parle_onboard", { action: "start", email: "new@example.test" });
+  assert.equal(started.details.serverStatus, "if_invited_code_sent");
+  const completed = await harness.call("parle_onboard", {
+    action: "complete", email: "new@example.test", code: "123456", handle: "new-user", displayName: "New User",
+    confirmMutation: true, reason: "test onboarding",
+  });
+  assert.equal(completed.details.status, "session_saved");
+  assert.equal(JSON.stringify(completed.details).includes("parle_ses_onboarded"), false);
+  assert.equal(readFileSync(join(process.env.HOME, ".parle", "session"), "utf8"), "__Host-parle_session=parle_ses_onboarded\n");
+  assert.deepEqual(seen, [
+    { path: "/v/onboarding/start", body: { email: "new@example.test" } },
+    { path: "/v/onboarding/complete", body: { email: "new@example.test", code: "123456", handle: "new-user", display_name: "New User" } },
+  ]);
 });
 
 test("parle_login mint-from-session returns seat_required without minting or publishing a profile", async () => {

@@ -28,6 +28,7 @@ const expectedTools = [
   "parle_inbox",
   "parle_login",
   "parle_mint_principal_invite",
+  "parle_onboard",
   "parle_owned_alias_delivery",
   "parle_owned_alias_release",
   "parle_read",
@@ -389,6 +390,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
   };
   const fakeAccount = {
     listRooms: async (active) => { calls.push(["rooms", active]); return { active, configured: { state: "complete", rows: [] }, account: { state: "complete", rows: [] }, rooms: [], compactText: "Account rooms" }; },
+    onboard: async (params) => { calls.push(["onboard", params]); return { status: "start_accepted", serverStatus: "if_invited_code_sent" }; },
     login: async (params) => { calls.push(["login", params]); return { status: "start_accepted", serverStatus: "if_account_exists_code_sent" }; },
     createRoom: async (params) => { calls.push(["create-room", params]); return { room_id: "room-1" }; },
     createOwnAgent: async (params) => { calls.push(["create-own-agent", params]); return { agent_id: "agent-1", agent_handle: params.agentHandle, display_name: params.displayName || params.agentHandle }; },
@@ -450,6 +452,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.deepEqual(switched.structuredContent.watcher.launcherArgs, ["--profile", "target", "42", "as-target", "participant-target"]);
     const aliased = await client.callTool({ name: "parle_session_alias", arguments: { alias: "galexc-guru" } });
     assert.equal(aliased.structuredContent.sessionAddress, "@p.a.galexc-guru");
+    const onboard = await client.callTool({ name: "parle_onboard", arguments: { action: "start", email: "new@example.test" } });
+    assert.equal(onboard.structuredContent.serverStatus, "if_invited_code_sent");
     const login = await client.callTool({ name: "parle_login", arguments: { action: "start", email: "user@example.test" } });
     assert.equal(login.structuredContent.status, "start_accepted");
     assert.equal(login.structuredContent.serverStatus, "if_account_exists_code_sent");
@@ -476,6 +480,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["delete-profile", { profile: "temporary", confirmMutation: true, reason: "cleanup" }],
       ["switch", "target"],
       ["session-alias", "galexc-guru"],
+      ["onboard", { action: "start", email: "new@example.test" }],
       ["login", { action: "start", email: "user@example.test" }],
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
       ["create-own-agent", { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" }],

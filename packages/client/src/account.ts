@@ -15,6 +15,7 @@ const MAX_HANDOFF_BYTES = 32 * 1024;
 const MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
 const MAX_ACCOUNT_ROOM_ROWS = 2_000;
 const MAX_ACCOUNT_ROOM_PAGES = 10;
+const EMAIL_START_SAFETY_FLOOR = "Request accepted. This does not confirm that an account, invitation, or email delivery exists. If a code arrives, complete only the flow you selected. Do not retry automatically or start the other flow.";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 const INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
@@ -75,6 +76,17 @@ export type ConnectOwnAgentParams = {
   agentHandle?: string;
   createAgentHandle?: string;
   profileLabel?: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
+export type OnboardParams = {
+  action?: "start" | "complete";
+  email?: string;
+  code?: string;
+  handle?: string;
+  displayName?: string;
+  writeCredentials?: boolean;
   confirmMutation?: boolean;
   reason?: string;
 };
@@ -767,8 +779,74 @@ export class ParleAccountClient {
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.byteLength > MAX_RESPONSE_BYTES) throw new Error(`Parle API response exceeded ${MAX_RESPONSE_BYTES} bytes.`);
     const text = scrub(buffer.toString("utf8"), Object.values(body));
-    if (!response.ok) throw new Error(`Parle email login ${path.endsWith("/start") ? "start" : "complete"} failed ${response.status}: ${truncateText(text, 4096).text}`);
+    if (!response.ok) throw new Error(`Parle email request ${path} failed ${response.status}: ${truncateText(text, 4096).text}`);
     return { status: response.status, json: parseJson(text) || {}, headers: response.headers };
+  }
+
+  private emailStartResult(started: { json: any }, email: string) {
+    const serverResponse = started.json && typeof started.json === "object" && !Array.isArray(started.json) && Object.keys(started.json).length
+      ? started.json as Record<string, unknown>
+      : undefined;
+    const serverStatus = typeof serverResponse?.status === "string" && serverResponse.status.trim() ? serverResponse.status : undefined;
+    const serverGuidance = typeof serverResponse?.guidance === "string" && serverResponse.guidance.trim() ? serverResponse.guidance : undefined;
+    return {
+      status: "start_accepted",
+      ...(serverStatus ? { serverStatus } : {}),
+      ...(serverResponse ? { serverResponse } : {}),
+      email,
+      next: serverGuidance || EMAIL_START_SAFETY_FLOOR,
+    };
+  }
+
+  async onboard(params: OnboardParams, signal?: AbortSignal) {
+    const action = params.action || (params.code ? "complete" : "start");
+    const config = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true });
+    if (!params.email) throw new Error(`parle_onboard ${action} requires email.`);
+
+    if (action === "start") {
+      const started = await this.emailRequest(config, "/v/onboarding/start", { email: params.email }, signal);
+      return this.emailStartResult(started, params.email);
+    }
+    if (action !== "complete") throw new Error(`Unknown parle_onboard action: ${action}`);
+    if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_onboard complete requires confirmMutation=true and a reason before spending the code and persisting credentials.");
+    if (params.writeCredentials === false) throw new Error("parle_onboard complete refuses writeCredentials=false because it would consume a one-time code without durable credential recovery.");
+    if (!params.code?.trim()) throw new Error("parle_onboard complete requires code.");
+    if (!params.handle?.trim()) throw new Error("parle_onboard complete requires handle.");
+
+    const body: Record<string, string> = {
+      email: params.email,
+      code: params.code.trim(),
+      handle: params.handle.trim(),
+    };
+    if (params.displayName?.trim()) body.display_name = params.displayName.trim();
+    const completed = await this.emailRequest(config, "/v/onboarding/complete", body, signal);
+    const sessionCookie = extractCookie(completed.headers, "__Host-parle_session");
+    if (!sessionCookie || !SESSION_COOKIE_RE.test(sessionCookie)) {
+      return {
+        status: "outcome_unknown",
+        credential: "not_persisted",
+        wroteSessionCookie: false,
+        secrets: "redacted; onboarding code and any session credential were not returned in tool output",
+        next: "The code may be spent and the account may now exist. Do not retry the code. Start returning-account login for the same email to recover access.",
+      };
+    }
+    const sessionCookiePath = writeSessionCookieFile(config.catalogPath, sessionCookie);
+    const responseWarnings = [
+      ...(completed.status === 201 ? [] : [`unexpected_http_status:${completed.status}`]),
+      ...(completed.json?.status === "onboarded" ? [] : ["unexpected_response_status"]),
+      ...(completed.json?.setup === null ? [] : ["unexpected_setup_redacted"]),
+    ];
+    return {
+      status: "session_saved",
+      ...(typeof completed.json?.principal_handle === "string" ? { principalHandle: completed.json.principal_handle } : {}),
+      ...(typeof completed.json?.display_name === "string" ? { displayName: completed.json.display_name } : {}),
+      setup: null,
+      ...(responseWarnings.length ? { responseWarnings } : {}),
+      wroteSessionCookie: true,
+      sessionCookiePath,
+      secrets: "redacted; onboarding code, unexpected setup data, and PARLE_SESSION_COOKIE were not returned in tool output",
+      next: "Create or select a room and durable agent, admit the agent to the room, then mint a room-bound profile from this saved human session.",
+    };
   }
 
   private async completeLoginFactor(config: AccountBaseConfig, code: string, signal?: AbortSignal) {
@@ -825,13 +903,7 @@ export class ParleAccountClient {
     if (action === "start") {
       if (!params.email) throw new Error("parle_login start requires email.");
       const started = await this.emailRequest(config, "/v/auth/email/start", { email: params.email }, signal);
-      const serverStatus = typeof started.json?.status === "string" && started.json.status.trim() ? started.json.status : undefined;
-      return {
-        status: "start_accepted",
-        ...(serverStatus ? { serverStatus } : {}),
-        email: params.email,
-        next: "An accepted request does not confirm that an account exists or that a code was sent. If a code arrives at this exact email, call parle_login again with the same email and code. Otherwise, do not retry automatically: parle_login is only for a returning account's linked email; first-time onboarding uses the separate onboarding flow.",
-      };
+      return this.emailStartResult(started, params.email);
     }
 
     if (!writeCredentials) {

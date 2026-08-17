@@ -261,6 +261,25 @@
       "target"
     ]
   },
+  "parle_onboard": {
+    "title": "Parle Onboarding",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "code",
+      "confirmMutation",
+      "displayName",
+      "email",
+      "handle",
+      "reason",
+      "writeCredentials"
+    ],
+    "required": []
+  },
   "parle_owned_alias_delivery": {
     "title": "Manage Owned Alias Offline Delivery",
     "annotations": {

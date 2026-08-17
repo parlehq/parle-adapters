@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.40 (2026-08-17)
+
+- Bundle the typed first-time onboarding tool and server-owned email-start guidance.
+
 ## 0.6.39 (2026-08-17)
 
 - Refresh the bundled account client with honest conditional email login start guidance.

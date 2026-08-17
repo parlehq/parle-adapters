@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.40 (2026-08-17)
+
+- Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
+
 ## 0.7.39 (2026-08-17)
 
 - Expose honest conditional returning-account login start results and stop presenting accepted requests as proof that a code was sent.

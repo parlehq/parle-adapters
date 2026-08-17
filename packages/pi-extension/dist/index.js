@@ -2499,6 +2499,7 @@ var MAX_HANDOFF_BYTES = 32 * 1024;
 var MAX_PROFILE_CATALOG_BYTES2 = 1024 * 1024;
 var MAX_ACCOUNT_ROOM_ROWS = 2e3;
 var MAX_ACCOUNT_ROOM_PAGES = 10;
+var EMAIL_START_SAFETY_FLOOR = "Request accepted. This does not confirm that an account, invitation, or email delivery exists. If a code arrives, complete only the flow you selected. Do not retry automatically or start the other flow.";
 var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
@@ -3131,8 +3132,75 @@ var ParleAccountClient = class {
       throw new Error(`Parle API response exceeded ${MAX_RESPONSE_BYTES2} bytes.`);
     const text = scrub(buffer.toString("utf8"), Object.values(body));
     if (!response.ok)
-      throw new Error(`Parle email login ${path.endsWith("/start") ? "start" : "complete"} failed ${response.status}: ${truncateText(text, 4096).text}`);
+      throw new Error(`Parle email request ${path} failed ${response.status}: ${truncateText(text, 4096).text}`);
     return { status: response.status, json: parseJson2(text) || {}, headers: response.headers };
+  }
+  emailStartResult(started, email) {
+    const serverResponse = started.json && typeof started.json === "object" && !Array.isArray(started.json) && Object.keys(started.json).length ? started.json : void 0;
+    const serverStatus = typeof serverResponse?.status === "string" && serverResponse.status.trim() ? serverResponse.status : void 0;
+    const serverGuidance = typeof serverResponse?.guidance === "string" && serverResponse.guidance.trim() ? serverResponse.guidance : void 0;
+    return {
+      status: "start_accepted",
+      ...serverStatus ? { serverStatus } : {},
+      ...serverResponse ? { serverResponse } : {},
+      email,
+      next: serverGuidance || EMAIL_START_SAFETY_FLOOR
+    };
+  }
+  async onboard(params, signal) {
+    const action = params.action || (params.code ? "complete" : "start");
+    const config = resolveAccountBaseConfig(this.cwd, this.env, { allowMissingProfile: true });
+    if (!params.email)
+      throw new Error(`parle_onboard ${action} requires email.`);
+    if (action === "start") {
+      const started = await this.emailRequest(config, "/v/onboarding/start", { email: params.email }, signal);
+      return this.emailStartResult(started, params.email);
+    }
+    if (action !== "complete")
+      throw new Error(`Unknown parle_onboard action: ${action}`);
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_onboard complete requires confirmMutation=true and a reason before spending the code and persisting credentials.");
+    if (params.writeCredentials === false)
+      throw new Error("parle_onboard complete refuses writeCredentials=false because it would consume a one-time code without durable credential recovery.");
+    if (!params.code?.trim())
+      throw new Error("parle_onboard complete requires code.");
+    if (!params.handle?.trim())
+      throw new Error("parle_onboard complete requires handle.");
+    const body = {
+      email: params.email,
+      code: params.code.trim(),
+      handle: params.handle.trim()
+    };
+    if (params.displayName?.trim())
+      body.display_name = params.displayName.trim();
+    const completed = await this.emailRequest(config, "/v/onboarding/complete", body, signal);
+    const sessionCookie = extractCookie(completed.headers, "__Host-parle_session");
+    if (!sessionCookie || !SESSION_COOKIE_RE.test(sessionCookie)) {
+      return {
+        status: "outcome_unknown",
+        credential: "not_persisted",
+        wroteSessionCookie: false,
+        secrets: "redacted; onboarding code and any session credential were not returned in tool output",
+        next: "The code may be spent and the account may now exist. Do not retry the code. Start returning-account login for the same email to recover access."
+      };
+    }
+    const sessionCookiePath = writeSessionCookieFile(config.catalogPath, sessionCookie);
+    const responseWarnings = [
+      ...completed.status === 201 ? [] : [`unexpected_http_status:${completed.status}`],
+      ...completed.json?.status === "onboarded" ? [] : ["unexpected_response_status"],
+      ...completed.json?.setup === null ? [] : ["unexpected_setup_redacted"]
+    ];
+    return {
+      status: "session_saved",
+      ...typeof completed.json?.principal_handle === "string" ? { principalHandle: completed.json.principal_handle } : {},
+      ...typeof completed.json?.display_name === "string" ? { displayName: completed.json.display_name } : {},
+      setup: null,
+      ...responseWarnings.length ? { responseWarnings } : {},
+      wroteSessionCookie: true,
+      sessionCookiePath,
+      secrets: "redacted; onboarding code, unexpected setup data, and PARLE_SESSION_COOKIE were not returned in tool output",
+      next: "Create or select a room and durable agent, admit the agent to the room, then mint a room-bound profile from this saved human session."
+    };
   }
   async completeLoginFactor(config, code, signal) {
     const pendingCookie = readPendingLoginCookieFile(config.catalogPath);
@@ -3191,13 +3259,7 @@ var ParleAccountClient = class {
       if (!params.email)
         throw new Error("parle_login start requires email.");
       const started = await this.emailRequest(config, "/v/auth/email/start", { email: params.email }, signal);
-      const serverStatus = typeof started.json?.status === "string" && started.json.status.trim() ? started.json.status : void 0;
-      return {
-        status: "start_accepted",
-        ...serverStatus ? { serverStatus } : {},
-        email: params.email,
-        next: "An accepted request does not confirm that an account exists or that a code was sent. If a code arrives at this exact email, call parle_login again with the same email and code. Otherwise, do not retry automatically: parle_login is only for a returning account's linked email; first-time onboarding uses the separate onboarding flow."
-      };
+      return this.emailStartResult(started, params.email);
     }
     if (!writeCredentials) {
       if (action === "complete")
@@ -6737,7 +6799,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.43";
+var PI_EXTENSION_VERSION = "0.7.44";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -7896,7 +7958,7 @@ function statusDetails(ctx) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_onboard", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue2(cfg.sessionAlias),
@@ -8420,7 +8482,7 @@ function parleExtension(pi) {
   pi.registerTool({
     name: "parle_setup",
     label: "Parle Setup",
-    description: "Diagnose Parle config and return setup guidance. Use parle_login for email-code login and local credential bootstrap.",
+    description: "Diagnose Parle config and return setup guidance. Invited first-time users use parle_onboard; returning users use parle_login. If intent is unclear, ask before calling either start.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _update, ctx) {
       lastCtx = ctx;
@@ -8433,8 +8495,29 @@ function parleExtension(pi) {
         missing,
         howPeersReachYou: details.runtime?.sessionAddress ? `Peers can direct responsive messages to ${details.runtime.sessionAddress}. Share this address when you want this exact session to be reachable.` : void 0,
         peerDiscovery: "Peer addresses are learned from message author blocks on readable room messages. Agents cannot list the full peer roster unless a room-specific API grants that separately.",
-        next: missing.length ? "Use parle_login to request and complete email login, then call mint-from-session with exact room and agent selectors to save a named profile in ~/.parle/profiles." : "Config is sufficient for lazy runtime bootstrap."
+        next: missing.length ? "For invited first-time setup, use parle_onboard. For an existing account, use parle_login. If unclear, ask before sending either request. After a human session is saved, create or select the room and agent, admit the agent, then use parle_login mint-from-session to save a named profile." : "Config is sufficient for lazy runtime bootstrap."
       });
+    }
+  });
+  pi.registerTool({
+    name: "parle_onboard",
+    label: "Parle Onboarding",
+    description: "Start or complete first-time Parle onboarding for a user who has an invitation. An accepted start does not confirm that an invitation exists or that an email was sent. If the user may already have an account, use returning login instead; if their intent is unclear, ask before calling either start. Never call both starts or retry automatically. Completion spends the one-time code and saves the human session without returning secrets.",
+    parameters: Type.Object({
+      action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete"] })),
+      email: Type.Optional(Type.String()),
+      code: Type.Optional(Type.String()),
+      handle: Type.Optional(Type.String()),
+      displayName: Type.Optional(Type.String()),
+      writeCredentials: Type.Optional(Type.Boolean({ description: "Must remain true so completion persists the human session." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true for completion before spending the one-time code and persisting credentials." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for completion." }))
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig2(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).onboard(params, signal));
     }
   });
   pi.registerTool({

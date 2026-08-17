@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.43";
+const PI_EXTENSION_VERSION = "0.7.44";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -145,6 +145,7 @@ type RuntimeState = PiWatchRuntime & {
   rolloverLatched?: boolean;
 };
 
+type ParleOnboardParams = OnboardParams;
 type ParleLoginParams = LoginParams;
 type ParleCreateRoomParams = CreateRoomParams;
 type ParleCreateOwnAgentParams = CreateOwnAgentParams;
@@ -1580,7 +1581,7 @@ function statusDetails(ctx: any) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_onboard", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -2140,7 +2141,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_setup",
     label: "Parle Setup",
-    description: "Diagnose Parle config and return setup guidance. Use parle_login for email-code login and local credential bootstrap.",
+    description: "Diagnose Parle config and return setup guidance. Invited first-time users use parle_onboard; returning users use parle_login. If intent is unclear, ask before calling either start.",
     parameters: Type.Object({}),
     async execute(_id, _params, _signal, _update, ctx) {
       lastCtx = ctx;
@@ -2153,8 +2154,30 @@ export default function parleExtension(pi: any) {
         missing,
         howPeersReachYou: details.runtime?.sessionAddress ? `Peers can direct responsive messages to ${details.runtime.sessionAddress}. Share this address when you want this exact session to be reachable.` : undefined,
         peerDiscovery: "Peer addresses are learned from message author blocks on readable room messages. Agents cannot list the full peer roster unless a room-specific API grants that separately.",
-        next: missing.length ? "Use parle_login to request and complete email login, then call mint-from-session with exact room and agent selectors to save a named profile in ~/.parle/profiles." : "Config is sufficient for lazy runtime bootstrap.",
+        next: missing.length ? "For invited first-time setup, use parle_onboard. For an existing account, use parle_login. If unclear, ask before sending either request. After a human session is saved, create or select the room and agent, admit the agent, then use parle_login mint-from-session to save a named profile." : "Config is sufficient for lazy runtime bootstrap.",
       });
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_onboard",
+    label: "Parle Onboarding",
+    description: "Start or complete first-time Parle onboarding for a user who has an invitation. An accepted start does not confirm that an invitation exists or that an email was sent. If the user may already have an account, use returning login instead; if their intent is unclear, ask before calling either start. Never call both starts or retry automatically. Completion spends the one-time code and saves the human session without returning secrets.",
+    parameters: Type.Object({
+      action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete"] })),
+      email: Type.Optional(Type.String()),
+      code: Type.Optional(Type.String()),
+      handle: Type.Optional(Type.String()),
+      displayName: Type.Optional(Type.String()),
+      writeCredentials: Type.Optional(Type.Boolean({ description: "Must remain true so completion persists the human session." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true for completion before spending the one-time code and persisting credentials." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for completion." })),
+    }),
+    async execute(_id, params: ParleOnboardParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).onboard(params, signal));
     },
   });
 

@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -130,6 +130,7 @@ const savedStartSchema = {
 
 export type ParleAccountClientLike = {
   listRooms(active: RoomInventorySection<ActiveRoomInventoryRow>, signal?: AbortSignal): Promise<ParleRoomsInventory>;
+  onboard(params: OnboardParams): Promise<unknown>;
   login(params: LoginParams): Promise<unknown>;
   createRoom(params: CreateRoomParams): Promise<unknown>;
   createOwnAgent(params: CreateOwnAgentParams): Promise<unknown>;
@@ -403,6 +404,25 @@ export function registerParleTools(
       } : { restartRequired: false },
     };
   }));
+
+  registerTool("parle_onboard", {
+    title: "Parle Onboarding",
+    description: "Start or complete first-time Parle onboarding for a user who has an invitation. An accepted start does not confirm that an invitation exists or that an email was sent. If the user may already have an account, use returning login instead; if their intent is unclear, ask before calling either start. Never call both starts or retry automatically. Completion spends the one-time code and saves the human session without returning secrets.",
+    inputSchema: {
+      action: z.enum(["start", "complete"]).optional(),
+      email: z.string().optional(),
+      code: z.string().optional(),
+      handle: z.string().optional(),
+      displayName: z.string().optional(),
+      writeCredentials: z.boolean().optional(),
+      confirmMutation: z.boolean().optional(),
+      reason: z.string().optional(),
+    },
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.onboard(params as OnboardParams));
+  });
 
   registerTool("parle_login", {
     title: "Parle Login",

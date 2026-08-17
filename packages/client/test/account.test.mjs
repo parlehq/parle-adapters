@@ -80,18 +80,28 @@ function roomDetails(agentIds = [AGENT_ID]) {
   };
 }
 
-test("login start preserves conditional server status without claiming email delivery", async () => {
+test("login start prefers server guidance and keeps a no-oracle safety floor", async () => {
   const f = loginFixture();
   try {
-    const next = "An accepted request does not confirm that an account exists or that a code was sent. If a code arrives at this exact email, call parle_login again with the same email and code. Otherwise, do not retry automatically: parle_login is only for a returning account's linked email; first-time onboarding uses the separate onboarding flow.";
+    const next = "Request accepted. This does not confirm that an email was sent. If a code arrives, complete returning-account login. Do not retry automatically.";
+    const serverResponse = {
+      status: "if_account_exists_code_sent",
+      requested_flow: "returning_login",
+      delivery_status: "not_disclosed",
+      next_action: "complete_returning_login_if_code_received",
+      automatic_retry: false,
+      guidance: next,
+      future_field: "preserved",
+    };
     const accepted = new ParleAccountClient({
       cwd: f.cwd,
       env: f.env,
-      fetch: async () => response({ status: "if_account_exists_code_sent" }, 202),
+      fetch: async () => response(serverResponse, 202),
     });
     assert.deepEqual(await accepted.login({ email: "user@example.test" }), {
       status: "start_accepted",
       serverStatus: "if_account_exists_code_sent",
+      serverResponse,
       email: "user@example.test",
       next,
     });
@@ -104,8 +114,98 @@ test("login start preserves conditional server status without claiming email del
     assert.deepEqual(await unknown.login({ action: "start", email: "user@example.test" }), {
       status: "start_accepted",
       email: "user@example.test",
-      next,
+      next: "Request accepted. This does not confirm that an account, invitation, or email delivery exists. If a code arrives, complete only the flow you selected. Do not retry automatically or start the other flow.",
     });
+  } finally { f.cleanup(); }
+});
+
+test("onboarding start preserves server guidance and completion saves only the human session", async () => {
+  const f = loginFixture();
+  const calls = [];
+  try {
+    const guidance = "Request accepted. This does not confirm that an email was sent. If a code arrives, complete first-time onboarding. Do not retry automatically.";
+    const serverResponse = {
+      status: "if_invited_code_sent",
+      requested_flow: "first_time_onboarding",
+      delivery_status: "not_disclosed",
+      next_action: "complete_onboarding_if_code_received",
+      automatic_retry: false,
+      guidance,
+      future_field: "preserved",
+    };
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, body: JSON.parse(init.body) });
+        if (path === "/v/onboarding/start") return response(serverResponse, 202);
+        if (path === "/v/onboarding/complete") {
+          return new Response(JSON.stringify({
+            status: "onboarded",
+            principal_handle: "new-user",
+            display_name: "New User",
+            session_cookie: "__Host-parle_session",
+            setup: { future_field: "preserved", initial_agent_token: { plaintext: "parle_agt_must-not-leak" } },
+          }), {
+            status: 201,
+            headers: { "Set-Cookie": "__Host-parle_session=parle_ses_onboarded-cookie; Path=/; HttpOnly; Secure" },
+          });
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    assert.deepEqual(await client.onboard({ action: "start", email: "new@example.test" }), {
+      status: "start_accepted",
+      serverStatus: "if_invited_code_sent",
+      serverResponse,
+      email: "new@example.test",
+      next: guidance,
+    });
+    const completed = await client.onboard({
+      action: "complete",
+      email: "new@example.test",
+      code: "123456",
+      handle: "new-user",
+      displayName: "New User",
+      confirmMutation: true,
+      reason: "test onboarding",
+    });
+    assert.equal(completed.status, "session_saved");
+    assert.equal(completed.setup, null);
+    assert.deepEqual(completed.responseWarnings, ["unexpected_setup_redacted"]);
+    assert.equal(JSON.stringify(completed).includes("onboarded-cookie"), false);
+    assert.equal(JSON.stringify(completed).includes("must-not-leak"), false);
+    assert.equal(readFileSync(join(f.home, ".parle", "session"), "utf8"), "__Host-parle_session=parle_ses_onboarded-cookie\n");
+    assert.deepEqual(calls, [
+      { path: "/v/onboarding/start", body: { email: "new@example.test" } },
+      { path: "/v/onboarding/complete", body: { email: "new@example.test", code: "123456", handle: "new-user", display_name: "New User" } },
+    ]);
+  } finally { f.cleanup(); }
+});
+
+test("onboarding completion without a usable session reports unknown outcome and forbids code replay", async () => {
+  const f = loginFixture();
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => response({ status: "onboarded", setup: { future_field: true } }, 201),
+    });
+    const completed = await client.onboard({
+      action: "complete",
+      email: "new@example.test",
+      code: "123456",
+      handle: "new-user",
+      confirmMutation: true,
+      reason: "test uncertain onboarding",
+    });
+    assert.equal(completed.status, "outcome_unknown");
+    assert.equal(completed.credential, "not_persisted");
+    assert.equal(completed.wroteSessionCookie, false);
+    assert.match(completed.next, /Do not retry the code/);
+    assert.match(completed.next, /returning-account login/);
+    assert.equal(existsSync(join(f.home, ".parle", "session")), false);
   } finally { f.cleanup(); }
 });
 

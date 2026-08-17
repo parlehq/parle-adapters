@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.37 (2026-08-17)
+
+- Add a typed first-time onboarding flow, preserve server-owned start guidance and unknown fields with a privacy-safe fallback, and save or recover onboarding sessions without exposing credentials or replaying spent codes.
+
 ## 0.8.36 (2026-08-17)
 
 - Return privacy-flat email login starts as `start_accepted`, preserve optional `serverStatus`, and give conditional returning-account guidance without claiming a code was sent.
