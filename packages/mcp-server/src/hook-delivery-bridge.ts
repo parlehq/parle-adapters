@@ -201,6 +201,7 @@ export class HookDeliveryBridge {
   }
 
   private async startBridge(): Promise<void> {
+    if (this.server?.listening && this.controller.status().running) return;
     this.lastError = undefined;
     this.publishEvidence("starting", { expectedProgressMs: 120_000 });
     if (!this.unsubscribeCommitGuard) {

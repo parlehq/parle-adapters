@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.40 (2026-08-17)
+
+- Refresh the bundled MCP runtime so plain status preserves healthy responsive-delivery evidence (#120).
+
 ## 0.6.39 (2026-08-17)
 
 - Refresh the bundled account client with honest conditional email login start guidance.

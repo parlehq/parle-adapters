@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.44 (2026-08-17)
+
+- Refresh the bundled MCP runtime so plain status preserves healthy responsive-delivery evidence (#120).
+
 ## 0.7.43 (2026-08-17)
 
 - Present email login starts as privacy-flat accepted requests, preserve the server status as data, and distinguish returning login from first-time onboarding.
