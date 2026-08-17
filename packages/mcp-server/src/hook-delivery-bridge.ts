@@ -42,6 +42,9 @@ export type HookDeliveryBridgeStatus = {
   socketPath: string;
   hostSessionBound: boolean;
   agentSessionId?: string;
+  ownerPid: number;
+  hostParentPid?: number;
+  currentParentPid?: number;
   lastError?: string;
   // Wake hints naming a room this process does not configure. Recorded so an
   // ignored hint is diagnosable instead of looking like lost delivery.
@@ -71,12 +74,17 @@ export function hookBridgeStateDir(scope: string): string {
   return join(homedir(), ".local", "state", "parle", "hook-bridge", key);
 }
 
-export function hookBridgeSocketPath(scope: string, pid = process.pid): string {
-  return join(hookBridgeStateDir(scope), `${pid}.sock`);
+export function hookBridgeHostDir(scope: string, hostParentPid = process.ppid): string {
+  if (!Number.isSafeInteger(hostParentPid) || hostParentPid <= 1) throw new Error("Parle hook bridge host parent pid must be greater than 1");
+  return join(hookBridgeStateDir(scope), String(hostParentPid));
 }
 
-export function hookBridgeRuntimeDescriptorPath(scope: string, pid = process.pid): string {
-  return join(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+export function hookBridgeSocketPath(scope: string, pid = process.pid, hostParentPid?: number): string {
+  return join(hostParentPid === undefined ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.sock`);
+}
+
+export function hookBridgeRuntimeDescriptorPath(scope: string, pid = process.pid, hostParentPid?: number): string {
+  return join(hostParentPid === undefined ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.runtime.json`);
 }
 
 export function hookBridgeRuntimeHandlePath(scope: string, pid = process.pid): string {
@@ -120,7 +128,12 @@ export class HookDeliveryBridge {
     private readonly scope = process.cwd(),
     private readonly runtimeExecPath = process.execPath,
     private readonly evidenceCwd = process.cwd(),
+    private readonly hostParentPid?: number,
+    private readonly readParentPid = () => process.ppid,
   ) {
+    if (this.hostParentPid !== undefined && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
+      throw new Error("Parle hook bridge host parent pid must be greater than 1");
+    }
     // The handler only ever throws on queue overflow, which is host capacity,
     // never a poison row. An unbounded attempt budget keeps the controller
     // from ever classifying an undelivered row as poison and acknowledging it.
@@ -145,17 +158,21 @@ export class HookDeliveryBridge {
       running: Boolean(this.server?.listening) && !this.stopped,
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
-      socketPath: hookBridgeSocketPath(this.scope),
+      socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
+      ownerPid: process.pid,
+      ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() }),
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
       ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
       ...(lastError ? { lastError } : {}),
     };
   }
 
-  bindHostSession(sessionId: string): boolean {
-    if (!sessionId) return false;
-    if (this.hostSessionId && this.hostSessionId !== sessionId) return false;
+  bindHostSession(sessionId: string, allowReplace = false, correlated = false): boolean {
+    this.assertCurrentHostParent();
+    if (!sessionId || (this.hostParentPid !== undefined && !correlated)) return false;
+    if (this.hostSessionId === sessionId) return true;
+    if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
     this.hostSessionId = sessionId;
     return true;
   }
@@ -275,17 +292,21 @@ export class HookDeliveryBridge {
   }
 
   private async listen(): Promise<void> {
-    const path = hookBridgeSocketPath(this.scope);
+    this.assertCurrentHostParent();
+    const path = hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid);
+    const stateDir = hookBridgeStateDir(this.scope);
     const dir = dirname(path);
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const before = lstatSync(dir);
-    if (!before.isDirectory() || before.isSymbolicLink() || (typeof process.getuid === "function" && before.uid !== process.getuid())) {
-      throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
+    for (const candidate of [stateDir, dir]) {
+      mkdirSync(candidate, { recursive: true, mode: 0o700 });
+      const before = lstatSync(candidate);
+      if (!before.isDirectory() || before.isSymbolicLink() || (typeof process.getuid === "function" && before.uid !== process.getuid())) {
+        throw new Error(`Unsafe Parle hook bridge directory: ${candidate}`);
+      }
+      chmodSync(candidate, 0o700);
+      const after = lstatSync(candidate);
+      if ((after.mode & 0o077) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${candidate}`);
     }
-    chmodSync(dir, 0o700);
-    const after = lstatSync(dir);
-    if ((after.mode & 0o077) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
-    this.removeDeadRuntimeArtifacts(dir);
+    if (this.hostParentPid === undefined) this.removeDeadRuntimeArtifacts(stateDir);
     this.removeOwnRuntimeArtifacts();
     this.publishRuntimeArtifacts();
     try {
@@ -311,14 +332,15 @@ export class HookDeliveryBridge {
     accessSync(execPath, constants.X_OK);
     if (!statSync(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
 
-    const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
+    const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
     const handleTemporary = `${handlePath}.tmp-${randomUUID()}`;
     try {
       atomicReplaceOwnerOnlyFile(descriptorPath, `${JSON.stringify({
         execPath,
         pid: process.pid,
-        startedAt: new Date().toISOString(),
+        ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid }),
+        startedAt: this.hostParentPid === undefined ? new Date().toISOString() : processStartedAtIso(),
       })}\n`, { label: "Parle hook bridge runtime descriptor", maxBytes: 16 * 1024, durability: "none" });
       symlinkSync(execPath, handleTemporary, "file");
       renameSync(handleTemporary, handlePath);
@@ -332,10 +354,10 @@ export class HookDeliveryBridge {
 
   private removeOwnRuntimeArtifacts(): void {
     for (const path of [
-      hookBridgeSocketPath(this.scope),
-      hookBridgeRuntimeDescriptorPath(this.scope),
+      hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
+      hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid),
       hookBridgeRuntimeHandlePath(this.scope),
-      `${hookBridgeRuntimeDescriptorPath(this.scope)}.tmp`,
+      `${hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid)}.tmp`,
       `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`,
     ]) rmSync(path, { force: true });
   }
@@ -346,6 +368,12 @@ export class HookDeliveryBridge {
       const match = name.match(stalePattern);
       if (!match || processIsAlive(Number(match[1]))) continue;
       rmSync(join(dir, name), { force: true });
+    }
+  }
+
+  private assertCurrentHostParent(): void {
+    if (this.hostParentPid !== undefined && this.readParentPid() !== this.hostParentPid) {
+      throw new Error("Parle hook bridge host process correlation is no longer valid");
     }
   }
 
@@ -379,10 +407,11 @@ export class HookDeliveryBridge {
 
   private async handleCommand(command: any): Promise<unknown> {
     if (command?.action === "status") return { ok: true, ...this.status() };
+    this.assertCurrentHostParent();
     const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
-      const bound = this.bindHostSession(sessionId);
+      const bound = this.bindHostSession(sessionId, command?.allowReplace === true, true);
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };

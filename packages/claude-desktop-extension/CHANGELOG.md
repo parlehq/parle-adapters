@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.38 (2026-08-16)
+
+- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).
+
 ## 0.8.37 (2026-08-15)
 
 - Preserve redacted API error details and stop presenting bootstrap history twice as current runtime health (#126, #127).

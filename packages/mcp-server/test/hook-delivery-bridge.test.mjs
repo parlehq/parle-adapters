@@ -18,6 +18,7 @@ import { connect } from "node:net";
 import { ParleApiError } from "@parlehq/agent-client";
 import {
   HookDeliveryBridge,
+  hookBridgeHostDir,
   hookBridgeRuntimeDescriptorPath,
   hookBridgeRuntimeHandlePath,
   hookBridgeStateDir,
@@ -79,12 +80,14 @@ async function settle(ms = 100) {
 test("hook delivery bridge queues SSE delivery and acks only after lease commit", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-delivery-bridge-"));
   const stateDir = hookBridgeStateDir(cwd);
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const hostDir = hookBridgeHostDir(cwd);
+  mkdirSync(hostDir, { recursive: true, mode: 0o700 });
   chmodSync(stateDir, 0o700);
-  const deadPid = 99_999_999;
-  const staleSocket = join(stateDir, `${deadPid}.sock`);
-  const staleDescriptor = join(stateDir, `${deadPid}.runtime.json`);
-  const staleHandle = join(stateDir, `${deadPid}.node`);
+  chmodSync(hostDir, 0o700);
+  const stalePid = 99_999_999;
+  const staleSocket = join(hostDir, `${stalePid}.sock`);
+  const staleDescriptor = join(hostDir, `${stalePid}.runtime.json`);
+  const staleHandle = join(stateDir, `${stalePid}.node`);
   writeFileSync(staleSocket, "");
   writeFileSync(staleDescriptor, "{}\n");
   symlinkSync(process.execPath, staleHandle);
@@ -122,21 +125,22 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
       }), { headers: { "Content-Type": "text/event-stream" } });
     },
   };
-  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  const bridge = new HookDeliveryBridge(fakeClient, cwd, process.execPath, cwd, process.ppid);
   let stopped = false;
   try {
     await bridge.start();
-    const descriptorPath = hookBridgeRuntimeDescriptorPath(cwd);
+    const descriptorPath = hookBridgeRuntimeDescriptorPath(cwd, process.pid, process.ppid);
     const handlePath = hookBridgeRuntimeHandlePath(cwd);
     const descriptor = JSON.parse(readFileSync(descriptorPath, "utf8"));
     assert.equal(descriptor.execPath, process.execPath);
     assert.equal(descriptor.pid, process.pid);
+    assert.equal(descriptor.hostParentPid, process.ppid);
     assert.equal(typeof descriptor.startedAt, "string");
     assert.equal(statSync(descriptorPath).mode & 0o077, 0);
     assert.equal(readlinkSync(handlePath), process.execPath);
-    assert.equal(existsSync(staleSocket), false);
-    assert.equal(existsSync(staleDescriptor), false);
-    assert.equal(existsSync(staleHandle), false);
+    assert.equal(existsSync(staleSocket), true, "a stale sibling must not block publication or be deleted");
+    assert.equal(existsSync(staleDescriptor), true);
+    assert.equal(existsSync(staleHandle), true);
     await eventually(() => bridge.status().pending === 1);
     assert.deepEqual(acknowledgements, []);
     assert.equal(bridge.status().lastError, undefined);
@@ -148,6 +152,10 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     assert.equal(drainCalls, settledDrains, "the drain should terminate once no batch makes progress");
     assert.ok(settledDrains < 10, `the drain should stop far below the batch cap, saw ${settledDrains}`);
 
+    const status = await request(bridge.status().socketPath, { action: "status" });
+    assert.equal(status.ownerPid, process.pid);
+    assert.equal(status.hostParentPid, process.ppid);
+    assert.equal(status.currentParentPid, process.ppid);
     assert.deepEqual(await request(bridge.status().socketPath, { action: "bind", sessionId: "command-code-session" }), { ok: true, bound: true });
     assert.deepEqual(await request(bridge.status().socketPath, { action: "bind", sessionId: "other-session" }), { ok: false, bound: true });
     const leased = await request(bridge.status().socketPath, { action: "take", sessionId: "command-code-session" });
@@ -169,6 +177,62 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     assert.equal(existsSync(bridge.status().socketPath), false);
   } finally {
     if (!stopped) await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("hook bridge binding recovers an unbound bridge but only SessionStart may replace a live binding", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-binding-"));
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd, process.execPath, cwd, process.ppid);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    assert.equal(bridge.bindHostSession("uncorrelated-metadata"), false, "in-band metadata cannot preempt Claude process correlation");
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-1" }), { ok: true, bound: true });
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "pending", content: "pending" } });
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2" }), { ok: false, bound: true });
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true }), { ok: true, bound: true });
+    assert.equal(bridge.status().pending, 1, "SessionStart replacement preserves pending delivery");
+    const leased = await request(path, { action: "take", sessionId: "host-2" });
+    assert.equal(leased.messages.length, 1);
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-3", allowReplace: true }), { ok: false, bound: true });
+    assert.equal(bridge.status().pending, 1, "an active lease blocks replacement without discarding work");
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("hook bridge rejects invalid or changed direct-parent correlation", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-parent-"));
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+  assert.throws(() => new HookDeliveryBridge(fakeClient, cwd, process.execPath, cwd, 1), /greater than 1/);
+  let currentParentPid = process.ppid;
+  const bridge = new HookDeliveryBridge(fakeClient, cwd, process.execPath, cwd, process.ppid, () => currentParentPid);
+  try {
+    await bridge.start();
+    currentParentPid = 1;
+    const status = await request(bridge.status().socketPath, { action: "status" });
+    assert.equal(status.hostParentPid, process.ppid);
+    assert.equal(status.currentParentPid, 1);
+    const binding = await request(bridge.status().socketPath, { action: "bind", sessionId: "host-1" });
+    assert.equal(binding.ok, false);
+    assert.match(binding.error, /correlation is no longer valid/);
+  } finally {
+    await bridge.stop();
     rmSync(cwd, { recursive: true, force: true });
   }
 });

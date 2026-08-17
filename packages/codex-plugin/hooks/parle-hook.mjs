@@ -13,10 +13,12 @@ const SOCKET_TIMEOUT_MS = 1000;
 
 function parseArgs(argv) {
   let bind = false;
+  let directParent = false;
   let knownAddressContext = false;
   let scope;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--bind") bind = true;
+    else if (argv[index] === "--direct-parent") directParent = true;
     else if (argv[index] === "--known-address-context") knownAddressContext = true;
     else if (argv[index] === "--scope") {
       scope = argv[++index];
@@ -24,7 +26,7 @@ function parseArgs(argv) {
     }
     else throw new Error(`Unknown Parle hook argument: ${argv[index]}`);
   }
-  return { bind, knownAddressContext, scope };
+  return { bind, directParent, knownAddressContext, scope };
 }
 
 function renderKnownAddressContext(cwd) {
@@ -46,7 +48,7 @@ function stateDir(scope) {
   return join(homedir(), ".local", "state", "parle", "hook-bridge", key);
 }
 
-function socketPaths(scope) {
+function legacySocketPaths(scope) {
   const dir = stateDir(scope);
   try {
     return readdirSync(dir)
@@ -56,6 +58,23 @@ function socketPaths(scope) {
       .map((entry) => entry.path);
   } catch {
     return [];
+  }
+}
+
+function hostDir(scope, hostParentPid = process.ppid) {
+  if (!Number.isSafeInteger(hostParentPid) || hostParentPid <= 1) throw new Error("Parle hook host parent pid must be greater than 1");
+  return join(stateDir(scope), String(hostParentPid));
+}
+
+function socketEntries(scope, hostParentPid) {
+  const dir = hostDir(scope, hostParentPid);
+  try {
+    return readdirSync(dir)
+      .filter((name) => /^\d+\.sock$/.test(name))
+      .map((name) => ({ ownerPid: Number(name.slice(0, -5)), path: join(dir, name) }));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
   }
 }
 
@@ -85,8 +104,48 @@ function request(path, payload) {
   });
 }
 
-async function take(scope, sessionId, allowBind) {
-  for (const path of socketPaths(scope)) {
+function isNonResponding(error) {
+  return ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "EACCES", "EPERM"].includes(error?.code)
+    || error?.message === "timeout"
+    || error?.message === "bridge closed without a response";
+}
+
+async function selectBridge(scope) {
+  const hostParentPid = process.ppid;
+  const matches = [];
+  for (const entry of socketEntries(scope, hostParentPid)) {
+    let status;
+    try {
+      status = await request(entry.path, { action: "status" });
+    } catch (error) {
+      if (isNonResponding(error)) continue;
+      throw error;
+    }
+    if (!status?.ok
+      || status.running !== true
+      || status.ownerPid !== entry.ownerPid
+      || status.hostParentPid !== hostParentPid
+      || status.currentParentPid !== hostParentPid) {
+      throw new Error("Parle hook bridge process correlation mismatch");
+    }
+    matches.push(entry.path);
+  }
+  if (matches.length !== 1) throw new Error(`Parle hook bridge correlation found ${matches.length} matching endpoints`);
+  return matches[0];
+}
+
+async function take(scope, sessionId, allowBind, event, directParent) {
+  if (directParent) {
+    const path = await selectBridge(scope);
+    if (allowBind) {
+      const binding = await request(path, { action: "bind", sessionId, allowReplace: event === "SessionStart" });
+      if (!binding?.ok) throw new Error("Parle hook bridge rejected host session binding");
+    }
+    const result = await request(path, { action: "take", sessionId });
+    if (!result?.ok) throw new Error(result?.error || "Parle hook bridge take failed");
+    return Array.isArray(result.messages) && result.messages.length > 0 ? { path, ...result } : undefined;
+  }
+  for (const path of legacySocketPaths(scope)) {
     try {
       if (allowBind) {
         const binding = await request(path, { action: "bind", sessionId });
@@ -95,7 +154,7 @@ async function take(scope, sessionId, allowBind) {
       const result = await request(path, { action: "take", sessionId });
       if (result?.ok && Array.isArray(result.messages) && result.messages.length > 0) return { path, ...result };
     } catch {
-      // Stale or differently bound sockets are harmless.
+      // Legacy non-Claude hosts retain their existing fail-open discovery.
     }
   }
   return undefined;
@@ -159,12 +218,15 @@ async function main() {
   try {
     const args = parseArgs(process.argv.slice(2));
     const payload = await readStdin();
+    if (args.directParent && Object.prototype.hasOwnProperty.call(payload, "agent_id")) {
+      await writeOutput({});
+      outputWritten = true;
+      return;
+    }
     const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
     const scope = args.scope || cwd;
-    const sessionId = typeof payload.session_id === "string" && payload.session_id
-      ? payload.session_id
-      : process.env.COMMANDCODE_SESSION_ID;
-    const delivery = sessionId ? await take(scope, sessionId, args.bind) : undefined;
+    const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : undefined;
+    const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent) : undefined;
     const registryBlock = args.knownAddressContext && payload.hook_event_name === "SessionStart"
       ? renderKnownAddressContext(cwd)
       : "";

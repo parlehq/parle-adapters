@@ -18,6 +18,7 @@ test("Claude plugin metadata and MCP config point at bundled server", () => {
   assert.deepEqual(mcp.mcpServers.parle.args, ["${CLAUDE_PLUGIN_ROOT}/dist/parle-mcp.js"]);
   assert.deepEqual(mcp.mcpServers.parle.env, {
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
+    PARLE_HOOK_BRIDGE_HOST_PROCESS: "direct-parent",
     PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
     PARLE_INTEGRATION_VERSION: plugin.version,
   });
@@ -30,7 +31,7 @@ test("Claude plugin metadata and MCP config point at bundled server", () => {
 test("Claude hooks bind the host session and cover every delivery boundary", () => {
   const root2 = root;
   const hooks = JSON.parse(readFileSync(resolve(root2, "hooks/hooks.json"), "utf8"));
-  const bind = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind";
+  const bind = "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind --direct-parent";
 
   // SessionStart binds AND restores known-address context: an unbound bridge
   // cannot be leased from before MCP tool metadata binds it.

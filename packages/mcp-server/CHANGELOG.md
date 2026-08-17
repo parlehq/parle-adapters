@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.38 (2026-08-16)
+
+- Add opt-in direct-parent hook-bridge correlation for Claude, descriptor challenges, safe rebinding, and per-bridge endpoints while preserving legacy Codex discovery (#118).
+
 ## 0.7.37 (2026-08-15)
 
 - Preserve redacted typed API error details in MCP tool results and bundle truthful bootstrap-error status projection (#126, #127).

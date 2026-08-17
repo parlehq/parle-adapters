@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.42 (2026-08-16)
+
+- Isolate responsive delivery by top-level Claude process, suppress subagent delivery IPC, recover an unbound bridge after MCP restart, and correct the documented ownership guarantee (#118).
+
 ## 0.9.41 (2026-08-15)
 
 - Preserve redacted API error details and stop presenting bootstrap history twice as current runtime health (#126, #127).

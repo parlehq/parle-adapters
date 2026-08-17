@@ -12,7 +12,7 @@ import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, 
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.37";
+export const MCP_CLIENT_VERSION = "0.7.38";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -60,6 +60,10 @@ export async function runStdio() {
     throw new Error(`Unsupported PARLE_RESPONSIVE_DELIVERY mode: ${responsiveDelivery}`);
   }
   const hookBridgeEnabled = responsiveDelivery === "hook-bridge";
+  const hostProcessMode = process.env.PARLE_HOOK_BRIDGE_HOST_PROCESS;
+  if (hostProcessMode && hostProcessMode !== "direct-parent") {
+    throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
+  }
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
     const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
@@ -69,7 +73,13 @@ export async function runStdio() {
       };
     }
     const deliveryBridge = hookBridgeEnabled
-      ? new HookDeliveryBridge(client, process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd())
+      ? new HookDeliveryBridge(
+        client,
+        process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd(),
+        process.execPath,
+        process.cwd(),
+        hostProcessMode === "direct-parent" ? process.ppid : undefined,
+      )
       : undefined;
     if (deliveryBridge) {
       const baseStatus = client.status.bind(client);
@@ -220,10 +230,13 @@ export function parseWatcherArgs(args: string[]): string {
   return args[0];
 }
 
-function hookBridgeRequest(path: string, payload: unknown): Promise<any> {
+const HOOK_BRIDGE_REQUEST_TIMEOUT_MS = 1000;
+
+function hookBridgeRequest(path: string, payload: unknown, timeoutMs = 0): Promise<any> {
   return new Promise((resolve, reject) => {
     const socket = connect(path);
     socket.setEncoding("utf8");
+    if (timeoutMs > 0) socket.setTimeout(timeoutMs, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
     let response = "";
     socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
     socket.on("data", (chunk) => {
@@ -257,19 +270,32 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
     || (state.mode & 0o077) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
-  const paths = readdirSync(stateDir)
-    .filter((name) => /^\d+\.sock$/.test(name))
-    .map((name) => join(stateDir, name));
+  const entries = readdirSync(stateDir, { withFileTypes: true });
+  const paths = [
+    ...entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).map((entry) => join(stateDir, entry.name)),
+    ...entries
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .flatMap((entry) => {
+        const parentDir = join(stateDir, entry.name);
+        const parentState = lstatSync(parentDir);
+        if (parentState.isSymbolicLink()
+          || (typeof process.getuid === "function" && parentState.uid !== process.getuid())
+          || (parentState.mode & 0o077) !== 0) return [];
+        return readdirSync(parentDir)
+          .filter((name) => /^\d+\.sock$/.test(name))
+          .map((name) => join(parentDir, name));
+      }),
+  ];
   for (const path of paths) {
     try {
-      const status = await hookBridgeRequest(path, { action: "status" });
+      const status = await hookBridgeRequest(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
       if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
       const result = await hookBridgeRequest(path, { action: "wait", agentSessionId });
       if (!result?.ok || !result.ready) throw new Error(result?.error || "Parle hook bridge wait failed");
       console.log("parle-watch: responsive delivery queued");
       return 0;
     } catch (error: any) {
-      if (["ENOENT", "ECONNREFUSED", "ECONNRESET"].includes(error?.code)) continue;
+      if (["ENOENT", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(error?.code)) continue;
       throw error;
     }
   }
