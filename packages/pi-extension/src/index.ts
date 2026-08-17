@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.42";
+const PI_EXTENSION_VERSION = "0.7.43";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2161,7 +2161,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_login",
     label: "Parle Login",
-    description: "First-class Parle email login and local credential bootstrap. Complete persists either the human session or an opaque pending-login cookie beside the resolved profile catalog. For a hardened account, complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it mints one room-bound agent token and atomically writes a named 0600 profile (~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate). A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Cookies, proofs, and tokens are never returned in tool output.",
+    description: "First-class returning-account Parle email login and local credential bootstrap for an exact linked email. An accepted start does not confirm that an account exists or that a code was sent; first-time onboarding uses the separate onboarding flow. Complete persists either the human session or an opaque pending-login cookie beside the resolved profile catalog. For a hardened account, complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it mints one room-bound agent token and atomically writes a named 0600 profile (~/.parle/profiles by default, PARLE_PROFILES_PATH to relocate). A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason. The profile defaults to default. Existing profiles require force=true and replacements return the prior agent_token_id when available. Cookies, proofs, and tokens are never returned in tool output.",
     parameters: Type.Object({
       action: Type.Optional(Type.Unsafe({ type: "string", enum: ["start", "complete", "complete-factor", "mint-from-session"] })),
       email: Type.Optional(Type.String()),

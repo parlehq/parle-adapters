@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.43 (2026-08-17)
+
+- Refresh the bundled account client with honest conditional email login start guidance.
+
 ## 0.9.42 (2026-08-16)
 
 - Isolate responsive delivery by top-level Claude process, suppress subagent delivery IPC, recover an unbound bridge after MCP restart, and correct the documented ownership guarantee (#118).

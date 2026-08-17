@@ -824,11 +824,13 @@ export class ParleAccountClient {
 
     if (action === "start") {
       if (!params.email) throw new Error("parle_login start requires email.");
-      await this.emailRequest(config, "/v/auth/email/start", { email: params.email }, signal);
+      const started = await this.emailRequest(config, "/v/auth/email/start", { email: params.email }, signal);
+      const serverStatus = typeof started.json?.status === "string" && started.json.status.trim() ? started.json.status : undefined;
       return {
-        status: "code_requested",
+        status: "start_accepted",
+        ...(serverStatus ? { serverStatus } : {}),
         email: params.email,
-        next: "Call parle_login again with the same email and the code. Unhardened accounts save the human session immediately; hardened accounts continue with TOTP without requesting another email code.",
+        next: "An accepted request does not confirm that an account exists or that a code was sent. If a code arrives at this exact email, call parle_login again with the same email and code. Otherwise, do not retry automatically: parle_login is only for a returning account's linked email; first-time onboarding uses the separate onboarding flow.",
       };
     }
 

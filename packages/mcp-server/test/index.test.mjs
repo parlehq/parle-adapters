@@ -389,7 +389,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
   };
   const fakeAccount = {
     listRooms: async (active) => { calls.push(["rooms", active]); return { active, configured: { state: "complete", rows: [] }, account: { state: "complete", rows: [] }, rooms: [], compactText: "Account rooms" }; },
-    login: async (params) => { calls.push(["login", params]); return { status: "code_requested" }; },
+    login: async (params) => { calls.push(["login", params]); return { status: "start_accepted", serverStatus: "if_account_exists_code_sent" }; },
     createRoom: async (params) => { calls.push(["create-room", params]); return { room_id: "room-1" }; },
     createOwnAgent: async (params) => { calls.push(["create-own-agent", params]); return { agent_id: "agent-1", agent_handle: params.agentHandle, display_name: params.displayName || params.agentHandle }; },
     deleteOwnAgent: async (params) => { calls.push(["delete-own-agent", params]); return { agent_id: params.agentId, http_status: 204 }; },
@@ -451,7 +451,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const aliased = await client.callTool({ name: "parle_session_alias", arguments: { alias: "galexc-guru" } });
     assert.equal(aliased.structuredContent.sessionAddress, "@p.a.galexc-guru");
     const login = await client.callTool({ name: "parle_login", arguments: { action: "start", email: "user@example.test" } });
-    assert.equal(login.structuredContent.status, "code_requested");
+    assert.equal(login.structuredContent.status, "start_accepted");
+    assert.equal(login.structuredContent.serverStatus, "if_account_exists_code_sent");
     const room = await client.callTool({ name: "parle_create_room", arguments: { kind: "shared", confirmMutation: true, reason: "create" } });
     assert.equal(room.structuredContent.room_id, "room-1");
     const createdAgent = await client.callTool({ name: "parle_create_own_agent", arguments: { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" } });

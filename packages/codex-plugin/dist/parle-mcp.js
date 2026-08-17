@@ -34128,11 +34128,13 @@ var ParleAccountClient = class {
     if (action === "start") {
       if (!params.email)
         throw new Error("parle_login start requires email.");
-      await this.emailRequest(config2, "/v/auth/email/start", { email: params.email }, signal);
+      const started = await this.emailRequest(config2, "/v/auth/email/start", { email: params.email }, signal);
+      const serverStatus = typeof started.json?.status === "string" && started.json.status.trim() ? started.json.status : void 0;
       return {
-        status: "code_requested",
+        status: "start_accepted",
+        ...serverStatus ? { serverStatus } : {},
         email: params.email,
-        next: "Call parle_login again with the same email and the code. Unhardened accounts save the human session immediately; hardened accounts continue with TOTP without requesting another email code."
+        next: "An accepted request does not confirm that an account exists or that a code was sent. If a code arrives at this exact email, call parle_login again with the same email and code. Otherwise, do not retry automatically: parle_login is only for a returning account's linked email; first-time onboarding uses the separate onboarding flow."
       };
     }
     if (!writeCredentials) {
@@ -38868,7 +38870,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }));
   registerTool("parle_login", {
     title: "Parle Login",
-    description: "Request or complete an email-code login, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it performs the non-idempotent token mint and profile publication. A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
+    description: "Request or complete returning-account email-code login for an exact linked email, continue a hardened login with TOTP when required, then separately mint a room-bound agent profile from the saved human session. An accepted start does not confirm that an account exists or that a code was sent; first-time onboarding uses the separate onboarding flow. Complete persists either the human session or an opaque pending-login cookie; complete-factor spends TOTP and promotes pending state to the human session. mint-from-session requires the selected exact agent to have an active seat in the selected room before it performs the non-idempotent token mint and profile publication. A missing seat returns seat_required and directs the operator to the separately confirmed parle_add_own_agent_seat mutation. Credential-consuming actions require confirmMutation=true plus a reason, always persist recoverable state, and never return a cookie, proof, or token.",
     inputSchema: {
       action: external_exports.enum(["start", "complete", "complete-factor", "mint-from-session"]).optional(),
       email: external_exports.string().optional(),
@@ -39146,7 +39148,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.38";
+var MCP_CLIENT_VERSION = "0.7.39";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

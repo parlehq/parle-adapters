@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.39 (2026-08-17)
+
+- Expose honest conditional returning-account login start results and stop presenting accepted requests as proof that a code was sent.
+
 ## 0.7.38 (2026-08-16)
 
 - Add opt-in direct-parent hook-bridge correlation for Claude, descriptor challenges, safe rebinding, and per-bridge endpoints while preserving legacy Codex discovery (#118).

@@ -80,6 +80,35 @@ function roomDetails(agentIds = [AGENT_ID]) {
   };
 }
 
+test("login start preserves conditional server status without claiming email delivery", async () => {
+  const f = loginFixture();
+  try {
+    const next = "An accepted request does not confirm that an account exists or that a code was sent. If a code arrives at this exact email, call parle_login again with the same email and code. Otherwise, do not retry automatically: parle_login is only for a returning account's linked email; first-time onboarding uses the separate onboarding flow.";
+    const accepted = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => response({ status: "if_account_exists_code_sent" }, 202),
+    });
+    assert.deepEqual(await accepted.login({ email: "user@example.test" }), {
+      status: "start_accepted",
+      serverStatus: "if_account_exists_code_sent",
+      email: "user@example.test",
+      next,
+    });
+
+    const unknown = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async () => new Response("not-json", { status: 202 }),
+    });
+    assert.deepEqual(await unknown.login({ action: "start", email: "user@example.test" }), {
+      status: "start_accepted",
+      email: "user@example.test",
+      next,
+    });
+  } finally { f.cleanup(); }
+});
+
 test("login complete persists only the shared session without returning secrets or minting", async () => {
   const f = loginFixture();
   const calls = [];

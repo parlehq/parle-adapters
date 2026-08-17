@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.36 (2026-08-17)
+
+- Return privacy-flat email login starts as `start_accepted`, preserve optional `serverStatus`, and give conditional returning-account guidance without claiming a code was sent.
+
 ## 0.8.35 (2026-08-15)
 
 - Preserve redacted Parle API error details across send and reply failures, and omit generic runtime errors that only duplicate bootstrap history (#126, #127).

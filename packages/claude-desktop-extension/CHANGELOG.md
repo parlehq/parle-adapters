@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.39 (2026-08-17)
+
+- Refresh the bundled account client with honest conditional email login start guidance.
+
 ## 0.8.38 (2026-08-16)
 
 - Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).

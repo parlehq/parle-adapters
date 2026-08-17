@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.39 (2026-08-17)
+
+- Refresh the bundled account client with honest conditional email login start guidance.
+
 ## 0.6.38 (2026-08-16)
 
 - Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation while preserving Codex runtime-handle and socket discovery (#118).

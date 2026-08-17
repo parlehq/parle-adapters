@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.43 (2026-08-17)
+
+- Present email login starts as privacy-flat accepted requests, preserve the server status as data, and distinguish returning login from first-time onboarding.
+
 ## 0.7.42 (2026-08-16)
 
 - Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).

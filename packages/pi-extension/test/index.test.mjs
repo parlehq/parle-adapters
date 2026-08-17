@@ -925,7 +925,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.42" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.43" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1611,7 +1611,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.42");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.43");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1873,8 +1873,10 @@ test("parle_login starts email login without requiring raw request plumbing", as
   const result = await harness.call("parle_login", { email: "user@example.test" });
 
   assert.deepEqual(startBody, { email: "user@example.test" });
-  assert.equal(result.details.status, "code_requested");
-  assert.match(result.details.next, /code/);
+  assert.equal(result.details.status, "start_accepted");
+  assert.equal(result.details.serverStatus, "if_account_exists_code_sent");
+  assert.match(result.details.next, /does not confirm/);
+  assert.match(result.details.next, /first-time onboarding/);
 });
 
 test("parle_login mint-from-session returns seat_required without minting or publishing a profile", async () => {
