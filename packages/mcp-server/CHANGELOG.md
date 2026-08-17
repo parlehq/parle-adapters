@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.40 (2026-08-17)
+
+- Keep repeated hook-bridge startup from replacing healthy persisted `watching` evidence with `starting`, restoring truthful plain `parle_status` results (#120).
+
 ## 0.7.39 (2026-08-17)
 
 - Expose honest conditional returning-account login start results and stop presenting accepted requests as proof that a code was sent.

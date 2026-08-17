@@ -38264,6 +38264,7 @@ var HookDeliveryBridge = class {
     this.removeOwnRuntimeArtifacts();
   }
   async startBridge() {
+    if (this.server?.listening && this.controller.status().running) return;
     this.lastError = void 0;
     this.publishEvidence("starting", { expectedProgressMs: 12e4 });
     if (!this.unsubscribeCommitGuard) {
@@ -39148,7 +39149,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.39";
+var MCP_CLIENT_VERSION = "0.7.40";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

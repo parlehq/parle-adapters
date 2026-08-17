@@ -582,6 +582,10 @@ test("hook delivery bridge renews lifecycle evidence on observed progress and to
     await eventually(() => existsSync(evidencePath));
     const opened = JSON.parse(readFileSync(evidencePath, "utf8"));
     assert.equal(opened.state, "watching");
+    void bridge.start();
+    const afterStatus = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(afterStatus.state, "watching", "plain status startup must not clobber healthy evidence");
+    assert.equal(afterStatus.updatedAt, opened.updatedAt, "plain status startup must not replace healthy evidence");
     const firstUpdatedAt = opened.updatedAt;
     await settle(5);
     wakeSink.push({ room_id: ROOM });
