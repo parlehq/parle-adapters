@@ -37,6 +37,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -53,6 +55,9 @@ jobs:
 
       - name: Check manifest versions
         run: pnpm check:manifests
+
+      - name: Check native adapter release claims
+        run: pnpm check:release-claims -- HEAD^
 
       - name: Check clean MCP artifact reproducibility
         run: pnpm check:mcp-artifacts

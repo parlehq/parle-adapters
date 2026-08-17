@@ -2,7 +2,7 @@
 
 ## 0.7.19 (2026-08-17)
 
-- Refresh the bundled MCP runtime so plain status preserves healthy responsive-delivery evidence (#120).
+- Release alignment for #120; no Command Code runtime behavior changed because its native delivery path does not use Claude's hook bridge.
 
 ## 0.7.18 (2026-08-17)
 
@@ -10,7 +10,7 @@
 
 ## 0.7.17 (2026-08-16)
 
-- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).
+- Release alignment for #118; no Command Code runtime behavior changed because its native delivery path does not use Claude's hook bridge.
 
 ## 0.7.16 (2026-08-15)
 
