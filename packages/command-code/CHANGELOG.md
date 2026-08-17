@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.17 (2026-08-16)
+
+- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).
+
 ## 0.7.16 (2026-08-15)
 
 - Refresh the native runtime with redacted API error details and deduplicated bootstrap-error status reporting (#126, #127).

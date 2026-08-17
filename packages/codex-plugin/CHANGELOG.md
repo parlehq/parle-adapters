@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.38 (2026-08-16)
+
+- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation while preserving Codex runtime-handle and socket discovery (#118).
+
 ## 0.6.37 (2026-08-15)
 
 - Preserve redacted API error details and stop presenting bootstrap history twice as current runtime health (#126, #127).

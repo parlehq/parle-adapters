@@ -12,7 +12,7 @@ import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, 
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.37";
+export const MCP_CLIENT_VERSION = "0.7.38";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -60,6 +60,10 @@ export async function runStdio() {
     throw new Error(`Unsupported PARLE_RESPONSIVE_DELIVERY mode: ${responsiveDelivery}`);
   }
   const hookBridgeEnabled = responsiveDelivery === "hook-bridge";
+  const hostProcessMode = process.env.PARLE_HOOK_BRIDGE_HOST_PROCESS;
+  if (hostProcessMode && hostProcessMode !== "direct-parent") {
+    throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
+  }
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
     const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
@@ -69,7 +73,13 @@ export async function runStdio() {
       };
     }
     const deliveryBridge = hookBridgeEnabled
-      ? new HookDeliveryBridge(client, process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd())
+      ? new HookDeliveryBridge(
+        client,
+        process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd(),
+        process.execPath,
+        process.cwd(),
+        hostProcessMode === "direct-parent" ? process.ppid : undefined,
+      )
       : undefined;
     if (deliveryBridge) {
       const baseStatus = client.status.bind(client);
@@ -257,9 +267,22 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
     || (state.mode & 0o077) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
-  const paths = readdirSync(stateDir)
-    .filter((name) => /^\d+\.sock$/.test(name))
-    .map((name) => join(stateDir, name));
+  const entries = readdirSync(stateDir, { withFileTypes: true });
+  const paths = [
+    ...entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).map((entry) => join(stateDir, entry.name)),
+    ...entries
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .flatMap((entry) => {
+        const parentDir = join(stateDir, entry.name);
+        const parentState = lstatSync(parentDir);
+        if (parentState.isSymbolicLink()
+          || (typeof process.getuid === "function" && parentState.uid !== process.getuid())
+          || (parentState.mode & 0o077) !== 0) return [];
+        return readdirSync(parentDir)
+          .filter((name) => /^\d+\.sock$/.test(name))
+          .map((name) => join(parentDir, name));
+      }),
+  ];
   for (const path of paths) {
     try {
       const status = await hookBridgeRequest(path, { action: "status" });

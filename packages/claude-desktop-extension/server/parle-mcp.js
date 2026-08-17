@@ -38149,11 +38149,15 @@ function hookBridgeStateDir(scope) {
   const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
   return join10(homedir2(), ".local", "state", "parle", "hook-bridge", key);
 }
-function hookBridgeSocketPath(scope, pid = process.pid) {
-  return join10(hookBridgeStateDir(scope), `${pid}.sock`);
+function hookBridgeHostDir(scope, hostParentPid = process.ppid) {
+  if (!Number.isSafeInteger(hostParentPid) || hostParentPid <= 1) throw new Error("Parle hook bridge host parent pid must be greater than 1");
+  return join10(hookBridgeStateDir(scope), String(hostParentPid));
 }
-function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid) {
-  return join10(hookBridgeStateDir(scope), `${pid}.runtime.json`);
+function hookBridgeSocketPath(scope, pid = process.pid, hostParentPid) {
+  return join10(hostParentPid === void 0 ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.sock`);
+}
+function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid, hostParentPid) {
+  return join10(hostParentPid === void 0 ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.runtime.json`);
 }
 function hookBridgeRuntimeHandlePath(scope, pid = process.pid) {
   return join10(hookBridgeStateDir(scope), `${pid}.node`);
@@ -38168,11 +38172,16 @@ function processIsAlive(pid) {
   }
 }
 var HookDeliveryBridge = class {
-  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd()) {
+  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd(), hostParentPid, readParentPid = () => process.ppid) {
     this.client = client;
     this.scope = scope;
     this.runtimeExecPath = runtimeExecPath;
     this.evidenceCwd = evidenceCwd;
+    this.hostParentPid = hostParentPid;
+    this.readParentPid = readParentPid;
+    if (this.hostParentPid !== void 0 && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
+      throw new Error("Parle hook bridge host parent pid must be greater than 1");
+    }
     this.controller = new ResponsiveDeliveryController(client, {
       handler: (input) => this.handleDelivery(input),
       maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
@@ -38189,6 +38198,8 @@ var HookDeliveryBridge = class {
   scope;
   runtimeExecPath;
   evidenceCwd;
+  hostParentPid;
+  readParentPid;
   controller;
   pending = [];
   queuedKeys = /* @__PURE__ */ new Set();
@@ -38212,16 +38223,20 @@ var HookDeliveryBridge = class {
       running: Boolean(this.server?.listening) && !this.stopped,
       pending: this.pending.length,
       baselineSkipped: this.baselineSkipped,
-      socketPath: hookBridgeSocketPath(this.scope),
+      socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
+      ownerPid: process.pid,
+      ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() },
       ...this.client.runtime?.agentSessionId ? { agentSessionId: String(this.client.runtime.agentSessionId) } : {},
       ...controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {},
       ...lastError ? { lastError } : {}
     };
   }
-  bindHostSession(sessionId) {
+  bindHostSession(sessionId, allowReplace = false) {
+    this.assertCurrentHostParent();
     if (!sessionId) return false;
-    if (this.hostSessionId && this.hostSessionId !== sessionId) return false;
+    if (this.hostSessionId === sessionId) return true;
+    if (this.liveLease() || this.hostSessionId && !allowReplace) return false;
     this.hostSessionId = sessionId;
     return true;
   }
@@ -38329,17 +38344,21 @@ var HookDeliveryBridge = class {
     this.finishWaiter({ ok: true, ready: true });
   }
   async listen() {
-    const path = hookBridgeSocketPath(this.scope);
+    this.assertCurrentHostParent();
+    const path = hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid);
+    const stateDir = hookBridgeStateDir(this.scope);
     const dir = dirname7(path);
-    mkdirSync5(dir, { recursive: true, mode: 448 });
-    const before = lstatSync7(dir);
-    if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
-      throw new Error(`Unsafe Parle hook bridge directory: ${dir}`);
+    for (const candidate of [stateDir, dir]) {
+      mkdirSync5(candidate, { recursive: true, mode: 448 });
+      const before = lstatSync7(candidate);
+      if (!before.isDirectory() || before.isSymbolicLink() || typeof process.getuid === "function" && before.uid !== process.getuid()) {
+        throw new Error(`Unsafe Parle hook bridge directory: ${candidate}`);
+      }
+      chmodSync4(candidate, 448);
+      const after = lstatSync7(candidate);
+      if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${candidate}`);
     }
-    chmodSync4(dir, 448);
-    const after = lstatSync7(dir);
-    if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${dir}`);
-    this.removeDeadRuntimeArtifacts(dir);
+    if (this.hostParentPid === void 0) this.removeDeadRuntimeArtifacts(stateDir);
     this.removeOwnRuntimeArtifacts();
     this.publishRuntimeArtifacts();
     try {
@@ -38363,14 +38382,15 @@ var HookDeliveryBridge = class {
     if (!isAbsolute3(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
     accessSync(execPath, constants3.X_OK);
     if (!statSync3(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
-    const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope);
+    const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
     const handleTemporary = `${handlePath}.tmp-${randomUUID5()}`;
     try {
       atomicReplaceOwnerOnlyFile(descriptorPath, `${JSON.stringify({
         execPath,
         pid: process.pid,
-        startedAt: (/* @__PURE__ */ new Date()).toISOString()
+        ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid },
+        startedAt: this.hostParentPid === void 0 ? (/* @__PURE__ */ new Date()).toISOString() : processStartedAtIso()
       })}
 `, { label: "Parle hook bridge runtime descriptor", maxBytes: 16 * 1024, durability: "none" });
       symlinkSync(execPath, handleTemporary, "file");
@@ -38384,10 +38404,10 @@ var HookDeliveryBridge = class {
   }
   removeOwnRuntimeArtifacts() {
     for (const path of [
-      hookBridgeSocketPath(this.scope),
-      hookBridgeRuntimeDescriptorPath(this.scope),
+      hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
+      hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid),
       hookBridgeRuntimeHandlePath(this.scope),
-      `${hookBridgeRuntimeDescriptorPath(this.scope)}.tmp`,
+      `${hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid)}.tmp`,
       `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`
     ]) rmSync3(path, { force: true });
   }
@@ -38397,6 +38417,11 @@ var HookDeliveryBridge = class {
       const match = name.match(stalePattern);
       if (!match || processIsAlive(Number(match[1]))) continue;
       rmSync3(join10(dir, name), { force: true });
+    }
+  }
+  assertCurrentHostParent() {
+    if (this.hostParentPid !== void 0 && this.readParentPid() !== this.hostParentPid) {
+      throw new Error("Parle hook bridge host process correlation is no longer valid");
     }
   }
   handleSocket(socket) {
@@ -38431,10 +38456,11 @@ var HookDeliveryBridge = class {
   }
   async handleCommand(command) {
     if (command?.action === "status") return { ok: true, ...this.status() };
+    this.assertCurrentHostParent();
     const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
-      const bound = this.bindHostSession(sessionId);
+      const bound = this.bindHostSession(sessionId, command?.allowReplace === true);
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
@@ -39120,7 +39146,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.37";
+var MCP_CLIENT_VERSION = "0.7.38";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -39158,6 +39184,10 @@ async function runStdio() {
     throw new Error(`Unsupported PARLE_RESPONSIVE_DELIVERY mode: ${responsiveDelivery}`);
   }
   const hookBridgeEnabled = responsiveDelivery === "hook-bridge";
+  const hostProcessMode = process.env.PARLE_HOOK_BRIDGE_HOST_PROCESS;
+  if (hostProcessMode && hostProcessMode !== "direct-parent") {
+    throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
+  }
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
     const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
@@ -39166,7 +39196,13 @@ async function runStdio() {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
       };
     }
-    const deliveryBridge = hookBridgeEnabled ? new HookDeliveryBridge(client, process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd()) : void 0;
+    const deliveryBridge = hookBridgeEnabled ? new HookDeliveryBridge(
+      client,
+      process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd(),
+      process.execPath,
+      process.cwd(),
+      hostProcessMode === "direct-parent" ? process.ppid : void 0
+    ) : void 0;
     if (deliveryBridge) {
       const baseStatus = client.status.bind(client);
       client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
@@ -39325,7 +39361,16 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd()) {
   if (!state.isDirectory() || state.isSymbolicLink() || typeof process.getuid === "function" && state.uid !== process.getuid() || (state.mode & 63) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
-  const paths = readdirSync4(stateDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(stateDir, name));
+  const entries = readdirSync4(stateDir, { withFileTypes: true });
+  const paths = [
+    ...entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).map((entry) => join11(stateDir, entry.name)),
+    ...entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
+      const parentDir = join11(stateDir, entry.name);
+      const parentState = lstatSync8(parentDir);
+      if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
+      return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
+    })
+  ];
   for (const path of paths) {
     try {
       const status = await hookBridgeRequest(path, { action: "status" });

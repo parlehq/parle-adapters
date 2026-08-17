@@ -25,9 +25,11 @@ function bridgeStateDir(scope, home = homedir()) {
 
 async function startBridge(cwd, agentSessionId) {
   const stateDir = bridgeStateDir(cwd);
-  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const hostDir = join(stateDir, String(process.pid));
+  mkdirSync(hostDir, { recursive: true, mode: 0o700 });
   chmodSync(stateDir, 0o700);
-  const socketPath = join(stateDir, `${process.pid}.sock`);
+  chmodSync(hostDir, 0o700);
+  const socketPath = join(hostDir, `${process.pid}.sock`);
   const actions = [];
   let waiter;
   const server = createServer((socket) => {
