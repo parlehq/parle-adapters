@@ -39327,11 +39327,11 @@ function parseWatcherArgs(args) {
   return args[0];
 }
 var HOOK_BRIDGE_REQUEST_TIMEOUT_MS = 1e3;
-function hookBridgeRequest(path, payload) {
+function hookBridgeRequest(path, payload, timeoutMs = 0) {
   return new Promise((resolve2, reject) => {
     const socket = connect(path);
     socket.setEncoding("utf8");
-    socket.setTimeout(HOOK_BRIDGE_REQUEST_TIMEOUT_MS, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
+    if (timeoutMs > 0) socket.setTimeout(timeoutMs, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
     let response = "";
     socket.once("connect", () => socket.write(`${JSON.stringify(payload)}
 `));
@@ -39375,7 +39375,7 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd()) {
   ];
   for (const path of paths) {
     try {
-      const status = await hookBridgeRequest(path, { action: "status" });
+      const status = await hookBridgeRequest(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
       if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
       const result2 = await hookBridgeRequest(path, { action: "wait", agentSessionId });
       if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");

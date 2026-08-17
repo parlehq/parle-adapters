@@ -96,6 +96,8 @@ test("watch waits on the matching local hook bridge and opens no network watcher
     await waitFor(() => bridge.actions.some((action) => action.action === "wait"), "watch did not register its local wait");
     assert.equal(watch.child.exitCode, null);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "wait"]);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 1100));
+    assert.equal(watch.child.exitCode, null, "the delivery wait itself must remain open beyond the stale-status timeout");
     bridge.ready();
     assert.equal(await watch.exited, 0, watch.err());
     assert.match(watch.out(), /responsive delivery queued/);
