@@ -6,14 +6,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const HOOK = resolve(root, "hooks/parle-hook.mjs");
+const MCP_BRIDGE_MODULE = pathToFileURL(resolve(root, "../mcp-server/dist/hook-delivery-bridge.js")).href;
 const CLAUDE_ARGS = ["--bind", "--direct-parent"];
 const ROUTE_ID = "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61";
 
@@ -76,17 +77,26 @@ function runHook(args, payload, env = {}) {
   });
 }
 
-function prepareHookHost(args = CLAUDE_ARGS) {
+function prepareHookHost(scope, args = CLAUDE_ARGS) {
   const wrapper = `
     const { spawn } = require("node:child_process");
-    const child = spawn(process.execPath, [process.env.PARLE_TEST_HOOK, ...JSON.parse(process.env.PARLE_TEST_HOOK_ARGS)], { env: process.env });
-    process.stdin.pipe(child.stdin);
-    child.stdout.pipe(process.stdout);
-    child.stderr.pipe(process.stderr);
-    child.on("exit", (code) => { process.exitCode = code; });
+    const probe = spawn(process.execPath, ["--input-type=module", "-e", process.env.PARLE_TEST_MCP_PROBE], { env: process.env });
+    probe.stderr.pipe(process.stderr);
+    probe.on("exit", (probeCode) => {
+      if (probeCode !== 0) return void (process.exitCode = probeCode);
+      const child = spawn(process.execPath, [process.env.PARLE_TEST_HOOK, ...JSON.parse(process.env.PARLE_TEST_HOOK_ARGS)], { env: process.env });
+      process.stdin.pipe(child.stdin);
+      child.stdout.pipe(process.stdout);
+      child.stderr.pipe(process.stderr);
+      child.on("exit", (code) => { process.exitCode = code; });
+    });
+  `;
+  const probe = `
+    import { hookBridgeHostDir } from ${JSON.stringify(MCP_BRIDGE_MODULE)};
+    console.error("MCP_PROBE " + JSON.stringify({ ppid: process.ppid, dir: hookBridgeHostDir(${JSON.stringify(scope)}) }));
   `;
   const host = spawn(process.execPath, ["-e", wrapper], {
-    env: { ...process.env, PARLE_TEST_HOOK: HOOK, PARLE_TEST_HOOK_ARGS: JSON.stringify(args) },
+    env: { ...process.env, PARLE_TEST_HOOK: HOOK, PARLE_TEST_HOOK_ARGS: JSON.stringify(args), PARLE_TEST_MCP_PROBE: probe },
     stdio: ["pipe", "pipe", "pipe"],
   });
   return {
@@ -196,24 +206,30 @@ test("subagent hooks perform no bridge IPC while agent_type alone remains eligib
   });
 });
 
-test("two top-level Claude hosts in one cwd consume only their own bridge in either hook order", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-claude-two-hosts-"));
-  const hostA = prepareHookHost();
-  const hostB = prepareHookHost();
-  const bridgeA = await startBridge(cwd, { hostParentPid: hostA.pid, messages: [deliveredRow(21)] });
-  const bridgeB = await startBridge(cwd, { hostParentPid: hostB.pid, messages: [deliveredRow(22)] });
-  try {
-    const second = await hostB.run({ hook_event_name: "UserPromptSubmit", session_id: "session-b", cwd });
-    assert.match(JSON.parse(second.stdout).hookSpecificOutput.additionalContext, /seq=22/);
-    assert.deepEqual(bridgeA.actions, []);
-    assert.deepEqual(bridgeB.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
-
-    const first = await hostA.run({ hook_event_name: "UserPromptSubmit", session_id: "session-a", cwd });
-    assert.match(JSON.parse(first.stdout).hookSpecificOutput.additionalContext, /seq=21/);
-    assert.deepEqual(bridgeA.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
-  } finally {
-    await Promise.all([bridgeA.stop(), bridgeB.stop()]);
-    rmSync(cwd, { recursive: true, force: true });
+test("MCP and hook children derive the same parent and isolate two hosts in both hook orders", async () => {
+  for (const order of [["a", "b"], ["b", "a"]]) {
+    const cwd = mkdtempSync(join(tmpdir(), "parle-claude-two-hosts-"));
+    const hosts = { a: prepareHookHost(cwd), b: prepareHookHost(cwd) };
+    const bridges = {
+      a: await startBridge(cwd, { hostParentPid: hosts.a.pid, messages: [deliveredRow(21)] }),
+      b: await startBridge(cwd, { hostParentPid: hosts.b.pid, messages: [deliveredRow(22)] }),
+    };
+    try {
+      for (const label of order) {
+        const result = await hosts[label].run({ hook_event_name: "UserPromptSubmit", session_id: `session-${label}`, cwd });
+        const seq = label === "a" ? 21 : 22;
+        assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, new RegExp(`seq=${seq}`));
+        const probe = JSON.parse(result.stderr.match(/MCP_PROBE (\{.*\})/)[1]);
+        assert.equal(probe.ppid, hosts[label].pid);
+        assert.equal(probe.dir, join(stateDir(cwd), String(hosts[label].pid)));
+        assert.deepEqual(bridges[label].actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
+        const other = label === "a" ? "b" : "a";
+        if (!order.slice(0, order.indexOf(label)).includes(other)) assert.deepEqual(bridges[other].actions, []);
+      }
+    } finally {
+      await Promise.all([bridges.a.stop(), bridges.b.stop()]);
+      rmSync(cwd, { recursive: true, force: true });
+    }
   }
 });
 
@@ -225,6 +241,7 @@ test("a stale unresponsive sibling does not block replacement bridge recovery or
       staleServer.once("error", reject);
       staleServer.listen(stalePath, resolveListen);
     });
+    chmodSync(stalePath, 0o000);
     try {
       const { stdout } = await runHook(CLAUDE_ARGS, { hook_event_name: "PostToolUse", session_id: "claude-session", cwd });
       assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /seq=23/);

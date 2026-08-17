@@ -38232,9 +38232,9 @@ var HookDeliveryBridge = class {
       ...lastError ? { lastError } : {}
     };
   }
-  bindHostSession(sessionId, allowReplace = false) {
+  bindHostSession(sessionId, allowReplace = false, correlated = false) {
     this.assertCurrentHostParent();
-    if (!sessionId) return false;
+    if (!sessionId || this.hostParentPid !== void 0 && !correlated) return false;
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || this.hostSessionId && !allowReplace) return false;
     this.hostSessionId = sessionId;
@@ -38460,7 +38460,7 @@ var HookDeliveryBridge = class {
     const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
-      const bound = this.bindHostSession(sessionId, command?.allowReplace === true);
+      const bound = this.bindHostSession(sessionId, command?.allowReplace === true, true);
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
@@ -39326,10 +39326,12 @@ function parseWatcherArgs(args) {
   if (args.length !== 1 || !args[0] || args[0].startsWith("-")) throw new WatcherUsageError();
   return args[0];
 }
+var HOOK_BRIDGE_REQUEST_TIMEOUT_MS = 1e3;
 function hookBridgeRequest(path, payload) {
   return new Promise((resolve2, reject) => {
     const socket = connect(path);
     socket.setEncoding("utf8");
+    socket.setTimeout(HOOK_BRIDGE_REQUEST_TIMEOUT_MS, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
     let response = "";
     socket.once("connect", () => socket.write(`${JSON.stringify(payload)}
 `));
@@ -39380,7 +39382,7 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd()) {
       console.log("parle-watch: responsive delivery queued");
       return 0;
     } catch (error51) {
-      if (["ENOENT", "ECONNREFUSED", "ECONNRESET"].includes(error51?.code)) continue;
+      if (["ENOENT", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(error51?.code)) continue;
       throw error51;
     }
   }

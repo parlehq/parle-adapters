@@ -105,7 +105,7 @@ function request(path, payload) {
 }
 
 function isNonResponding(error) {
-  return ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE"].includes(error?.code)
+  return ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "EACCES", "EPERM"].includes(error?.code)
     || error?.message === "timeout"
     || error?.message === "bridge closed without a response";
 }

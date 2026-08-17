@@ -230,10 +230,13 @@ export function parseWatcherArgs(args: string[]): string {
   return args[0];
 }
 
+const HOOK_BRIDGE_REQUEST_TIMEOUT_MS = 1000;
+
 function hookBridgeRequest(path: string, payload: unknown): Promise<any> {
   return new Promise((resolve, reject) => {
     const socket = connect(path);
     socket.setEncoding("utf8");
+    socket.setTimeout(HOOK_BRIDGE_REQUEST_TIMEOUT_MS, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
     let response = "";
     socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
     socket.on("data", (chunk) => {
@@ -292,7 +295,7 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
       console.log("parle-watch: responsive delivery queued");
       return 0;
     } catch (error: any) {
-      if (["ENOENT", "ECONNREFUSED", "ECONNRESET"].includes(error?.code)) continue;
+      if (["ENOENT", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(error?.code)) continue;
       throw error;
     }
   }

@@ -80,7 +80,7 @@ function runWatch(cwd, args) {
 }
 
 async function waitFor(predicate, message) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 250; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
   }
@@ -100,6 +100,39 @@ test("watch waits on the matching local hook bridge and opens no network watcher
     assert.equal(await watch.exited, 0, watch.err());
     assert.match(watch.out(), /responsive delivery queued/);
   } finally {
+    await bridge.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("watch times out a stale listener and reaches the matching nested bridge", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "parle-local-watch-stale-")));
+  const session = "019f2946-aef5-77ad-a41d-747ce0fd6a12";
+  const stateDir = bridgeStateDir(cwd);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  chmodSync(stateDir, 0o700);
+  const stalePath = join(stateDir, "1.sock");
+  const staleSockets = new Set();
+  let staleAccepted = false;
+  const stale = createServer((socket) => {
+    staleAccepted = true;
+    staleSockets.add(socket);
+    socket.once("close", () => staleSockets.delete(socket));
+  });
+  await new Promise((resolveListen, reject) => {
+    stale.once("error", reject);
+    stale.listen(stalePath, resolveListen);
+  });
+  const bridge = await startBridge(cwd, session);
+  try {
+    const watch = runWatch(cwd, [session]);
+    await waitFor(() => bridge.actions.some((action) => action.action === "wait"), "watch did not continue after the stale listener timeout");
+    assert.equal(staleAccepted, true);
+    bridge.ready();
+    assert.equal(await watch.exited, 0, watch.err());
+  } finally {
+    for (const socket of staleSockets) socket.destroy();
+    await new Promise((resolveClose) => stale.close(resolveClose));
     await bridge.close();
     rmSync(cwd, { recursive: true, force: true });
   }

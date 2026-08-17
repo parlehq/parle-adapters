@@ -168,9 +168,9 @@ export class HookDeliveryBridge {
     };
   }
 
-  bindHostSession(sessionId: string, allowReplace = false): boolean {
+  bindHostSession(sessionId: string, allowReplace = false, correlated = false): boolean {
     this.assertCurrentHostParent();
-    if (!sessionId) return false;
+    if (!sessionId || (this.hostParentPid !== undefined && !correlated)) return false;
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
     this.hostSessionId = sessionId;
@@ -411,7 +411,7 @@ export class HookDeliveryBridge {
     const sessionId = typeof command?.sessionId === "string" ? command.sessionId : "";
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
-      const bound = this.bindHostSession(sessionId, command?.allowReplace === true);
+      const bound = this.bindHostSession(sessionId, command?.allowReplace === true, true);
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };

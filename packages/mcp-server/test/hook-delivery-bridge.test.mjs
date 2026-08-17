@@ -194,6 +194,7 @@ test("hook bridge binding recovers an unbound bridge but only SessionStart may r
   try {
     await bridge.start();
     const path = bridge.status().socketPath;
+    assert.equal(bridge.bindHostSession("uncorrelated-metadata"), false, "in-band metadata cannot preempt Claude process correlation");
     assert.deepEqual(await request(path, { action: "bind", sessionId: "host-1" }), { ok: true, bound: true });
     bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "pending", content: "pending" } });
     assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2" }), { ok: false, bound: true });
