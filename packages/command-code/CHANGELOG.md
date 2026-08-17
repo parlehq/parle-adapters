@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.20 (2026-08-17)
+
+- Preserve persisted responsive-delivery success and backoff evidence when repeated status calls find the native controller already running (#136).
+
 ## 0.7.19 (2026-08-17)
 
 - Release alignment for #120; no Command Code runtime behavior changed because its native delivery path does not use Claude's hook bridge.
