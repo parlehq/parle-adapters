@@ -46,6 +46,7 @@ export type HookDeliveryBridgeStatus = {
   hostParentPid?: number;
   currentParentPid?: number;
   lastError?: string;
+  lastErrorKind?: "listen" | "startup" | "controller" | "evidence";
   // Wake hints naming a room this process does not configure. Recorded so an
   // ignored hint is diagnosable instead of looking like lost delivery.
   ignoredWakeHints?: number;
@@ -118,6 +119,7 @@ export class HookDeliveryBridge {
   private baselineDone = false;
   private baselineSkipped = 0;
   private lastError?: string;
+  private lastErrorKind?: HookDeliveryBridgeStatus["lastErrorKind"];
   private hostSessionId?: string;
   private waiter?: Socket;
   private unsubscribeCommitGuard?: () => void;
@@ -165,6 +167,7 @@ export class HookDeliveryBridge {
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
       ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
       ...(lastError ? { lastError } : {}),
+      ...(this.lastErrorKind ? { lastErrorKind: this.lastErrorKind } : {}),
     };
   }
 
@@ -202,8 +205,7 @@ export class HookDeliveryBridge {
 
   private async startBridge(): Promise<void> {
     if (this.server?.listening && this.controller.status().running) return;
-    this.lastError = undefined;
-    this.publishEvidence("starting", { expectedProgressMs: 120_000 });
+    if (!this.lastError) this.publishEvidence("starting", { expectedProgressMs: 120_000 });
     if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = (this.client as any).onBeforeSessionCommit?.((plan: SessionCommitPlan) => this.guardSessionCommit(plan));
     }
@@ -212,10 +214,14 @@ export class HookDeliveryBridge {
         await this.listen();
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
+        this.lastErrorKind = typeof error === "object" && error !== null && (error as { syscall?: string }).syscall === "listen" ? "listen" : "startup";
         this.server = undefined;
         this.removeOwnRuntimeArtifacts();
+        this.publishEvidence("terminal", { reason: this.lastErrorKind === "listen" ? "bridge_listen_failed" : "bridge_start_failed", lastError: this.lastError });
         return;
       }
+      this.lastError = undefined;
+      this.lastErrorKind = undefined;
     }
     // The socket and runtime artifacts outlive a bootstrap or wake failure:
     // hooks keep a status endpoint to diagnose through, and a later start()
@@ -227,9 +233,12 @@ export class HookDeliveryBridge {
       try {
         await this.controller.start();
         this.baselineDone = true;
+        this.lastError = undefined;
+        this.lastErrorKind = undefined;
         this.publishEvidence("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
+        this.lastErrorKind = "controller";
         this.publishEvidence("backoff", { expectedProgressMs: 30_000, lastError: this.lastError });
       } finally {
         this.baselineActive = false;
@@ -257,7 +266,10 @@ export class HookDeliveryBridge {
     try {
       this.evidence.record(state, event as any);
     } catch (error) {
-      this.lastError = this.lastError || `responsive-delivery evidence unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      if (!this.lastError) {
+        this.lastError = `responsive-delivery evidence unavailable: ${error instanceof Error ? error.message : String(error)}`;
+        this.lastErrorKind = "evidence";
+      }
     }
   }
 

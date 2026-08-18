@@ -2,6 +2,7 @@
 
 ## 0.7.45 (2026-08-17)
 
+- Release alignment for #132; no Pi runtime behavior changed because Pi does not carry the MCP hook bridge.
 - Add native `parle_room_participants` and guarded `parle_end_own_session` account tools for stale-session capacity recovery (#140).
 
 ## 0.7.44 (2026-08-17)

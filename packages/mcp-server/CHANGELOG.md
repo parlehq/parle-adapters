@@ -2,6 +2,7 @@
 
 ## 0.7.41 (2026-08-17)
 
+- Publish terminal evidence when hook-bridge socket startup fails and prevent status or connect cards from reporting an unbound bridge as armed (#132).
 - Expose `parle_room_participants` and guarded `parle_end_own_session` tools so operators can inspect stale room sessions and reclaim their participant capacity without connecting an agent (#140).
 
 ## 0.7.40 (2026-08-17)

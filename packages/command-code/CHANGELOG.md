@@ -2,6 +2,7 @@
 
 ## 0.7.21 (2026-08-17)
 
+- Release alignment for #132; no Command Code runtime behavior changed because its native delivery path does not use the MCP hook bridge.
 - Expose native room-participant inventory and guarded own-session ending through the shared account tool runtime (#140).
 
 ## 0.7.20 (2026-08-17)
