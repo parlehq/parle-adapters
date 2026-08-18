@@ -515,7 +515,7 @@ export function registerParleTools(
 
   registerTool("parle_room_participants", {
     title: "List Parle Room Participants",
-    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
     inputSchema: roomParticipantsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => {

@@ -1377,10 +1377,11 @@ export class ParleAccountClient {
         results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "explicitly_protected" });
         continue;
       }
-      const heartbeatAdvanced = plan.lastSeenBefore
+      const heartbeatAdvanced = Date.parse(current.last_seen_at) > Date.parse(candidate.last_seen_at);
+      const exceedsCutoff = plan.lastSeenBefore
         ? Date.parse(current.last_seen_at) > Date.parse(plan.lastSeenBefore)
-        : current.last_seen_at !== candidate.last_seen_at;
-      if (heartbeatAdvanced) {
+        : false;
+      if (heartbeatAdvanced || exceedsCutoff) {
         results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: candidate.last_seen_at, currentLastSeenAt: current.last_seen_at });
         continue;
       }

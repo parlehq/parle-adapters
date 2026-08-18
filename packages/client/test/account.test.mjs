@@ -546,7 +546,7 @@ test("room capacity recovery is preview-first, protects the invoker, and skips a
         if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "testagent1", display_name: "Test Agent 1" }] });
         if (path === `/v/rooms/${ROOM_ID}/participants`) {
           rosterReads += 1;
-          const candidateSeen = rosterReads <= 2 ? "2026-08-18T00:30:00Z" : "2026-08-18T00:55:00Z";
+          const candidateSeen = rosterReads <= 2 ? "2026-08-18T00:30:00Z" : "2026-08-18T00:40:00Z";
           return response({ participants: [participant(AGENT_SESSION_ID, "2026-08-18T00:59:00Z"), participant(ADDITIONAL_AGENT_SESSION_ID, candidateSeen)] });
         }
         if (path === `/v/agent/sessions/${ADDITIONAL_AGENT_SESSION_ID}/end`) { ended += 1; return new Response(null, { status: 204 }); }
@@ -566,7 +566,7 @@ test("room capacity recovery is preview-first, protects the invoker, and skips a
     assert.equal(preview.exclusions.find((row) => row.agentSessionId === AGENT_SESSION_ID).reason, "current_invoker");
 
     const complete = await client.roomCapacityRecovery({ action: "complete", roomId: ROOM_ID, previewId: preview.previewId, confirmMutation: true, reason: "recover capacity" }, invoker);
-    assert.deepEqual(complete.results, [{ agentSessionId: ADDITIONAL_AGENT_SESSION_ID, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: "2026-08-18T00:30:00Z", currentLastSeenAt: "2026-08-18T00:55:00Z" }]);
+    assert.deepEqual(complete.results, [{ agentSessionId: ADDITIONAL_AGENT_SESSION_ID, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: "2026-08-18T00:30:00Z", currentLastSeenAt: "2026-08-18T00:40:00Z" }]);
     assert.equal(ended, 0);
     await assert.rejects(client.roomCapacityRecovery({ action: "complete", roomId: ROOM_ID, previewId: preview.previewId, confirmMutation: true, reason: "retry" }, invoker), /missing or expired/);
     assert.deepEqual(recoveryInvokerState({ runtime: { bootstrapState: "unstarted", agentSessionId: "" } }), { state: "authoritatively_absent" });

@@ -34658,8 +34658,9 @@ var ParleAccountClient = class {
         results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "explicitly_protected" });
         continue;
       }
-      const heartbeatAdvanced = plan.lastSeenBefore ? Date.parse(current.last_seen_at) > Date.parse(plan.lastSeenBefore) : current.last_seen_at !== candidate.last_seen_at;
-      if (heartbeatAdvanced) {
+      const heartbeatAdvanced = Date.parse(current.last_seen_at) > Date.parse(candidate.last_seen_at);
+      const exceedsCutoff = plan.lastSeenBefore ? Date.parse(current.last_seen_at) > Date.parse(plan.lastSeenBefore) : false;
+      if (heartbeatAdvanced || exceedsCutoff) {
         results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: candidate.last_seen_at, currentLastSeenAt: current.last_seen_at });
         continue;
       }
@@ -39219,7 +39220,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   });
   registerTool("parle_room_participants", {
     title: "List Parle Room Participants",
-    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
     inputSchema: roomParticipantsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params, extra) => {
