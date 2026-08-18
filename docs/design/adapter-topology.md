@@ -6,9 +6,11 @@ This document owns the repository's process topology, state ownership, responsiv
 
 ## Visual grammar
 
-The diagrams use four forms:
+The diagrams use these forms:
 
+- `{service}` is a remote service boundary.
 - `[process]` is an operating-system process boundary.
+- An indented unboxed label is a component or stage inside the surrounding boundary.
 - `(state)` is state held by the surrounding process or by Parle.
 - `→` is a control or data transition.
 - `⇢` is evidence about another component, not ownership or proof of a later stage.
@@ -19,23 +21,23 @@ Sharing a directory, package cache, profile, credential, room, or durable agent 
 ## Common architecture
 
 ```text
-{Parle server}
+{Parle server service}
   (room event log)
   (responsive eligibility and cursor scope)
   (unacknowledged delivery)
           ↓ wake hint
 [adapter process]
-  [ParleAgentClient]
+  ParleAgentClient
     (live agent session and room runtimes)
     (projection cursors)
-  [ResponsiveDeliveryController]
+  ResponsiveDeliveryController
     wake → drain → deduplicate → handle → acknowledge
           ↓ host handoff
   (host queue, bridge queue, or persisted host entry)
           ↓ host-supported injection boundary
-[host context]
+  host context
           ↓ host scheduling
-[model turn]
+  model turn
 ```
 
 The shared client is headless. It owns protocol and session mechanics but imports no harness API. The diagram shows the responsive path when a controller is enabled. The controller belongs to the shared client package and runs inside the adapter process that constructed it. A hook bridge, when enabled, also runs inside the MCP child. It is not a second network client or a separate daemon.
@@ -126,7 +128,7 @@ Two sessions started from the same directory may share installed bytes, plugin c
 
 Bridge discovery differs by host:
 
-- Claude leaves `PARLE_HOOK_BRIDGE_SCOPE` unset, so the MCP cwd selects the hashed scope. `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent` then nests artifacts under the top-level Claude parent PID. Same-cwd Claude sessions share the scope root but not the parent directory.
+- Claude leaves `PARLE_HOOK_BRIDGE_SCOPE` unset, so the MCP cwd selects the hashed scope. `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent` then nests artifacts under the top-level Claude parent PID. Separate top-level Claude processes sharing a cwd use different parent directories. Sessions sharing one top-level host share that parent boundary and are not isolated by directory alone.
 - Codex sets `PARLE_HOOK_BRIDGE_SCOPE=codex-plugin` and does not use direct-parent nesting. Codex sessions share one flat scope directory containing PID-keyed sockets, and hooks use host-session binding rather than Claude's parent namespace.
 
 A cwd-scoped statusline may aggregate several runtime snapshots. It cannot select the authoritative bridge or waiter for one host session.
@@ -150,9 +152,9 @@ The runtime files and bridge artifacts are credential-free, bounded operational 
 
 ```text
 [Pi process]
-  [Pi extension]
-    [ParleAgentClient]
-    [ResponsiveDeliveryController]
+  Pi extension
+    ParleAgentClient
+    ResponsiveDeliveryController
       → (Pi pending queue)
       → pi.sendUserMessage while idle
       → deferred completion
@@ -166,9 +168,9 @@ Pi is native and in-process. It owns host injection policy, pending batching, id
 
 ```text
 [Command Code process]
-  [native Parle mod]
-    [ParleAgentClient]
-    [ResponsiveDeliveryController]
+  native Parle mod
+    ParleAgentClient
+    ResponsiveDeliveryController
       → appendCustomMessageEntry
       → (persisted pending entry)
       → onTurnStart fold
@@ -183,20 +185,20 @@ Command Code is native and in-process. Arrival during an active run can continue
 
 ```text
 [Claude Code process]
-  [MCP child]
-    [ParleAgentClient]
-    [ResponsiveDeliveryController]
-    [HookDeliveryBridge]
+  [MCP child process]
+    ParleAgentClient
+    ResponsiveDeliveryController
+    HookDeliveryBridge
       (queue and lease)
       ⇄ owner-only socket
-  [short-lived lifecycle hook]
+  [lifecycle hook process]
     take → write additionalContext → commit
-  [one harness-tracked waiter]
+  [harness-tracked waiter process]
     socket wait → exit on queue readiness
               ↓ public task completion may wake host
-  [next lifecycle boundary]
+  next lifecycle boundary
               ↓
-  [model turn]
+  model turn
   ✕ live profile switching while hook-bridge delivery is active
 ```
 
@@ -212,16 +214,16 @@ The durable design remains blocked in [issue #99](https://github.com/parlehq/par
 
 ```text
 [Codex process]
-  [MCP child]
-    [ParleAgentClient]
-    [ResponsiveDeliveryController]
-    [HookDeliveryBridge]
+  [MCP child process]
+    ParleAgentClient
+    ResponsiveDeliveryController
+    HookDeliveryBridge
       (queue and lease)
       ⇄ owner-only socket
-  [short-lived trusted lifecycle hook]
+  [trusted lifecycle hook process]
     take → write host output → commit
               ↓
-  [model turn at a supported lifecycle boundary]
+  model turn at a supported lifecycle boundary
   ✕ start a new turn in a fully idle thread
   ✕ live profile switching while hook-bridge delivery is active
 ```
@@ -232,9 +234,9 @@ Codex uses the same MCP-child controller and bridge, bound to the exact Codex th
 
 ```text
 [Claude Desktop process]
-  [MCP child]
-    [ParleAgentClient]
-    [MCP tools]
+  [MCP child process]
+    ParleAgentClient
+    MCP tools
     (count-only unread observation)
   ✕ responsive controller
   ✕ hook bridge
@@ -248,9 +250,9 @@ Claude Desktop is a thin MCPB wrapper around the generic MCP server artifact. It
 
 ```text
 [MCP host process]
-  [MCP child]
-    [ParleAgentClient]
-    [MCP tools]
+  [MCP child process]
+    ParleAgentClient
+    MCP tools
     (count-only unread observation by default)
     (optional ResponsiveDeliveryController + HookDeliveryBridge)
 ```
