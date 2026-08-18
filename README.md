@@ -141,7 +141,7 @@ pnpm typecheck
 pnpm build
 ```
 
-After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` before the reproducibility check. Commit the refreshed native Pi bundle and four MCP wrapper artifacts, then apply the package version and changelog policy in `AGENTS.md`.
+After shared client or MCP server changes, run `pnpm refresh:mcp-artifacts` before the reproducibility check. Commit the refreshed native Pi bundle and three MCP wrapper artifacts, then apply the package version and changelog policy in `AGENTS.md`.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Live profile switching
 
-Status: implemented foundation with Pi bridge
+Status: implemented for Pi and non-hook MCP lifecycle. Claude Code and Codex refuse live switching while hook-bridge delivery is active and require a host restart with the target profile. See [`adapter-topology.md`](./adapter-topology.md#shared-and-isolated-state).
 
 ## Decision
 

@@ -64,7 +64,7 @@ Current adapters use three modes:
 : The process that owns one `ParleAgentClient`. This is the host process for native Pi and Command Code adapters, and the MCP child for MCP-based hosts.
 
 **MCP child**
-: Host-launched stdio server process containing the shared client, tool runtime, and optional hook bridge. Each top-level host process gets its own child in the supported Claude Code and Codex layouts.
+: Host-launched stdio server process containing the shared client, tool runtime, and optional hook bridge. The wrapper configures the child, while the host owns process creation and multiplicity.
 
 **Client instance**
 : Process-ephemeral adapter identity used for local correlation and request metadata. It is separate from durable agent identity and live agent session identity.
@@ -131,6 +131,8 @@ Bridge discovery differs by host:
 
 A cwd-scoped statusline may aggregate several runtime snapshots. It cannot select the authoritative bridge or waiter for one host session.
 
+Live profile switching is process-local host lifecycle. Pi supports it by changing the client binding and restarting its native controller. Claude Code and Codex refuse it while the hook bridge owns delivery because the MCP session, wake stream, queue, and hook binding must change atomically. Restart the host with the target `PARLE_PROFILE` instead.
+
 ## Local artifact roots
 
 Credential custody and operational rendezvous state have separate roots:
@@ -195,6 +197,7 @@ Command Code is native and in-process. Arrival during an active run can continue
   [next lifecycle boundary]
               ↓
   [model turn]
+  ✕ live profile switching while hook-bridge delivery is active
 ```
 
 The bridge and controller own delivery. The waiter is only a host-wake shim. `waiterAttached: true` proves a live socket attachment, not that Claude tracks the process or began a model turn. `watching` proves controller health, not waiter attachment or idle wake. Claude's bridge scope defaults to the MCP cwd and uses direct-parent PID nesting to isolate top-level Claude processes in one project.
@@ -220,6 +223,7 @@ The durable design remains blocked in [issue #99](https://github.com/parlehq/par
               ↓
   [model turn at a supported lifecycle boundary]
   ✕ start a new turn in a fully idle thread
+  ✕ live profile switching while hook-bridge delivery is active
 ```
 
 Codex uses the same MCP-child controller and bridge, bound to the exact Codex thread id. It sets the constant bridge scope `codex-plugin` and uses a flat scope directory without Claude's direct-parent nesting. It has no Claude waiter. Rows received after the thread becomes idle stay queued until the next user prompt or lifecycle event. Hook trust and Unix-socket support are prerequisites for injection.
@@ -231,13 +235,14 @@ Codex uses the same MCP-child controller and bridge, bound to the exact Codex th
   [MCP child]
     [ParleAgentClient]
     [MCP tools]
+    (count-only unread observation)
   ✕ responsive controller
   ✕ hook bridge
   ✕ lifecycle injection
   ✕ idle wake
 ```
 
-Claude Desktop is a thin MCPB wrapper around the generic MCP server artifact. It remains pull-only because the package does not enable hook-bridge delivery and Desktop exposes no supported lifecycle injection boundary.
+Claude Desktop is a thin MCPB wrapper around the generic MCP server artifact. It remains pull-only because the package does not enable hook-bridge delivery and Desktop exposes no supported lifecycle injection boundary. Its default background work is limited to count-only unread observation, which never advances the cursor or reads message content into the snapshot.
 
 ### Generic MCP host
 
@@ -246,10 +251,11 @@ Claude Desktop is a thin MCPB wrapper around the generic MCP server artifact. It
   [MCP child]
     [ParleAgentClient]
     [MCP tools]
+    (count-only unread observation by default)
     (optional ResponsiveDeliveryController + HookDeliveryBridge)
 ```
 
-The generic MCP server is tool-only by default. Enabling `PARLE_RESPONSIVE_DELIVERY=hook-bridge` creates a bridge, but a host still needs a supported exact-session binding and lifecycle hook contract. Bridge startup alone does not create host injection or idle wake.
+The generic MCP server is delivery-tool-only by default, with count-only unread observation for runtime UX. Enabling `PARLE_RESPONSIVE_DELIVERY=hook-bridge` disables that poll and creates a controller and bridge, but a host still needs a supported exact-session binding and lifecycle hook contract. Bridge startup alone does not create host injection or idle wake.
 
 ## Evidence and diagnostics
 
