@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.42 (2026-08-17)
+
+- Republish the merged #132 and #140 MCP runtime under a unique version after the concurrent releases shared 0.7.41; runtime behavior is unchanged from main.
+
 ## 0.7.41 (2026-08-17)
 
 - Publish terminal evidence when hook-bridge socket startup fails and prevent status or connect cards from reporting an unbound bridge as armed (#132).

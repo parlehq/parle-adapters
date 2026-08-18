@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.46 (2026-08-17)
+
+- Republish the merged #132 and #140 Claude bundle under a unique version after the concurrent releases shared 0.9.45; runtime behavior is unchanged from main.
+
 ## 0.9.45 (2026-08-17)
 
 - Report hook-bridge socket startup failures as terminal instead of claiming responsive delivery is armed (#132).

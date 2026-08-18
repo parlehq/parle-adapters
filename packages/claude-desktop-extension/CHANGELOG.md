@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.42 (2026-08-17)
+
+- Republish the merged #132 and #140 Desktop bundle under a unique version after the concurrent releases shared 0.8.41; runtime behavior is unchanged from main.
+
 ## 0.8.41 (2026-08-17)
 
 - Refresh the bundled MCP runtime so hook-bridge socket startup failures report terminal delivery evidence instead of armed delivery (#132).

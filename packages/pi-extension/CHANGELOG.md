@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.46 (2026-08-17)
+
+- Republish the merged #132 and #140 Pi bundle under a unique version after the concurrent releases shared 0.7.45; runtime behavior is unchanged from main.
+
 ## 0.7.45 (2026-08-17)
 
 - Release alignment for #132; no Pi runtime behavior changed because Pi does not carry the MCP hook bridge.

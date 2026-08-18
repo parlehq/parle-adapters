@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/claude-plugin",
-  "version": "0.9.45",
+  "version": "0.9.46",
   "private": true,
   "type": "module",
   "dependencies": {
