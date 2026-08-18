@@ -202,6 +202,11 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
     resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
   }
   if (!resolved) return undefined;
+  const idleWakeUnarmed = bridgeStatus?.running === true
+    && bridgeStatus.hostSessionBound === true
+    && bridgeStatus.waiterAttached === false
+    && ["watching", "idle"].includes(resolved.state);
+  if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
   const next = resolved.reason === "bridge_listen_failed"
     ? { nextActionKey: "repair-delivery-host" as const, nextAction: "restart the host after correcting the local delivery socket error" }
     : resolved.state === "unknown" || resolved.state === "stopped"
@@ -210,7 +215,9 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
         ? { nextActionKey: "wait-for-watcher" as const, nextAction: "wait for responsive delivery startup" }
         : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict"
           ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
-          : { nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" };
+          : bridgeStatus && bridgeStatus.waiterAttached !== true
+            ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "attach or verify the local delivery waiter" }
+            : { nextActionKey: "already-connected" as const, nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 

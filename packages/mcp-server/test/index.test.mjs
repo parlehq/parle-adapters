@@ -223,6 +223,31 @@ test("watcher skips an EPERM candidate and attaches to the next matching bridge"
   }
 });
 
+test("watcher treats an attached or raced waiter as a successful no-op", async () => {
+  for (const race of ["observed", "after-status", "legacy-error"]) {
+    const fixture = watcherFixture();
+    const path = join(fixture.currentDir, "100.sock");
+    writeFileSync(path, "");
+    const requests = [];
+    try {
+      const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
+        stateDir: fixture.stateDir,
+        request: async (_path, payload) => {
+          requests.push(payload.action);
+          if (payload.action === "status") return { ok: true, running: true, hostSessionBound: true, waiterAttached: race === "observed", agentSessionId: "session-1" };
+          return race === "legacy-error"
+            ? { ok: false, error: "Parle hook bridge already has a waiter" }
+            : { ok: true, ready: true, alreadyAttached: true };
+        },
+      });
+      assert.equal(result, 0);
+      assert.deepEqual(requests, race === "observed" ? ["status"] : ["status", "wait"]);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
 test("watcher aggregates candidate probe errors without naming an arbitrary path", async () => {
   const fixture = watcherFixture();
   writeFileSync(join(fixture.currentDir, "100.sock"), "");
@@ -935,6 +960,56 @@ test("parle_status never reports an unarmed bridge with an error as armed", asyn
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("status and connect distinguish bridge health from local waiter attachment", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  let waiterAttached = false;
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({ running: true, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true, waiterAttached }),
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue151-test", clientInstanceId: "issue151-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-waiter-status", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    for (const result of [
+      await client.callTool({ name: "parle_connect", arguments: {} }),
+      await client.callTool({ name: "parle_status", arguments: {} }),
+    ]) {
+      assert.equal(result.structuredContent.responsiveDelivery.state, "watching");
+      assert.equal(result.structuredContent.responsiveDelivery.reason, "idle_wake_unarmed");
+      assert.equal(result.structuredContent.responsiveDelivery.nextActionKey, "arm-or-verify-watcher");
+      assert.equal(result.structuredContent.responsiveDeliveryBridge.waiterAttached, false);
+      assert.match(result.structuredContent.compactText, /Delivery      watching \(idle wake unarmed\)/);
+      assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
+    }
+    waiterAttached = true;
+    const attached = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.equal(attached.structuredContent.responsiveDelivery.reason, undefined);
+    assert.equal(attached.structuredContent.responsiveDelivery.nextActionKey, "already-connected");
+    assert.equal(attached.structuredContent.responsiveDelivery.nextAction, "bridge delivery is watching and a local waiter is attached");
+    assert.equal(attached.structuredContent.responsiveDeliveryBridge.waiterAttached, true);
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(evidencePath, { force: true });
   }
 });
 

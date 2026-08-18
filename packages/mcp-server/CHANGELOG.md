@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.49 (2026-08-18)
+
+- Expose socket-derived local waiter attachment, report healthy-but-unarmed idle wake truthfully, and make duplicate watcher attachment a successful no-op (#151).
+
 ## 0.7.48 (2026-08-18)
 
 - Share one conservative stale-artifact remover between bounded bridge cleanup and watcher discovery, and stop direct-parent MCP children when host correlation is lost (#149).
@@ -7,15 +11,6 @@
 ## 0.7.47 (2026-08-18)
 
 - Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
-
-## 0.7.47 (2026-08-18)
-
-<<<<<<< HEAD
-- Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
-||||||| parent of b438dd4 (feat: add bounded adapter startup hygiene (#149))
-=======
-- Share one conservative stale-artifact remover between bounded bridge cleanup and watcher discovery, and stop direct-parent MCP children when host correlation is lost (#149).
->>>>>>> b438dd4 (feat: add bounded adapter startup hygiene (#149))
 
 ## 0.7.46 (2026-08-17)
 

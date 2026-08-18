@@ -133,6 +133,21 @@ test("status card omits zero unread and retains unknown watcher guidance", () =>
   assert.match(card, /Next: arm or verify responsive delivery\./);
 });
 
+test("status and connection cards make unarmed idle wake visible without changing controller state", () => {
+  const responsiveDelivery = { state: "watching", reason: "idle_wake_unarmed", nextActionKey: "arm-or-verify-watcher" };
+  const connection = compactConnectionCardFromSummary({ sessionAddress: "@p.a.s1", rooms: [{ roomHandle: "room-one" }] }, { responsiveDelivery, next: responsiveDelivery.nextActionKey });
+  assert.match(connection, /Delivery      watching \(idle wake unarmed\)/);
+  assert.match(connection, /Next: arm or verify responsive delivery\./);
+
+  const status = compactStatusCardFromStatus({
+    responsiveDelivery,
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] },
+  });
+  assert.match(status, /Delivery      watching \(idle wake unarmed\)/);
+  assert.match(status, /Next: arm or verify responsive delivery\./);
+});
+
 test("status card surfaces degraded responsive delivery", () => {
   const card = compactStatusCardFromStatus({
     responsiveDelivery: { state: "backoff", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" },

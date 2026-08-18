@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.27 (2026-08-18)
+
+- Refresh the bundled MCP tool runtime with truthful local waiter status while leaving Command Code's native delivery path unchanged (#151).
+
 ## 0.7.26 (2026-08-18)
 
 - Bundle shared startup cleanup for expired local runtime evidence (#149).
@@ -7,15 +11,6 @@
 ## 0.7.25 (2026-08-18)
 
 - Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
-
-## 0.7.25 (2026-08-18)
-
-<<<<<<< HEAD
-- Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
-||||||| parent of b438dd4 (feat: add bounded adapter startup hygiene (#149))
-=======
-- Bundle shared startup cleanup for expired local runtime evidence (#149).
->>>>>>> b438dd4 (feat: add bounded adapter startup hygiene (#149))
 
 ## 0.7.24 (2026-08-17)
 
