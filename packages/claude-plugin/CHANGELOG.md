@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.55 (2026-08-18)
+
+- Allow a slow successful delivery acknowledgement to finish inside Claude's bounded hook window instead of reporting a contradictory local timeout (#151).
+
 ## 0.9.54 (2026-08-18)
 
 - Deliver Stop-boundary messages and idle-wake instructions as non-error hook context instead of Claude's misleading `Stop hook error` rendering.

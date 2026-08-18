@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.50 (2026-08-18)
+
+- Refresh the bundled MCP runtime after the shared hook package's bounded commit-timeout correction (#151).
+
 ## 0.8.49 (2026-08-18)
 
 - Refresh the bundled MCP runtime with truthful hook-bridge waiter status (#151).

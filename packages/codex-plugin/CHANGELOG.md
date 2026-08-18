@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.51 (2026-08-18)
+
+- Allow slow successful hook-delivery acknowledgements to complete within the bounded host hook window (#151).
+
 ## 0.6.50 (2026-08-18)
 
 - Keep Codex Stop behavior unchanged while bundling the shared hook's opt-in Claude non-error output mode.
