@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.46 (2026-08-17)
+
+- Bundle race-safe hook-bridge candidate discovery (#133).
+
 ## 0.6.45 (2026-08-17)
 
 - Bundle resilient hook-bridge watcher discovery and aggregate candidate diagnostics (#133).

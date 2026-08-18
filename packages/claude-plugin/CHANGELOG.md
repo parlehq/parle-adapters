@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.50 (2026-08-17)
+
+- Keep concurrent legacy-socket cleanup from aborting watcher attachment (#133).
+
 ## 0.9.49 (2026-08-17)
 
 - Restore resilient watcher attachment across stale or unreachable hook-bridge socket candidates (#133).

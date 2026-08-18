@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.46 (2026-08-17)
+
+- Keep concurrent candidate removal from aborting watcher discovery and include discovery failures in aggregate diagnostics (#133).
+
 ## 0.7.45 (2026-08-17)
 
 - Probe current hook-bridge sockets before legacy candidates, skip per-candidate status failures, reap dead flat sockets, and report aggregate watcher diagnostics (#133).

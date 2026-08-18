@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -205,7 +205,7 @@ test("watcher aggregates candidate probe errors without naming an arbitrary path
         request: async () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
       }),
       (error) => {
-        assert.match(error.message, /Probed 3 candidate sockets; status probe errors: EPERM \(3\/3\)/);
+        assert.match(error.message, /Probed 3 candidate sockets; discovery errors: none; status probe errors: EPERM \(3\/3\)/);
         assert.doesNotMatch(error.message, /100\.sock|200\.sock|300\.sock/);
         return true;
       },
@@ -233,13 +233,36 @@ test("watcher removes a dead flat-layout socket without probing or reporting it"
         },
       }),
       (error) => {
-        assert.match(error.message, /Probed 1 candidate socket; status probe errors: none/);
+        assert.match(error.message, /Probed 1 candidate socket; discovery errors: none; status probe errors: none/);
         assert.doesNotMatch(error.message, /300\.sock/);
         return true;
       },
     );
     assert.deepEqual(requests, [current]);
     assert.equal(existsSync(stale), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("watcher skips a flat candidate that vanishes during discovery", async () => {
+  const fixture = watcherFixture();
+  const current = join(fixture.currentDir, "100.sock");
+  const vanished = join(fixture.stateDir, "300.sock");
+  writeFileSync(current, "");
+  writeFileSync(vanished, "", { mode: 0o600 });
+  try {
+    const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
+      stateDir: fixture.stateDir,
+      lstat: (path) => {
+        if (path === vanished) throw Object.assign(new Error("vanished"), { code: "ENOENT" });
+        return lstatSync(path);
+      },
+      request: async (_path, payload) => payload.action === "status"
+        ? { ok: true, running: true, hostSessionBound: true, agentSessionId: "session-1" }
+        : { ok: true, ready: true },
+    });
+    assert.equal(result, 0);
   } finally {
     fixture.cleanup();
   }

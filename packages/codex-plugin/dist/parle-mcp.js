@@ -39470,7 +39470,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.45";
+var MCP_CLIENT_VERSION = "0.7.46";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -39685,20 +39685,38 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}
   const stateDir = dependencies.stateDir || hookBridgeStateDir(cwd);
   const request = dependencies.request || hookBridgeRequest;
   const isProcessAlive = dependencies.isProcessAlive || processIsAlive;
-  const state = lstatSync8(stateDir);
+  const lstat = dependencies.lstat || lstatSync8;
+  const state = lstat(stateDir);
   if (!state.isDirectory() || state.isSymbolicLink() || typeof process.getuid === "function" && state.uid !== process.getuid() || (state.mode & 63) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
   const entries = readdirSync4(stateDir, { withFileTypes: true });
+  const discoveryErrors = /* @__PURE__ */ new Map();
+  const recordDiscoveryError = (error51) => {
+    const code = typeof error51?.code === "string" && error51.code ? error51.code : "UNKNOWN";
+    discoveryErrors.set(code, (discoveryErrors.get(code) || 0) + 1);
+  };
   const currentPaths = entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
     const parentDir = join11(stateDir, entry.name);
-    const parentState = lstatSync8(parentDir);
+    let parentState;
+    try {
+      parentState = lstat(parentDir);
+    } catch (error51) {
+      recordDiscoveryError(error51);
+      return [];
+    }
     if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
     return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
   }).sort();
   const legacyPaths = entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).flatMap((entry) => {
     const path = join11(stateDir, entry.name);
-    const socketState = lstatSync8(path);
+    let socketState;
+    try {
+      socketState = lstat(path);
+    } catch (error51) {
+      recordDiscoveryError(error51);
+      return [];
+    }
     if (socketState.isSymbolicLink() || typeof process.getuid === "function" && socketState.uid !== process.getuid() || (socketState.mode & 63) !== 0) return [];
     if (isProcessAlive(Number(entry.name.slice(0, -5)))) return [path];
     try {
@@ -39724,7 +39742,8 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}
     console.log("parle-watch: responsive delivery queued");
     return 0;
   }
-  const detail = paths.length === 0 ? "Found 0 candidate sockets." : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
+  const discoveryDetail = discoveryErrors.size === 0 ? "none" : [...discoveryErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count})`).join(", ");
+  const detail = paths.length === 0 ? `Found 0 candidate sockets; discovery errors: ${discoveryDetail}.` : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; discovery errors: ${discoveryDetail}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
   throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. ${detail} Run parle_connect in this project, then re-arm with its current agent session id.`);
 }
 async function runKnownAddressContext(cwd) {

@@ -12,7 +12,7 @@ import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, 
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.45";
+export const MCP_CLIENT_VERSION = "0.7.46";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -265,6 +265,7 @@ type WatcherDependencies = {
   stateDir?: string;
   request?: typeof hookBridgeRequest;
   isProcessAlive?: typeof processIsAlive;
+  lstat?: typeof lstatSync;
 };
 
 export async function runWatcher(_metaUrl: string, args: string[], cwd = process.cwd(), dependencies: WatcherDependencies = {}): Promise<number> {
@@ -272,18 +273,28 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
   const stateDir = dependencies.stateDir || hookBridgeStateDir(cwd);
   const request = dependencies.request || hookBridgeRequest;
   const isProcessAlive = dependencies.isProcessAlive || processIsAlive;
-  const state = lstatSync(stateDir);
+  const lstat = dependencies.lstat || lstatSync;
+  const state = lstat(stateDir);
   if (!state.isDirectory() || state.isSymbolicLink()
     || (typeof process.getuid === "function" && state.uid !== process.getuid())
     || (state.mode & 0o077) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
   const entries = readdirSync(stateDir, { withFileTypes: true });
+  const discoveryErrors = new Map<string, number>();
+  const recordDiscoveryError = (error: any) => {
+    const code = typeof error?.code === "string" && error.code ? error.code : "UNKNOWN";
+    discoveryErrors.set(code, (discoveryErrors.get(code) || 0) + 1);
+  };
   const currentPaths = entries
     .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
     .flatMap((entry) => {
       const parentDir = join(stateDir, entry.name);
-      const parentState = lstatSync(parentDir);
+      let parentState;
+      try { parentState = lstat(parentDir); } catch (error) {
+        recordDiscoveryError(error);
+        return [];
+      }
       if (parentState.isSymbolicLink()
         || (typeof process.getuid === "function" && parentState.uid !== process.getuid())
         || (parentState.mode & 0o077) !== 0) return [];
@@ -298,7 +309,11 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
     .filter((entry) => /^\d+\.sock$/.test(entry.name))
     .flatMap((entry) => {
       const path = join(stateDir, entry.name);
-      const socketState = lstatSync(path);
+      let socketState;
+      try { socketState = lstat(path); } catch (error) {
+        recordDiscoveryError(error);
+        return [];
+      }
       if (socketState.isSymbolicLink()
         || (typeof process.getuid === "function" && socketState.uid !== process.getuid())
         || (socketState.mode & 0o077) !== 0) return [];
@@ -324,9 +339,10 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
     console.log("parle-watch: responsive delivery queued");
     return 0;
   }
+  const discoveryDetail = discoveryErrors.size === 0 ? "none" : [...discoveryErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count})`).join(", ");
   const detail = paths.length === 0
-    ? "Found 0 candidate sockets."
-    : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
+    ? `Found 0 candidate sockets; discovery errors: ${discoveryDetail}.`
+    : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; discovery errors: ${discoveryDetail}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
   throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. ${detail} Run parle_connect in this project, then re-arm with its current agent session id.`);
 }
 
