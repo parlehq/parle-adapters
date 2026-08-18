@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.43 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
 ## 0.8.42 (2026-08-17)
 
 - Republish the merged #132 and #140 Desktop bundle under a unique version after the concurrent releases shared 0.8.41; runtime behavior is unchanged from main.

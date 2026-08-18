@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.23 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
 ## 0.7.22 (2026-08-17)
 
 - Republish the merged #132 and #140 Command Code bundle under a unique version after the concurrent releases shared 0.7.21; runtime behavior is unchanged from main.

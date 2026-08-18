@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.43 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
 ## 0.6.42 (2026-08-17)
 
 - Republish the merged #132 and #140 Codex bundle under a unique version after the concurrent releases shared 0.6.41; runtime behavior is unchanged from main.
