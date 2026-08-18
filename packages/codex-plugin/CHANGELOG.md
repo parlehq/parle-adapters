@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.52 (2026-08-18)
+
+- Clear recovered room diagnostics without masking active failures in other responsive-delivery domains (#156).
+
 ## 0.6.51 (2026-08-18)
 
 - Allow slow successful hook-delivery acknowledgements to complete within the bounded host hook window (#151).

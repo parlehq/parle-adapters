@@ -525,6 +525,9 @@ test("hook delivery bridge keeps its artifacts through a terminal wake failure a
     await bridge.start();
     await eventually(() => Boolean(bridge.status().lastError));
     assert.match(bridge.status().lastError, /Bad Gateway/);
+    assert.equal(bridge.status().lastErrorSource, "controller");
+    assert.match(bridge.status().lastErrorAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(bridge.status().lastErrorKind, undefined, "controller runtime errors are not bridge lifecycle kinds");
     // The wake failure is diagnosable, not fatal: the socket keeps answering
     // and the runtime artifacts stay published for the hook flow.
     assert.equal(bridge.status().running, true);
@@ -534,6 +537,8 @@ test("hook delivery bridge keeps its artifacts through a terminal wake failure a
     const status = await request(bridge.status().socketPath, { action: "status" });
     assert.equal(status.ok, true);
     assert.match(status.lastError, /Bad Gateway/);
+    assert.equal(status.lastErrorSource, "controller");
+    assert.equal(status.lastErrorAt, bridge.status().lastErrorAt);
 
     // The settled controller loop must not read as running forever: a later
     // bridge start() restarts delivery on the same socket. Rows found by that
@@ -545,6 +550,32 @@ test("hook delivery bridge keeps its artifacts through a terminal wake failure a
     await eventually(() => bridge.status().pending === 1);
     assert.equal(bridge.status().baselineSkipped, 0, "a recovery drain is not a baseline window");
     assert.deepEqual(acknowledgements, [], "recovered rows still ack only through hook commit");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook delivery bridge attributes active room errors without manufacturing a bridge lifecycle kind", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-room-failure-"));
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => { throw new Error("room drain unavailable"); },
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    await eventually(() => bridge.status().lastErrorSource === "room");
+    const status = bridge.status();
+    assert.match(status.lastError, /room drain unavailable/);
+    assert.match(status.lastErrorAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(status.lastErrorSource, "room");
+    assert.equal(status.lastErrorKind, undefined);
+    assert.equal(status.running, true);
   } finally {
     await bridge.stop();
     cleanupFixture(cwd);
@@ -708,6 +739,7 @@ test("hook delivery bridge publishes terminal evidence when socket listen fails"
     await bridge.start();
     assert.equal(bridge.status().running, false);
     assert.equal(bridge.status().lastErrorKind, "listen");
+    assert.equal(bridge.status().lastErrorSource, "bridge");
     assert.match(bridge.status().lastError, /listen EPERM/);
     const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
     assert.equal(evidence.state, "terminal");

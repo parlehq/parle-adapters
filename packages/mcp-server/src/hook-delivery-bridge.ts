@@ -51,6 +51,8 @@ export type HookDeliveryBridgeStatus = {
   hostParentPid?: number;
   currentParentPid?: number;
   lastError?: string;
+  lastErrorAt?: string;
+  lastErrorSource?: "bridge" | "controller" | "room";
   lastErrorKind?: "listen" | "startup" | "controller" | "evidence";
   // Wake hints naming a room this process does not configure. Recorded so an
   // ignored hint is diagnosable instead of looking like lost delivery.
@@ -278,8 +280,10 @@ export class HookDeliveryBridge {
 
   status(): HookDeliveryBridgeStatus {
     const controller = this.controller.status();
-    const roomError = controller.rooms.find((room) => room.lastError)?.lastError;
-    const lastError = this.lastError ?? controller.lastError ?? roomError;
+    const roomStatus = controller.rooms.find((room) => room.lastError);
+    const lastError = this.lastError ?? controller.lastError ?? roomStatus?.lastError;
+    const lastErrorSource = this.lastError ? "bridge" : controller.lastError ? "controller" : roomStatus?.lastError ? "room" : undefined;
+    const lastErrorAt = lastErrorSource === "controller" ? controller.lastErrorAt : lastErrorSource === "room" ? roomStatus?.lastErrorAt : undefined;
     return {
       running: Boolean(this.server?.listening) && !this.stopped,
       pending: this.pending.length,
@@ -292,6 +296,8 @@ export class HookDeliveryBridge {
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
       ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
       ...(lastError ? { lastError } : {}),
+      ...(lastErrorAt ? { lastErrorAt } : {}),
+      ...(lastErrorSource ? { lastErrorSource } : {}),
       ...(this.lastErrorKind ? { lastErrorKind: this.lastErrorKind } : {}),
     };
   }

@@ -56,6 +56,8 @@ export type DeliveryControllerOptions = {
   onProgress?: (kind: "wake_open" | "drain_success") => void;
 };
 
+export type DeliveryErrorDomain = "recover" | "drain" | "handler" | "ack";
+
 export type DeliveryRoomStatus = {
   roomId: string;
   roomHandle?: string;
@@ -65,6 +67,8 @@ export type DeliveryRoomStatus = {
   poisoned: number;
   deferred: number;
   lastError?: string;
+  lastErrorAt?: string;
+  lastErrorDomain?: DeliveryErrorDomain;
 };
 
 export type DeliveryControllerStatus = {
@@ -75,6 +79,7 @@ export type DeliveryControllerStatus = {
   ignoredWakeHints: number;
   lastIgnoredWakeRoomId?: string;
   lastError?: string;
+  lastErrorAt?: string;
 };
 
 const DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
@@ -117,6 +122,7 @@ export class ResponsiveDeliveryController {
   private readonly onWakeError?: (error: unknown) => "continue" | "stop" | void;
   private readonly onWakeOpen?: () => void;
   private readonly onProgress?: (kind: "wake_open" | "drain_success") => void;
+  private readonly now: () => Date;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -127,7 +133,7 @@ export class ResponsiveDeliveryController {
   private readonly handled = new Map<string, DeliveryHandlerResult>();
   private readonly poisonedKeys = new Set<string>();
   private readonly rerunRequested = new Set<string>();
-  private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastError?: string }>();
+  private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastError?: { message: string; at: string; domain: DeliveryErrorDomain } }>();
   // Rows a host accepted for later effective handling. They are never
   // re-offered to the handler and never acknowledged until the host reports
   // completion, so a crash before injection leaves the row redeliverable.
@@ -138,7 +144,7 @@ export class ResponsiveDeliveryController {
   private wakeAbort?: AbortController;
   private ignoredWakeHints = 0;
   private lastIgnoredWakeRoomId?: string;
-  private lastError?: string;
+  private lastError?: { message: string; at: string };
   private wakeTiming: WakeTiming = {
     fallbackMs: DEFAULT_FALLBACK_MS,
     fallbackJitterMs: DEFAULT_FALLBACK_JITTER_MS,
@@ -155,6 +161,7 @@ export class ResponsiveDeliveryController {
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
     this.onProgress = options.onProgress;
+    this.now = options.now ?? (() => new Date());
   }
 
   status(): DeliveryControllerStatus {
@@ -170,12 +177,12 @@ export class ResponsiveDeliveryController {
           skipped: stat.skipped,
           poisoned: stat.poisoned,
           deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
-          ...(stat.lastError ? { lastError: stat.lastError } : {}),
+          ...(stat.lastError ? { lastError: stat.lastError.message, lastErrorAt: stat.lastError.at, lastErrorDomain: stat.lastError.domain } : {}),
         };
       }),
       ignoredWakeHints: this.ignoredWakeHints,
       ...(this.lastIgnoredWakeRoomId ? { lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {}),
-      ...(this.lastError ? { lastError: this.lastError } : {}),
+      ...(this.lastError ? { lastError: this.lastError.message, lastErrorAt: this.lastError.at } : {}),
     };
   }
 
@@ -198,7 +205,7 @@ export class ResponsiveDeliveryController {
     this.loop = loop;
     void loop
       .catch((error) => {
-        if (!this.abort.signal.aborted) this.lastError = redactString(error instanceof Error ? error.message : String(error));
+        if (!this.abort.signal.aborted && !this.lastError) this.lastError = this.errorState(error);
       })
       .finally(() => {
         if (this.loop === loop) this.loop = undefined;
@@ -224,9 +231,10 @@ export class ResponsiveDeliveryController {
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
     } catch (error) {
-      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.setRoomError(roomId, "ack", error);
       return false;
     }
+    this.clearRoomError(roomId, "ack");
     this.deferred.delete(key);
     this.handled.delete(key);
     this.remember(key);
@@ -296,7 +304,7 @@ export class ResponsiveDeliveryController {
           if (this.abort.signal.aborted) break;
           // A revision-driven restart is expected, not a failure.
           if (wakeAbort.signal.aborted) continue;
-          this.lastError = redactString(error instanceof Error ? error.message : String(error));
+          this.lastError = this.errorState(error);
           if (this.onWakeError?.(error) === "stop") return;
           if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || "")) throw error;
           const retryAfter = error instanceof ParleApiError && typeof error.retryAfterMs === "number" ? error.retryAfterMs : 0;
@@ -388,9 +396,10 @@ export class ResponsiveDeliveryController {
       const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
       if (!recovered) {
         const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
-        this.stat(room.roomId).lastError = live?.lastError || "room is degraded and could not be reinitialized";
+        this.setRoomError(room.roomId, "recover", live?.lastError || "room is degraded and could not be reinitialized");
         return;
       }
+      this.clearRoomError(room.roomId, "recover");
     }
     const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
     await this.drainRoom(current);
@@ -430,6 +439,19 @@ export class ResponsiveDeliveryController {
     return entry;
   }
 
+  private errorState(error: unknown): { message: string; at: string } {
+    return { message: redactString(error instanceof Error ? error.message : String(error)), at: this.now().toISOString() };
+  }
+
+  private setRoomError(roomId: string, domain: DeliveryErrorDomain, error: unknown): void {
+    this.stat(roomId).lastError = { ...this.errorState(error), domain };
+  }
+
+  private clearRoomError(roomId: string, domain: DeliveryErrorDomain): void {
+    const stat = this.stat(roomId);
+    if (stat.lastError?.domain === domain) stat.lastError = undefined;
+  }
+
   private reportProgress(kind: "wake_open" | "drain_success"): void {
     try { this.onProgress?.(kind); } catch { /* diagnostics never interrupt delivery */ }
   }
@@ -440,9 +462,10 @@ export class ResponsiveDeliveryController {
       let delivery: any;
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        this.clearRoomError(room.roomId, "drain");
         this.reportProgress("drain_success");
       } catch (error) {
-        this.stat(room.roomId).lastError = redactString(error instanceof Error ? error.message : String(error));
+        this.setRoomError(room.roomId, "drain", error);
         return;
       }
       const messages: ResponsiveDeliveryMessage[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
@@ -463,7 +486,7 @@ export class ResponsiveDeliveryController {
       // again, and rows whose handler already ran are only re-acknowledged.
       if (progressed === 0) return;
     }
-    this.stat(room.roomId).lastError = `responsive drain exceeded ${this.maxDrainBatches} batches`;
+    this.setRoomError(room.roomId, "drain", `responsive drain exceeded ${this.maxDrainBatches} batches`);
   }
 
   // Handling and acknowledgement are separate facts. A handler that succeeded
@@ -487,6 +510,7 @@ export class ResponsiveDeliveryController {
           ...(preamble ? { preamble } : {}),
           message,
         });
+        this.clearRoomError(room.roomId, "handler");
         this.handled.set(key, outcome);
         this.attempts.delete(key);
         if (outcome === "deferred") {
@@ -496,7 +520,7 @@ export class ResponsiveDeliveryController {
       } catch (error) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
-        stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+        this.setRoomError(room.roomId, "handler", error);
         if (attempts < this.maxHandlerAttempts) return true;
         // Bounded budget exhausted. The controller classifies the row as an
         // intentional skip and acknowledges it once, because leaving a
@@ -512,9 +536,10 @@ export class ResponsiveDeliveryController {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
     } catch (error) {
       // Only the acknowledgement is retried, and only on a later drain.
-      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.setRoomError(room.roomId, "ack", error);
       return false;
     }
+    this.clearRoomError(room.roomId, "ack");
     this.handled.delete(key);
     this.remember(key);
     if (outcome === "intentionally_skipped") stat.skipped += 1;

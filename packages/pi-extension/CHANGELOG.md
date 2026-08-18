@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.51 (2026-08-18)
+
+- Bundle timestamped responsive-delivery room diagnostics that clear only after same-domain recovery (#156).
+
 ## 0.7.50 (2026-08-18)
 
 - Bundle shared startup cleanup for expired local runtime evidence (#149).

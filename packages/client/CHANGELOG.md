@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.44 (2026-08-18)
+
+- Track current responsive-delivery room errors by recovery domain and timestamp, clearing them only after matching success (#156).
+
 ## 0.8.43 (2026-08-18)
 
 - Render `idle_wake_unarmed` explicitly in compact delivery cards without changing the underlying controller lifecycle state (#151).

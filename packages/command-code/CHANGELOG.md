@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.28 (2026-08-18)
+
+- Bundle timestamped responsive-delivery room diagnostics that clear only after same-domain recovery (#156).
+
 ## 0.7.27 (2026-08-18)
 
 - Refresh the bundled MCP tool runtime with truthful local waiter status while leaving Command Code's native delivery path unchanged (#151).

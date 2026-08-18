@@ -4455,6 +4455,7 @@ var ResponsiveDeliveryController = class {
   onWakeError;
   onWakeOpen;
   onProgress;
+  now;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
   // the same row can legitimately arrive again under a new generation.
@@ -4493,6 +4494,7 @@ var ResponsiveDeliveryController = class {
     this.onWakeError = options.onWakeError;
     this.onWakeOpen = options.onWakeOpen;
     this.onProgress = options.onProgress;
+    this.now = options.now ?? (() => /* @__PURE__ */ new Date());
   }
   status() {
     return {
@@ -4507,12 +4509,12 @@ var ResponsiveDeliveryController = class {
           skipped: stat.skipped,
           poisoned: stat.poisoned,
           deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
-          ...stat.lastError ? { lastError: stat.lastError } : {}
+          ...stat.lastError ? { lastError: stat.lastError.message, lastErrorAt: stat.lastError.at, lastErrorDomain: stat.lastError.domain } : {}
         };
       }),
       ignoredWakeHints: this.ignoredWakeHints,
       ...this.lastIgnoredWakeRoomId ? { lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {},
-      ...this.lastError ? { lastError: this.lastError } : {}
+      ...this.lastError ? { lastError: this.lastError.message, lastErrorAt: this.lastError.at } : {}
     };
   }
   async start() {
@@ -4527,8 +4529,8 @@ var ResponsiveDeliveryController = class {
     const loop = this.watchLoop();
     this.loop = loop;
     void loop.catch((error) => {
-      if (!this.abort.signal.aborted)
-        this.lastError = redactString(error instanceof Error ? error.message : String(error));
+      if (!this.abort.signal.aborted && !this.lastError)
+        this.lastError = this.errorState(error);
     }).finally(() => {
       if (this.loop === loop)
         this.loop = void 0;
@@ -4553,9 +4555,10 @@ var ResponsiveDeliveryController = class {
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
     } catch (error) {
-      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.setRoomError(roomId, "ack", error);
       return false;
     }
+    this.clearRoomError(roomId, "ack");
     this.deferred.delete(key);
     this.handled.delete(key);
     this.remember(key);
@@ -4626,7 +4629,7 @@ var ResponsiveDeliveryController = class {
             break;
           if (wakeAbort.signal.aborted)
             continue;
-          this.lastError = redactString(error instanceof Error ? error.message : String(error));
+          this.lastError = this.errorState(error);
           if (this.onWakeError?.(error) === "stop")
             return;
           if (error instanceof ParleApiError && ["reauthorize", "fix_client", "stop"].includes(error.action || ""))
@@ -4713,9 +4716,10 @@ var ResponsiveDeliveryController = class {
       const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
       if (!recovered) {
         const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
-        this.stat(room.roomId).lastError = live?.lastError || "room is degraded and could not be reinitialized";
+        this.setRoomError(room.roomId, "recover", live?.lastError || "room is degraded and could not be reinitialized");
         return;
       }
+      this.clearRoomError(room.roomId, "recover");
     }
     const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
     await this.drainRoom(current);
@@ -4752,6 +4756,17 @@ var ResponsiveDeliveryController = class {
     }
     return entry;
   }
+  errorState(error) {
+    return { message: redactString(error instanceof Error ? error.message : String(error)), at: this.now().toISOString() };
+  }
+  setRoomError(roomId, domain, error) {
+    this.stat(roomId).lastError = { ...this.errorState(error), domain };
+  }
+  clearRoomError(roomId, domain) {
+    const stat = this.stat(roomId);
+    if (stat.lastError?.domain === domain)
+      stat.lastError = void 0;
+  }
   reportProgress(kind) {
     try {
       this.onProgress?.(kind);
@@ -4765,9 +4780,10 @@ var ResponsiveDeliveryController = class {
       let delivery;
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        this.clearRoomError(room.roomId, "drain");
         this.reportProgress("drain_success");
       } catch (error) {
-        this.stat(room.roomId).lastError = redactString(error instanceof Error ? error.message : String(error));
+        this.setRoomError(room.roomId, "drain", error);
         return;
       }
       const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
@@ -4788,7 +4804,7 @@ var ResponsiveDeliveryController = class {
       if (progressed === 0)
         return;
     }
-    this.stat(room.roomId).lastError = `responsive drain exceeded ${this.maxDrainBatches} batches`;
+    this.setRoomError(room.roomId, "drain", `responsive drain exceeded ${this.maxDrainBatches} batches`);
   }
   // Handling and acknowledgement are separate facts. A handler that succeeded
   // and an ack that failed must never re-run the handler: the host has already
@@ -4809,6 +4825,7 @@ var ResponsiveDeliveryController = class {
           ...preamble ? { preamble } : {},
           message
         });
+        this.clearRoomError(room.roomId, "handler");
         this.handled.set(key, outcome);
         this.attempts.delete(key);
         if (outcome === "deferred") {
@@ -4818,7 +4835,7 @@ var ResponsiveDeliveryController = class {
       } catch (error) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
-        stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+        this.setRoomError(room.roomId, "handler", error);
         if (attempts < this.maxHandlerAttempts)
           return true;
         this.attempts.delete(key);
@@ -4831,9 +4848,10 @@ var ResponsiveDeliveryController = class {
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
     } catch (error) {
-      stat.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.setRoomError(room.roomId, "ack", error);
       return false;
     }
+    this.clearRoomError(room.roomId, "ack");
     this.handled.delete(key);
     this.remember(key);
     if (outcome === "intentionally_skipped")
@@ -7238,7 +7256,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.50";
+var PI_EXTENSION_VERSION = "0.7.51";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

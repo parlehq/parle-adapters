@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.56 (2026-08-18)
+
+- Clear recovered room diagnostics without masking active failures in other responsive-delivery domains (#156).
+
 ## 0.9.55 (2026-08-18)
 
 - Allow a slow successful delivery acknowledgement to finish inside Claude's bounded hook window instead of reporting a contradictory local timeout (#151).

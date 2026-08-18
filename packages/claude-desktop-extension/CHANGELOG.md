@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.51 (2026-08-18)
+
+- Bundle attributed, timestamped responsive-delivery diagnostics from the shared MCP runtime (#156).
+
 ## 0.8.50 (2026-08-18)
 
 - Refresh the bundled MCP runtime after the shared hook package's bounded commit-timeout correction (#151).

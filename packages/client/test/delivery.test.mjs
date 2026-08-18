@@ -194,6 +194,7 @@ test("an intentional skip acknowledges and a handler failure does not", async ()
     },
     maxHandlerAttempts: 2,
     reconnectDelayMs: 5,
+    now: () => new Date("2026-08-18T20:00:00.000Z"),
   });
   try {
     await h.client.connect();
@@ -208,6 +209,32 @@ test("an intentional skip acknowledges and a handler failure does not", async ()
     assert.equal(beta.poisoned, 1, "bounded retries then an explicit skip, never a wedged queue");
     assert.equal(beta.skipped, 1);
     assert.match(beta.lastError, /handler exploded/);
+    assert.equal(beta.lastErrorDomain, "handler", "poisoning is the terminal handler outcome");
+    assert.equal(beta.lastErrorAt, "2026-08-18T20:00:00.000Z");
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("a handler error clears after a later successful retry", async () => {
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 2, event_id: "retry-handler" }] }, profiles: "alpha" });
+  let attempts = 0;
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("handler retry needed");
+      return "handled";
+    },
+    maxHandlerAttempts: 2,
+    now: () => new Date("2026-08-18T20:00:30.000Z"),
+  });
+  try {
+    await h.client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.equal(attempts, 2);
+    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).lastError, undefined);
+    assert.deepEqual(h.acks.map(([, eventId]) => eventId), ["retry-handler"]);
   } finally {
     await controller.stop();
     h.cleanup();
@@ -373,11 +400,51 @@ test("a replacement session supersedes a prior alias owner without replay or wed
   }
 });
 
-test("an acknowledgement failure retries the ack without re-running the handler", async () => {
+test("a room drain error survives unrelated success and clears on same-domain recovery", async () => {
+  let drainFailures = 1;
+  const h = harness({ rooms: { [ALPHA]: [], [BETA]: [] } });
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path.includes(ALPHA) && path.includes("/responsive-delivery") && !path.endsWith("/ack") && drainFailures > 0) {
+        drainFailures -= 1;
+        return json({ error: { code: "internal", message: "drain unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 500);
+      }
+      return baseFetch(url, init);
+    },
+  });
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async () => "handled",
+    now: () => new Date("2026-08-18T20:01:00.000Z"),
+  });
+  try {
+    await client.connect();
+    await controller.drainForTest(ALPHA);
+    const failed = controller.status().rooms.find((room) => room.roomId === ALPHA);
+    assert.match(failed.lastError, /drain unavailable/);
+    assert.equal(failed.lastErrorAt, "2026-08-18T20:01:00.000Z");
+    assert.equal(failed.lastErrorDomain, "drain");
+    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).lastErrorAt, failed.lastErrorAt, "status reads do not restamp errors");
+
+    await controller.drainForTest(BETA);
+    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).lastErrorAt, failed.lastErrorAt, "another room cannot clear the fault");
+
+    await controller.drainForTest(ALPHA);
+    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).lastError, undefined);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("an acknowledgement failure survives a successful drain and clears after ack without re-running the handler", async () => {
   // The host has already acted on a handled row, so replaying the handler
   // would duplicate a visible side effect (Pi would inject twice).
   let ackFailures = 1;
-  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "once" }] } });
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "once" }] }, profiles: "alpha" });
   const baseFetch = h.client.fetchImpl;
   const client = new ParleAgentClient({
     cwd: h.client.cwd,
@@ -394,18 +461,29 @@ test("an acknowledgement failure retries the ack without re-running the handler"
   const handled = [];
   const controller = new ResponsiveDeliveryController(client, {
     handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
-    reconnectDelayMs: 5,
+    now: () => new Date("2026-08-18T20:02:00.000Z"),
   });
   try {
     await client.connect();
-    await controller.start();
+    await controller.drainForTest(ALPHA);
     assert.deepEqual(handled, ["once"], "handler ran once despite the failed ack");
     assert.equal(h.acks.length, 0, "nothing was acknowledged yet");
-    // A later drain retries only the acknowledgement.
+    const failed = controller.status().rooms.find((room) => room.roomId === ALPHA);
+    assert.match(failed.lastError, /ack unavailable/);
+    assert.equal(failed.lastErrorDomain, "ack");
+    assert.equal(failed.lastErrorAt, "2026-08-18T20:02:00.000Z");
+
+    h.queues.set(ALPHA, []);
+    await controller.drainForTest(ALPHA);
+    assert.match(controller.status().rooms.find((room) => room.roomId === ALPHA).lastError, /ack unavailable/, "same-room fetch success cannot mask an ack fault");
+
+    h.queues.set(ALPHA, [{ seq: 1, event_id: "once" }]);
     await controller.drainForTest(ALPHA);
     assert.deepEqual(handled, ["once"], "the handler is never re-run");
     assert.deepEqual(h.acks.map(([, id]) => id), ["once"]);
-    assert.equal(controller.status().rooms.find((room) => room.roomId === ALPHA).delivered, 1);
+    const recovered = controller.status().rooms.find((room) => room.roomId === ALPHA);
+    assert.equal(recovered.delivered, 1);
+    assert.equal(recovered.lastError, undefined);
   } finally {
     await controller.stop();
     h.cleanup();
@@ -460,14 +538,27 @@ test("a concurrent recovery request queues a drain instead of joining an in-flig
 test("a deferred row is not acknowledged until the host reports effective handling", async () => {
   // Pi queues a row and injects it only when the assistant is idle, so a
   // crash between drain and injection must leave the row redeliverable.
+  let ackFailures = 1;
   const h = harness({ rooms: { [ALPHA]: [{ seq: 3, event_id: "queued" }] } });
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      if (new URL(String(url)).pathname.endsWith("/responsive-delivery/ack") && ackFailures-- > 0) {
+        return json({ error: { code: "unavailable", message: "deferred ack unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 503);
+      }
+      return baseFetch(url, init);
+    },
+  });
   const queued = [];
-  const controller = new ResponsiveDeliveryController(h.client, {
+  const controller = new ResponsiveDeliveryController(client, {
     handler: async ({ roomId, message }) => { queued.push({ roomId, message }); return "deferred"; },
     reconnectDelayMs: 5,
+    now: () => new Date("2026-08-18T20:03:00.000Z"),
   });
   try {
-    await h.client.connect();
+    await client.connect();
     await controller.start();
     assert.equal(queued.length, 1);
     assert.deepEqual(h.acks, [], "a deferred row is never acknowledged by the drain");
@@ -475,12 +566,18 @@ test("a deferred row is not acknowledged until the host reports effective handli
     // A later drain must not re-offer the row to the handler.
     await controller.drainForTest(ALPHA);
     assert.equal(queued.length, 1, "a deferred row is never re-handled");
-    // The host reports injection; only now is it acknowledged.
+    // The host reports injection; a failed ack remains current until retry.
+    assert.equal(await controller.completeDeferred(ALPHA, queued[0].message), false);
+    const failed = controller.status().rooms.find((room) => room.roomId === ALPHA);
+    assert.match(failed.lastError, /deferred ack unavailable/);
+    assert.equal(failed.lastErrorDomain, "ack");
+    assert.equal(failed.lastErrorAt, "2026-08-18T20:03:00.000Z");
     assert.equal(await controller.completeDeferred(ALPHA, queued[0].message), true);
     assert.deepEqual(h.acks.map(([, id]) => id), ["queued"]);
     const status = controller.status().rooms.find((room) => room.roomId === ALPHA);
     assert.equal(status.delivered, 1);
     assert.equal(status.deferred, 0);
+    assert.equal(status.lastError, undefined);
   } finally {
     await controller.stop();
     h.cleanup();
@@ -527,9 +624,14 @@ test("a pending deferred row does not spin the drain", async () => {
 
 test("a terminal wake failure settles the loop and a later start resumes delivery", async () => {
   const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", failFirstWakes: 1 });
-  const controller = new ResponsiveDeliveryController(h.client, {
+  let clockReads = 0;
+  let observedAt;
+  let controller;
+  controller = new ResponsiveDeliveryController(h.client, {
     handler: () => "handled",
     reconnectDelayMs: 5,
+    now: () => new Date(Date.parse("2026-08-18T20:04:00.000Z") + clockReads++ * 1000),
+    onWakeError: () => { observedAt = controller.status().lastErrorAt; },
   });
   try {
     await controller.start();
@@ -538,6 +640,9 @@ test("a terminal wake failure settles the loop and a later start resumes deliver
     // leave the host with no recovery path short of a process restart.
     await eventually(() => controller.status().running === false);
     assert.match(controller.status().lastError, /wake refused terminally/);
+    assert.equal(observedAt, "2026-08-18T20:04:00.000Z");
+    assert.equal(controller.status().lastErrorAt, observedAt, "terminal propagation does not restamp one failure");
+    assert.equal(clockReads, 1);
 
     h.queues.set(ALPHA, [{ seq: 1, event_id: "after-restart" }]);
     await controller.start();
@@ -570,6 +675,7 @@ test("a successful internal reconnect reports the live wake stream to the host",
     assert.equal(failures.length, 1, "the retryable failure reaches host policy");
     assert.deepEqual(opens, [2], "only the subsequently opened reconciled stream reports success");
     assert.equal(controller.status().lastError, undefined, "a live stream supersedes the retryable error");
+    assert.equal(controller.status().lastErrorAt, undefined);
   } finally {
     await controller.stop();
     h.cleanup();

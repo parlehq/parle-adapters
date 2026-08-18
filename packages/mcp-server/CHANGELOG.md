@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.51 (2026-08-18)
+
+- Attribute active hook-bridge diagnostics to bridge, controller, or room state while preserving lifecycle error kinds (#156).
+
 ## 0.7.50 (2026-08-18)
 
 - Keep synchronous hook delivery commits within the host's bounded Stop window while tolerating acknowledgements slower than the ordinary local IPC timeout (#151).
