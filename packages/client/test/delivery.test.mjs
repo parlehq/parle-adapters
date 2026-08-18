@@ -321,6 +321,37 @@ test("a room entered without projection initialization is recovered, not strande
   }
 });
 
+test("observing a room ready clears a prior recovery error", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha" });
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async () => "handled",
+    now: () => new Date("2026-08-18T20:01:30.000Z"),
+  });
+  try {
+    await h.client.connect();
+    const room = h.client.runtime.rooms.find((entry) => entry.roomId === ALPHA);
+    room.state = "degraded";
+    room.lastError = "room recovery unavailable";
+    h.client.recoverRoom = async () => false;
+
+    await controller.start();
+    await eventually(() => controller.status().rooms.find((entry) => entry.roomId === ALPHA).lastErrorDomain === "recover" && h.wakeOpens() === 1);
+    const failed = controller.status().rooms.find((entry) => entry.roomId === ALPHA);
+    assert.match(failed.lastError, /room recovery unavailable/);
+    assert.equal(failed.lastErrorAt, "2026-08-18T20:01:30.000Z");
+
+    // Session replacement can restore readiness outside recoverRoom. The next
+    // observed delivery pass is same-domain recovery and must clear the error.
+    room.state = "ready";
+    room.lastError = undefined;
+    h.wake({ room_id: ALPHA });
+    await eventually(() => controller.status().rooms.find((entry) => entry.roomId === ALPHA).lastError === undefined);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
 test("a replacement session supersedes a prior alias owner without replay or wedge", async () => {
   // Own-session continuity (issue #49): the configured alias already has a
   // prior owner, the replacement claims it from the authoritative generation,

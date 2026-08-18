@@ -4719,8 +4719,8 @@ var ResponsiveDeliveryController = class {
         this.setRoomError(room.roomId, "recover", live?.lastError || "room is degraded and could not be reinitialized");
         return;
       }
-      this.clearRoomError(room.roomId, "recover");
     }
+    this.clearRoomError(room.roomId, "recover");
     const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
     await this.drainRoom(current);
   }
