@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.45 (2026-08-17)
+
+- Bundle resilient hook-bridge watcher discovery and aggregate candidate diagnostics (#133).
+
 ## 0.8.44 (2026-08-17)
 
 - Refresh the bundled MCP runtime with preview-first room capacity recovery and stronger exact-session safety guidance (#144).

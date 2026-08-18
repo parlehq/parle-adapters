@@ -92,7 +92,7 @@ export function hookBridgeRuntimeHandlePath(scope: string, pid = process.pid): s
   return join(hookBridgeStateDir(scope), `${pid}.node`);
 }
 
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

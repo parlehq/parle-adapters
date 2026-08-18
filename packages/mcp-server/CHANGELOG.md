@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.45 (2026-08-17)
+
+- Probe current hook-bridge sockets before legacy candidates, skip per-candidate status failures, reap dead flat sockets, and report aggregate watcher diagnostics (#133).
+
 ## 0.7.44 (2026-08-17)
 
 - Add guarded `parle_room_capacity_recovery` preview and completion, and harden roster and exact-session tool guidance against inferred bulk cleanup (#144).

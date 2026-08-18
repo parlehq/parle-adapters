@@ -30953,7 +30953,7 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "node:fs";
+import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4, rmSync as rmSync4 } from "node:fs";
 import { connect } from "node:net";
 import { join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -39470,7 +39470,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.44";
+var MCP_CLIENT_VERSION = "0.7.45";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -39680,37 +39680,52 @@ function hookBridgeRequest(path, payload, timeoutMs = 0) {
     });
   });
 }
-async function runWatcher(_metaUrl, args, cwd = process.cwd()) {
+async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}) {
   const agentSessionId = parseWatcherArgs(args);
-  const stateDir = hookBridgeStateDir(cwd);
+  const stateDir = dependencies.stateDir || hookBridgeStateDir(cwd);
+  const request = dependencies.request || hookBridgeRequest;
+  const isProcessAlive = dependencies.isProcessAlive || processIsAlive;
   const state = lstatSync8(stateDir);
   if (!state.isDirectory() || state.isSymbolicLink() || typeof process.getuid === "function" && state.uid !== process.getuid() || (state.mode & 63) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
   const entries = readdirSync4(stateDir, { withFileTypes: true });
-  const paths = [
-    ...entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).map((entry) => join11(stateDir, entry.name)),
-    ...entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
-      const parentDir = join11(stateDir, entry.name);
-      const parentState = lstatSync8(parentDir);
-      if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
-      return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
-    })
-  ];
-  for (const path of paths) {
+  const currentPaths = entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
+    const parentDir = join11(stateDir, entry.name);
+    const parentState = lstatSync8(parentDir);
+    if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
+    return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
+  }).sort();
+  const legacyPaths = entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).flatMap((entry) => {
+    const path = join11(stateDir, entry.name);
+    const socketState = lstatSync8(path);
+    if (socketState.isSymbolicLink() || typeof process.getuid === "function" && socketState.uid !== process.getuid() || (socketState.mode & 63) !== 0) return [];
+    if (isProcessAlive(Number(entry.name.slice(0, -5)))) return [path];
     try {
-      const status = await hookBridgeRequest(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
-      if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
-      const result2 = await hookBridgeRequest(path, { action: "wait", agentSessionId });
-      if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");
-      console.log("parle-watch: responsive delivery queued");
-      return 0;
-    } catch (error51) {
-      if (["ENOENT", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(error51?.code)) continue;
-      throw error51;
+      rmSync4(path, { force: true });
+    } catch {
     }
+    return [];
+  }).sort();
+  const paths = [...currentPaths, ...legacyPaths];
+  const probeErrors = /* @__PURE__ */ new Map();
+  for (const path of paths) {
+    let status;
+    try {
+      status = await request(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
+    } catch (error51) {
+      const code = typeof error51?.code === "string" && error51.code ? error51.code : "UNKNOWN";
+      probeErrors.set(code, (probeErrors.get(code) || 0) + 1);
+      continue;
+    }
+    if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
+    const result2 = await request(path, { action: "wait", agentSessionId });
+    if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");
+    console.log("parle-watch: responsive delivery queued");
+    return 0;
   }
-  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. Run parle_connect in this project, then re-arm with its current agent session id.`);
+  const detail = paths.length === 0 ? "Found 0 candidate sockets." : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
+  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. ${detail} Run parle_connect in this project, then re-arm with its current agent session id.`);
 }
 async function runKnownAddressContext(cwd) {
   const cfg = resolveConfig(cwd, process.env);
