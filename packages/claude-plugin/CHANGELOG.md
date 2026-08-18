@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.45 (2026-08-17)
+
+- Report hook-bridge socket startup failures as terminal instead of claiming responsive delivery is armed (#132).
+
 ## 0.9.44 (2026-08-17)
 
 - Preserve healthy hook-bridge `watching` evidence across plain status calls (#120).

@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ParleAgentClient, ParleApiError, ProfileNotFoundError } from "@parlehq/agent-client";
+import { ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, processStartedAtIso } from "@parlehq/agent-client";
 import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, scheduleEagerBootstrap } from "../dist/index.js";
 
 const expectedTools = [
@@ -589,8 +589,13 @@ test("connect and status do not wait for optional responsive delivery startup", 
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("tool waited for responsive delivery startup")), 500));
     const connect = await Promise.race([client.callTool({ name: "parle_connect", arguments: {} }), timeout]);
     assert.equal(connect.structuredContent.connected, true);
+    assert.equal(connect.structuredContent.responsiveDelivery.state, "stopped");
+    assert.doesNotMatch(connect.structuredContent.compactText, /responsive delivery is armed/);
+    assert.match(connect.structuredContent.compactText, /Next: arm or verify responsive delivery\./);
     const status = await Promise.race([client.callTool({ name: "parle_status", arguments: {} }), timeout]);
     assert.equal(status.structuredContent.runtime.sessionAddress, "@p.a.s1");
+    assert.equal(status.structuredContent.responsiveDelivery.state, "stopped");
+    assert.doesNotMatch(status.structuredContent.compactText, /responsive delivery is armed/);
   } finally {
     await client.close();
     await server.close();
@@ -735,7 +740,7 @@ test("parle_status auto-connects a configured client and reports the attempt", a
   }
 });
 
-test("parle_status surfaces an unarmed bridge error as degraded", async () => {
+test("parle_status never reports an unarmed bridge with an error as armed", async () => {
   const counters = {};
   const clientImpl = new ParleAgentClient({ env: realClientEnv(), fetch: sessionFetch(counters) });
   const deliveryBridge = {
@@ -756,13 +761,98 @@ test("parle_status surfaces an unarmed bridge error as degraded", async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const result = await client.callTool({ name: "parle_status", arguments: {} });
-    assert.match(result.structuredContent.compactText, /Delivery      backoff/);
+    assert.match(result.structuredContent.compactText, /Delivery      terminal/);
     assert.match(result.structuredContent.compactText, /Next: inspect the responsive delivery error and restart the host if it does not recover\./);
-    assert.equal(result.structuredContent.responsiveDelivery.state, "backoff");
+    assert.equal(result.structuredContent.responsiveDelivery.state, "terminal");
+    assert.equal(result.structuredContent.responsiveDelivery.reason, "bridge_failed");
+    assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
     assert.equal(result.structuredContent.responsiveDeliveryBridge.lastError, "Parle wake stream 502: Bad Gateway");
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("status and connect report a latched hook bridge listen failure instead of armed delivery", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({
+      running: false,
+      pending: 0,
+      baselineSkipped: 0,
+      socketPath: "/tmp/parle-test.sock",
+      hostSessionBound: true,
+      lastError: "listen EPERM: operation not permitted /tmp/parle-test.sock",
+      lastErrorKind: "listen",
+    }),
+  };
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-listen-failure", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    for (const result of [
+      await client.callTool({ name: "parle_connect", arguments: {} }),
+      await client.callTool({ name: "parle_status", arguments: {} }),
+    ]) {
+      assert.equal(result.structuredContent.responsiveDelivery.state, "terminal");
+      assert.equal(result.structuredContent.responsiveDelivery.reason, "bridge_listen_failed");
+      assert.equal(result.structuredContent.responsiveDelivery.nextActionKey, "repair-delivery-host");
+      assert.match(result.structuredContent.responsiveDelivery.lastError.message, /listen EPERM/);
+      assert.match(result.structuredContent.compactText, /Delivery      terminal/);
+      assert.match(result.structuredContent.compactText, /Next: restart the host after correcting the local delivery socket error\./);
+      assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("status and connect never report stale healthy evidence as armed while the bridge is down", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({ running: false, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true }),
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue132-test", clientInstanceId: "issue132-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-down-stale-evidence", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    for (const result of [
+      await client.callTool({ name: "parle_connect", arguments: {} }),
+      await client.callTool({ name: "parle_status", arguments: {} }),
+    ]) {
+      assert.equal(result.structuredContent.responsiveDelivery.state, "starting");
+      assert.equal(result.structuredContent.responsiveDelivery.reason, "bridge_starting");
+      assert.equal(result.structuredContent.responsiveDelivery.nextActionKey, "wait-for-watcher");
+      assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(evidencePath, { force: true });
   }
 });
 

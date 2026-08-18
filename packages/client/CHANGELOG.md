@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.37 (2026-08-17)
+
+- Add compact delivery guidance that distinguishes in-progress startup from a hook-bridge socket failure requiring host repair (#132).
+
 ## 0.8.36 (2026-08-17)
 
 - Return privacy-flat email login starts as `start_accepted`, preserve optional `serverStatus`, and give conditional returning-account guidance without claiming a code was sent.

@@ -34872,8 +34872,12 @@ function nextTextFor(key) {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return "arm or verify responsive delivery.";
+    case "wait-for-watcher":
+      return "wait for responsive delivery startup.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
+    case "repair-delivery-host":
+      return "restart the host after correcting the local delivery socket error.";
     default:
       return key;
   }
@@ -38213,6 +38217,7 @@ var HookDeliveryBridge = class {
   baselineDone = false;
   baselineSkipped = 0;
   lastError;
+  lastErrorKind;
   hostSessionId;
   waiter;
   unsubscribeCommitGuard;
@@ -38231,7 +38236,8 @@ var HookDeliveryBridge = class {
       ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() },
       ...this.client.runtime?.agentSessionId ? { agentSessionId: String(this.client.runtime.agentSessionId) } : {},
       ...controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {},
-      ...lastError ? { lastError } : {}
+      ...lastError ? { lastError } : {},
+      ...this.lastErrorKind ? { lastErrorKind: this.lastErrorKind } : {}
     };
   }
   bindHostSession(sessionId, allowReplace = false, correlated = false) {
@@ -38265,8 +38271,7 @@ var HookDeliveryBridge = class {
   }
   async startBridge() {
     if (this.server?.listening && this.controller.status().running) return;
-    this.lastError = void 0;
-    this.publishEvidence("starting", { expectedProgressMs: 12e4 });
+    if (!this.lastError) this.publishEvidence("starting", { expectedProgressMs: 12e4 });
     if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = this.client.onBeforeSessionCommit?.((plan) => this.guardSessionCommit(plan));
     }
@@ -38275,19 +38280,26 @@ var HookDeliveryBridge = class {
         await this.listen();
       } catch (error51) {
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        this.lastErrorKind = typeof error51 === "object" && error51 !== null && error51.syscall === "listen" ? "listen" : "startup";
         this.server = void 0;
         this.removeOwnRuntimeArtifacts();
+        this.publishEvidence("terminal", { reason: this.lastErrorKind === "listen" ? "bridge_listen_failed" : "bridge_start_failed", lastError: this.lastError });
         return;
       }
+      this.lastError = void 0;
+      this.lastErrorKind = void 0;
     }
     if (!this.controller.status().running) {
       this.baselineActive = !this.baselineDone;
       try {
         await this.controller.start();
         this.baselineDone = true;
+        this.lastError = void 0;
+        this.lastErrorKind = void 0;
         this.publishEvidence("watching", { expectedProgressMs: 57e4, lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
       } catch (error51) {
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        this.lastErrorKind = "controller";
         this.publishEvidence("backoff", { expectedProgressMs: 3e4, lastError: this.lastError });
       } finally {
         this.baselineActive = false;
@@ -38314,7 +38326,10 @@ var HookDeliveryBridge = class {
     try {
       this.evidence.record(state, event);
     } catch (error51) {
-      this.lastError = this.lastError || `responsive-delivery evidence unavailable: ${error51 instanceof Error ? error51.message : String(error51)}`;
+      if (!this.lastError) {
+        this.lastError = `responsive-delivery evidence unavailable: ${error51 instanceof Error ? error51.message : String(error51)}`;
+        this.lastErrorKind = "evidence";
+      }
     }
   }
   // Session-scoped backlog present before the bridge's first drain belongs to
@@ -38658,6 +38673,28 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
+function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
+  let resolved = responsiveDelivery;
+  const bridgeDown = bridgeStatus?.running === false;
+  const bridgeError = typeof bridgeStatus?.lastError === "string" ? bridgeStatus.lastError : void 0;
+  const bridgeErrorKind = typeof bridgeStatus?.lastErrorKind === "string" ? bridgeStatus.lastErrorKind : void 0;
+  if (bridgeDown && bridgeError) {
+    const reason = bridgeErrorKind === "listen" ? "bridge_listen_failed" : bridgeErrorKind === "startup" ? "bridge_start_failed" : bridgeErrorKind === "evidence" ? "bridge_evidence_failed" : bridgeErrorKind === "controller" ? "bridge_controller_failed" : "bridge_failed";
+    resolved = {
+      ...resolved || {},
+      state: "terminal",
+      reason,
+      lastError: { message: redactString(bridgeError), at: (/* @__PURE__ */ new Date()).toISOString() }
+    };
+  } else if (resolved?.state === "unknown" && bridgeStatus) {
+    resolved = { state: bridgeStatus.running ? "watching" : "stopped" };
+  } else if (bridgeDown && ["watching", "idle"].includes(resolved?.state)) {
+    resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
+  }
+  if (!resolved) return void 0;
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
+  return { ...resolved, ...next };
+}
 function hostSessionIdFromMeta(meta3) {
   if (!meta3 || typeof meta3 !== "object") return void 0;
   const value = meta3;
@@ -38710,14 +38747,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = status.runtime?.agentSessionId;
-      let responsiveDelivery = connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
-      if (responsiveDelivery?.state === "unknown" && bridgeStatus) {
-        responsiveDelivery = bridgeStatus.lastError ? { state: "backoff", lastError: { message: redactString(String(bridgeStatus.lastError)), at: (/* @__PURE__ */ new Date()).toISOString() } } : { state: bridgeStatus.running ? "watching" : "stopped" };
-      }
-      if (responsiveDelivery) {
-        const next = responsiveDelivery.state === "unknown" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : responsiveDelivery.state === "backoff" || responsiveDelivery.state === "stale" || responsiveDelivery.state === "terminal" || responsiveDelivery.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
-        responsiveDelivery = { ...responsiveDelivery, ...next };
-      }
+      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
       return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
@@ -38769,12 +38799,12 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
-      const responsiveDelivery = agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
+      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
       return {
         ...summary,
         ...responsiveDelivery ? { responsiveDelivery } : {},
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},
-        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery })
+        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery, next: responsiveDelivery?.nextActionKey })
       };
     }
     return summary;
@@ -39149,7 +39179,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.40";
+var MCP_CLIENT_VERSION = "0.7.41";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

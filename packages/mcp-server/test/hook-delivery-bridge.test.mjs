@@ -599,6 +599,48 @@ test("hook delivery bridge renews lifecycle evidence on observed progress and to
   }
 });
 
+test("hook delivery bridge publishes terminal evidence when socket listen fails", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-listen-failure-"));
+  const wakeSink = { push: () => {} };
+  const fakeClient = {
+    runtime: bridgeRuntime(),
+    clientInstanceId: "bridge-listen-test",
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    openWakeStream: async (signal) => heldWakeStream(wakeSink, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd, process.execPath, cwd);
+  const listen = bridge.listen.bind(bridge);
+  bridge.listen = async () => {
+    throw Object.assign(new Error("listen EPERM: operation not permitted"), { code: "EPERM", syscall: "listen" });
+  };
+  const evidencePath = join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`);
+  try {
+    await bridge.start();
+    assert.equal(bridge.status().running, false);
+    assert.equal(bridge.status().lastErrorKind, "listen");
+    assert.match(bridge.status().lastError, /listen EPERM/);
+    const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(evidence.state, "terminal");
+    assert.equal(evidence.reason, "bridge_listen_failed");
+    assert.match(evidence.lastError.message, /listen EPERM/);
+
+    await bridge.start();
+    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "terminal", "retry must not leave fresh starting evidence behind");
+
+    bridge.listen = listen;
+    await bridge.start();
+    assert.equal(bridge.status().running, true);
+    assert.equal(bridge.status().lastError, undefined);
+    assert.equal(bridge.status().lastErrorKind, undefined);
+    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "watching");
+  } finally {
+    await bridge.stop();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("hook delivery bridge records runtime publication failure without throwing", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-runtime-failure-"));
   const fakeClient = {
@@ -606,11 +648,16 @@ test("hook delivery bridge records runtime publication failure without throwing"
     ensureBootstrapped: async () => {},
     drainResponsiveDelivery: async () => ({ messages: [] }),
   };
-  const bridge = new HookDeliveryBridge(fakeClient, cwd, join(cwd, "missing-node"));
+  const bridge = new HookDeliveryBridge(fakeClient, cwd, join(cwd, "missing-node"), cwd);
+  const evidencePath = join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`);
   try {
     await bridge.start();
     assert.equal(bridge.status().running, false);
+    assert.equal(bridge.status().lastErrorKind, "startup");
     assert.match(bridge.status().lastError, /ENOENT/);
+    const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(evidence.state, "terminal");
+    assert.equal(evidence.reason, "bridge_start_failed");
   } finally {
     await bridge.stop();
     rmSync(cwd, { recursive: true, force: true });

@@ -96,6 +96,8 @@ test("compact formatter guards address parsing and next text", () => {
   assert.equal(nextTextFor("custom hint."), "custom hint.");
   assert.equal(nextTextFor("arm-watcher"), "arm or verify responsive delivery.");
   assert.equal(nextTextFor("arm-or-verify-watcher"), "arm or verify responsive delivery.");
+  assert.equal(nextTextFor("wait-for-watcher"), "wait for responsive delivery startup.");
+  assert.equal(nextTextFor("repair-delivery-host"), "restart the host after correcting the local delivery socket error.");
   assert.match(formatCompactConnectionCard({ sessionAddress: "@p.a.s1" }), /Session Address:\n@p\.a\.s1/);
 });
 
