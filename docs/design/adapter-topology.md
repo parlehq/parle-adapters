@@ -32,13 +32,15 @@ Sharing a directory, package cache, profile, credential, room, or durable agent 
     (projection cursors)
   ResponsiveDeliveryController
     wake → drain → deduplicate → handle → acknowledge
-          ↓ host handoff
   (host queue, bridge queue, or persisted host entry)
-          ↓ host-supported injection boundary
-  host context
+          ↓ host handoff across or within a process
+[host process]
+  host-supported injection boundary
           ↓ host scheduling
   model turn
 ```
+
+For native adapters, the adapter and host labels collapse to one operating-system process. MCP hosts keep the adapter in a separate child process.
 
 The shared client is headless. It owns protocol and session mechanics but imports no harness API. The diagram shows the responsive path when a controller is enabled. The controller belongs to the shared client package and runs inside the adapter process that constructed it. A hook bridge, when enabled, also runs inside the MCP child. It is not a second network client or a separate daemon.
 
@@ -254,7 +256,7 @@ Claude Desktop is a thin MCPB wrapper around the generic MCP server artifact. It
     ParleAgentClient
     MCP tools
     (count-only unread observation by default)
-    (optional ResponsiveDeliveryController + HookDeliveryBridge)
+    optional ResponsiveDeliveryController + HookDeliveryBridge
 ```
 
 The generic MCP server is delivery-tool-only by default, with count-only unread observation for runtime UX. Enabling `PARLE_RESPONSIVE_DELIVERY=hook-bridge` disables that poll and creates a controller and bridge, but a host still needs a supported exact-session binding and lifecycle hook contract. Bridge startup alone does not create host injection or idle wake.
