@@ -33670,6 +33670,33 @@ function assertStringArray(raw, label) {
     throw new Error(`Parle response ${label} is invalid.`);
   return raw;
 }
+function parseRoomParticipants(raw, expectedRoomId) {
+  if (!Array.isArray(raw?.participants))
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  try {
+    return {
+      participants: raw.participants.map((participant) => {
+        if (!participant || typeof participant !== "object" || typeof participant.session_handle !== "string" || !participant.session_handle || !Number.isFinite(Date.parse(participant.last_seen_at)) || !Number.isFinite(Date.parse(participant.expires_at)))
+          throw new Error();
+        const roomId = validateUUID(String(participant.room_id || ""), "participant room_id");
+        if (roomId !== expectedRoomId)
+          throw new Error();
+        return {
+          participant_id: validateUUID(String(participant.participant_id || ""), "participant_id"),
+          room_id: roomId,
+          principal_id: validateUUID(String(participant.principal_id || ""), "participant principal_id"),
+          agent_session_id: validateUUID(String(participant.agent_session_id || ""), "participant agent_session_id"),
+          agent_id: validateUUID(String(participant.agent_id || ""), "participant agent_id"),
+          session_handle: participant.session_handle,
+          last_seen_at: participant.last_seen_at,
+          expires_at: participant.expires_at
+        };
+      })
+    };
+  } catch {
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  }
+}
 function parseInvitationReference(raw) {
   const value = raw.trim();
   if (UUID_RE3.test(value))
@@ -34460,6 +34487,30 @@ var ParleAccountClient = class {
         outcome: "unknown",
         retry_attempted: false,
         next: "Agent deletion outcome is unknown. Do not retry blindly; inspect the owned-agent inventory before taking another action."
+      };
+    }
+  }
+  async roomParticipants(params, signal) {
+    const roomId = validateUUID(params.roomId, "roomId");
+    const config2 = this.config();
+    return parseRoomParticipants(await this.request(config2, `/v/rooms/${encodeURIComponent(roomId)}/participants`, { signal }), roomId);
+  }
+  async endOwnSession(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_end_own_session requires confirmMutation=true and a reason for POST /v/agent/sessions/{agentSessionID}/end.");
+    const agentSessionId = validateUUID(params.agentSessionId, "agentSessionId");
+    const config2 = this.config();
+    try {
+      await this.request(config2, `/v/agent/sessions/${encodeURIComponent(agentSessionId)}/end`, { method: "POST", signal, expectNoContent: true });
+      return { agent_session_id: agentSessionId, http_status: 204 };
+    } catch (error51) {
+      if (typeof error51?.status === "number" && !(error51 instanceof ParleAccountResponseContractError && error51.status >= 200 && error51.status < 300))
+        throw error51;
+      return {
+        agent_session_id: agentSessionId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Session end outcome is unknown. Do not retry blindly; call parle_room_participants again and inspect the roster before taking another action."
       };
     }
   }
@@ -38632,6 +38683,14 @@ var deleteOwnAgentSchema = {
   confirmMutation: external_exports.boolean().optional(),
   reason: external_exports.string().optional()
 };
+var roomParticipantsSchema = {
+  roomId: external_exports.string()
+};
+var endOwnSessionSchema = {
+  agentSessionId: external_exports.string(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
 var deleteProfileSchema = {
   profile: external_exports.string(),
   confirmMutation: external_exports.boolean().optional(),
@@ -38953,6 +39012,24 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => accountClient.deleteOwnAgent(params));
+  });
+  registerTool("parle_room_participants", {
+    title: "List Parle Room Participants",
+    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    inputSchema: roomParticipantsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomParticipants(params));
+  });
+  registerTool("parle_end_own_session", {
+    title: "End Own Parle Session",
+    description: "End one live agent session owned by the authenticated principal through the fixed human-session endpoint. Ending the session removes its active participant seats. The session cookie is resolved only from safe local configuration and is never accepted or returned. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    inputSchema: endOwnSessionSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.endOwnSession(params));
   });
   registerTool("parle_add_own_agent_seat", {
     title: "Parle Add Own Agent Seat",

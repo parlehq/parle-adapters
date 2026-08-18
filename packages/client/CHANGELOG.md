@@ -3,6 +3,7 @@
 ## 0.8.37 (2026-08-17)
 
 - Add compact delivery guidance that distinguishes in-progress startup from a hook-bridge socket failure requiring host repair (#132).
+- Add typed human-session controls to list an owned room's active participants and end one owned live agent session, including fail-closed roster validation and safe unknown-outcome guidance (#140).
 
 ## 0.8.36 (2026-08-17)
 

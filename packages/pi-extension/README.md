@@ -125,6 +125,8 @@ The extension registers these Pi tools:
 - `parle_create_room` - create one private or shared room through the fixed human-session endpoint.
 - `parle_create_own_agent` - create one durable agent owned by the authenticated principal without seating it or minting credentials.
 - `parle_delete_own_agent` - terminally delete one owned durable agent, including its active tokens, sessions, and seats.
+- `parle_room_participants` - list active live-session participants for one owned room without connecting an agent.
+- `parle_end_own_session` - end one owned live agent session with explicit confirmation, removing its active participant seats.
 - `parle_add_own_agent_seat` - admit one of the authenticated principal's own durable agents onto a private or shared room's seat plane.
 - `parle_harden_account` - perform one typed account-hardening transition without accepting a secret or path. The human separately runs `parle-hardening-secret` on a controlling TTY; it is never auto-launched.
 - `parle_mint_principal_invite` - mint one target-proof ordinary person invitation by leading-at handle or email. Handle targets return a resolved immutable identity and non-secret locator. Email targets return only a privacy-flat accepted result with fixed 30-day expiry while the mailer handles locator delivery. Possession of a locator grants no authority.

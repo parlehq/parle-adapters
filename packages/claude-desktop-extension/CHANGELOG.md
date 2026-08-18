@@ -3,6 +3,7 @@
 ## 0.8.41 (2026-08-17)
 
 - Refresh the bundled MCP runtime so hook-bridge socket startup failures report terminal delivery evidence instead of armed delivery (#132).
+- Refresh the bundled MCP runtime with room-participant inventory and guarded own-session ending for stale-session capacity recovery (#140).
 
 ## 0.8.40 (2026-08-17)
 

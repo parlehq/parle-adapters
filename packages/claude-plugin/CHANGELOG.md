@@ -3,6 +3,7 @@
 ## 0.9.45 (2026-08-17)
 
 - Report hook-bridge socket startup failures as terminal instead of claiming responsive delivery is armed (#132).
+- Refresh the bundled MCP runtime with room-participant inventory and guarded own-session ending for stale-session capacity recovery (#140).
 
 ## 0.9.44 (2026-08-17)
 

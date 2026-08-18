@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -80,6 +80,16 @@ const deleteOwnAgentSchema = {
   reason: z.string().optional(),
 };
 
+const roomParticipantsSchema = {
+  roomId: z.string(),
+};
+
+const endOwnSessionSchema = {
+  agentSessionId: z.string(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
 const deleteProfileSchema = {
   profile: z.string(),
   confirmMutation: z.boolean().optional(),
@@ -134,6 +144,8 @@ export type ParleAccountClientLike = {
   createRoom(params: CreateRoomParams): Promise<unknown>;
   createOwnAgent(params: CreateOwnAgentParams): Promise<unknown>;
   deleteOwnAgent(params: DeleteOwnAgentParams): Promise<unknown>;
+  roomParticipants(params: RoomParticipantsParams): Promise<unknown>;
+  endOwnSession(params: EndOwnSessionParams): Promise<unknown>;
   addOwnAgentSeat(params: AddOwnAgentSeatParams): Promise<unknown>;
   mintPrincipalInvite(params: MintPrincipalInviteParams): Promise<unknown>;
   claimPrincipalInvite(params: ClaimPrincipalInviteParams): Promise<unknown>;
@@ -487,6 +499,26 @@ export function registerParleTools(
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => accountClient.deleteOwnAgent(params as DeleteOwnAgentParams));
+  });
+
+  registerTool("parle_room_participants", {
+    title: "List Parle Room Participants",
+    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    inputSchema: roomParticipantsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomParticipants(params as RoomParticipantsParams));
+  });
+
+  registerTool("parle_end_own_session", {
+    title: "End Own Parle Session",
+    description: "End one live agent session owned by the authenticated principal through the fixed human-session endpoint. Ending the session removes its active participant seats. The session cookie is resolved only from safe local configuration and is never accepted or returned. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    inputSchema: endOwnSessionSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.endOwnSession(params as EndOwnSessionParams));
   });
 
   registerTool("parle_add_own_agent_seat", {

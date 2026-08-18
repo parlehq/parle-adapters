@@ -2732,6 +2732,33 @@ function assertStringArray(raw, label) {
     throw new Error(`Parle response ${label} is invalid.`);
   return raw;
 }
+function parseRoomParticipants(raw, expectedRoomId) {
+  if (!Array.isArray(raw?.participants))
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  try {
+    return {
+      participants: raw.participants.map((participant) => {
+        if (!participant || typeof participant !== "object" || typeof participant.session_handle !== "string" || !participant.session_handle || !Number.isFinite(Date.parse(participant.last_seen_at)) || !Number.isFinite(Date.parse(participant.expires_at)))
+          throw new Error();
+        const roomId = validateUUID(String(participant.room_id || ""), "participant room_id");
+        if (roomId !== expectedRoomId)
+          throw new Error();
+        return {
+          participant_id: validateUUID(String(participant.participant_id || ""), "participant_id"),
+          room_id: roomId,
+          principal_id: validateUUID(String(participant.principal_id || ""), "participant principal_id"),
+          agent_session_id: validateUUID(String(participant.agent_session_id || ""), "participant agent_session_id"),
+          agent_id: validateUUID(String(participant.agent_id || ""), "participant agent_id"),
+          session_handle: participant.session_handle,
+          last_seen_at: participant.last_seen_at,
+          expires_at: participant.expires_at
+        };
+      })
+    };
+  } catch {
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  }
+}
 function parseInvitationReference(raw) {
   const value = raw.trim();
   if (UUID_RE3.test(value))
@@ -3522,6 +3549,30 @@ var ParleAccountClient = class {
         outcome: "unknown",
         retry_attempted: false,
         next: "Agent deletion outcome is unknown. Do not retry blindly; inspect the owned-agent inventory before taking another action."
+      };
+    }
+  }
+  async roomParticipants(params, signal) {
+    const roomId = validateUUID(params.roomId, "roomId");
+    const config = this.config();
+    return parseRoomParticipants(await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/participants`, { signal }), roomId);
+  }
+  async endOwnSession(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_end_own_session requires confirmMutation=true and a reason for POST /v/agent/sessions/{agentSessionID}/end.");
+    const agentSessionId = validateUUID(params.agentSessionId, "agentSessionId");
+    const config = this.config();
+    try {
+      await this.request(config, `/v/agent/sessions/${encodeURIComponent(agentSessionId)}/end`, { method: "POST", signal, expectNoContent: true });
+      return { agent_session_id: agentSessionId, http_status: 204 };
+    } catch (error) {
+      if (typeof error?.status === "number" && !(error instanceof ParleAccountResponseContractError && error.status >= 200 && error.status < 300))
+        throw error;
+      return {
+        agent_session_id: agentSessionId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Session end outcome is unknown. Do not retry blindly; call parle_room_participants again and inspect the roster before taking another action."
       };
     }
   }
@@ -7896,7 +7947,7 @@ function statusDetails(ctx) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_rooms", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_room_participants", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_end_own_session", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue2(cfg.sessionAlias),
@@ -8514,6 +8565,36 @@ function parleExtension(pi) {
       const cfg = resolveConfig2(ctx.cwd || process.cwd());
       assertEnabled(cfg);
       return formatResult(await accountClient(ctx.cwd || process.cwd()).deleteOwnAgent(params, signal));
+    }
+  });
+  pi.registerTool({
+    name: "parle_room_participants",
+    label: "List Parle Room Participants",
+    description: "List active live-session participants for one owned room through the fixed GET /v/rooms/{roomID}/participants human-session endpoint. This does not connect an agent to the room. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    parameters: Type.Object({
+      roomId: Type.String({ description: "Exact UUID of the owned room." })
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig2(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).roomParticipants(params, signal));
+    }
+  });
+  pi.registerTool({
+    name: "parle_end_own_session",
+    label: "End Own Parle Session",
+    description: "End one live agent session owned by the authenticated principal through the fixed POST /v/agent/sessions/{agentSessionID}/end human-session endpoint. Ending the session removes its active participant seats. The session cookie is read only from resolved local configuration and never accepted or returned. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    parameters: Type.Object({
+      agentSessionId: Type.String({ description: "Exact UUID of the owned live agent session to end." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm ending the live session." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for ending the live session." }))
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig2(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).endOwnSession(params, signal));
     }
   });
   pi.registerTool({
