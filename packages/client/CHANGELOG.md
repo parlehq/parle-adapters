@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.37 (2026-08-17)
+
+- Add typed human-session controls to list an owned room's active participants and end one owned live agent session, including fail-closed roster validation and safe unknown-outcome guidance (#140).
+
 ## 0.8.36 (2026-08-17)
 
 - Return privacy-flat email login starts as `start_accepted`, preserve optional `serverStatus`, and give conditional returning-account guidance without claiming a code was sent.

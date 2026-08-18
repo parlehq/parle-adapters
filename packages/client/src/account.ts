@@ -115,6 +115,16 @@ export type DeleteOwnAgentParams = {
   reason?: string;
 };
 
+export type RoomParticipantsParams = {
+  roomId: string;
+};
+
+export type EndOwnSessionParams = {
+  agentSessionId: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
 export type AddOwnAgentSeatParams = {
   roomId: string;
   agentId: string;
@@ -383,6 +393,34 @@ function optionalUUID(raw: unknown): string | undefined {
 function assertStringArray(raw: any, label: string): string[] {
   if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string")) throw new Error(`Parle response ${label} is invalid.`);
   return raw;
+}
+
+function parseRoomParticipants(raw: any, expectedRoomId: string) {
+  if (!Array.isArray(raw?.participants)) throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  try {
+    return {
+      participants: raw.participants.map((participant: any) => {
+        if (!participant || typeof participant !== "object"
+          || typeof participant.session_handle !== "string" || !participant.session_handle
+          || !Number.isFinite(Date.parse(participant.last_seen_at))
+          || !Number.isFinite(Date.parse(participant.expires_at))) throw new Error();
+        const roomId = validateUUID(String(participant.room_id || ""), "participant room_id");
+        if (roomId !== expectedRoomId) throw new Error();
+        return {
+          participant_id: validateUUID(String(participant.participant_id || ""), "participant_id"),
+          room_id: roomId,
+          principal_id: validateUUID(String(participant.principal_id || ""), "participant principal_id"),
+          agent_session_id: validateUUID(String(participant.agent_session_id || ""), "participant agent_session_id"),
+          agent_id: validateUUID(String(participant.agent_id || ""), "participant agent_id"),
+          session_handle: participant.session_handle,
+          last_seen_at: participant.last_seen_at,
+          expires_at: participant.expires_at,
+        };
+      }),
+    };
+  } catch {
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  }
 }
 
 function parseInvitationReference(raw: string): string {
@@ -1140,6 +1178,30 @@ export class ParleAccountClient {
         outcome: "unknown",
         retry_attempted: false,
         next: "Agent deletion outcome is unknown. Do not retry blindly; inspect the owned-agent inventory before taking another action.",
+      };
+    }
+  }
+
+  async roomParticipants(params: RoomParticipantsParams, signal?: AbortSignal) {
+    const roomId = validateUUID(params.roomId, "roomId");
+    const config = this.config();
+    return parseRoomParticipants(await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/participants`, { signal }), roomId);
+  }
+
+  async endOwnSession(params: EndOwnSessionParams, signal?: AbortSignal) {
+    if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_end_own_session requires confirmMutation=true and a reason for POST /v/agent/sessions/{agentSessionID}/end.");
+    const agentSessionId = validateUUID(params.agentSessionId, "agentSessionId");
+    const config = this.config();
+    try {
+      await this.request(config, `/v/agent/sessions/${encodeURIComponent(agentSessionId)}/end`, { method: "POST", signal, expectNoContent: true });
+      return { agent_session_id: agentSessionId, http_status: 204 };
+    } catch (error: any) {
+      if (typeof error?.status === "number" && !(error instanceof ParleAccountResponseContractError && error.status >= 200 && error.status < 300)) throw error;
+      return {
+        agent_session_id: agentSessionId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Session end outcome is unknown. Do not retry blindly; call parle_room_participants again and inspect the roster before taking another action.",
       };
     }
   }

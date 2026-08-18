@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.41 (2026-08-17)
+
+- Expose `parle_room_participants` and guarded `parle_end_own_session` tools so operators can inspect stale room sessions and reclaim their participant capacity without connecting an agent (#140).
+
 ## 0.7.40 (2026-08-17)
 
 - Keep repeated hook-bridge startup from replacing healthy persisted `watching` evidence with `starting`, restoring truthful plain `parle_status` results (#120).

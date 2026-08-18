@@ -13,6 +13,7 @@ const SEAT_ID = "019f7c00-0000-7000-8000-000000000002";
 const PARTICIPANT_ID = "019f7c00-0000-7000-8000-000000000003";
 const AGENT_ID = "019f7c00-0000-7000-8000-000000000004";
 const AGENT_TOKEN_ID = "019f7c00-0000-7000-8000-000000000005";
+const AGENT_SESSION_ID = "019f7c00-0000-7000-8000-000000000008";
 const ADDITIONAL_AGENT_ID = "019f7c00-0000-7000-8000-000000000006";
 const ADDITIONAL_AGENT_TOKEN_ID = "019f7c00-0000-7000-8000-000000000007";
 const SECRET = `parle_inv_${"z".repeat(43)}`;
@@ -476,6 +477,78 @@ test("shared account client creates rooms and admits own agents through fixed hu
       { path: "/v/rooms", method: "POST", body: { kind: "shared", room_handle: "shared-room" }, cookie: "__Host-parle_session=human-cookie" },
       { path: `/v/rooms/${ROOM_ID}/seats`, method: "POST", body: { agent_id: AGENT_ID }, cookie: "__Host-parle_session=human-cookie" },
     ]);
+  } finally { f.cleanup(); }
+});
+
+test("shared account client lists room participants and ends one own session through fixed human-session endpoints", async () => {
+  const f = fixture();
+  const calls = [];
+  try {
+    const roster = {
+      participants: [{
+        participant_id: PARTICIPANT_ID,
+        room_id: ROOM_ID,
+        principal_id: PRINCIPAL_ID,
+        agent_session_id: AGENT_SESSION_ID,
+        agent_id: AGENT_ID,
+        session_handle: "abcdefghijklmno2",
+        last_seen_at: "2026-08-17T10:00:00Z",
+        expires_at: "2026-08-18T10:00:00Z",
+      }],
+    };
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, method: init.method, body: init.body, cookie: init.headers.Cookie });
+        if (path === `/v/rooms/${ROOM_ID}/participants`) return response(roster);
+        if (path === `/v/agent/sessions/${AGENT_SESSION_ID}/end`) return new Response(null, { status: 204 });
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    assert.deepEqual(await client.roomParticipants({ roomId: ROOM_ID.toUpperCase() }), roster);
+    assert.deepEqual(await client.endOwnSession({ agentSessionId: AGENT_SESSION_ID.toUpperCase(), confirmMutation: true, reason: "reclaim stale capacity" }), {
+      agent_session_id: AGENT_SESSION_ID,
+      http_status: 204,
+    });
+    assert.deepEqual(calls, [
+      { path: `/v/rooms/${ROOM_ID}/participants`, method: "GET", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+      { path: `/v/agent/sessions/${AGENT_SESSION_ID}/end`, method: "POST", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+    ]);
+  } finally { f.cleanup(); }
+});
+
+test("session recovery controls fail closed and preserve ambiguous end outcomes", async () => {
+  const f = fixture();
+  let calls = 0;
+  try {
+    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { calls += 1; throw new TypeError("connection reset after dispatch"); } });
+    await assert.rejects(client.roomParticipants({ roomId: "not-a-uuid" }), /roomId must be a non-zero UUID/);
+    await assert.rejects(client.endOwnSession({ agentSessionId: AGENT_SESSION_ID, reason: "missing confirmation" }), /confirmMutation=true/);
+    await assert.rejects(client.endOwnSession({ agentSessionId: "not-a-uuid", confirmMutation: true, reason: "invalid id" }), /agentSessionId must be a non-zero UUID/);
+    assert.equal(calls, 0);
+
+    const unknown = await client.endOwnSession({ agentSessionId: AGENT_SESSION_ID, confirmMutation: true, reason: "reclaim" });
+    assert.deepEqual(unknown, {
+      agent_session_id: AGENT_SESSION_ID,
+      outcome: "unknown",
+      retry_attempted: false,
+      next: "Session end outcome is unknown. Do not retry blindly; call parle_room_participants again and inspect the roster before taking another action.",
+    });
+    assert.equal(calls, 1);
+
+    const malformedRoster = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ participants: [{ room_id: ROOM_ID }] }) });
+    await assert.rejects(
+      malformedRoster.roomParticipants({ roomId: ROOM_ID }),
+      (error) => error instanceof ParleAccountResponseContractError && error.status === 200,
+    );
+
+    const denied = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ error: { code: "not_found", message: "not found", action: "stop", retryable: false, scope: "account" } }, 404) });
+    await assert.rejects(
+      denied.endOwnSession({ agentSessionId: AGENT_SESSION_ID, confirmMutation: true, reason: "not owned" }),
+      (error) => error.status === 404 && error.code === "not_found" && error.action === "stop",
+    );
   } finally { f.cleanup(); }
 });
 
