@@ -12,7 +12,7 @@
     "pack:desktop": "pnpm build:mcp && pnpm -F @parlehq/claude-desktop-extension pack:mcpb",
     "check:manifests": "node scripts/check-manifest-versions.mjs",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "node scripts/test-workspaces.mjs"
   },
   "devDependencies": {
     "@parlehq/agent-client": "file:packages/client",
