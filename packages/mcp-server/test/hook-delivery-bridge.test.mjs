@@ -249,11 +249,9 @@ test("hook bridge cleanup retains a raced replacement and continues", () => {
     cleanupHookBridgeArtifacts(stateDir, {
       processIsAlive: () => false,
       lstat(path) {
-        if (path === replacedPath && ++targetInspections === 2) {
-          rmSync(path, { force: true });
-          writeFileSync(path, JSON.stringify({ pid: replacedPid }), { mode: 0o600 });
-        }
-        return lstatSync(path);
+        const stat = lstatSync(path);
+        if (path === replacedPath && ++targetInspections === 2) return { dev: stat.dev, ino: stat.ino + 1 };
+        return stat;
       },
     });
     assert.equal(existsSync(replacedPath), true, "an inode replacement observed before removal wins");
