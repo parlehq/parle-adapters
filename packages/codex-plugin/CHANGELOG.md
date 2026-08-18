@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.50 (2026-08-18)
+
+- Keep Codex Stop behavior unchanged while bundling the shared hook's opt-in Claude non-error output mode.
+
 ## 0.6.49 (2026-08-18)
 
 - Refresh the bundled MCP runtime with socket-derived waiter status and idempotent duplicate watcher attachment (#151).

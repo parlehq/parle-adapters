@@ -39,12 +39,12 @@ test("Claude hooks bind the host session and cover every delivery boundary", () 
 
   // UserPromptSubmit and PreToolUse alone strand queued work when a watcher
   // wake produces a turn that calls no tool. Stop is the terminal boundary that
-  // blocks and continues; PostToolUse cuts latency after long tools.
+  // continues through non-error context; PostToolUse cuts latency after long tools.
   for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse"]) {
     assert.ok(hooks.hooks[event], `${event} hook is missing; queued delivery would strand`);
     assert.equal(hooks.hooks[event][0].hooks[0].command, bind, `${event} must drain delivery`);
   }
-  assert.equal(hooks.hooks.Stop[0].hooks[0].command, `${bind} --idle-wake-launcher "\${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh"`);
+  assert.equal(hooks.hooks.Stop[0].hooks[0].command, `${bind} --stop-additional-context --idle-wake-launcher "\${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh"`);
 
   // Claude-native schema only. Codex-only keys and launcher assumptions must
   // not be copied across hosts.

@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind --direct-parent --idle-wake-launcher \"${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh\"",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/parle-hook.mjs\" --bind --direct-parent --stop-additional-context --idle-wake-launcher \"${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh\"",
             "timeout": 5
           }
         ]

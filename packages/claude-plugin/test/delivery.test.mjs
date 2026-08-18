@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const HOOK = resolve(root, "hooks/parle-hook.mjs");
 const MCP_BRIDGE_MODULE = pathToFileURL(resolve(root, "../mcp-server/dist/hook-delivery-bridge.js")).href;
-const CLAUDE_ARGS = ["--bind", "--direct-parent"];
+const CLAUDE_ARGS = ["--bind", "--direct-parent", "--stop-additional-context"];
 const ROUTE_ID = "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61";
 
 function stateDir(scope) {
@@ -162,12 +162,13 @@ test("an injected delivery carries the opaque reply route into model context", a
   });
 });
 
-test("Stop blocks with the delivery so a tool-free turn cannot strand it", async () => {
+test("Stop injects delivery as non-error context so a tool-free turn cannot strand it", async () => {
   await withBridge({ messages: [deliveredRow(9)] }, async ({ cwd }) => {
     const { stdout } = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     const output = JSON.parse(stdout);
-    assert.equal(output.decision, "block");
-    assert.match(output.reason, new RegExp(`reply_route_id: ${ROUTE_ID}`));
+    assert.equal(output.hookSpecificOutput.hookEventName, "Stop");
+    assert.equal(Object.hasOwn(output, "decision"), false);
+    assert.match(output.hookSpecificOutput.additionalContext, new RegExp(`reply_route_id: ${ROUTE_ID}`));
   });
 });
 
@@ -186,8 +187,9 @@ test("Stop requests one bounded idle-wake attachment only for an empty unarmed b
   await withBridge({ messages: [] }, async ({ cwd, bridge }) => {
     const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     const output = JSON.parse(result.stdout);
-    assert.equal(output.decision, "block");
-    assert.equal(output.reason, `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${quotedLauncher} 'parle-agent-session'`);
+    assert.equal(output.hookSpecificOutput.hookEventName, "Stop");
+    assert.equal(Object.hasOwn(output, "decision"), false);
+    assert.equal(output.hookSpecificOutput.additionalContext, `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${quotedLauncher} 'parle-agent-session'`);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
   });
 
@@ -219,9 +221,12 @@ test("a Stop-delivered batch stays first and carries re-attachment through the s
     const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
     const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     const output = JSON.parse(result.stdout);
-    assert.match(output.reason, /Parle responsive delivery seq=10/);
-    assert.match(output.reason, /idle wake is not attached/);
-    assert.ok(output.reason.indexOf("Parle responsive delivery seq=10") < output.reason.indexOf("Parle idle wake is not attached"));
+    const context = output.hookSpecificOutput.additionalContext;
+    assert.equal(output.hookSpecificOutput.hookEventName, "Stop");
+    assert.equal(Object.hasOwn(output, "decision"), false);
+    assert.match(context, /Parle responsive delivery seq=10/);
+    assert.match(context, /idle wake is not attached/);
+    assert.ok(context.indexOf("Parle responsive delivery seq=10") < context.indexOf("Parle idle wake is not attached"));
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
   });
 });

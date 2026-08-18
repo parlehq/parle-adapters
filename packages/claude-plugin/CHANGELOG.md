@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.54 (2026-08-18)
+
+- Deliver Stop-boundary messages and idle-wake instructions as non-error hook context instead of Claude's misleading `Stop hook error` rendering.
+
 ## 0.9.53 (2026-08-18)
 
 - Restore one bounded current-plugin waiter attachment at eligible Stop boundaries while preserving delivery precedence, truthful unarmed status, and no bridge IPC after Claude's Stop fence is active (#151).

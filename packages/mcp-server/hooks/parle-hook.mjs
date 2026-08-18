@@ -15,12 +15,14 @@ function parseArgs(argv) {
   let bind = false;
   let directParent = false;
   let knownAddressContext = false;
+  let stopAdditionalContext = false;
   let idleWakeLauncher;
   let scope;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--bind") bind = true;
     else if (argv[index] === "--direct-parent") directParent = true;
     else if (argv[index] === "--known-address-context") knownAddressContext = true;
+    else if (argv[index] === "--stop-additional-context") stopAdditionalContext = true;
     else if (argv[index] === "--idle-wake-launcher") {
       idleWakeLauncher = argv[++index];
       if (!idleWakeLauncher || !isAbsolute(idleWakeLauncher)) throw new Error("Parle idle-wake launcher must be an absolute path");
@@ -31,7 +33,7 @@ function parseArgs(argv) {
     }
     else throw new Error(`Unknown Parle hook argument: ${argv[index]}`);
   }
-  return { bind, directParent, knownAddressContext, idleWakeLauncher, scope };
+  return { bind, directParent, knownAddressContext, stopAdditionalContext, idleWakeLauncher, scope };
 }
 
 function renderKnownAddressContext(cwd) {
@@ -193,9 +195,9 @@ function formatMessages(messages) {
   ].join("\n\n");
 }
 
-function hookOutput(event, context) {
-  if (event === "Stop") return { decision: "block", reason: context };
-  if (["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"].includes(event)) {
+function hookOutput(event, context, stopAdditionalContext) {
+  if (event === "Stop" && !stopAdditionalContext) return { decision: "block", reason: context };
+  if (["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"].includes(event)) {
     return {
       hookSpecificOutput: {
         hookEventName: event,
@@ -267,7 +269,7 @@ async function main() {
       ...(deliveryBatch ? [formatMessages(deliveryBatch.messages)] : []),
       ...(rearm ? [rearm] : []),
     ];
-    const output = contextParts.length ? hookOutput(payload.hook_event_name, contextParts.join("\n\n")) : undefined;
+    const output = contextParts.length ? hookOutput(payload.hook_event_name, contextParts.join("\n\n"), args.stopAdditionalContext) : undefined;
     await writeOutput(output || {});
     outputWritten = true;
     if (!deliveryBatch || !output) return;
