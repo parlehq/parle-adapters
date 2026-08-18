@@ -621,7 +621,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-08-10";
+var DEFAULT_VERSION = "2026-08-17";
 var ParleApiError = class extends Error {
   status;
   code;
@@ -22346,7 +22346,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.22";
+var ADAPTER_VERSION = "0.7.23";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

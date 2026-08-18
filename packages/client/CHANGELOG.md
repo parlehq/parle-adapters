@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.39 (2026-08-17)
+
+- Advance the sole supported Parle-Version to 2026-08-17 for the canonical error-contract hard cut (parlehq/parle#810).
+
 ## 0.8.38 (2026-08-17)
 
 - Republish the merged #132 and #140 client under a unique version after the concurrent releases shared 0.8.37; runtime behavior is unchanged from main.
