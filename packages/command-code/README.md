@@ -2,6 +2,8 @@
 
 Native Command Code mod packaging for Parle.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md#command-code) for Command Code's in-process delivery path and idle-host limit. This README owns Command Code installation and host-specific behavior.
+
 The package contributes one user-scope mod. That mod registers the Parle tools with `cmd.addTool`, adds stable safety guidance with `appendSystemPrompt`, renders connection state with `cmd.ui.setStatus`, and owns responsive delivery through Command Code lifecycle and session persistence APIs.
 
 It does not install an Agent Skill, register an MCP server, edit Command Code settings, spawn hook helpers, or create adapter-owned socket state.

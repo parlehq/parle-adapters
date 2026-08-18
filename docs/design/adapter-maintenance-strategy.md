@@ -4,6 +4,8 @@ Status: design draft for review
 Date: 2026-07-06
 Related: `package-architecture.md`, `claude-adapter-update-plan.md`, `claude-desktop-mcpb-package.md`
 
+Current process topology, state ownership, and delivery-stage vocabulary are canonical in [`adapter-topology.md`](./adapter-topology.md). This document owns maintenance and API-first routing strategy.
+
 ## Objective
 
 Optimize for minimal maintenance across a wide and changing harness market.
@@ -141,7 +143,7 @@ Pi and Command Code remain native because they have capabilities MCP v1 does not
 - prompt injection into the active session
 - status/footer behavior
 
-MCP wrappers are better for hosts that need pull-only tool access and simple installation. They should not try to recreate Pi's push loop unless the host provides a real background delivery surface. If a future host needs responsive delivery, the implementation should use shared client wake/drain/ack primitives rather than polling `waitSeconds`.
+MCP wrappers are better for hosts that need tool access and simple installation. Desktop and generic MCP hosts remain pull-only. Claude Code and Codex add responsive delivery only because they expose trusted lifecycle hooks; their MCP children reuse the shared controller and hook bridge rather than recreating Pi's native path. A future host must have a real injection boundary and use shared wake, drain, and acknowledgement primitives rather than polling `waitSeconds`.
 
 ## Future adapter routing rule
 

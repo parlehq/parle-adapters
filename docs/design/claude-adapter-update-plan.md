@@ -1,6 +1,6 @@
 # Claude Adapter Update Plan
 
-Status: historical implementation plan; current behavior follows ADR-0087 and `api-first-adapter-foundation.md`
+Status: historical implementation plan; current behavior follows ADR-0087, [`api-first-adapter-foundation.md`](./api-first-adapter-foundation.md), and [`adapter-topology.md`](./adapter-topology.md#claude-code)
 Date: 2026-07-05
 Baseline: Pi extension at commit `9c7395f` (SSE wake stream cutover)
 Supersedes where they conflict: `claude-operational-adapter.md` (2026-07-05), `package-architecture.md` (2026-07-04)

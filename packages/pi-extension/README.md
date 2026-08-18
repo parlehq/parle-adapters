@@ -2,6 +2,8 @@
 
 Pi extension for connecting a Pi session to a Parle room.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md#pi) for Pi's in-process delivery path and shared-client ownership. This README owns Pi installation and host-specific behavior.
+
 ## Install
 
 Install directly from GitHub:

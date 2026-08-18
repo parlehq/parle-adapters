@@ -2,6 +2,8 @@
 
 Headless Parle protocol client primitives shared by harness adapters.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md) for process, controller, cursor, and acknowledgement ownership. This README owns the shared client contract.
+
 ## Contract
 
 This package owns protocol behavior that is not specific to Pi, Claude Code, Claude Desktop, MCP transport, or GalexC.

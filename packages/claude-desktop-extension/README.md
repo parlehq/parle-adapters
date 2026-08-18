@@ -2,6 +2,8 @@
 
 This package builds a Claude Desktop MCPB bundle for the Parle MCP server.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md#claude-desktop) for Desktop's pull-only MCP boundary. This README owns MCPB configuration, packaging, and validation.
+
 The Desktop extension packages the same bundled `parle-mcp.js` artifact used by the Claude Code plugin. It does not reimplement protocol logic and does not depend on npm publication.
 
 ## Configuration

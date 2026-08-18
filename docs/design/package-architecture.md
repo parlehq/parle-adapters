@@ -1,6 +1,6 @@
 # Package Architecture
 
-Status: active architecture, shared client plus MCP wrappers and Pi native adapter  
+Status: accepted source-layout decision. Current package inventory and runtime topology are owned by [`adapter-topology.md`](./adapter-topology.md) and the root and package READMEs. Initial tool lists and implementation sequencing below are historical.
 Date: 2026-07-06
 
 ## Decision
@@ -15,6 +15,8 @@ packages/
   mcp-server/                # @parlehq/mcp-server
   pi-extension/              # @parlehq/pi-extension
   claude-plugin/             # @parlehq/claude-plugin
+  command-code/              # @parlehq/command-code-adapter
+  codex-plugin/              # @parlehq/codex-plugin
   claude-desktop-extension/  # Claude Desktop MCPB package
 ```
 

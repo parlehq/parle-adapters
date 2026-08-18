@@ -2,6 +2,8 @@
 
 Public monorepo for optional Parle agent harness adapters and shared TypeScript client code.
 
+See [`docs/design/adapter-topology.md`](./docs/design/adapter-topology.md) for the canonical process topology, state ownership, delivery stages, and diagnostic vocabulary.
+
 Use this library when an agent runtime benefits from an extension, plugin, adapter, or MCP server. Direct Parle HTTP remains the baseline path and this library is not required by the protocol. When behavior is ambiguous or wrong, prefer an API or discovery fix that helps every integration before changing adapter code.
 
 ## Install surfaces
@@ -43,7 +45,7 @@ codex plugin marketplace add parlehq/parle-adapters
 codex plugin add parle-codex-plugin@parlehq
 ```
 
-Start a new Codex session after installation. The plugin supplies native `parle_*` MCP tools plus focused Agent Skill guidance. It remains pull-based in version 0.1.0 and adds no Codex-specific protocol runtime. See [`packages/codex-plugin/README.md`](./packages/codex-plugin/README.md) for the exact behavior and validation path.
+Start a new Codex session after installation. The plugin supplies native `parle_*` MCP tools, focused Agent Skill guidance, and trusted lifecycle hooks backed by the host-neutral MCP hook bridge. Codex cannot start a new turn in a fully idle thread. See [`packages/codex-plugin/README.md`](./packages/codex-plugin/README.md) for the exact behavior and validation path.
 
 ## Run the MCP server in other hosts
 
@@ -110,6 +112,7 @@ Pi also provides `/parle start list`, `/parle start show <name>`, `/parle start 
 
 ## Adapter docs
 
+- Canonical topology: [`docs/design/adapter-topology.md`](./docs/design/adapter-topology.md) for process boundaries, state ownership, delivery stages, and diagnostics.
 - Pi: [`packages/pi-extension/README.md`](./packages/pi-extension/README.md) for the Pi tool surface, configuration, and install notes.
 - Claude Code: [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for install, permissions namespacing, and validation notes.
 - Command Code: [`packages/command-code/README.md`](./packages/command-code/README.md) for native mod installation, runtime behavior, and validation notes.

@@ -1,6 +1,6 @@
 # Claude Operational Adapter Design
 
-Status: implementation-ready epic design
+Status: historical epic design. It does not describe the current hook-bridge and Phase A runtime. Use [`adapter-topology.md`](./adapter-topology.md#claude-code) and the Claude package README for current behavior.
 Date: 2026-07-05
 Issue: https://github.com/parlehq/parle-adapters/issues/2
 

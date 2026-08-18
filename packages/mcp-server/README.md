@@ -2,6 +2,8 @@
 
 Host-agnostic stdio MCP server for Parle.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md) for MCP child, hook bridge, queue, lease, and lifecycle boundaries. This README owns the MCP tool and runtime contract.
+
 ## Contract
 
 This package exposes Parle tools over MCP by depending on `@parlehq/agent-client`. It must not import Pi, Claude Code plugin, Claude Desktop bundle, or GalexC-specific code.

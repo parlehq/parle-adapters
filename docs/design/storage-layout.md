@@ -4,15 +4,15 @@ Status: accepted
 
 ## Context
 
-Parle adapters need one predictable location for room-bound credentials and the human-session state used by typed account operations. The location must be easy to inspect, relocate, secure, and remove without making credential discovery depend on several independently configured roots.
+Parle adapters need one predictable location for room-bound credentials and the human-session state used by typed account operations. This credential-bearing location must be easy to inspect, relocate, secure, and remove without making credential discovery depend on several independently configured roots.
 
 The XDG Base Directory Specification is a reasonable default for new general-purpose command-line tools, but an XDG split is a poor fit for the current adapter state. The profile catalog carries live credentials, while user configuration directories are commonly synchronized through dotfile tooling. Splitting related state across config, state, and cache roots would also make credential auditing and relocation harder.
 
-This decision covers the home-directory layout. Credential-free per-process runtime snapshots remain a separate host rendezvous question under issue #34.
+This decision covers credential and account-state custody. Credential-free runtime snapshots, bridge sockets, descriptors, and executable handles are operational rendezvous state with separate lifecycle and cleanup rules. Their current roots are canonical in [`adapter-topology.md`](./adapter-topology.md#local-artifact-roots).
 
 ## Decision
 
-Store adapter configuration and account state under one `~/.parle` directory.
+Store adapter credential configuration and account state under one `~/.parle` directory.
 
 The current layout is:
 
@@ -27,7 +27,7 @@ The current layout is:
 
 The default safety posture is 0700 directories, 0600 credential and saved-start files, bounded reads, and atomic temporary-file replacement. Saved starts keep optional profile, alias, and opaque next-instruction references separate from room-bound credentials. Several starts can reuse one profile without copying its token. The known-address registry uses the shared safe-file mechanics and is same-owner-readable convenience data, not a security boundary or routing authority. Symlink handling and ownership checks remain implementation details that must fail closed. Issue #37 owns the pending decision about refusing loose catalog permissions and remediating git exposure. Its outcome should update the consequences here without changing the one-root decision.
 
-Per-process runtime snapshots currently live at `<cwd>/.parle/runtime/<pid>.json`. They are display-safe, expiring rendezvous files rather than credential state. Issue #34 owns whether they remain workspace-local or move to a user-scoped runtime root.
+Credential-free client snapshots live at `<cwd>/.parle/runtime/<pid>.json`, responsive-delivery evidence lives at `<cwd>/.parle/runtime/responsive/<pid>.json`, and hook-bridge sockets and handles live under `~/.local/state/parle/hook-bridge/`. They are bounded operational rendezvous artifacts, not another credential root. Issue #34 retains the broader placement question.
 
 ## Alternatives considered
 
@@ -39,7 +39,7 @@ It is not selected because the current configuration is primarily credential-bea
 
 ### Single dot directory
 
-A single `~/.parle` directory matches the operational shape of current AI harness tools such as Claude Code and Codex. One root is easy to find, protect, back up, relocate, and delete. One override also avoids ambiguous precedence between credential locations.
+A single `~/.parle` directory matches the credential-custody shape of current AI harness tools such as Claude Code and Codex. One credential root is easy to find, protect, back up, relocate, and delete. One override also avoids ambiguous precedence between credential locations.
 
 The cost is deliberate nonconformance with XDG expectations. Requests to support XDG locations should point to this decision rather than treating the current path as accidental.
 

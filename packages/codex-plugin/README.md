@@ -2,6 +2,8 @@
 
 Native Codex plugin packaging for Parle.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md#codex) for Codex's MCP child, hook bridge, lifecycle injection, and idle-thread limit. This README owns Codex installation and host-specific behavior.
+
 The plugin contains a version-matched copy of the shared Parle MCP server and focused Agent Skill guidance. Codex owns plugin installation, skill discovery, MCP loading, and tool policy. The package adds no Parle protocol implementation or credential handling.
 
 ## Install
@@ -42,7 +44,7 @@ Output is written before the local lease is committed. If commit fails, the mess
 
 Codex does not currently expose a supported plugin API for starting a new turn in a fully idle thread. Messages received after the thread becomes idle remain queued until the next user prompt or lifecycle event. The plugin does not emulate that missing host capability with polling, cron, transcript edits, terminal automation, or another Codex process.
 
-Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it. Version 0.2.6 changes the command to the stable launcher and requires one renewed review after updating.
+Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it. Review trust again after an update changes the installed hook command.
 
 Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields.
 

@@ -2,6 +2,8 @@
 
 Claude Code plugin packaging for Parle.
 
+See the [canonical adapter topology](../../docs/design/adapter-topology.md#claude-code) for the MCP child, hook bridge, waiter, Phase A boundary, and delivery stages. This README owns Claude installation and host-specific behavior.
+
 ## Contract
 
 This package is a Claude Code plugin directory. It should launch a bundled `@parlehq/mcp-server` artifact and provide Claude-specific metadata, skills, and documentation.
