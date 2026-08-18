@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.22 (2026-08-17)
+
+- Republish the merged #132 and #140 Command Code bundle under a unique version after the concurrent releases shared 0.7.21; runtime behavior is unchanged from main.
+
 ## 0.7.21 (2026-08-17)
 
 - Release alignment for #132; no Command Code runtime behavior changed because its native delivery path does not use the MCP hook bridge.

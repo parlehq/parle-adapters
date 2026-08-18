@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.38 (2026-08-17)
+
+- Republish the merged #132 and #140 client under a unique version after the concurrent releases shared 0.8.37; runtime behavior is unchanged from main.
+
 ## 0.8.37 (2026-08-17)
 
 - Add compact delivery guidance that distinguishes in-progress startup from a hook-bridge socket failure requiring host repair (#132).
