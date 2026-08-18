@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.47 (2026-08-17)
+
+- Refresh the bundled MCP runtime with preview-first room capacity recovery and stronger exact-session safety guidance (#144).
+
 ## 0.9.46 (2026-08-17)
 
 - Republish the merged #132 and #140 Claude bundle under a unique version after the concurrent releases shared 0.9.45; runtime behavior is unchanged from main.

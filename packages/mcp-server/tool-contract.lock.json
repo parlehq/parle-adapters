@@ -353,6 +353,28 @@
       "replyRouteId"
     ]
   },
+  "parle_room_capacity_recovery": {
+    "title": "Recover Parle Room Capacity",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "agentSessionIds",
+      "confirmMutation",
+      "lastSeenBefore",
+      "previewId",
+      "protectAgentSessionIds",
+      "reason",
+      "roomId"
+    ],
+    "required": [
+      "action",
+      "roomId"
+    ]
+  },
   "parle_room_participants": {
     "title": "List Parle Room Participants",
     "annotations": {

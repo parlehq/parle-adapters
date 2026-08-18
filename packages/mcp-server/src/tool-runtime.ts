@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -90,6 +90,17 @@ const endOwnSessionSchema = {
   reason: z.string().optional(),
 };
 
+const roomCapacityRecoverySchema = {
+  action: z.enum(["preview", "complete"]),
+  roomId: z.string(),
+  agentSessionIds: z.array(z.string()).optional(),
+  lastSeenBefore: z.string().optional(),
+  protectAgentSessionIds: z.array(z.string()).optional(),
+  previewId: z.string().optional(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
 const deleteProfileSchema = {
   profile: z.string(),
   confirmMutation: z.boolean().optional(),
@@ -145,6 +156,7 @@ export type ParleAccountClientLike = {
   createOwnAgent(params: CreateOwnAgentParams): Promise<unknown>;
   deleteOwnAgent(params: DeleteOwnAgentParams): Promise<unknown>;
   roomParticipants(params: RoomParticipantsParams): Promise<unknown>;
+  roomCapacityRecovery(params: RoomCapacityRecoveryParams, invoker: ReturnType<typeof recoveryInvokerState>): Promise<unknown>;
   endOwnSession(params: EndOwnSessionParams): Promise<unknown>;
   addOwnAgentSeat(params: AddOwnAgentSeatParams): Promise<unknown>;
   mintPrincipalInvite(params: MintPrincipalInviteParams): Promise<unknown>;
@@ -511,9 +523,19 @@ export function registerParleTools(
     return safeTool(() => accountClient.roomParticipants(params as RoomParticipantsParams));
   });
 
+  registerTool("parle_room_capacity_recovery", {
+    title: "Recover Parle Room Capacity",
+    description: "Preview or complete guarded room capacity recovery using the owner roster and exact own-session end primitives. Preview is read-only and selects nothing unless exact session IDs or an explicit lastSeenBefore heartbeat cutoff are supplied. last_seen_at is heartbeat recency, not workload idleness or proof of abandonment. Complete requires the opaque previewId, explicit confirmation, and a reason; it protects the current runtime session, rereads before each serial end, stops on unknown outcome, and never retries automatically. The final roster GET and end POST are separate and non-atomic.",
+    inputSchema: roomCapacityRecoverySchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomCapacityRecovery(params as RoomCapacityRecoveryParams, recoveryInvokerState(client.status())));
+  });
+
   registerTool("parle_end_own_session", {
     title: "End Own Parle Session",
-    description: "End one live agent session owned by the authenticated principal through the fixed human-session endpoint. Ending the session removes its active participant seats. The session cookie is resolved only from safe local configuration and is never accepted or returned. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    description: "End one exact live agent session owned by the authenticated principal through the fixed human-session endpoint. Ending the session removes its active participant seats. A room roster contains active sessions, not stale cleanup candidates, and last_seen_at is heartbeat recency rather than workload idleness. Never bulk-loop this tool from a roster or infer permission to end multiple sessions from an ambiguous recovery request; use parle_room_capacity_recovery preview first. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
     inputSchema: endOwnSessionSchema,
     annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {

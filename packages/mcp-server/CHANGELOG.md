@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.43 (2026-08-17)
+
+- Add guarded `parle_room_capacity_recovery` preview and completion, and harden roster and exact-session tool guidance against inferred bulk cleanup (#144).
+
 ## 0.7.42 (2026-08-17)
 
 - Republish the merged #132 and #140 MCP runtime under a unique version after the concurrent releases shared 0.7.41; runtime behavior is unchanged from main.

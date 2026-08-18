@@ -33,6 +33,7 @@ const expectedTools = [
   "parle_owned_alias_release",
   "parle_read",
   "parle_reply",
+  "parle_room_capacity_recovery",
   "parle_room_participants",
   "parle_rooms",
   "parle_saved_start",
@@ -396,6 +397,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     createOwnAgent: async (params) => { calls.push(["create-own-agent", params]); return { agent_id: "agent-1", agent_handle: params.agentHandle, display_name: params.displayName || params.agentHandle }; },
     deleteOwnAgent: async (params) => { calls.push(["delete-own-agent", params]); return { agent_id: params.agentId, http_status: 204 }; },
     roomParticipants: async (params) => { calls.push(["room-participants", params]); return { participants: [{ agent_session_id: "session-1" }] }; },
+    roomCapacityRecovery: async (params, invoker) => { calls.push(["room-capacity-recovery", params, invoker]); return { action: params.action, roomId: params.roomId, selected: [] }; },
     endOwnSession: async (params) => { calls.push(["end-own-session", params]); return { agent_session_id: params.agentSessionId, http_status: 204 }; },
     addOwnAgentSeat: async (params) => { calls.push(["add-own-agent-seat", params]); return { seat_id: "seat-1" }; },
     hardenAccount: async (params) => { calls.push(["harden-account", params]); return { action: params.action, state: "needs_password", next: "human helper" }; },
@@ -429,6 +431,9 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const participantTool = tools.tools.find((tool) => tool.name === "parle_room_participants");
     assert.match(participantTool.description, /does not connect an agent/);
     assert.match(participantTool.description, /principal-private/);
+    const recoveryTool = tools.tools.find((tool) => tool.name === "parle_room_capacity_recovery");
+    assert.match(recoveryTool.description, /selects nothing/);
+    assert.match(recoveryTool.description, /non-atomic/);
     const endSessionTool = tools.tools.find((tool) => tool.name === "parle_end_own_session");
     assert.match(endSessionTool.description, /reread the room roster/);
     const seatTool = tools.tools.find((tool) => tool.name === "parle_add_own_agent_seat");
@@ -470,6 +475,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(deletedAgent.structuredContent.http_status, 204);
     const participants = await client.callTool({ name: "parle_room_participants", arguments: { roomId: "room-1" } });
     assert.equal(participants.structuredContent.participants[0].agent_session_id, "session-1");
+    const recovery = await client.callTool({ name: "parle_room_capacity_recovery", arguments: { action: "preview", roomId: "room-1" } });
+    assert.equal(recovery.structuredContent.action, "preview");
     const endedSession = await client.callTool({ name: "parle_end_own_session", arguments: { agentSessionId: "session-1", confirmMutation: true, reason: "reclaim" } });
     assert.equal(endedSession.structuredContent.http_status, 204);
     const seat = await client.callTool({ name: "parle_add_own_agent_seat", arguments: { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" } });
@@ -494,6 +501,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["create-own-agent", { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" }],
       ["delete-own-agent", { agentId: "agent-1", confirmMutation: true, reason: "delete agent" }],
       ["room-participants", { roomId: "room-1" }],
+      ["room-capacity-recovery", { action: "preview", roomId: "room-1" }, { state: "unknown", reason: "runtime_session_state_unresolved" }],
       ["end-own-session", { agentSessionId: "session-1", confirmMutation: true, reason: "reclaim" }],
       ["add-own-agent-seat", { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" }],
       ["harden-account", { action: "status" }],

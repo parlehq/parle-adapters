@@ -15,6 +15,7 @@ const MAX_HANDOFF_BYTES = 32 * 1024;
 const MAX_PROFILE_CATALOG_BYTES = 1024 * 1024;
 const MAX_ACCOUNT_ROOM_ROWS = 2_000;
 const MAX_ACCOUNT_ROOM_PAGES = 10;
+const ROOM_CAPACITY_PREVIEW_TTL_MS = 15 * 60 * 1000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 const INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
@@ -125,6 +126,22 @@ export type EndOwnSessionParams = {
   reason?: string;
 };
 
+export type RecoveryInvokerState =
+  | { state: "present"; agentSessionId: string }
+  | { state: "authoritatively_absent" }
+  | { state: "unknown"; reason: string };
+
+export type RoomCapacityRecoveryParams = {
+  action: "preview" | "complete";
+  roomId: string;
+  agentSessionIds?: string[];
+  lastSeenBefore?: string;
+  protectAgentSessionIds?: string[];
+  previewId?: string;
+  confirmMutation?: boolean;
+  reason?: string;
+};
+
 export type AddOwnAgentSeatParams = {
   roomId: string;
   agentId: string;
@@ -168,6 +185,28 @@ type AccountBaseConfig = {
 type AccountConfig = AccountBaseConfig & {
   sessionCookie: string;
 };
+
+type RoomParticipant = {
+  participant_id: string;
+  room_id: string;
+  principal_id: string;
+  agent_session_id: string;
+  agent_id: string;
+  session_handle: string;
+  last_seen_at: string;
+  expires_at: string;
+};
+
+type RoomCapacityRecoveryPlan = {
+  binding: string;
+  roomId: string;
+  createdAt: number;
+  selected: RoomParticipant[];
+  lastSeenBefore?: string;
+  protectedAgentSessionIds: string[];
+};
+
+const roomCapacityRecoveryPlans = new Map<string, RoomCapacityRecoveryPlan>();
 
 type PrincipalInviteHandoff = {
   schemaVersion: 1;
@@ -329,6 +368,39 @@ function validateUUID(raw: unknown, label: string): string {
   return value;
 }
 
+function validateUUIDList(raw: unknown, label: string): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) throw new Error(`${label} must be an array of UUIDs.`);
+  return [...new Set(raw.map((value) => validateUUID(value, label)))];
+}
+
+function validateTimestamp(raw: unknown, label: string): string {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value || !Number.isFinite(Date.parse(value))) throw new Error(`${label} must be an RFC3339 timestamp.`);
+  return new Date(value).toISOString();
+}
+
+export function recoveryInvokerState(status: unknown): RecoveryInvokerState {
+  const view = status && typeof status === "object" ? status as Record<string, any> : {};
+  const runtime = view.runtime && typeof view.runtime === "object" ? view.runtime : view;
+  const rawId = runtime.agentSessionId;
+  if (typeof rawId === "string" && rawId) {
+    try {
+      return { state: "present", agentSessionId: validateUUID(rawId, "runtime agentSessionId") };
+    } catch {
+      return { state: "unknown", reason: "runtime_agent_session_id_invalid" };
+    }
+  }
+  if (runtime.bootstrapped === true || runtime.bootstrapState === "ready" || runtime.bootstrapState === "starting") {
+    return { state: "unknown", reason: "runtime_session_identity_missing" };
+  }
+  if (runtime.bootstrapState === "unstarted") return { state: "authoritatively_absent" };
+  if (runtime.bootstrapState === "failed" && runtime.terminalCause?.code === "resource_limit_exceeded") {
+    return { state: "authoritatively_absent" };
+  }
+  return { state: "unknown", reason: "runtime_session_state_unresolved" };
+}
+
 function validateAlias(raw: unknown): string {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (!isValidSessionAlias(value)) {
@@ -395,7 +467,7 @@ function assertStringArray(raw: any, label: string): string[] {
   return raw;
 }
 
-function parseRoomParticipants(raw: any, expectedRoomId: string) {
+function parseRoomParticipants(raw: any, expectedRoomId: string): { participants: RoomParticipant[] } {
   if (!Array.isArray(raw?.participants)) throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
   try {
     return {
@@ -1186,6 +1258,157 @@ export class ParleAccountClient {
     const roomId = validateUUID(params.roomId, "roomId");
     const config = this.config();
     return parseRoomParticipants(await this.request(config, `/v/rooms/${encodeURIComponent(roomId)}/participants`, { signal }), roomId);
+  }
+
+  async roomCapacityRecovery(params: RoomCapacityRecoveryParams, invoker: RecoveryInvokerState, signal?: AbortSignal) {
+    if (params.action !== "preview" && params.action !== "complete") throw new Error('parle_room_capacity_recovery action must be "preview" or "complete".');
+    const roomId = validateUUID(params.roomId, "roomId");
+    const config = this.config();
+    const binding = `${config.apiBase}\u0000${config.catalogPath}`;
+    const now = this.now();
+    for (const [id, plan] of roomCapacityRecoveryPlans) {
+      if (now.getTime() - plan.createdAt > ROOM_CAPACITY_PREVIEW_TTL_MS) roomCapacityRecoveryPlans.delete(id);
+    }
+
+    if (params.action === "preview") {
+      if (params.previewId !== undefined || params.confirmMutation !== undefined || params.reason !== undefined) {
+        throw new Error("parle_room_capacity_recovery preview does not accept completion fields.");
+      }
+      const requested = validateUUIDList(params.agentSessionIds, "agentSessionIds");
+      const protectedIds = validateUUIDList(params.protectAgentSessionIds, "protectAgentSessionIds");
+      if (requested.length > 0 && params.lastSeenBefore !== undefined) throw new Error("agentSessionIds and lastSeenBefore are mutually exclusive selection modes.");
+      const lastSeenBefore = params.lastSeenBefore === undefined ? undefined : validateTimestamp(params.lastSeenBefore, "lastSeenBefore");
+      const roster = (await this.roomParticipants({ roomId }, signal)).participants;
+      const listedAgents = await this.request(config, "/v/agents", { signal });
+      const ownedAgentIds = new Set(publicAgents(listedAgents?.agents).map((agent) => agent.agentId));
+      const requestedSet = new Set(requested);
+      const protectedSet = new Set(protectedIds);
+      const invokerId = invoker.state === "present" ? invoker.agentSessionId : undefined;
+      const selected: RoomParticipant[] = [];
+      const exclusions: Array<Record<string, string>> = [];
+
+      for (const row of roster) {
+        const summary = {
+          agentSessionId: row.agent_session_id,
+          sessionHandle: row.session_handle,
+          lastSeenAt: row.last_seen_at,
+          expiresAt: row.expires_at,
+        };
+        let reason: string | undefined;
+        if (!ownedAgentIds.has(row.agent_id)) reason = "different_principal";
+        else if (row.agent_session_id === invokerId) reason = "current_invoker";
+        else if (protectedSet.has(row.agent_session_id)) reason = "explicitly_protected";
+        else if (requested.length > 0 && !requestedSet.has(row.agent_session_id)) reason = "not_requested";
+        else if (lastSeenBefore && Date.parse(row.last_seen_at) > Date.parse(lastSeenBefore)) reason = "newer_than_cutoff";
+        else if (requested.length === 0 && !lastSeenBefore) reason = "not_requested";
+        if (reason) exclusions.push({ ...summary, reason });
+        else selected.push(row);
+      }
+
+      const selectedIds = new Set(selected.map((row) => row.agent_session_id));
+      const requestedNotFound = requested.filter((id) => !selectedIds.has(id) && !roster.some((row) => row.agent_session_id === id));
+      const completionEnabled = invoker.state !== "unknown" && selected.length > 0;
+      const previewId = completionEnabled ? randomUUID() : undefined;
+      if (previewId) {
+        roomCapacityRecoveryPlans.set(previewId, {
+          binding,
+          roomId,
+          createdAt: now.getTime(),
+          selected,
+          ...(lastSeenBefore ? { lastSeenBefore } : {}),
+          protectedAgentSessionIds: protectedIds,
+        });
+      }
+      return {
+        action: "preview",
+        roomId,
+        previewedAt: now.toISOString(),
+        invoker,
+        completionEnabled,
+        ...(previewId ? { previewId } : {}),
+        selectionMode: requested.length > 0 ? "exact_session_ids" : lastSeenBefore ? "heartbeat_cutoff" : "none",
+        ...(lastSeenBefore ? { lastSeenBefore } : {}),
+        ...(requested.length === 0 && !lastSeenBefore ? { suggestedLastSeenBefore: new Date(now.getTime() - 15 * 60 * 1000).toISOString() } : {}),
+        selected: selected.map((row) => ({ agentSessionId: row.agent_session_id, sessionHandle: row.session_handle, lastSeenAt: row.last_seen_at, expiresAt: row.expires_at })),
+        exclusions,
+        requestedNotFound,
+        guidance: "last_seen_at is authenticated-request heartbeat recency, not workload idleness or proof of abandonment. An unqualified preview selects nothing; any 15-minute suggestion is advisory only.",
+        nonAtomicBoundary: "Completion rereads before each end, but the final roster GET and session-end POST are separate requests and are not atomic.",
+      };
+    }
+
+    if (params.agentSessionIds !== undefined || params.lastSeenBefore !== undefined || params.protectAgentSessionIds !== undefined) {
+      throw new Error("parle_room_capacity_recovery complete accepts only the previewId and confirmation fields from a prior preview.");
+    }
+    if (params.confirmMutation !== true || !params.reason?.trim()) throw new Error("parle_room_capacity_recovery complete requires confirmMutation=true and a reason.");
+    if (!params.previewId?.trim()) throw new Error("parle_room_capacity_recovery complete requires previewId from preview.");
+    const plan = roomCapacityRecoveryPlans.get(params.previewId);
+    if (!plan || now.getTime() - plan.createdAt > ROOM_CAPACITY_PREVIEW_TTL_MS) {
+      roomCapacityRecoveryPlans.delete(params.previewId);
+      throw new Error("Room capacity recovery preview is missing or expired. Create a fresh preview.");
+    }
+    if (plan.binding !== binding || plan.roomId !== roomId) throw new Error("Room capacity recovery preview does not match the current account binding and room.");
+    if (invoker.state === "unknown") throw new Error(`Room capacity recovery cannot resolve the invoker session safely: ${invoker.reason}.`);
+    if (invoker.state === "present" && plan.selected.some((row) => row.agent_session_id === invoker.agentSessionId)) {
+      throw new Error("Room capacity recovery refuses to end the current runtime session. Use parle_end_own_session separately when that disconnect is intentional.");
+    }
+
+    roomCapacityRecoveryPlans.delete(params.previewId);
+    const listedAgents = await this.request(config, "/v/agents", { signal });
+    const ownedAgentIds = new Set(publicAgents(listedAgents?.agents).map((agent) => agent.agentId));
+    const protectedSet = new Set(plan.protectedAgentSessionIds);
+    const results: Array<Record<string, unknown>> = [];
+    let stopped = false;
+    for (const candidate of plan.selected) {
+      const current = (await this.roomParticipants({ roomId }, signal)).participants.find((row) => row.agent_session_id === candidate.agent_session_id);
+      if (!current) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "not_found" });
+        continue;
+      }
+      if (!ownedAgentIds.has(current.agent_id)) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "different_principal" });
+        continue;
+      }
+      if (invoker.state === "present" && current.agent_session_id === invoker.agentSessionId) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "current_invoker" });
+        continue;
+      }
+      if (protectedSet.has(current.agent_session_id)) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "explicitly_protected" });
+        continue;
+      }
+      const heartbeatAdvanced = plan.lastSeenBefore
+        ? Date.parse(current.last_seen_at) > Date.parse(plan.lastSeenBefore)
+        : current.last_seen_at !== candidate.last_seen_at;
+      if (heartbeatAdvanced) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: candidate.last_seen_at, currentLastSeenAt: current.last_seen_at });
+        continue;
+      }
+      try {
+        const result = await this.endOwnSession({ agentSessionId: candidate.agent_session_id, confirmMutation: true, reason: params.reason }, signal);
+        if (result.outcome === "unknown") {
+          results.push({ agentSessionId: candidate.agent_session_id, outcome: "unknown" });
+          stopped = true;
+          break;
+        }
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "ended" });
+      } catch (error: any) {
+        if (error?.status === 404) {
+          results.push({ agentSessionId: candidate.agent_session_id, outcome: "not_found" });
+          continue;
+        }
+        throw error;
+      }
+    }
+    return {
+      action: "complete",
+      roomId,
+      previewId: params.previewId,
+      results,
+      stopped,
+      nonAtomicBoundary: "Each roster GET and session-end POST is a separate request. This best-effort recovery does not provide atomic heartbeat protection.",
+      next: stopped ? "Outcome is unknown. Reread the roster and begin a fresh preview; never retry or resume this plan automatically." : "Recovery plan consumed. Create a fresh preview before any further session ends.",
+    };
   }
 
   async endOwnSession(params: EndOwnSessionParams, signal?: AbortSignal) {

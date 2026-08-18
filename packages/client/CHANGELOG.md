@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.39 (2026-08-17)
+
+- Add preview-first room capacity recovery orchestration with explicit session or heartbeat-cutoff selection, invoker protection, serial completion, and stop-on-unknown behavior (#144).
+
 ## 0.8.38 (2026-08-17)
 
 - Republish the merged #132 and #140 client under a unique version after the concurrent releases shared 0.8.37; runtime behavior is unchanged from main.

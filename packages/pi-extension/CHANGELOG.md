@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.47 (2026-08-17)
+
+- Add native preview-first room capacity recovery with fail-closed invoker protection and serial exact-session completion (#144).
+
 ## 0.7.46 (2026-08-17)
 
 - Republish the merged #132 and #140 Pi bundle under a unique version after the concurrent releases shared 0.7.45; runtime behavior is unchanged from main.
