@@ -112,7 +112,7 @@ test("status ignores persisted PARLE_VERSION and warns", async () => {
   globalThis.fetch = async () => { throw new Error("offline test"); };
   const harness = installHarness(cwd);
   const status = await harness.call("parle_status");
-  assert.equal(status.details.version.value, "2026-08-10");
+  assert.equal(status.details.version.value, "2026-08-17");
   assert.equal(status.details.version.source, "default");
   assert.equal(status.details.roomId.value, "room-1");
   assert.match(status.details.warnings.join("\n"), /Ignoring PARLE_VERSION from project \.env/);
@@ -925,7 +925,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.44" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.49" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1611,7 +1611,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.44");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.49");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -1740,6 +1740,53 @@ test("own-agent lifecycle tools fail closed before fetch and preserve delete unc
   assert.equal(calls, 1);
 });
 
+test("session recovery tools use only the configured cookie and fixed account endpoints", async () => {
+  const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
+  const secretsDir = join(process.env.HOME, ".parle");
+  mkdirSync(secretsDir, { recursive: true });
+  writeFileSync(join(secretsDir, "session"), "__Host-parle_session=parle_sess_recovery-secret\n", { mode: 0o600 });
+  const roomId = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
+  const sessionId = "019f7c00-0000-7000-8000-000000000008";
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    const path = new URL(String(url)).pathname;
+    if (init.method === "POST") return new Response(null, { status: 204 });
+    if (path === "/v/agents") return new Response(JSON.stringify({ agents: [{ agent_id: "019f7c00-0000-7000-8000-000000000004", agent_handle: "testagent1", display_name: "Test Agent 1" }] }), { status: 200 });
+    return new Response(JSON.stringify({ participants: [{
+      participant_id: "019f7c00-0000-7000-8000-000000000003",
+      room_id: roomId,
+      principal_id: "019f3894-bb87-726a-8deb-17d367054426",
+      agent_session_id: sessionId,
+      agent_id: "019f7c00-0000-7000-8000-000000000004",
+      session_handle: "abcdefghijklmno2",
+      last_seen_at: "2026-08-17T10:00:00Z",
+      expires_at: "2026-08-18T10:00:00Z",
+    }] }), { status: 200 });
+  };
+  const harness = installHarness(cwd);
+
+  const participants = await harness.call("parle_room_participants", { roomId: roomId.toUpperCase() });
+  const preview = await harness.call("parle_room_capacity_recovery", { action: "preview", roomId, agentSessionIds: [sessionId] });
+  const ended = await harness.call("parle_end_own_session", { agentSessionId: sessionId.toUpperCase(), confirmMutation: true, reason: "reclaim stale capacity" });
+
+  assert.equal(participants.details.participants[0].agent_session_id, sessionId);
+  assert.equal(preview.details.completionEnabled, false);
+  assert.equal(preview.details.invoker.state, "unknown");
+  assert.deepEqual(preview.details.selected.map((row) => row.agentSessionId), [sessionId]);
+  assert.deepEqual(ended.details, { agent_session_id: sessionId, http_status: 204 });
+  assert.deepEqual(requests.map(({ url, init }) => ({ url, method: init.method, cookie: init.headers.Cookie })), [
+    { url: `https://api.parle.sh/v/rooms/${roomId}/participants`, method: "GET", cookie: "__Host-parle_session=parle_sess_recovery-secret" },
+    { url: `https://api.parle.sh/v/rooms/${roomId}/participants`, method: "GET", cookie: "__Host-parle_session=parle_sess_recovery-secret" },
+    { url: "https://api.parle.sh/v/agents", method: "GET", cookie: "__Host-parle_session=parle_sess_recovery-secret" },
+    { url: `https://api.parle.sh/v/agent/sessions/${sessionId}/end`, method: "POST", cookie: "__Host-parle_session=parle_sess_recovery-secret" },
+  ]);
+  assert.deepEqual(Object.keys(harness.tools.parle_room_participants.parameters.properties), ["roomId"]);
+  assert.deepEqual(Object.keys(harness.tools.parle_end_own_session.parameters.properties).sort(), ["agentSessionId", "confirmMutation", "reason"]);
+  assert.match(harness.tools.parle_room_participants.description, /principal-private/);
+  assert.match(harness.tools.parle_room_capacity_recovery.description, /non-atomic/);
+});
+
 test("parle_add_own_agent_seat uses only validated IDs, the configured cookie, and the fixed seat endpoint", async () => {
   const cwd = tempProject("PARLE_WATCH_ENABLED=0\n");
   const secretsDir = join(process.env.HOME, ".parle");
@@ -1857,7 +1904,7 @@ test("generic parle_request honestly excludes human-session auth", async () => {
 
   const status = await harness.call("parle_status");
   assert.equal(status.details.humanSession.genericRequest, "unsupported");
-  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_onboard", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
+  assert.deepEqual(status.details.humanSession.supportedTools, ["parle_rooms", "parle_onboard", "parle_room_participants", "parle_room_capacity_recovery", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_end_own_session", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"]);
 });
 
 test("parle_login starts email login without requiring raw request plumbing", async () => {

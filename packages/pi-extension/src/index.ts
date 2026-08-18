@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, recoveryInvokerState, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type RoomCapacityRecoveryParams, type RoomParticipantsParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.44";
+const PI_EXTENSION_VERSION = "0.7.49";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -150,6 +150,8 @@ type ParleLoginParams = LoginParams;
 type ParleCreateRoomParams = CreateRoomParams;
 type ParleCreateOwnAgentParams = CreateOwnAgentParams;
 type ParleDeleteOwnAgentParams = DeleteOwnAgentParams;
+type ParleRoomParticipantsParams = RoomParticipantsParams;
+type ParleEndOwnSessionParams = EndOwnSessionParams;
 type ParleDeleteProfileParams = DeleteProfileParams;
 type ParleAddOwnAgentSeatParams = AddOwnAgentSeatParams;
 type ParleOwnedAliasDeliveryParams = OwnedAliasDeliveryParams;
@@ -1581,7 +1583,7 @@ function statusDetails(ctx: any) {
     humanSession: {
       configured: Boolean(cfg.sessionCookie?.value),
       genericRequest: "unsupported",
-      supportedTools: ["parle_rooms", "parle_onboard", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
+      supportedTools: ["parle_rooms", "parle_onboard", "parle_room_participants", "parle_room_capacity_recovery", "parle_login", "parle_create_room", "parle_create_own_agent", "parle_delete_own_agent", "parle_end_own_session", "parle_add_own_agent_seat", "parle_harden_account", "parle_mint_principal_invite", "parle_claim_principal_invite", "parle_accept_room_invitation", "parle_connect_own_agent"],
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
@@ -2261,6 +2263,60 @@ export default function parleExtension(pi: any) {
       const cfg = resolveConfig(ctx.cwd || process.cwd());
       assertEnabled(cfg);
       return formatResult(await accountClient(ctx.cwd || process.cwd()).deleteOwnAgent(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_room_participants",
+    label: "List Parle Room Participants",
+    description: "List active live-session participants for one owned room through the fixed GET /v/rooms/{roomID}/participants human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. Never repost this principal-private operator context into rooms.",
+    parameters: Type.Object({
+      roomId: Type.String({ description: "Exact UUID of the owned room." }),
+    }),
+    async execute(_id, params: ParleRoomParticipantsParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).roomParticipants(params, signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_room_capacity_recovery",
+    label: "Recover Parle Room Capacity",
+    description: "Preview or complete guarded room capacity recovery using the owner roster and exact own-session end primitives. Preview is read-only and selects nothing unless exact session IDs or an explicit lastSeenBefore heartbeat cutoff are supplied. last_seen_at is heartbeat recency, not workload idleness or proof of abandonment. Complete requires the opaque previewId, explicit confirmation, and a reason; it protects the current runtime session, rereads before each serial end, stops on unknown outcome, and never retries automatically. The final roster GET and end POST are separate and non-atomic.",
+    parameters: Type.Object({
+      action: Type.Unsafe({ type: "string", enum: ["preview", "complete"] }),
+      roomId: Type.String({ description: "Exact UUID of the owned room." }),
+      agentSessionIds: Type.Optional(Type.Array(Type.String({ description: "Exact owned live agent-session UUID selected for preview." }))),
+      lastSeenBefore: Type.Optional(Type.String({ description: "Explicit RFC3339 heartbeat cutoff selected for preview. Mutually exclusive with agentSessionIds." })),
+      protectAgentSessionIds: Type.Optional(Type.Array(Type.String({ description: "Additional exact session UUIDs to protect during preview and completion." }))),
+      previewId: Type.Optional(Type.String({ description: "Opaque one-use identifier returned by preview and required for complete." })),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Required true only for complete." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation only for complete." })),
+    }),
+    async execute(_id, params: RoomCapacityRecoveryParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).roomCapacityRecovery(params, recoveryInvokerState(client?.runtime || {}), signal));
+    },
+  });
+
+  pi.registerTool({
+    name: "parle_end_own_session",
+    label: "End Own Parle Session",
+    description: "End one exact live agent session owned by the authenticated principal through the fixed POST /v/agent/sessions/{agentSessionID}/end human-session endpoint. Ending the session removes its active participant seats. A room roster is not a stale-session cleanup list. Never bulk-loop this tool or infer permission to end multiple sessions from an ambiguous recovery request; use parle_room_capacity_recovery preview first. The session cookie is read only from resolved local configuration and never accepted or returned. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    parameters: Type.Object({
+      agentSessionId: Type.String({ description: "Exact UUID of the owned live agent session to end." }),
+      confirmMutation: Type.Optional(Type.Boolean({ description: "Must be true to confirm ending the live session." })),
+      reason: Type.Optional(Type.String({ description: "Required explanation for ending the live session." })),
+    }),
+    async execute(_id, params: ParleEndOwnSessionParams, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig(ctx.cwd || process.cwd());
+      assertEnabled(cfg);
+      return formatResult(await accountClient(ctx.cwd || process.cwd()).endOwnSession(params, signal));
     },
   });
 

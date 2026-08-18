@@ -1,8 +1,37 @@
 # Changelog
 
-## 0.8.40 (2026-08-17)
+## 0.8.47 (2026-08-18)
 
 - Bundle the typed first-time onboarding tool and server-owned email-start guidance.
+
+## 0.8.46 (2026-08-17)
+
+- Bundle race-safe hook-bridge candidate discovery (#133).
+
+## 0.8.45 (2026-08-17)
+
+- Bundle resilient hook-bridge watcher discovery and aggregate candidate diagnostics (#133).
+
+## 0.8.44 (2026-08-17)
+
+- Refresh the bundled MCP runtime with preview-first room capacity recovery and stronger exact-session safety guidance (#144).
+
+## 0.8.43 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
+## 0.8.42 (2026-08-17)
+
+- Republish the merged #132 and #140 Desktop bundle under a unique version after the concurrent releases shared 0.8.41; runtime behavior is unchanged from main.
+
+## 0.8.41 (2026-08-17)
+
+- Refresh the bundled MCP runtime so hook-bridge socket startup failures report terminal delivery evidence instead of armed delivery (#132).
+- Refresh the bundled MCP runtime with room-participant inventory and guarded own-session ending for stale-session capacity recovery (#140).
+
+## 0.8.40 (2026-08-17)
+
+- Refresh the bundled MCP runtime so plain status preserves healthy responsive-delivery evidence (#120).
 
 ## 0.8.39 (2026-08-17)
 

@@ -3,7 +3,7 @@ import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.19";
+const ADAPTER_VERSION = "0.7.25";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 
@@ -127,6 +127,7 @@ export class NativeResponsiveDelivery {
 
   async start(): Promise<void> {
     if (this.startPromise) return this.startPromise;
+    if (!this.stopped && this.controller.status().running) return;
     this.startPromise = this.startDelivery();
     try {
       await this.startPromise;

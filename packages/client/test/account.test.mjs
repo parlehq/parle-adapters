@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ParleAccountClient, ParleAccountResponseContractError } from "../dist/index.js";
+import { ParleAccountClient, ParleAccountResponseContractError, recoveryInvokerState } from "../dist/index.js";
 
 const ROOM_ID = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
 const PRINCIPAL_ID = "019f3894-bb87-726a-8deb-17d367054426";
@@ -13,6 +13,9 @@ const SEAT_ID = "019f7c00-0000-7000-8000-000000000002";
 const PARTICIPANT_ID = "019f7c00-0000-7000-8000-000000000003";
 const AGENT_ID = "019f7c00-0000-7000-8000-000000000004";
 const AGENT_TOKEN_ID = "019f7c00-0000-7000-8000-000000000005";
+const AGENT_SESSION_ID = "019f7c00-0000-7000-8000-000000000008";
+const ADDITIONAL_AGENT_SESSION_ID = "019f7c00-0000-7000-8000-000000000009";
+const THIRD_AGENT_SESSION_ID = "019f7c00-0000-7000-8000-000000000011";
 const ADDITIONAL_AGENT_ID = "019f7c00-0000-7000-8000-000000000006";
 const ADDITIONAL_AGENT_TOKEN_ID = "019f7c00-0000-7000-8000-000000000007";
 const SECRET = `parle_inv_${"z".repeat(43)}`;
@@ -576,6 +579,177 @@ test("shared account client creates rooms and admits own agents through fixed hu
       { path: "/v/rooms", method: "POST", body: { kind: "shared", room_handle: "shared-room" }, cookie: "__Host-parle_session=human-cookie" },
       { path: `/v/rooms/${ROOM_ID}/seats`, method: "POST", body: { agent_id: AGENT_ID }, cookie: "__Host-parle_session=human-cookie" },
     ]);
+  } finally { f.cleanup(); }
+});
+
+test("shared account client lists room participants and ends one own session through fixed human-session endpoints", async () => {
+  const f = fixture();
+  const calls = [];
+  try {
+    const roster = {
+      participants: [{
+        participant_id: PARTICIPANT_ID,
+        room_id: ROOM_ID,
+        principal_id: PRINCIPAL_ID,
+        agent_session_id: AGENT_SESSION_ID,
+        agent_id: AGENT_ID,
+        session_handle: "abcdefghijklmno2",
+        last_seen_at: "2026-08-17T10:00:00Z",
+        expires_at: "2026-08-18T10:00:00Z",
+      }],
+    };
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        calls.push({ path, method: init.method, body: init.body, cookie: init.headers.Cookie });
+        if (path === `/v/rooms/${ROOM_ID}/participants`) return response(roster);
+        if (path === `/v/agent/sessions/${AGENT_SESSION_ID}/end`) return new Response(null, { status: 204 });
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    assert.deepEqual(await client.roomParticipants({ roomId: ROOM_ID.toUpperCase() }), roster);
+    assert.deepEqual(await client.endOwnSession({ agentSessionId: AGENT_SESSION_ID.toUpperCase(), confirmMutation: true, reason: "reclaim stale capacity" }), {
+      agent_session_id: AGENT_SESSION_ID,
+      http_status: 204,
+    });
+    assert.deepEqual(calls, [
+      { path: `/v/rooms/${ROOM_ID}/participants`, method: "GET", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+      { path: `/v/agent/sessions/${AGENT_SESSION_ID}/end`, method: "POST", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+    ]);
+  } finally { f.cleanup(); }
+});
+
+test("room capacity recovery is preview-first, protects the invoker, and skips an advanced heartbeat", async () => {
+  const f = fixture();
+  const invoker = { state: "present", agentSessionId: AGENT_SESSION_ID };
+  let rosterReads = 0;
+  let ended = 0;
+  try {
+    const participant = (sessionId, lastSeenAt) => ({
+      participant_id: sessionId === AGENT_SESSION_ID ? PARTICIPANT_ID : "019f7c00-0000-7000-8000-000000000010",
+      room_id: ROOM_ID,
+      principal_id: PRINCIPAL_ID,
+      agent_session_id: sessionId,
+      agent_id: AGENT_ID,
+      session_handle: sessionId === AGENT_SESSION_ID ? "abcdefghijklmno2" : "abcdefghijklmno3",
+      last_seen_at: lastSeenAt,
+      expires_at: "2026-08-19T10:00:00Z",
+    });
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      now: () => new Date("2026-08-18T01:00:00Z"),
+      fetch: async (url) => {
+        const path = new URL(url).pathname;
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "testagent1", display_name: "Test Agent 1" }] });
+        if (path === `/v/rooms/${ROOM_ID}/participants`) {
+          rosterReads += 1;
+          const candidateSeen = rosterReads <= 2 ? "2026-08-18T00:30:00Z" : "2026-08-18T00:40:00Z";
+          return response({ participants: [participant(AGENT_SESSION_ID, "2026-08-18T00:59:00Z"), participant(ADDITIONAL_AGENT_SESSION_ID, candidateSeen)] });
+        }
+        if (path === `/v/agent/sessions/${ADDITIONAL_AGENT_SESSION_ID}/end`) { ended += 1; return new Response(null, { status: 204 }); }
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+
+    const empty = await client.roomCapacityRecovery({ action: "preview", roomId: ROOM_ID }, invoker);
+    assert.equal(empty.selectionMode, "none");
+    assert.equal(empty.selected.length, 0);
+    assert.equal(empty.completionEnabled, false);
+    assert.match(empty.guidance, /not workload idleness/);
+
+    const preview = await client.roomCapacityRecovery({ action: "preview", roomId: ROOM_ID, lastSeenBefore: "2026-08-18T00:45:00Z" }, invoker);
+    assert.equal(preview.completionEnabled, true);
+    assert.deepEqual(preview.selected.map((row) => row.agentSessionId), [ADDITIONAL_AGENT_SESSION_ID]);
+    assert.equal(preview.exclusions.find((row) => row.agentSessionId === AGENT_SESSION_ID).reason, "current_invoker");
+
+    const complete = await client.roomCapacityRecovery({ action: "complete", roomId: ROOM_ID, previewId: preview.previewId, confirmMutation: true, reason: "recover capacity" }, invoker);
+    assert.deepEqual(complete.results, [{ agentSessionId: ADDITIONAL_AGENT_SESSION_ID, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: "2026-08-18T00:30:00Z", currentLastSeenAt: "2026-08-18T00:40:00Z" }]);
+    assert.equal(ended, 0);
+    await assert.rejects(client.roomCapacityRecovery({ action: "complete", roomId: ROOM_ID, previewId: preview.previewId, confirmMutation: true, reason: "retry" }, invoker), /missing or expired/);
+    assert.deepEqual(recoveryInvokerState({ runtime: { bootstrapState: "unstarted", agentSessionId: "" } }), { state: "authoritatively_absent" });
+    assert.deepEqual(recoveryInvokerState({ runtime: { bootstrapState: "starting", agentSessionId: "" } }), { state: "unknown", reason: "runtime_session_identity_missing" });
+  } finally { f.cleanup(); }
+});
+
+test("room capacity recovery ends serially and stops at the first unknown outcome", async () => {
+  const f = fixture();
+  const posts = [];
+  try {
+    const participant = (sessionId, suffix) => ({
+      participant_id: `019f7c00-0000-7000-8000-0000000000${suffix}`,
+      room_id: ROOM_ID,
+      principal_id: PRINCIPAL_ID,
+      agent_session_id: sessionId,
+      agent_id: AGENT_ID,
+      session_handle: `abcdefghijklm${suffix.padStart(3, "0")}`,
+      last_seen_at: "2026-08-18T00:30:00Z",
+      expires_at: "2026-08-19T10:00:00Z",
+    });
+    const roster = { participants: [participant(ADDITIONAL_AGENT_SESSION_ID, "12"), participant(THIRD_AGENT_SESSION_ID, "13")] };
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      now: () => new Date("2026-08-18T01:00:00Z"),
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        if (path === "/v/agents") return response({ agents: [{ agent_id: AGENT_ID, agent_handle: "testagent1", display_name: "Test Agent 1" }] });
+        if (path === `/v/rooms/${ROOM_ID}/participants`) return response(roster);
+        if (init.method === "POST") {
+          posts.push(path);
+          if (path.endsWith(`/${ADDITIONAL_AGENT_SESSION_ID}/end`)) return new Response(null, { status: 204 });
+          throw new TypeError("connection reset after dispatch");
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    const absent = { state: "authoritatively_absent" };
+    const preview = await client.roomCapacityRecovery({ action: "preview", roomId: ROOM_ID, agentSessionIds: [ADDITIONAL_AGENT_SESSION_ID, THIRD_AGENT_SESSION_ID] }, absent);
+    const complete = await client.roomCapacityRecovery({ action: "complete", roomId: ROOM_ID, previewId: preview.previewId, confirmMutation: true, reason: "recover capacity" }, absent);
+    assert.deepEqual(complete.results, [
+      { agentSessionId: ADDITIONAL_AGENT_SESSION_ID, outcome: "ended" },
+      { agentSessionId: THIRD_AGENT_SESSION_ID, outcome: "unknown" },
+    ]);
+    assert.equal(complete.stopped, true);
+    assert.deepEqual(posts, [
+      `/v/agent/sessions/${ADDITIONAL_AGENT_SESSION_ID}/end`,
+      `/v/agent/sessions/${THIRD_AGENT_SESSION_ID}/end`,
+    ]);
+  } finally { f.cleanup(); }
+});
+
+test("session recovery controls fail closed and preserve ambiguous end outcomes", async () => {
+  const f = fixture();
+  let calls = 0;
+  try {
+    const client = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => { calls += 1; throw new TypeError("connection reset after dispatch"); } });
+    await assert.rejects(client.roomParticipants({ roomId: "not-a-uuid" }), /roomId must be a non-zero UUID/);
+    await assert.rejects(client.endOwnSession({ agentSessionId: AGENT_SESSION_ID, reason: "missing confirmation" }), /confirmMutation=true/);
+    await assert.rejects(client.endOwnSession({ agentSessionId: "not-a-uuid", confirmMutation: true, reason: "invalid id" }), /agentSessionId must be a non-zero UUID/);
+    assert.equal(calls, 0);
+
+    const unknown = await client.endOwnSession({ agentSessionId: AGENT_SESSION_ID, confirmMutation: true, reason: "reclaim" });
+    assert.deepEqual(unknown, {
+      agent_session_id: AGENT_SESSION_ID,
+      outcome: "unknown",
+      retry_attempted: false,
+      next: "Session end outcome is unknown. Do not retry blindly; call parle_room_participants again and inspect the roster before taking another action.",
+    });
+    assert.equal(calls, 1);
+
+    const malformedRoster = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ participants: [{ room_id: ROOM_ID }] }) });
+    await assert.rejects(
+      malformedRoster.roomParticipants({ roomId: ROOM_ID }),
+      (error) => error instanceof ParleAccountResponseContractError && error.status === 200,
+    );
+
+    const denied = new ParleAccountClient({ cwd: f.cwd, env: f.env, fetch: async () => response({ error: { code: "not_found", message: "not found", action: "stop", retryable: false, scope: "account" } }, 404) });
+    await assert.rejects(
+      denied.endOwnSession({ agentSessionId: AGENT_SESSION_ID, confirmMutation: true, reason: "not owned" }),
+      (error) => error.status === 404 && error.code === "not_found" && error.action === "stop",
+    );
   } finally { f.cleanup(); }
 });
 

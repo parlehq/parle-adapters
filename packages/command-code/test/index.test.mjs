@@ -61,7 +61,7 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.19");
+  assert.equal(pkg.version, "0.7.25");
   assert.match(readFileSync(resolve("src/index.ts"), "utf8"), new RegExp(`ADAPTER_VERSION = "${pkg.version}"`));
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
@@ -176,6 +176,40 @@ test("session replacement retains deferred work for the replacement turn", async
   const replacement = delivery.foldPending({ messages: [] });
   assert.deepEqual(replacement.messages, [projected]);
   assert.equal(delivery.status().pending, 1);
+});
+
+test("repeated start preserves persisted success and backoff evidence", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-command-code-evidence-"));
+  try {
+    const client = { runtime: { agentSessionId: "agent-1" }, clientInstanceId: "test-client", async ensureReadySafe() {} };
+    const delivery = new source.NativeResponsiveDelivery({ cwd, session: { appendCustomMessageEntry() {} } }, client, () => {});
+    let running = false;
+    delivery.controller.status = () => ({ running });
+    delivery.controller.start = async () => { running = true; };
+
+    await delivery.start();
+    const evidencePath = join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`);
+    const watching = readFileSync(evidencePath, "utf8");
+    const watchingSnapshot = JSON.parse(watching);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await delivery.start();
+    const watchingAfterStatus = readFileSync(evidencePath, "utf8");
+    assert.equal(watchingAfterStatus, watching, "plain status startup preserves persisted watching evidence byte-for-byte");
+    assert.equal(JSON.parse(watchingAfterStatus).updatedAt, watchingSnapshot.updatedAt);
+    assert.equal(JSON.parse(watchingAfterStatus).lastSuccessAt, watchingSnapshot.lastSuccessAt);
+
+    delivery.handleWakeError(new Error("stream ended unexpectedly"));
+    const backoff = readFileSync(evidencePath, "utf8");
+    const backoffSnapshot = JSON.parse(backoff);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await delivery.start();
+    const backoffAfterStatus = readFileSync(evidencePath, "utf8");
+    assert.equal(backoffAfterStatus, backoff, "plain status startup preserves persisted backoff evidence byte-for-byte");
+    assert.equal(JSON.parse(backoffAfterStatus).updatedAt, backoffSnapshot.updatedAt);
+    assert.equal(JSON.parse(backoffAfterStatus).lastSuccessAt, backoffSnapshot.lastSuccessAt);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("a successful wake reopen clears stale error state and reports watching evidence", () => {

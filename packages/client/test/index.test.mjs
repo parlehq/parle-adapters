@@ -64,8 +64,8 @@ test("adapter owns one release-pinned DEFAULT_VERSION without a contract bundle"
   const protocolSrc = readFileSync(new URL("../src/protocol.ts", import.meta.url), "utf8");
   const piSrc = readFileSync(new URL("../../pi-extension/src/index.ts", import.meta.url), "utf8");
   const mcpSrc = readFileSync(new URL("../../mcp-server/src/index.ts", import.meta.url), "utf8");
-  assert.equal(DEFAULT_VERSION, "2026-08-10");
-  assert.match(protocolSrc, /DEFAULT_VERSION = "2026-08-10"/);
+  assert.equal(DEFAULT_VERSION, "2026-08-17");
+  assert.match(protocolSrc, /DEFAULT_VERSION = "2026-08-17"/);
   assert.match(piSrc, /DEFAULT_VERSION[^\n]*from "@parlehq\/agent-client"/);
   assert.doesNotMatch(piSrc, /const DEFAULT_VERSION =/);
   assert.doesNotMatch(mcpSrc, /PARLE_VERSION:/);
@@ -370,7 +370,7 @@ test("PARLE_VERSION is adapter-owned unless explicitly set in process env", () =
   try {
     writeFileSync(join(cwd, ".env"), "PARLE_VERSION=from-dotenv\n");
     const defaultCfg = resolveConfig(cwd, { HOME: cwd });
-    assert.equal(defaultCfg.version.value, "2026-08-10");
+    assert.equal(defaultCfg.version.value, "2026-08-17");
     assert.equal(defaultCfg.version.source, "default");
     assert.match(defaultCfg.warnings.join("\n"), /Ignoring PARLE_VERSION from \.env/);
 
@@ -389,7 +389,7 @@ test("PARLE_VERSION is adapter-owned unless explicitly set in process env", () =
 
     rmSync(join(cwd, ".env"));
     const cleanCfg = resolveConfig(cwd, { HOME: cwd });
-    assert.equal(cleanCfg.version.value, "2026-08-10");
+    assert.equal(cleanCfg.version.value, "2026-08-17");
     assert.equal(cleanCfg.version.source, "default");
     assert.equal(cleanCfg.warnings.length, 0);
   } finally {
@@ -589,11 +589,11 @@ test("requestJson sends one process client identity and rejects reserved caller 
 test("unsupported version errors include source, default, and server versions", async () => {
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token", PARLE_VERSION: "bad-version" },
-    fetch: async () => json({ error: { code: "unsupported_parle_version", message: "unsupported Parle-Version header", supported: ["2026-08-10"], current: "2026-08-10" } }, 400),
+    fetch: async () => json({ error: { code: "unsupported_parle_version", message: "unsupported Parle-Version header", supported: ["2026-08-17"], current: "2026-08-17" } }, 400),
   });
   await assert.rejects(
     () => client.requestJson("/v/test"),
-    /Sent Parle-Version bad-version from env; adapter default is 2026-08-10\. Server supports 2026-08-10\. Unset the stale PARLE_VERSION override or upgrade the adapter\./,
+    /Sent Parle-Version bad-version from env; adapter default is 2026-08-17\. Server supports 2026-08-17\. Unset the stale PARLE_VERSION override or upgrade the adapter\./,
   );
 });
 
@@ -1695,7 +1695,7 @@ test("default profile is selected when no explicit binding is configured", () =>
 
 test("version error hint preserves supported-version precedence", () => {
   const cfg = { version: { value: "old", source: "env" } };
-  assert.equal(formatVersionErrorHint(cfg, { supported: ["new"], current: "also-new" }), " Sent Parle-Version old from env; adapter default is 2026-08-10. Server supports new. Unset the stale PARLE_VERSION override or upgrade the adapter.");
+  assert.equal(formatVersionErrorHint(cfg, { supported: ["new"], current: "also-new" }), " Sent Parle-Version old from env; adapter default is 2026-08-17. Server supports new. Unset the stale PARLE_VERSION override or upgrade the adapter.");
 });
 
 test("automatic bootstrap terminal latch fails closed while explicit connect remains a recovery path", async () => {

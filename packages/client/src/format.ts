@@ -1,6 +1,6 @@
 export type CompactResponsiveDelivery = "starting" | "watching" | "backoff" | "stopped" | "terminal" | "stale" | "unknown" | "conflict";
 
-export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "recover-watcher";
+export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "wait-for-watcher" | "recover-watcher" | "repair-delivery-host";
 
 export type CompactCardRoom = { roomId?: string; roomHandle?: string; unreadCount?: number };
 
@@ -35,8 +35,12 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return "arm or verify responsive delivery.";
+    case "wait-for-watcher":
+      return "wait for responsive delivery startup.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
+    case "repair-delivery-host":
+      return "restart the host after correcting the local delivery socket error.";
     default:
       return key;
   }

@@ -1,8 +1,33 @@
 # Changelog
 
-## 0.7.19 (2026-08-17)
+## 0.7.25 (2026-08-18)
 
 - Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
+
+## 0.7.24 (2026-08-17)
+
+- Add native preview-first room capacity recovery through the shared account tool runtime (#144).
+
+## 0.7.23 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
+## 0.7.22 (2026-08-17)
+
+- Republish the merged #132 and #140 Command Code bundle under a unique version after the concurrent releases shared 0.7.21; runtime behavior is unchanged from main.
+
+## 0.7.21 (2026-08-17)
+
+- Release alignment for #132; no Command Code runtime behavior changed because its native delivery path does not use the MCP hook bridge.
+- Expose native room-participant inventory and guarded own-session ending through the shared account tool runtime (#140).
+
+## 0.7.20 (2026-08-17)
+
+- Preserve persisted responsive-delivery success and backoff evidence when repeated status calls find the native controller already running (#136).
+
+## 0.7.19 (2026-08-17)
+
+- Release alignment for #120; no Command Code runtime behavior changed because its native delivery path does not use Claude's hook bridge.
 
 ## 0.7.18 (2026-08-17)
 
@@ -10,7 +35,7 @@
 
 ## 0.7.17 (2026-08-16)
 
-- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).
+- Release alignment for #118; no Command Code runtime behavior changed because its native delivery path does not use Claude's hook bridge.
 
 ## 0.7.16 (2026-08-15)
 

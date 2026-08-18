@@ -1,8 +1,37 @@
 # Changelog
 
-## 0.9.44 (2026-08-17)
+## 0.9.51 (2026-08-18)
 
 - Bundle the typed first-time onboarding tool and server-owned email-start guidance.
+
+## 0.9.50 (2026-08-17)
+
+- Keep concurrent legacy-socket cleanup from aborting watcher attachment (#133).
+
+## 0.9.49 (2026-08-17)
+
+- Restore resilient watcher attachment across stale or unreachable hook-bridge socket candidates (#133).
+
+## 0.9.48 (2026-08-17)
+
+- Refresh the bundled MCP runtime with preview-first room capacity recovery and stronger exact-session safety guidance (#144).
+
+## 0.9.47 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
+## 0.9.46 (2026-08-17)
+
+- Republish the merged #132 and #140 Claude bundle under a unique version after the concurrent releases shared 0.9.45; runtime behavior is unchanged from main.
+
+## 0.9.45 (2026-08-17)
+
+- Report hook-bridge socket startup failures as terminal instead of claiming responsive delivery is armed (#132).
+- Refresh the bundled MCP runtime with room-participant inventory and guarded own-session ending for stale-session capacity recovery (#140).
+
+## 0.9.44 (2026-08-17)
+
+- Preserve healthy hook-bridge `watching` evidence across plain status calls (#120).
 
 ## 0.9.43 (2026-08-17)
 

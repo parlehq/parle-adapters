@@ -1,8 +1,29 @@
 # Changelog
 
-## 0.7.44 (2026-08-17)
+## 0.7.49 (2026-08-18)
 
 - Expose first-time onboarding separately from returning login and route setup guidance by explicit user intent.
+
+## 0.7.48 (2026-08-17)
+
+- Add native preview-first room capacity recovery with fail-closed invoker protection and serial exact-session completion (#144).
+
+## 0.7.47 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
+
+## 0.7.46 (2026-08-17)
+
+- Republish the merged #132 and #140 Pi bundle under a unique version after the concurrent releases shared 0.7.45; runtime behavior is unchanged from main.
+
+## 0.7.45 (2026-08-17)
+
+- Release alignment for #132; no Pi runtime behavior changed because Pi does not carry the MCP hook bridge.
+- Add native `parle_room_participants` and guarded `parle_end_own_session` account tools for stale-session capacity recovery (#140).
+
+## 0.7.44 (2026-08-17)
+
+- Release alignment for #120; no Pi runtime behavior changed because Pi does not carry the MCP hook bridge.
 
 ## 0.7.43 (2026-08-17)
 
@@ -10,7 +31,7 @@
 
 ## 0.7.42 (2026-08-16)
 
-- Refresh the bundled MCP runtime with opt-in direct-parent hook-bridge correlation for Claude (#118).
+- Release alignment for #118; no Pi runtime behavior changed because Pi does not carry Claude's MCP hook bridge.
 
 ## 0.7.41 (2026-08-15)
 
@@ -18,7 +39,7 @@
 
 ## 0.7.40 (2026-08-14)
 
-- Refresh the shared responsive-delivery resolver so wake-only helpers do not create false owner conflicts.
+- Release alignment only; no Pi runtime behavior changed because the shared resolver update was not present in Pi's bundle.
 
 ## 0.7.39 (2026-08-14)
 

@@ -1,5 +1,5 @@
 import type { ErrorAction, ErrorScope } from "./error-envelope.js";
-export const DEFAULT_VERSION = "2026-08-10";
+export const DEFAULT_VERSION = "2026-08-17";
 
 
 export class ParleApiError extends Error {

@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -80,6 +80,27 @@ const deleteOwnAgentSchema = {
   reason: z.string().optional(),
 };
 
+const roomParticipantsSchema = {
+  roomId: z.string(),
+};
+
+const endOwnSessionSchema = {
+  agentSessionId: z.string(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
+const roomCapacityRecoverySchema = {
+  action: z.enum(["preview", "complete"]),
+  roomId: z.string(),
+  agentSessionIds: z.array(z.string()).optional(),
+  lastSeenBefore: z.string().optional(),
+  protectAgentSessionIds: z.array(z.string()).optional(),
+  previewId: z.string().optional(),
+  confirmMutation: z.boolean().optional(),
+  reason: z.string().optional(),
+};
+
 const deleteProfileSchema = {
   profile: z.string(),
   confirmMutation: z.boolean().optional(),
@@ -135,6 +156,9 @@ export type ParleAccountClientLike = {
   createRoom(params: CreateRoomParams): Promise<unknown>;
   createOwnAgent(params: CreateOwnAgentParams): Promise<unknown>;
   deleteOwnAgent(params: DeleteOwnAgentParams): Promise<unknown>;
+  roomParticipants(params: RoomParticipantsParams): Promise<unknown>;
+  roomCapacityRecovery(params: RoomCapacityRecoveryParams, invoker: ReturnType<typeof recoveryInvokerState>): Promise<unknown>;
+  endOwnSession(params: EndOwnSessionParams): Promise<unknown>;
   addOwnAgentSeat(params: AddOwnAgentSeatParams): Promise<unknown>;
   mintPrincipalInvite(params: MintPrincipalInviteParams): Promise<unknown>;
   claimPrincipalInvite(params: ClaimPrincipalInviteParams): Promise<unknown>;
@@ -150,6 +174,45 @@ export type HookDeliveryBridgeLike = {
   bindHostSession(sessionId: string): boolean;
   start?(): Promise<void>;
 };
+
+function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record<string, unknown>): any {
+  let resolved = responsiveDelivery;
+  const bridgeDown = bridgeStatus?.running === false;
+  const bridgeError = typeof bridgeStatus?.lastError === "string" ? bridgeStatus.lastError : undefined;
+  const bridgeErrorKind = typeof bridgeStatus?.lastErrorKind === "string" ? bridgeStatus.lastErrorKind : undefined;
+  if (bridgeDown && bridgeError) {
+    const reason = bridgeErrorKind === "listen"
+      ? "bridge_listen_failed"
+      : bridgeErrorKind === "startup"
+        ? "bridge_start_failed"
+        : bridgeErrorKind === "evidence"
+          ? "bridge_evidence_failed"
+          : bridgeErrorKind === "controller"
+            ? "bridge_controller_failed"
+            : "bridge_failed";
+    resolved = {
+      ...(resolved || {}),
+      state: "terminal",
+      reason,
+      lastError: { message: redactString(bridgeError), at: new Date().toISOString() },
+    };
+  } else if (resolved?.state === "unknown" && bridgeStatus) {
+    resolved = { state: bridgeStatus.running ? "watching" : "stopped" };
+  } else if (bridgeDown && ["watching", "idle"].includes(resolved?.state)) {
+    resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
+  }
+  if (!resolved) return undefined;
+  const next = resolved.reason === "bridge_listen_failed"
+    ? { nextActionKey: "repair-delivery-host" as const, nextAction: "restart the host after correcting the local delivery socket error" }
+    : resolved.state === "unknown" || resolved.state === "stopped"
+      ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
+      : resolved.state === "starting"
+        ? { nextActionKey: "wait-for-watcher" as const, nextAction: "wait for responsive delivery startup" }
+        : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict"
+          ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
+          : { nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" };
+  return { ...resolved, ...next };
+}
 
 export function hostSessionIdFromMeta(meta: unknown): string | undefined {
   if (!meta || typeof meta !== "object") return undefined;
@@ -228,22 +291,9 @@ export function registerParleTools(
       const connected = (status as any).runtime?.bootstrapState === "ready" && Boolean((status as any).runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = (status as any).runtime?.agentSessionId;
-      let responsiveDelivery = connected && agentSessionId
+      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId
         ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid })
-        : undefined;
-      if (responsiveDelivery?.state === "unknown" && bridgeStatus) {
-        responsiveDelivery = bridgeStatus.lastError
-          ? { state: "backoff", lastError: { message: redactString(String(bridgeStatus.lastError)), at: new Date().toISOString() } }
-          : { state: bridgeStatus.running ? "watching" : "stopped" };
-      }
-      if (responsiveDelivery) {
-        const next = responsiveDelivery.state === "unknown"
-          ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
-          : responsiveDelivery.state === "backoff" || responsiveDelivery.state === "stale" || responsiveDelivery.state === "terminal" || responsiveDelivery.state === "conflict"
-            ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
-            : { nextActionKey: "already-connected" as const, nextAction: "responsive delivery is armed" };
-        responsiveDelivery = { ...responsiveDelivery, ...next };
-      }
+        : undefined, bridgeStatus);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
       return { ...status, bootstrapAttempted, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
@@ -298,14 +348,14 @@ export function registerParleTools(
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = (summary as any).agentSessionId;
-      const responsiveDelivery = agentSessionId
+      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId
         ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid })
-        : undefined;
+        : undefined, bridgeStatus);
       return {
         ...summary,
         ...(responsiveDelivery ? { responsiveDelivery } : {}),
         ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}),
-        compactText: compactConnectionCardFromSummary(summary as any, { responsiveDelivery }),
+        compactText: compactConnectionCardFromSummary(summary as any, { responsiveDelivery, next: responsiveDelivery?.nextActionKey }),
       };
     }
     return summary;
@@ -481,6 +531,36 @@ export function registerParleTools(
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => accountClient.deleteOwnAgent(params as DeleteOwnAgentParams));
+  });
+
+  registerTool("parle_room_participants", {
+    title: "List Parle Room Participants",
+    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    inputSchema: roomParticipantsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomParticipants(params as RoomParticipantsParams));
+  });
+
+  registerTool("parle_room_capacity_recovery", {
+    title: "Recover Parle Room Capacity",
+    description: "Preview or complete guarded room capacity recovery using the owner roster and exact own-session end primitives. Preview is read-only and selects nothing unless exact session IDs or an explicit lastSeenBefore heartbeat cutoff are supplied. last_seen_at is heartbeat recency, not workload idleness or proof of abandonment. Complete requires the opaque previewId, explicit confirmation, and a reason; it protects the current runtime session, rereads before each serial end, stops on unknown outcome, and never retries automatically. The final roster GET and end POST are separate and non-atomic.",
+    inputSchema: roomCapacityRecoverySchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomCapacityRecovery(params as RoomCapacityRecoveryParams, recoveryInvokerState(client.status())));
+  });
+
+  registerTool("parle_end_own_session", {
+    title: "End Own Parle Session",
+    description: "End one exact live agent session owned by the authenticated principal through the fixed human-session endpoint. Ending the session removes its active participant seats. A room roster contains active sessions, not stale cleanup candidates, and last_seen_at is heartbeat recency rather than workload idleness. Never bulk-loop this tool from a roster or infer permission to end multiple sessions from an ambiguous recovery request; use parle_room_capacity_recovery preview first. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    inputSchema: endOwnSessionSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.endOwnSession(params as EndOwnSessionParams));
   });
 
   registerTool("parle_add_own_agent_seat", {

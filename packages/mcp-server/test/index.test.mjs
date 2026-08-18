@@ -4,12 +4,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ParleAgentClient, ParleApiError, ProfileNotFoundError } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, scheduleEagerBootstrap } from "../dist/index.js";
+import { ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, processStartedAtIso } from "@parlehq/agent-client";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, runWatcher, scheduleEagerBootstrap } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -23,6 +23,7 @@ const expectedTools = [
   "parle_create_room",
   "parle_delete_own_agent",
   "parle_delete_profile",
+  "parle_end_own_session",
   "parle_guidance",
   "parle_harden_account",
   "parle_inbox",
@@ -33,6 +34,8 @@ const expectedTools = [
   "parle_owned_alias_release",
   "parle_read",
   "parle_reply",
+  "parle_room_capacity_recovery",
+  "parle_room_participants",
   "parle_rooms",
   "parle_saved_start",
   "parle_send",
@@ -156,6 +159,113 @@ test("watcher arguments require exactly one agent session id", () => {
   assert.equal(parseWatcherArgs(["session-1"]), "session-1");
   for (const args of [[], ["session-1", "extra"], ["--profile"], ["--profile", "target", "session-1"], [""]]) {
     assert.throws(() => parseWatcherArgs(args), (error) => error instanceof WatcherUsageError && error.message === WATCHER_USAGE);
+  }
+});
+
+function watcherFixture() {
+  const stateDir = mkdtempSync(join(tmpdir(), "parle-watcher-"));
+  const currentDir = join(stateDir, "9000");
+  mkdirSync(currentDir, { mode: 0o700 });
+  return { stateDir, currentDir, cleanup: () => rmSync(stateDir, { recursive: true, force: true }) };
+}
+
+test("watcher skips an EPERM candidate and attaches to the next matching bridge", async () => {
+  const fixture = watcherFixture();
+  const first = join(fixture.currentDir, "100.sock");
+  const second = join(fixture.currentDir, "200.sock");
+  writeFileSync(first, "");
+  writeFileSync(second, "");
+  const requests = [];
+  try {
+    const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
+      stateDir: fixture.stateDir,
+      request: async (path, payload) => {
+        requests.push([path, payload.action]);
+        if (path === first) throw Object.assign(new Error("denied"), { code: "EPERM" });
+        if (payload.action === "status") return { ok: true, running: true, hostSessionBound: true, agentSessionId: "session-1" };
+        return { ok: true, ready: true };
+      },
+    });
+    assert.equal(result, 0);
+    assert.deepEqual(requests, [[first, "status"], [second, "status"], [second, "wait"]]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("watcher aggregates candidate probe errors without naming an arbitrary path", async () => {
+  const fixture = watcherFixture();
+  writeFileSync(join(fixture.currentDir, "100.sock"), "");
+  writeFileSync(join(fixture.currentDir, "200.sock"), "");
+  writeFileSync(join(fixture.stateDir, "300.sock"), "", { mode: 0o600 });
+  try {
+    await assert.rejects(
+      runWatcher(import.meta.url, ["session-1"], process.cwd(), {
+        stateDir: fixture.stateDir,
+        isProcessAlive: () => true,
+        request: async () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
+      }),
+      (error) => {
+        assert.match(error.message, /Probed 3 candidate sockets; discovery errors: none; status probe errors: EPERM \(3\/3\)/);
+        assert.doesNotMatch(error.message, /100\.sock|200\.sock|300\.sock/);
+        return true;
+      },
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("watcher removes a dead flat-layout socket without probing or reporting it", async () => {
+  const fixture = watcherFixture();
+  const current = join(fixture.currentDir, "100.sock");
+  const stale = join(fixture.stateDir, "300.sock");
+  writeFileSync(current, "");
+  writeFileSync(stale, "", { mode: 0o600 });
+  const requests = [];
+  try {
+    await assert.rejects(
+      runWatcher(import.meta.url, ["session-1"], process.cwd(), {
+        stateDir: fixture.stateDir,
+        isProcessAlive: () => false,
+        request: async (path) => {
+          requests.push(path);
+          return { ok: true, running: true, hostSessionBound: true, agentSessionId: "another-session" };
+        },
+      }),
+      (error) => {
+        assert.match(error.message, /Probed 1 candidate socket; discovery errors: none; status probe errors: none/);
+        assert.doesNotMatch(error.message, /300\.sock/);
+        return true;
+      },
+    );
+    assert.deepEqual(requests, [current]);
+    assert.equal(existsSync(stale), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("watcher skips a flat candidate that vanishes during discovery", async () => {
+  const fixture = watcherFixture();
+  const current = join(fixture.currentDir, "100.sock");
+  const vanished = join(fixture.stateDir, "300.sock");
+  writeFileSync(current, "");
+  writeFileSync(vanished, "", { mode: 0o600 });
+  try {
+    const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
+      stateDir: fixture.stateDir,
+      lstat: (path) => {
+        if (path === vanished) throw Object.assign(new Error("vanished"), { code: "ENOENT" });
+        return lstatSync(path);
+      },
+      request: async (_path, payload) => payload.action === "status"
+        ? { ok: true, running: true, hostSessionBound: true, agentSessionId: "session-1" }
+        : { ok: true, ready: true },
+    });
+    assert.equal(result, 0);
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -395,6 +505,9 @@ test("in-memory server maps read, send, and errors through fake client", async (
     createRoom: async (params) => { calls.push(["create-room", params]); return { room_id: "room-1" }; },
     createOwnAgent: async (params) => { calls.push(["create-own-agent", params]); return { agent_id: "agent-1", agent_handle: params.agentHandle, display_name: params.displayName || params.agentHandle }; },
     deleteOwnAgent: async (params) => { calls.push(["delete-own-agent", params]); return { agent_id: params.agentId, http_status: 204 }; },
+    roomParticipants: async (params) => { calls.push(["room-participants", params]); return { participants: [{ agent_session_id: "session-1" }] }; },
+    roomCapacityRecovery: async (params, invoker) => { calls.push(["room-capacity-recovery", params, invoker]); return { action: params.action, roomId: params.roomId, selected: [] }; },
+    endOwnSession: async (params) => { calls.push(["end-own-session", params]); return { agent_session_id: params.agentSessionId, http_status: 204 }; },
     addOwnAgentSeat: async (params) => { calls.push(["add-own-agent-seat", params]); return { seat_id: "seat-1" }; },
     hardenAccount: async (params) => { calls.push(["harden-account", params]); return { action: params.action, state: "needs_password", next: "human helper" }; },
     mintPrincipalInvite: async (params) => { calls.push(["mint-invite", params]); return { inviteId: "invite-1", handoffPath: "/private/invite.json" }; },
@@ -424,6 +537,14 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const deleteAgentTool = tools.tools.find((tool) => tool.name === "parle_delete_own_agent");
     assert.match(deleteAgentTool.description, /Terminally delete/);
     assert.match(deleteAgentTool.description, /revokes active tokens/);
+    const participantTool = tools.tools.find((tool) => tool.name === "parle_room_participants");
+    assert.match(participantTool.description, /does not connect an agent/);
+    assert.match(participantTool.description, /principal-private/);
+    const recoveryTool = tools.tools.find((tool) => tool.name === "parle_room_capacity_recovery");
+    assert.match(recoveryTool.description, /selects nothing/);
+    assert.match(recoveryTool.description, /non-atomic/);
+    const endSessionTool = tools.tools.find((tool) => tool.name === "parle_end_own_session");
+    assert.match(endSessionTool.description, /reread the room roster/);
     const seatTool = tools.tools.find((tool) => tool.name === "parle_add_own_agent_seat");
     assert.match(seatTool.description, /private or shared room/);
     const sendTool = tools.tools.find((tool) => tool.name === "parle_send");
@@ -463,6 +584,12 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(createdAgent.structuredContent.agent_id, "agent-1");
     const deletedAgent = await client.callTool({ name: "parle_delete_own_agent", arguments: { agentId: "agent-1", confirmMutation: true, reason: "delete agent" } });
     assert.equal(deletedAgent.structuredContent.http_status, 204);
+    const participants = await client.callTool({ name: "parle_room_participants", arguments: { roomId: "room-1" } });
+    assert.equal(participants.structuredContent.participants[0].agent_session_id, "session-1");
+    const recovery = await client.callTool({ name: "parle_room_capacity_recovery", arguments: { action: "preview", roomId: "room-1" } });
+    assert.equal(recovery.structuredContent.action, "preview");
+    const endedSession = await client.callTool({ name: "parle_end_own_session", arguments: { agentSessionId: "session-1", confirmMutation: true, reason: "reclaim" } });
+    assert.equal(endedSession.structuredContent.http_status, 204);
     const seat = await client.callTool({ name: "parle_add_own_agent_seat", arguments: { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" } });
     assert.equal(seat.structuredContent.seat_id, "seat-1");
     const hardening = await client.callTool({ name: "parle_harden_account", arguments: { action: "status" } });
@@ -485,6 +612,9 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
       ["create-own-agent", { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" }],
       ["delete-own-agent", { agentId: "agent-1", confirmMutation: true, reason: "delete agent" }],
+      ["room-participants", { roomId: "room-1" }],
+      ["room-capacity-recovery", { action: "preview", roomId: "room-1" }, { state: "unknown", reason: "runtime_session_state_unresolved" }],
+      ["end-own-session", { agentSessionId: "session-1", confirmMutation: true, reason: "reclaim" }],
       ["add-own-agent-seat", { roomId: "room-1", agentId: "agent-1", confirmMutation: true, reason: "admit" }],
       ["harden-account", { action: "status" }],
       ["mint-invite", { roomId: "room-1", target: "@kyle", confirmMutation: true, reason: "invite" }],
@@ -594,8 +724,13 @@ test("connect and status do not wait for optional responsive delivery startup", 
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("tool waited for responsive delivery startup")), 500));
     const connect = await Promise.race([client.callTool({ name: "parle_connect", arguments: {} }), timeout]);
     assert.equal(connect.structuredContent.connected, true);
+    assert.equal(connect.structuredContent.responsiveDelivery.state, "stopped");
+    assert.doesNotMatch(connect.structuredContent.compactText, /responsive delivery is armed/);
+    assert.match(connect.structuredContent.compactText, /Next: arm or verify responsive delivery\./);
     const status = await Promise.race([client.callTool({ name: "parle_status", arguments: {} }), timeout]);
     assert.equal(status.structuredContent.runtime.sessionAddress, "@p.a.s1");
+    assert.equal(status.structuredContent.responsiveDelivery.state, "stopped");
+    assert.doesNotMatch(status.structuredContent.compactText, /responsive delivery is armed/);
   } finally {
     await client.close();
     await server.close();
@@ -740,7 +875,7 @@ test("parle_status auto-connects a configured client and reports the attempt", a
   }
 });
 
-test("parle_status surfaces an unarmed bridge error as degraded", async () => {
+test("parle_status never reports an unarmed bridge with an error as armed", async () => {
   const counters = {};
   const clientImpl = new ParleAgentClient({ env: realClientEnv(), fetch: sessionFetch(counters) });
   const deliveryBridge = {
@@ -761,13 +896,98 @@ test("parle_status surfaces an unarmed bridge error as degraded", async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   try {
     const result = await client.callTool({ name: "parle_status", arguments: {} });
-    assert.match(result.structuredContent.compactText, /Delivery      backoff/);
+    assert.match(result.structuredContent.compactText, /Delivery      terminal/);
     assert.match(result.structuredContent.compactText, /Next: inspect the responsive delivery error and restart the host if it does not recover\./);
-    assert.equal(result.structuredContent.responsiveDelivery.state, "backoff");
+    assert.equal(result.structuredContent.responsiveDelivery.state, "terminal");
+    assert.equal(result.structuredContent.responsiveDelivery.reason, "bridge_failed");
+    assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
     assert.equal(result.structuredContent.responsiveDeliveryBridge.lastError, "Parle wake stream 502: Bad Gateway");
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("status and connect report a latched hook bridge listen failure instead of armed delivery", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({
+      running: false,
+      pending: 0,
+      baselineSkipped: 0,
+      socketPath: "/tmp/parle-test.sock",
+      hostSessionBound: true,
+      lastError: "listen EPERM: operation not permitted /tmp/parle-test.sock",
+      lastErrorKind: "listen",
+    }),
+  };
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-listen-failure", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    for (const result of [
+      await client.callTool({ name: "parle_connect", arguments: {} }),
+      await client.callTool({ name: "parle_status", arguments: {} }),
+    ]) {
+      assert.equal(result.structuredContent.responsiveDelivery.state, "terminal");
+      assert.equal(result.structuredContent.responsiveDelivery.reason, "bridge_listen_failed");
+      assert.equal(result.structuredContent.responsiveDelivery.nextActionKey, "repair-delivery-host");
+      assert.match(result.structuredContent.responsiveDelivery.lastError.message, /listen EPERM/);
+      assert.match(result.structuredContent.compactText, /Delivery      terminal/);
+      assert.match(result.structuredContent.compactText, /Next: restart the host after correcting the local delivery socket error\./);
+      assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("status and connect never report stale healthy evidence as armed while the bridge is down", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({ running: false, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true }),
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue132-test", clientInstanceId: "issue132-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-down-stale-evidence", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    for (const result of [
+      await client.callTool({ name: "parle_connect", arguments: {} }),
+      await client.callTool({ name: "parle_status", arguments: {} }),
+    ]) {
+      assert.equal(result.structuredContent.responsiveDelivery.state, "starting");
+      assert.equal(result.structuredContent.responsiveDelivery.reason, "bridge_starting");
+      assert.equal(result.structuredContent.responsiveDelivery.nextActionKey, "wait-for-watcher");
+      assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(evidencePath, { force: true });
   }
 });
 

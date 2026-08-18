@@ -30953,7 +30953,7 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "node:fs";
+import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4, rmSync as rmSync4 } from "node:fs";
 import { connect } from "node:net";
 import { join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31575,7 +31575,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-08-10";
+var DEFAULT_VERSION = "2026-08-17";
 var ParleApiError = class extends Error {
   status;
   code;
@@ -33438,6 +33438,7 @@ var MAX_PROFILE_CATALOG_BYTES2 = 1024 * 1024;
 var MAX_ACCOUNT_ROOM_ROWS = 2e3;
 var MAX_ACCOUNT_ROOM_PAGES = 10;
 var EMAIL_START_SAFETY_FLOOR = "Request accepted. This does not confirm that an account, invitation, or email delivery exists. If a code arrives, complete only the flow you selected. Do not retry automatically or start the other flow.";
+var ROOM_CAPACITY_PREVIEW_TTL_MS = 15 * 60 * 1e3;
 var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
@@ -33457,6 +33458,7 @@ var ParleAccountResponseContractError = class extends Error {
     this.status = status;
   }
 };
+var roomCapacityRecoveryPlans = /* @__PURE__ */ new Map();
 function parseDotEnv2(text) {
   const values = {};
   for (const raw of text.split(/\r?\n/)) {
@@ -33606,6 +33608,40 @@ function validateUUID(raw, label) {
     throw new Error(`${label} must be a non-zero UUID.`);
   return value;
 }
+function validateUUIDList(raw, label) {
+  if (raw === void 0)
+    return [];
+  if (!Array.isArray(raw))
+    throw new Error(`${label} must be an array of UUIDs.`);
+  return [...new Set(raw.map((value) => validateUUID(value, label)))];
+}
+function validateTimestamp(raw, label) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!value || !Number.isFinite(Date.parse(value)))
+    throw new Error(`${label} must be an RFC3339 timestamp.`);
+  return new Date(value).toISOString();
+}
+function recoveryInvokerState(status) {
+  const view = status && typeof status === "object" ? status : {};
+  const runtime = view.runtime && typeof view.runtime === "object" ? view.runtime : view;
+  const rawId = runtime.agentSessionId;
+  if (typeof rawId === "string" && rawId) {
+    try {
+      return { state: "present", agentSessionId: validateUUID(rawId, "runtime agentSessionId") };
+    } catch {
+      return { state: "unknown", reason: "runtime_agent_session_id_invalid" };
+    }
+  }
+  if (runtime.bootstrapped === true || runtime.bootstrapState === "ready" || runtime.bootstrapState === "starting") {
+    return { state: "unknown", reason: "runtime_session_identity_missing" };
+  }
+  if (runtime.bootstrapState === "unstarted")
+    return { state: "authoritatively_absent" };
+  if (runtime.bootstrapState === "failed" && runtime.terminalCause?.code === "resource_limit_exceeded") {
+    return { state: "authoritatively_absent" };
+  }
+  return { state: "unknown", reason: "runtime_session_state_unresolved" };
+}
 function validateAlias(raw) {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (!isValidSessionAlias(value)) {
@@ -33670,6 +33706,33 @@ function assertStringArray(raw, label) {
   if (!Array.isArray(raw) || raw.some((value) => typeof value !== "string"))
     throw new Error(`Parle response ${label} is invalid.`);
   return raw;
+}
+function parseRoomParticipants(raw, expectedRoomId) {
+  if (!Array.isArray(raw?.participants))
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  try {
+    return {
+      participants: raw.participants.map((participant) => {
+        if (!participant || typeof participant !== "object" || typeof participant.session_handle !== "string" || !participant.session_handle || !Number.isFinite(Date.parse(participant.last_seen_at)) || !Number.isFinite(Date.parse(participant.expires_at)))
+          throw new Error();
+        const roomId = validateUUID(String(participant.room_id || ""), "participant room_id");
+        if (roomId !== expectedRoomId)
+          throw new Error();
+        return {
+          participant_id: validateUUID(String(participant.participant_id || ""), "participant_id"),
+          room_id: roomId,
+          principal_id: validateUUID(String(participant.principal_id || ""), "participant principal_id"),
+          agent_session_id: validateUUID(String(participant.agent_session_id || ""), "participant agent_session_id"),
+          agent_id: validateUUID(String(participant.agent_id || ""), "participant agent_id"),
+          session_handle: participant.session_handle,
+          last_seen_at: participant.last_seen_at,
+          expires_at: participant.expires_at
+        };
+      })
+    };
+  } catch {
+    throw new ParleAccountResponseContractError("Parle room participant response is invalid.", 200);
+  }
 }
 function parseInvitationReference(raw) {
   const value = raw.trim();
@@ -34525,6 +34588,189 @@ var ParleAccountClient = class {
       };
     }
   }
+  async roomParticipants(params, signal) {
+    const roomId = validateUUID(params.roomId, "roomId");
+    const config2 = this.config();
+    return parseRoomParticipants(await this.request(config2, `/v/rooms/${encodeURIComponent(roomId)}/participants`, { signal }), roomId);
+  }
+  async roomCapacityRecovery(params, invoker, signal) {
+    if (params.action !== "preview" && params.action !== "complete")
+      throw new Error('parle_room_capacity_recovery action must be "preview" or "complete".');
+    const roomId = validateUUID(params.roomId, "roomId");
+    const config2 = this.config();
+    const binding = `${config2.apiBase}\0${config2.catalogPath}`;
+    const now = this.now();
+    for (const [id, plan2] of roomCapacityRecoveryPlans) {
+      if (now.getTime() - plan2.createdAt > ROOM_CAPACITY_PREVIEW_TTL_MS)
+        roomCapacityRecoveryPlans.delete(id);
+    }
+    if (params.action === "preview") {
+      if (params.previewId !== void 0 || params.confirmMutation !== void 0 || params.reason !== void 0) {
+        throw new Error("parle_room_capacity_recovery preview does not accept completion fields.");
+      }
+      const requested = validateUUIDList(params.agentSessionIds, "agentSessionIds");
+      const protectedIds = validateUUIDList(params.protectAgentSessionIds, "protectAgentSessionIds");
+      if (requested.length > 0 && params.lastSeenBefore !== void 0)
+        throw new Error("agentSessionIds and lastSeenBefore are mutually exclusive selection modes.");
+      const lastSeenBefore = params.lastSeenBefore === void 0 ? void 0 : validateTimestamp(params.lastSeenBefore, "lastSeenBefore");
+      const roster = (await this.roomParticipants({ roomId }, signal)).participants;
+      const listedAgents2 = await this.request(config2, "/v/agents", { signal });
+      const ownedAgentIds2 = new Set(publicAgents(listedAgents2?.agents).map((agent) => agent.agentId));
+      const requestedSet = new Set(requested);
+      const protectedSet2 = new Set(protectedIds);
+      const invokerId = invoker.state === "present" ? invoker.agentSessionId : void 0;
+      const selected = [];
+      const exclusions = [];
+      for (const row of roster) {
+        const summary = {
+          agentSessionId: row.agent_session_id,
+          sessionHandle: row.session_handle,
+          lastSeenAt: row.last_seen_at,
+          expiresAt: row.expires_at
+        };
+        let reason;
+        if (!ownedAgentIds2.has(row.agent_id))
+          reason = "different_principal";
+        else if (row.agent_session_id === invokerId)
+          reason = "current_invoker";
+        else if (protectedSet2.has(row.agent_session_id))
+          reason = "explicitly_protected";
+        else if (requested.length > 0 && !requestedSet.has(row.agent_session_id))
+          reason = "not_requested";
+        else if (lastSeenBefore && Date.parse(row.last_seen_at) > Date.parse(lastSeenBefore))
+          reason = "newer_than_cutoff";
+        else if (requested.length === 0 && !lastSeenBefore)
+          reason = "not_requested";
+        if (reason)
+          exclusions.push({ ...summary, reason });
+        else
+          selected.push(row);
+      }
+      const selectedIds = new Set(selected.map((row) => row.agent_session_id));
+      const requestedNotFound = requested.filter((id) => !selectedIds.has(id) && !roster.some((row) => row.agent_session_id === id));
+      const completionEnabled = invoker.state !== "unknown" && selected.length > 0;
+      const previewId = completionEnabled ? randomUUID3() : void 0;
+      if (previewId) {
+        roomCapacityRecoveryPlans.set(previewId, {
+          binding,
+          roomId,
+          createdAt: now.getTime(),
+          selected,
+          ...lastSeenBefore ? { lastSeenBefore } : {},
+          protectedAgentSessionIds: protectedIds
+        });
+      }
+      return {
+        action: "preview",
+        roomId,
+        previewedAt: now.toISOString(),
+        invoker,
+        completionEnabled,
+        ...previewId ? { previewId } : {},
+        selectionMode: requested.length > 0 ? "exact_session_ids" : lastSeenBefore ? "heartbeat_cutoff" : "none",
+        ...lastSeenBefore ? { lastSeenBefore } : {},
+        ...requested.length === 0 && !lastSeenBefore ? { suggestedLastSeenBefore: new Date(now.getTime() - 15 * 60 * 1e3).toISOString() } : {},
+        selected: selected.map((row) => ({ agentSessionId: row.agent_session_id, sessionHandle: row.session_handle, lastSeenAt: row.last_seen_at, expiresAt: row.expires_at })),
+        exclusions,
+        requestedNotFound,
+        guidance: "last_seen_at is authenticated-request heartbeat recency, not workload idleness or proof of abandonment. An unqualified preview selects nothing; any 15-minute suggestion is advisory only.",
+        nonAtomicBoundary: "Completion rereads before each end, but the final roster GET and session-end POST are separate requests and are not atomic."
+      };
+    }
+    if (params.agentSessionIds !== void 0 || params.lastSeenBefore !== void 0 || params.protectAgentSessionIds !== void 0) {
+      throw new Error("parle_room_capacity_recovery complete accepts only the previewId and confirmation fields from a prior preview.");
+    }
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_room_capacity_recovery complete requires confirmMutation=true and a reason.");
+    if (!params.previewId?.trim())
+      throw new Error("parle_room_capacity_recovery complete requires previewId from preview.");
+    const plan = roomCapacityRecoveryPlans.get(params.previewId);
+    if (!plan || now.getTime() - plan.createdAt > ROOM_CAPACITY_PREVIEW_TTL_MS) {
+      roomCapacityRecoveryPlans.delete(params.previewId);
+      throw new Error("Room capacity recovery preview is missing or expired. Create a fresh preview.");
+    }
+    if (plan.binding !== binding || plan.roomId !== roomId)
+      throw new Error("Room capacity recovery preview does not match the current account binding and room.");
+    if (invoker.state === "unknown")
+      throw new Error(`Room capacity recovery cannot resolve the invoker session safely: ${invoker.reason}.`);
+    if (invoker.state === "present" && plan.selected.some((row) => row.agent_session_id === invoker.agentSessionId)) {
+      throw new Error("Room capacity recovery refuses to end the current runtime session. Use parle_end_own_session separately when that disconnect is intentional.");
+    }
+    roomCapacityRecoveryPlans.delete(params.previewId);
+    const listedAgents = await this.request(config2, "/v/agents", { signal });
+    const ownedAgentIds = new Set(publicAgents(listedAgents?.agents).map((agent) => agent.agentId));
+    const protectedSet = new Set(plan.protectedAgentSessionIds);
+    const results = [];
+    let stopped = false;
+    for (const candidate of plan.selected) {
+      const current = (await this.roomParticipants({ roomId }, signal)).participants.find((row) => row.agent_session_id === candidate.agent_session_id);
+      if (!current) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "not_found" });
+        continue;
+      }
+      if (!ownedAgentIds.has(current.agent_id)) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "different_principal" });
+        continue;
+      }
+      if (invoker.state === "present" && current.agent_session_id === invoker.agentSessionId) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "current_invoker" });
+        continue;
+      }
+      if (protectedSet.has(current.agent_session_id)) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "explicitly_protected" });
+        continue;
+      }
+      const heartbeatAdvanced = Date.parse(current.last_seen_at) > Date.parse(candidate.last_seen_at);
+      const exceedsCutoff = plan.lastSeenBefore ? Date.parse(current.last_seen_at) > Date.parse(plan.lastSeenBefore) : false;
+      if (heartbeatAdvanced || exceedsCutoff) {
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "skipped", reason: "heartbeat_advanced", previewedLastSeenAt: candidate.last_seen_at, currentLastSeenAt: current.last_seen_at });
+        continue;
+      }
+      try {
+        const result2 = await this.endOwnSession({ agentSessionId: candidate.agent_session_id, confirmMutation: true, reason: params.reason }, signal);
+        if (result2.outcome === "unknown") {
+          results.push({ agentSessionId: candidate.agent_session_id, outcome: "unknown" });
+          stopped = true;
+          break;
+        }
+        results.push({ agentSessionId: candidate.agent_session_id, outcome: "ended" });
+      } catch (error51) {
+        if (error51?.status === 404) {
+          results.push({ agentSessionId: candidate.agent_session_id, outcome: "not_found" });
+          continue;
+        }
+        throw error51;
+      }
+    }
+    return {
+      action: "complete",
+      roomId,
+      previewId: params.previewId,
+      results,
+      stopped,
+      nonAtomicBoundary: "Each roster GET and session-end POST is a separate request. This best-effort recovery does not provide atomic heartbeat protection.",
+      next: stopped ? "Outcome is unknown. Reread the roster and begin a fresh preview; never retry or resume this plan automatically." : "Recovery plan consumed. Create a fresh preview before any further session ends."
+    };
+  }
+  async endOwnSession(params, signal) {
+    if (params.confirmMutation !== true || !params.reason?.trim())
+      throw new Error("parle_end_own_session requires confirmMutation=true and a reason for POST /v/agent/sessions/{agentSessionID}/end.");
+    const agentSessionId = validateUUID(params.agentSessionId, "agentSessionId");
+    const config2 = this.config();
+    try {
+      await this.request(config2, `/v/agent/sessions/${encodeURIComponent(agentSessionId)}/end`, { method: "POST", signal, expectNoContent: true });
+      return { agent_session_id: agentSessionId, http_status: 204 };
+    } catch (error51) {
+      if (typeof error51?.status === "number" && !(error51 instanceof ParleAccountResponseContractError && error51.status >= 200 && error51.status < 300))
+        throw error51;
+      return {
+        agent_session_id: agentSessionId,
+        outcome: "unknown",
+        retry_attempted: false,
+        next: "Session end outcome is unknown. Do not retry blindly; call parle_room_participants again and inspect the roster before taking another action."
+      };
+    }
+  }
   async addOwnAgentSeat(params, signal) {
     if (params.confirmMutation !== true || !params.reason?.trim())
       throw new Error("parle_add_own_agent_seat requires confirmMutation=true and a reason for POST /v/rooms/{roomID}/seats.");
@@ -34934,8 +35180,12 @@ function nextTextFor(key) {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return "arm or verify responsive delivery.";
+    case "wait-for-watcher":
+      return "wait for responsive delivery startup.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
+    case "repair-delivery-host":
+      return "restart the host after correcting the local delivery socket error.";
     default:
       return key;
   }
@@ -38275,6 +38525,7 @@ var HookDeliveryBridge = class {
   baselineDone = false;
   baselineSkipped = 0;
   lastError;
+  lastErrorKind;
   hostSessionId;
   waiter;
   unsubscribeCommitGuard;
@@ -38293,7 +38544,8 @@ var HookDeliveryBridge = class {
       ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() },
       ...this.client.runtime?.agentSessionId ? { agentSessionId: String(this.client.runtime.agentSessionId) } : {},
       ...controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {},
-      ...lastError ? { lastError } : {}
+      ...lastError ? { lastError } : {},
+      ...this.lastErrorKind ? { lastErrorKind: this.lastErrorKind } : {}
     };
   }
   bindHostSession(sessionId, allowReplace = false, correlated = false) {
@@ -38326,8 +38578,8 @@ var HookDeliveryBridge = class {
     this.removeOwnRuntimeArtifacts();
   }
   async startBridge() {
-    this.lastError = void 0;
-    this.publishEvidence("starting", { expectedProgressMs: 12e4 });
+    if (this.server?.listening && this.controller.status().running) return;
+    if (!this.lastError) this.publishEvidence("starting", { expectedProgressMs: 12e4 });
     if (!this.unsubscribeCommitGuard) {
       this.unsubscribeCommitGuard = this.client.onBeforeSessionCommit?.((plan) => this.guardSessionCommit(plan));
     }
@@ -38336,19 +38588,26 @@ var HookDeliveryBridge = class {
         await this.listen();
       } catch (error51) {
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        this.lastErrorKind = typeof error51 === "object" && error51 !== null && error51.syscall === "listen" ? "listen" : "startup";
         this.server = void 0;
         this.removeOwnRuntimeArtifacts();
+        this.publishEvidence("terminal", { reason: this.lastErrorKind === "listen" ? "bridge_listen_failed" : "bridge_start_failed", lastError: this.lastError });
         return;
       }
+      this.lastError = void 0;
+      this.lastErrorKind = void 0;
     }
     if (!this.controller.status().running) {
       this.baselineActive = !this.baselineDone;
       try {
         await this.controller.start();
         this.baselineDone = true;
+        this.lastError = void 0;
+        this.lastErrorKind = void 0;
         this.publishEvidence("watching", { expectedProgressMs: 57e4, lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
       } catch (error51) {
         this.lastError = error51 instanceof Error ? error51.message : String(error51);
+        this.lastErrorKind = "controller";
         this.publishEvidence("backoff", { expectedProgressMs: 3e4, lastError: this.lastError });
       } finally {
         this.baselineActive = false;
@@ -38375,7 +38634,10 @@ var HookDeliveryBridge = class {
     try {
       this.evidence.record(state, event);
     } catch (error51) {
-      this.lastError = this.lastError || `responsive-delivery evidence unavailable: ${error51 instanceof Error ? error51.message : String(error51)}`;
+      if (!this.lastError) {
+        this.lastError = `responsive-delivery evidence unavailable: ${error51 instanceof Error ? error51.message : String(error51)}`;
+        this.lastErrorKind = "evidence";
+      }
     }
   }
   // Session-scoped backlog present before the bridge's first drain belongs to
@@ -38678,6 +38940,24 @@ var deleteOwnAgentSchema = {
   confirmMutation: external_exports.boolean().optional(),
   reason: external_exports.string().optional()
 };
+var roomParticipantsSchema = {
+  roomId: external_exports.string()
+};
+var endOwnSessionSchema = {
+  agentSessionId: external_exports.string(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
+var roomCapacityRecoverySchema = {
+  action: external_exports.enum(["preview", "complete"]),
+  roomId: external_exports.string(),
+  agentSessionIds: external_exports.array(external_exports.string()).optional(),
+  lastSeenBefore: external_exports.string().optional(),
+  protectAgentSessionIds: external_exports.array(external_exports.string()).optional(),
+  previewId: external_exports.string().optional(),
+  confirmMutation: external_exports.boolean().optional(),
+  reason: external_exports.string().optional()
+};
 var deleteProfileSchema = {
   profile: external_exports.string(),
   confirmMutation: external_exports.boolean().optional(),
@@ -38719,6 +38999,28 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
+function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
+  let resolved = responsiveDelivery;
+  const bridgeDown = bridgeStatus?.running === false;
+  const bridgeError = typeof bridgeStatus?.lastError === "string" ? bridgeStatus.lastError : void 0;
+  const bridgeErrorKind = typeof bridgeStatus?.lastErrorKind === "string" ? bridgeStatus.lastErrorKind : void 0;
+  if (bridgeDown && bridgeError) {
+    const reason = bridgeErrorKind === "listen" ? "bridge_listen_failed" : bridgeErrorKind === "startup" ? "bridge_start_failed" : bridgeErrorKind === "evidence" ? "bridge_evidence_failed" : bridgeErrorKind === "controller" ? "bridge_controller_failed" : "bridge_failed";
+    resolved = {
+      ...resolved || {},
+      state: "terminal",
+      reason,
+      lastError: { message: redactString(bridgeError), at: (/* @__PURE__ */ new Date()).toISOString() }
+    };
+  } else if (resolved?.state === "unknown" && bridgeStatus) {
+    resolved = { state: bridgeStatus.running ? "watching" : "stopped" };
+  } else if (bridgeDown && ["watching", "idle"].includes(resolved?.state)) {
+    resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
+  }
+  if (!resolved) return void 0;
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
+  return { ...resolved, ...next };
+}
 function hostSessionIdFromMeta(meta3) {
   if (!meta3 || typeof meta3 !== "object") return void 0;
   const value = meta3;
@@ -38771,14 +39073,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = status.runtime?.agentSessionId;
-      let responsiveDelivery = connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
-      if (responsiveDelivery?.state === "unknown" && bridgeStatus) {
-        responsiveDelivery = bridgeStatus.lastError ? { state: "backoff", lastError: { message: redactString(String(bridgeStatus.lastError)), at: (/* @__PURE__ */ new Date()).toISOString() } } : { state: bridgeStatus.running ? "watching" : "stopped" };
-      }
-      if (responsiveDelivery) {
-        const next = responsiveDelivery.state === "unknown" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : responsiveDelivery.state === "backoff" || responsiveDelivery.state === "stale" || responsiveDelivery.state === "terminal" || responsiveDelivery.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
-        responsiveDelivery = { ...responsiveDelivery, ...next };
-      }
+      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
       return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
@@ -38830,12 +39125,12 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
-      const responsiveDelivery = agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0;
+      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
       return {
         ...summary,
         ...responsiveDelivery ? { responsiveDelivery } : {},
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},
-        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery })
+        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery, next: responsiveDelivery?.nextActionKey })
       };
     }
     return summary;
@@ -39002,6 +39297,33 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(() => accountClient.deleteOwnAgent(params));
+  });
+  registerTool("parle_room_participants", {
+    title: "List Parle Room Participants",
+    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    inputSchema: roomParticipantsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomParticipants(params));
+  });
+  registerTool("parle_room_capacity_recovery", {
+    title: "Recover Parle Room Capacity",
+    description: "Preview or complete guarded room capacity recovery using the owner roster and exact own-session end primitives. Preview is read-only and selects nothing unless exact session IDs or an explicit lastSeenBefore heartbeat cutoff are supplied. last_seen_at is heartbeat recency, not workload idleness or proof of abandonment. Complete requires the opaque previewId, explicit confirmation, and a reason; it protects the current runtime session, rereads before each serial end, stops on unknown outcome, and never retries automatically. The final roster GET and end POST are separate and non-atomic.",
+    inputSchema: roomCapacityRecoverySchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.roomCapacityRecovery(params, recoveryInvokerState(client.status())));
+  });
+  registerTool("parle_end_own_session", {
+    title: "End Own Parle Session",
+    description: "End one exact live agent session owned by the authenticated principal through the fixed human-session endpoint. Ending the session removes its active participant seats. A room roster contains active sessions, not stale cleanup candidates, and last_seen_at is heartbeat recency rather than workload idleness. Never bulk-loop this tool from a roster or infer permission to end multiple sessions from an ambiguous recovery request; use parle_room_capacity_recovery preview first. The mutation requires confirmMutation=true plus a reason. If the outcome is unknown, reread the room roster instead of retrying blindly.",
+    inputSchema: endOwnSessionSchema,
+    annotations: { destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => accountClient.endOwnSession(params));
   });
   registerTool("parle_add_own_agent_seat", {
     title: "Parle Add Own Agent Seat",
@@ -39228,7 +39550,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.40";
+var MCP_CLIENT_VERSION = "0.7.47";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -39438,37 +39760,71 @@ function hookBridgeRequest(path, payload, timeoutMs = 0) {
     });
   });
 }
-async function runWatcher(_metaUrl, args, cwd = process.cwd()) {
+async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}) {
   const agentSessionId = parseWatcherArgs(args);
-  const stateDir = hookBridgeStateDir(cwd);
-  const state = lstatSync8(stateDir);
+  const stateDir = dependencies.stateDir || hookBridgeStateDir(cwd);
+  const request = dependencies.request || hookBridgeRequest;
+  const isProcessAlive = dependencies.isProcessAlive || processIsAlive;
+  const lstat = dependencies.lstat || lstatSync8;
+  const state = lstat(stateDir);
   if (!state.isDirectory() || state.isSymbolicLink() || typeof process.getuid === "function" && state.uid !== process.getuid() || (state.mode & 63) !== 0) {
     throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
   }
   const entries = readdirSync4(stateDir, { withFileTypes: true });
-  const paths = [
-    ...entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).map((entry) => join11(stateDir, entry.name)),
-    ...entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
-      const parentDir = join11(stateDir, entry.name);
-      const parentState = lstatSync8(parentDir);
-      if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
-      return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
-    })
-  ];
-  for (const path of paths) {
+  const discoveryErrors = /* @__PURE__ */ new Map();
+  const recordDiscoveryError = (error51) => {
+    const code = typeof error51?.code === "string" && error51.code ? error51.code : "UNKNOWN";
+    discoveryErrors.set(code, (discoveryErrors.get(code) || 0) + 1);
+  };
+  const currentPaths = entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
+    const parentDir = join11(stateDir, entry.name);
+    let parentState;
     try {
-      const status = await hookBridgeRequest(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
-      if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
-      const result2 = await hookBridgeRequest(path, { action: "wait", agentSessionId });
-      if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");
-      console.log("parle-watch: responsive delivery queued");
-      return 0;
+      parentState = lstat(parentDir);
     } catch (error51) {
-      if (["ENOENT", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT"].includes(error51?.code)) continue;
-      throw error51;
+      recordDiscoveryError(error51);
+      return [];
     }
+    if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
+    return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
+  }).sort();
+  const legacyPaths = entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).flatMap((entry) => {
+    const path = join11(stateDir, entry.name);
+    let socketState;
+    try {
+      socketState = lstat(path);
+    } catch (error51) {
+      recordDiscoveryError(error51);
+      return [];
+    }
+    if (socketState.isSymbolicLink() || typeof process.getuid === "function" && socketState.uid !== process.getuid() || (socketState.mode & 63) !== 0) return [];
+    if (isProcessAlive(Number(entry.name.slice(0, -5)))) return [path];
+    try {
+      rmSync4(path, { force: true });
+    } catch {
+    }
+    return [];
+  }).sort();
+  const paths = [...currentPaths, ...legacyPaths];
+  const probeErrors = /* @__PURE__ */ new Map();
+  for (const path of paths) {
+    let status;
+    try {
+      status = await request(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
+    } catch (error51) {
+      const code = typeof error51?.code === "string" && error51.code ? error51.code : "UNKNOWN";
+      probeErrors.set(code, (probeErrors.get(code) || 0) + 1);
+      continue;
+    }
+    if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
+    const result2 = await request(path, { action: "wait", agentSessionId });
+    if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");
+    console.log("parle-watch: responsive delivery queued");
+    return 0;
   }
-  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. Run parle_connect in this project, then re-arm with its current agent session id.`);
+  const discoveryDetail = discoveryErrors.size === 0 ? "none" : [...discoveryErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count})`).join(", ");
+  const detail = paths.length === 0 ? `Found 0 candidate sockets; discovery errors: ${discoveryDetail}.` : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; discovery errors: ${discoveryDetail}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
+  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. ${detail} Run parle_connect in this project, then re-arm with its current agent session id.`);
 }
 async function runKnownAddressContext(cwd) {
   const cfg = resolveConfig(cwd, process.env);

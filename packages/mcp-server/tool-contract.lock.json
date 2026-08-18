@@ -179,6 +179,22 @@
       "profile"
     ]
   },
+  "parle_end_own_session": {
+    "title": "End Own Parle Session",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "agentSessionId",
+      "confirmMutation",
+      "reason"
+    ],
+    "required": [
+      "agentSessionId"
+    ]
+  },
   "parle_guidance": {
     "title": "Parle Guidance",
     "annotations": {
@@ -354,6 +370,43 @@
     "required": [
       "body",
       "replyRouteId"
+    ]
+  },
+  "parle_room_capacity_recovery": {
+    "title": "Recover Parle Room Capacity",
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "input": [
+      "action",
+      "agentSessionIds",
+      "confirmMutation",
+      "lastSeenBefore",
+      "previewId",
+      "protectAgentSessionIds",
+      "reason",
+      "roomId"
+    ],
+    "required": [
+      "action",
+      "roomId"
+    ]
+  },
+  "parle_room_participants": {
+    "title": "List Parle Room Participants",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": [
+      "roomId"
+    ],
+    "required": [
+      "roomId"
     ]
   },
   "parle_rooms": {

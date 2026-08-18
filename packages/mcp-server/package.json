@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/mcp-server",
-  "version": "0.7.40",
+  "version": "0.7.47",
   "private": true,
   "type": "module",
   "bin": {

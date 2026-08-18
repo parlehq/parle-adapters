@@ -1,8 +1,25 @@
 # Changelog
 
-## 0.8.37 (2026-08-17)
+## 0.8.41 (2026-08-18)
 
 - Add a typed first-time onboarding flow, preserve server-owned start guidance and unknown fields with a privacy-safe fallback, and save or recover onboarding sessions without exposing credentials or replaying spent codes.
+
+## 0.8.40 (2026-08-17)
+
+- Add preview-first room capacity recovery orchestration with explicit session or heartbeat-cutoff selection, invoker protection, serial completion, and stop-on-unknown behavior (#144).
+
+## 0.8.39 (2026-08-17)
+
+- Advance the sole supported Parle-Version to 2026-08-17 for the canonical error-contract hard cut (parlehq/parle#810).
+
+## 0.8.38 (2026-08-17)
+
+- Republish the merged #132 and #140 client under a unique version after the concurrent releases shared 0.8.37; runtime behavior is unchanged from main.
+
+## 0.8.37 (2026-08-17)
+
+- Add compact delivery guidance that distinguishes in-progress startup from a hook-bridge socket failure requiring host repair (#132).
+- Add typed human-session controls to list an owned room's active participants and end one owned live agent session, including fail-closed roster validation and safe unknown-outcome guidance (#140).
 
 ## 0.8.36 (2026-08-17)
 

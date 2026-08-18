@@ -25,7 +25,7 @@ Adapters own host-specific registration, schemas, lifecycle hooks, UI text, and 
 
 ## Session lifecycle
 
-The release is pinned to `Parle-Version: 2026-08-10`. Session creation always sends `{}`. When `PARLE_SESSION_ALIAS` is configured, the client creates an anonymous candidate, enters the configured room, verifies candidate wake readiness, reads the durable alias generation through the core alias lookup, and submits one exact generation-fenced claim. A failed claim is never replayed. Recovery prepares a fresh candidate and re-reads the durable fence, including after the prior owner expires.
+The release is pinned to `Parle-Version: 2026-08-17`. Session creation always sends `{}`. When `PARLE_SESSION_ALIAS` is configured, the client creates an anonymous candidate, enters the configured room, verifies candidate wake readiness, reads the durable alias generation through the core alias lookup, and submits one exact generation-fenced claim. A failed claim is never replayed. Recovery prepares a fresh candidate and re-reads the durable fence, including after the prior owner expires.
 
 The client schedules proactive replacement at `max(created_at, expires_at - 5 minutes - jitter)`, where deterministic jitter is below 60 seconds and derived from `agent_session_id`. Timers are injectable, single-flight, bounded after failures, and unreferenced under Node. Session revision events let bridges restart owned wake streams after a committed swap.
 
@@ -73,7 +73,7 @@ A configured `PARLE_SESSION_ALIAS` is carried across the switch. The target cand
 
 ## Human account-plane invitations
 
-`ParleAccountClient` provides shared registered-principal invitation and exact-agent connection workflows. It resolves the human session only from safe local configuration, fixes mint to an immutable principal UUID and an ordinary principal seat, and keeps generic human-session HTTP closed.
+`ParleAccountClient` provides shared registered-principal invitation, exact-agent connection, and stale-session recovery workflows. It resolves the human session only from safe local configuration, fixes mint to an immutable principal UUID and an ordinary principal seat, exposes typed room-participant inventory and own-session ending, and keeps generic human-session HTTP closed.
 
 Person mint accepts a leading-at handle or email target. Handle mint returns a non-secret target-proof locator whose possession grants no authority. Email mint returns only a privacy-flat accepted result, uses fixed 30-day expiry, and leaves locator delivery to the mailer. Acceptance uses authenticated target proof and remains separate from agent connection. Each connection operation selects one owned durable agent or deliberately creates an additional one, resumes missing seat and credential steps, and atomically publishes a no-clobber local profile without returning token material.
 

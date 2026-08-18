@@ -1,8 +1,37 @@
 # Changelog
 
-## 0.7.40 (2026-08-17)
+## 0.7.47 (2026-08-18)
 
 - Expose first-time onboarding separately from returning login and preserve server-owned privacy guidance without automatic retries.
+
+## 0.7.46 (2026-08-17)
+
+- Keep concurrent candidate removal from aborting watcher discovery and include discovery failures in aggregate diagnostics (#133).
+
+## 0.7.45 (2026-08-17)
+
+- Probe current hook-bridge sockets before legacy candidates, skip per-candidate status failures, reap dead flat sockets, and report aggregate watcher diagnostics (#133).
+
+## 0.7.44 (2026-08-17)
+
+- Add guarded `parle_room_capacity_recovery` preview and completion, and harden roster and exact-session tool guidance against inferred bulk cleanup (#144).
+
+## 0.7.43 (2026-08-17)
+
+- Bundle @parlehq/agent-client 0.8.39 with the sole 2026-08-17 wire version (parlehq/parle#810).
+
+## 0.7.42 (2026-08-17)
+
+- Republish the merged #132 and #140 MCP runtime under a unique version after the concurrent releases shared 0.7.41; runtime behavior is unchanged from main.
+
+## 0.7.41 (2026-08-17)
+
+- Publish terminal evidence when hook-bridge socket startup fails and prevent status or connect cards from reporting an unbound bridge as armed (#132).
+- Expose `parle_room_participants` and guarded `parle_end_own_session` tools so operators can inspect stale room sessions and reclaim their participant capacity without connecting an agent (#140).
+
+## 0.7.40 (2026-08-17)
+
+- Keep repeated hook-bridge startup from replacing healthy persisted `watching` evidence with `starting`, restoring truthful plain `parle_status` results (#120).
 
 ## 0.7.39 (2026-08-17)
 
