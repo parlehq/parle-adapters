@@ -1,8 +1,12 @@
 # Changelog
 
-## 0.8.43 (2026-08-17)
+## 0.8.44 (2026-08-17)
 
 - Refresh the bundled MCP runtime with preview-first room capacity recovery and stronger exact-session safety guidance (#144).
+
+## 0.8.43 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
 
 ## 0.8.42 (2026-08-17)
 

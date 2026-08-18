@@ -1,8 +1,12 @@
 # Changelog
 
-## 0.8.39 (2026-08-17)
+## 0.8.40 (2026-08-17)
 
 - Add preview-first room capacity recovery orchestration with explicit session or heartbeat-cutoff selection, invoker protection, serial completion, and stop-on-unknown behavior (#144).
+
+## 0.8.39 (2026-08-17)
+
+- Advance the sole supported Parle-Version to 2026-08-17 for the canonical error-contract hard cut (parlehq/parle#810).
 
 ## 0.8.38 (2026-08-17)
 

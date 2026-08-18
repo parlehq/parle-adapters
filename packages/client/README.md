@@ -25,7 +25,7 @@ Adapters own host-specific registration, schemas, lifecycle hooks, UI text, and 
 
 ## Session lifecycle
 
-The release is pinned to `Parle-Version: 2026-08-10`. Session creation always sends `{}`. When `PARLE_SESSION_ALIAS` is configured, the client creates an anonymous candidate, enters the configured room, verifies candidate wake readiness, reads the durable alias generation through the core alias lookup, and submits one exact generation-fenced claim. A failed claim is never replayed. Recovery prepares a fresh candidate and re-reads the durable fence, including after the prior owner expires.
+The release is pinned to `Parle-Version: 2026-08-17`. Session creation always sends `{}`. When `PARLE_SESSION_ALIAS` is configured, the client creates an anonymous candidate, enters the configured room, verifies candidate wake readiness, reads the durable alias generation through the core alias lookup, and submits one exact generation-fenced claim. A failed claim is never replayed. Recovery prepares a fresh candidate and re-reads the durable fence, including after the prior owner expires.
 
 The client schedules proactive replacement at `max(created_at, expires_at - 5 minutes - jitter)`, where deterministic jitter is below 60 seconds and derived from `agent_session_id`. Timers are injectable, single-flight, bounded after failures, and unreferenced under Node. Session revision events let bridges restart owned wake streams after a committed swap.
 

@@ -1,8 +1,12 @@
 # Changelog
 
-## 0.7.47 (2026-08-17)
+## 0.7.48 (2026-08-17)
 
 - Add native preview-first room capacity recovery with fail-closed invoker protection and serial exact-session completion (#144).
+
+## 0.7.47 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
 
 ## 0.7.46 (2026-08-17)
 

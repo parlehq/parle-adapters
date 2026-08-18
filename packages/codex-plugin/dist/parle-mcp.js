@@ -31575,7 +31575,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-08-10";
+var DEFAULT_VERSION = "2026-08-17";
 var ParleApiError = class extends Error {
   status;
   code;
@@ -39469,7 +39469,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.43";
+var MCP_CLIENT_VERSION = "0.7.44";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

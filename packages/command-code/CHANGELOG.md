@@ -1,8 +1,12 @@
 # Changelog
 
-## 0.7.23 (2026-08-17)
+## 0.7.24 (2026-08-17)
 
 - Add native preview-first room capacity recovery through the shared account tool runtime (#144).
+
+## 0.7.23 (2026-08-17)
+
+- Bundle the 2026-08-17 wire version required by the canonical error-contract hard cut (parlehq/parle#810).
 
 ## 0.7.22 (2026-08-17)
 

@@ -1,8 +1,12 @@
 # Changelog
 
-## 0.7.43 (2026-08-17)
+## 0.7.44 (2026-08-17)
 
 - Add guarded `parle_room_capacity_recovery` preview and completion, and harden roster and exact-session tool guidance against inferred bulk cleanup (#144).
+
+## 0.7.43 (2026-08-17)
+
+- Bundle @parlehq/agent-client 0.8.39 with the sole 2026-08-17 wire version (parlehq/parle#810).
 
 ## 0.7.42 (2026-08-17)
 
