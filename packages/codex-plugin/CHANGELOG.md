@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.49 (2026-08-18)
+
+- Refresh the bundled MCP runtime with socket-derived waiter status and idempotent duplicate watcher attachment (#151).
+
 ## 0.6.48 (2026-08-18)
 
 - Bundle bounded startup cleanup for definitively stale local bridge artifacts (#149).
@@ -7,15 +11,6 @@
 ## 0.6.47 (2026-08-18)
 
 - Bundle the typed first-time onboarding tool and server-owned email-start guidance.
-
-## 0.6.47 (2026-08-18)
-
-<<<<<<< HEAD
-- Bundle the typed first-time onboarding tool and server-owned email-start guidance.
-||||||| parent of b438dd4 (feat: add bounded adapter startup hygiene (#149))
-=======
-- Bundle bounded startup cleanup for definitively stale local bridge artifacts (#149).
->>>>>>> b438dd4 (feat: add bounded adapter startup hygiene (#149))
 
 ## 0.6.46 (2026-08-17)
 

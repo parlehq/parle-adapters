@@ -12,7 +12,7 @@ import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, 
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.48";
+export const MCP_CLIENT_VERSION = "0.7.49";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -367,7 +367,20 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
       continue;
     }
     if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
+    if (status.waiterAttached === true) {
+      console.log("parle-watch: local delivery waiter already attached");
+      return 0;
+    }
     const result = await request(path, { action: "wait", agentSessionId });
+    if (result?.ok && result.alreadyAttached === true) {
+      console.log("parle-watch: local delivery waiter already attached");
+      return 0;
+    }
+    // Compatibility with an older bridge during a plugin update.
+    if (result?.error === "Parle hook bridge already has a waiter") {
+      console.log("parle-watch: local delivery waiter already attached");
+      return 0;
+    }
     if (!result?.ok || !result.ready) throw new Error(result?.error || "Parle hook bridge wait failed");
     console.log("parle-watch: responsive delivery queued");
     return 0;

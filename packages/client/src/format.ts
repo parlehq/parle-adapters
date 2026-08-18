@@ -9,7 +9,7 @@ export type CompactConnectionCardInput = {
   sessionAddress?: string | null;
   // One entry per configured room. A single-room session simply has one.
   rooms?: CompactCardRoom[];
-  responsiveDelivery?: { state: CompactResponsiveDelivery } | CompactResponsiveDelivery;
+  responsiveDelivery?: { state: CompactResponsiveDelivery; reason?: string } | CompactResponsiveDelivery;
   unread?: number;
   next?: CompactConnectionNextKey | string;
 };
@@ -74,7 +74,10 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   const rooms = roomLabels(input.rooms);
   if (rooms.length === 1) lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1) lines.push(line("In rooms", rooms.join(", ")));
-  const delivery = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  const deliveryState = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  const delivery = deliveryState && typeof input.responsiveDelivery === "object" && input.responsiveDelivery.reason === "idle_wake_unarmed"
+    ? `${deliveryState} (idle wake unarmed)`
+    : deliveryState;
   if (delivery) lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0) lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
@@ -102,6 +105,7 @@ export type StatusLike = {
     state?: CompactResponsiveDelivery;
     nextActionKey?: CompactConnectionNextKey;
     nextAction?: string;
+    reason?: string;
   };
   config?: {
     roomHandle?: { value?: string };
@@ -133,7 +137,7 @@ export function compactStatusCardFromStatus(status: StatusLike): string {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : (status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : undefined),
       unread,
-      responsiveDelivery: status.responsiveDelivery?.state,
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason } : undefined,
       next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected"),
     });
   }

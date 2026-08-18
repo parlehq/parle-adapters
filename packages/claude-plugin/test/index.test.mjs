@@ -40,10 +40,11 @@ test("Claude hooks bind the host session and cover every delivery boundary", () 
   // UserPromptSubmit and PreToolUse alone strand queued work when a watcher
   // wake produces a turn that calls no tool. Stop is the terminal boundary that
   // blocks and continues; PostToolUse cuts latency after long tools.
-  for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) {
+  for (const event of ["UserPromptSubmit", "PreToolUse", "PostToolUse"]) {
     assert.ok(hooks.hooks[event], `${event} hook is missing; queued delivery would strand`);
     assert.equal(hooks.hooks[event][0].hooks[0].command, bind, `${event} must drain delivery`);
   }
+  assert.equal(hooks.hooks.Stop[0].hooks[0].command, `${bind} --idle-wake-launcher "\${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh"`);
 
   // Claude-native schema only. Codex-only keys and launcher assumptions must
   // not be copied across hosts.
@@ -80,6 +81,11 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /Delivery      watching/);
   assert.match(skill, /canonical `responsiveDelivery` lifecycle evidence/);
   assert.match(skill, /Never infer delivery health from MCP connectivity/);
+  assert.match(skill, /`waiterAttached` means only/);
+  assert.match(skill, /`idle_wake_unarmed`/);
+  assert.match(skill, /reload or restart Claude/);
+  assert.match(skill, /upstream-blocked/);
+  assert.match(skill, /Do not start another watcher merely because delivery completed/);
   assert.match(skill, /Do not report UUIDs, cursor, expiry, backlog, or config provenance/);
   // The hook bridge makes live switching throw. Guidance must say so rather
   // than keep documenting the retired stop-switch-re-arm sequence as current.

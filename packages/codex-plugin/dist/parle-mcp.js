@@ -35556,7 +35556,8 @@ function formatCompactConnectionCard(input) {
     lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1)
     lines.push(line("In rooms", rooms.join(", ")));
-  const delivery = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  const deliveryState = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  const delivery = deliveryState && typeof input.responsiveDelivery === "object" && input.responsiveDelivery.reason === "idle_wake_unarmed" ? `${deliveryState} (idle wake unarmed)` : deliveryState;
   if (delivery)
     lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0)
@@ -35587,7 +35588,7 @@ function compactStatusCardFromStatus(status) {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
       unread,
-      responsiveDelivery: status.responsiveDelivery?.state,
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason } : void 0,
       next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected")
     });
   }
@@ -38644,6 +38645,7 @@ var HookDeliveryBridge = class {
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
+      waiterAttached: Boolean(this.waiter),
       ownerPid: process.pid,
       ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() },
       ...this.client.runtime?.agentSessionId ? { agentSessionId: String(this.client.runtime.agentSessionId) } : {},
@@ -38903,7 +38905,7 @@ var HookDeliveryBridge = class {
       return;
     }
     if (this.waiter) {
-      socket.end(`${JSON.stringify({ ok: false, error: "Parle hook bridge already has a waiter" })}
+      socket.end(`${JSON.stringify({ ok: true, ready: true, alreadyAttached: true })}
 `);
       return;
     }
@@ -39114,7 +39116,9 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
     resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
   }
   if (!resolved) return void 0;
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
+  const idleWakeUnarmed = bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
+  if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -39646,7 +39650,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.48";
+var MCP_CLIENT_VERSION = "0.7.49";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -39937,7 +39941,19 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}
       continue;
     }
     if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
+    if (status.waiterAttached === true) {
+      console.log("parle-watch: local delivery waiter already attached");
+      return 0;
+    }
     const result2 = await request(path, { action: "wait", agentSessionId });
+    if (result2?.ok && result2.alreadyAttached === true) {
+      console.log("parle-watch: local delivery waiter already attached");
+      return 0;
+    }
+    if (result2?.error === "Parle hook bridge already has a waiter") {
+      console.log("parle-watch: local delivery waiter already attached");
+      return 0;
+    }
     if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");
     console.log("parle-watch: responsive delivery queued");
     return 0;

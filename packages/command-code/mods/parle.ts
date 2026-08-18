@@ -4563,7 +4563,8 @@ function formatCompactConnectionCard(input) {
     lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1)
     lines.push(line("In rooms", rooms.join(", ")));
-  const delivery = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  const deliveryState = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
+  const delivery = deliveryState && typeof input.responsiveDelivery === "object" && input.responsiveDelivery.reason === "idle_wake_unarmed" ? `${deliveryState} (idle wake unarmed)` : deliveryState;
   if (delivery)
     lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0)
@@ -4594,7 +4595,7 @@ function compactStatusCardFromStatus(status) {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
       unread,
-      responsiveDelivery: status.responsiveDelivery?.state,
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason } : void 0,
       next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected")
     });
   }
@@ -22086,7 +22087,10 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
   }
   if (!resolved)
     return void 0;
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : { nextActionKey: "already-connected", nextAction: "responsive delivery is armed" };
+  const idleWakeUnarmed = bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
+  if (idleWakeUnarmed)
+    resolved = { ...resolved, reason: "idle_wake_unarmed" };
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -22646,7 +22650,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.26";
+var ADAPTER_VERSION = "0.7.27";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

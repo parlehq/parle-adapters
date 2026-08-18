@@ -45,6 +45,7 @@ export type HookDeliveryBridgeStatus = {
   baselineSkipped: number;
   socketPath: string;
   hostSessionBound: boolean;
+  waiterAttached: boolean;
   agentSessionId?: string;
   ownerPid: number;
   hostParentPid?: number;
@@ -285,6 +286,7 @@ export class HookDeliveryBridge {
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
+      waiterAttached: Boolean(this.waiter),
       ownerPid: process.pid,
       ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() }),
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
@@ -558,7 +560,7 @@ export class HookDeliveryBridge {
       return;
     }
     if (this.waiter) {
-      socket.end(`${JSON.stringify({ ok: false, error: "Parle hook bridge already has a waiter" })}\n`);
+      socket.end(`${JSON.stringify({ ok: true, ready: true, alreadyAttached: true })}\n`);
       return;
     }
     this.waiter = socket;

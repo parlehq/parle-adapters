@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { connect } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MAX_INPUT = 256 * 1024;
@@ -15,18 +15,23 @@ function parseArgs(argv) {
   let bind = false;
   let directParent = false;
   let knownAddressContext = false;
+  let idleWakeLauncher;
   let scope;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--bind") bind = true;
     else if (argv[index] === "--direct-parent") directParent = true;
     else if (argv[index] === "--known-address-context") knownAddressContext = true;
+    else if (argv[index] === "--idle-wake-launcher") {
+      idleWakeLauncher = argv[++index];
+      if (!idleWakeLauncher || !isAbsolute(idleWakeLauncher)) throw new Error("Parle idle-wake launcher must be an absolute path");
+    }
     else if (argv[index] === "--scope") {
       scope = argv[++index];
       if (!scope) throw new Error("Parle hook scope must not be empty");
     }
     else throw new Error(`Unknown Parle hook argument: ${argv[index]}`);
   }
-  return { bind, directParent, knownAddressContext, scope };
+  return { bind, directParent, knownAddressContext, idleWakeLauncher, scope };
 }
 
 function renderKnownAddressContext(cwd) {
@@ -128,7 +133,7 @@ async function selectBridge(scope) {
       || status.currentParentPid !== hostParentPid) {
       throw new Error("Parle hook bridge process correlation mismatch");
     }
-    matches.push(entry.path);
+    matches.push({ ...entry, status });
   }
   if (matches.length !== 1) throw new Error(`Parle hook bridge correlation found ${matches.length} matching endpoints`);
   return matches[0];
@@ -136,14 +141,16 @@ async function selectBridge(scope) {
 
 async function take(scope, sessionId, allowBind, event, directParent) {
   if (directParent) {
-    const path = await selectBridge(scope);
+    const selected = await selectBridge(scope);
+    let bound = selected.status.hostSessionBound === true;
     if (allowBind) {
-      const binding = await request(path, { action: "bind", sessionId, allowReplace: event === "SessionStart" });
+      const binding = await request(selected.path, { action: "bind", sessionId, allowReplace: event === "SessionStart" });
       if (!binding?.ok) throw new Error("Parle hook bridge rejected host session binding");
+      bound = binding.bound === true;
     }
-    const result = await request(path, { action: "take", sessionId });
+    const result = await request(selected.path, { action: "take", sessionId });
     if (!result?.ok) throw new Error(result?.error || "Parle hook bridge take failed");
-    return Array.isArray(result.messages) && result.messages.length > 0 ? { path, ...result } : undefined;
+    return { path: selected.path, status: selected.status, bound, ...result };
   }
   for (const path of legacySocketPaths(scope)) {
     try {
@@ -158,6 +165,15 @@ async function take(scope, sessionId, allowBind, event, directParent) {
     }
   }
   return undefined;
+}
+
+function shellLiteral(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function idleWakeInstruction(launcher, agentSessionId) {
+  const command = `${shellLiteral(launcher)} ${shellLiteral(agentSessionId)}`;
+  return `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${command}`;
 }
 
 function formatMessages(messages) {
@@ -223,22 +239,39 @@ async function main() {
       outputWritten = true;
       return;
     }
+    if (payload.hook_event_name === "Stop" && payload.stop_hook_active === true) {
+      await writeOutput({});
+      outputWritten = true;
+      return;
+    }
     const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
     const scope = args.scope || cwd;
     const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : undefined;
     const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent) : undefined;
+    const deliveryBatch = delivery && Array.isArray(delivery.messages) && delivery.messages.length > 0 ? delivery : undefined;
+    const rearm = args.idleWakeLauncher
+      && payload.hook_event_name === "Stop"
+      && delivery?.bound === true
+      && delivery.status?.waiterAttached === false
+      && typeof delivery.status.agentSessionId === "string"
+      && delivery.status.agentSessionId
+      && delivery.busy !== true
+      && Array.isArray(delivery.messages)
+      ? idleWakeInstruction(args.idleWakeLauncher, delivery.status.agentSessionId)
+      : "";
     const registryBlock = args.knownAddressContext && payload.hook_event_name === "SessionStart"
       ? renderKnownAddressContext(cwd)
       : "";
     const contextParts = [
       ...(registryBlock ? [registryBlock] : []),
-      ...(delivery ? [formatMessages(delivery.messages)] : []),
+      ...(deliveryBatch ? [formatMessages(deliveryBatch.messages)] : []),
+      ...(rearm ? [rearm] : []),
     ];
     const output = contextParts.length ? hookOutput(payload.hook_event_name, contextParts.join("\n\n")) : undefined;
     await writeOutput(output || {});
     outputWritten = true;
-    if (!delivery || !output) return;
-    const committed = await request(delivery.path, { action: "commit", sessionId, leaseId: delivery.leaseId });
+    if (!deliveryBatch || !output) return;
+    const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId });
     if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
   } catch (error) {
     reportFailure(error);

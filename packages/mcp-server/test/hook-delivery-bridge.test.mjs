@@ -330,11 +330,13 @@ test("hook bridge wait is race-free, single-waiter, and survives session revisio
   const bridge = new HookDeliveryBridge(fakeClient, cwd);
   try {
     await bridge.start();
+    assert.equal(bridge.status().waiterAttached, false);
     const waiting = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
     await settle(20);
+    assert.equal(bridge.status().waiterAttached, true);
     assert.deepEqual(
       await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" }),
-      { ok: false, error: "Parle hook bridge already has a waiter" },
+      { ok: true, ready: true, alreadyAttached: true },
     );
 
     fakeClient.runtime.agentSessionId = "session-2";
@@ -344,6 +346,7 @@ test("hook bridge wait is race-free, single-waiter, and survives session revisio
       message: { seq: 1, event_id: "evt-wait", content: "queued" },
     });
     assert.deepEqual(await waiting, { ok: true, ready: true });
+    assert.equal(bridge.status().waiterAttached, false);
     assert.deepEqual(
       await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" }),
       { ok: false, error: "Parle agent session does not own this hook bridge" },
@@ -379,9 +382,11 @@ test("hook bridge wait cleans up disconnected clients and reports shutdown", asy
 
     const waiting = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
     await settle(20);
+    assert.equal(bridge.status().waiterAttached, true);
     await bridge.stop();
     stopped = true;
     assert.deepEqual(await waiting, { ok: false, error: "Parle hook bridge stopped" });
+    assert.equal(bridge.status().waiterAttached, false);
   } finally {
     if (!stopped) await bridge.stop();
     cleanupFixture(cwd);
