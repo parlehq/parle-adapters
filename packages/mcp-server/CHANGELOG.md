@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.50 (2026-08-18)
+
+- Keep synchronous hook delivery commits within the host's bounded Stop window while tolerating acknowledgements slower than the ordinary local IPC timeout (#151).
+
 ## 0.7.49 (2026-08-18)
 
 - Expose socket-derived local waiter attachment, report healthy-but-unarmed idle wake truthfully, and make duplicate watcher attachment a successful no-op (#151).

@@ -31,7 +31,7 @@ function cleanupFixture(cwd) {
 let nextOwnerPid = 900_000_000;
 
 // A stub bridge that records every action and answers with a scripted reply.
-function startBridge(scope, { messages, agentSessionId = "parle-agent-session", busy = false, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, waiterAttached = false } = {}) {
+function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false } = {}) {
   const ownerPid = nextOwnerPid++;
   const dir = join(stateDir(scope), String(hostParentPid));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -50,15 +50,19 @@ function startBridge(scope, { messages, agentSessionId = "parle-agent-session", 
       buffer = buffer.slice(newline + 1);
       actions.push(command);
       if (command.action === "status") {
-        return void socket.end(`${JSON.stringify({ ok: true, running: true, waiterAttached, agentSessionId, ownerPid, hostParentPid: reportedParentPid, currentParentPid: reportedParentPid })}\n`);
+        return void setTimeout(() => socket.end(`${JSON.stringify({ ok: true, running: true, waiterAttached, agentSessionId, ownerPid, hostParentPid: reportedParentPid, currentParentPid: reportedParentPid })}\n`), statusDelayMs);
       }
       if (command.action === "bind") {
         const ok = !boundSessionId || boundSessionId === command.sessionId || command.allowReplace === true;
         if (ok) boundSessionId = command.sessionId;
-        return void socket.end(`${JSON.stringify({ ok, bound: Boolean(boundSessionId) })}\n`);
+        return void setTimeout(() => socket.end(`${JSON.stringify({ ok, bound: Boolean(boundSessionId) })}\n`), bindDelayMs);
       }
-      if (command.action === "take" && command.sessionId === boundSessionId) return void socket.end(`${JSON.stringify(busy ? { ok: true, busy: true, messages: [] } : { ok: true, leaseId: "lease-1", messages })}\n`);
-      if (command.action === "commit" && command.sessionId === boundSessionId) return void socket.end(`${JSON.stringify(commitOk ? { ok: true, committed: messages.length } : { ok: false })}\n`);
+      if (command.action === "take" && command.sessionId === boundSessionId) {
+        return void setTimeout(() => socket.end(`${JSON.stringify(busy ? { ok: true, busy: true, messages: [] } : { ok: true, leaseId: "lease-1", messages })}\n`), takeDelayMs);
+      }
+      if (command.action === "commit" && command.sessionId === boundSessionId) {
+        return void setTimeout(() => socket.end(`${JSON.stringify(commitOk ? { ok: true, committed: messages.length } : { ok: false })}\n`), commitDelayMs);
+      }
       socket.end(`${JSON.stringify({ ok: false })}\n`);
     });
   });
@@ -237,6 +241,27 @@ test("an invalid idle-wake launcher fails open before bridge IPC", async () => {
     assert.deepEqual(JSON.parse(result.stdout), {});
     assert.match(result.stderr, /idle-wake launcher must be an absolute path/);
     assert.deepEqual(bridge.actions, []);
+  });
+});
+
+test("a slow successful commit completes within the remaining bounded hook budget", async () => {
+  await withBridge({ messages: [deliveredRow(11)], statusDelayMs: 200, bindDelayMs: 200, takeDelayMs: 200, commitDelayMs: 1200 }, async ({ cwd, bridge }) => {
+    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /Parle responsive delivery seq=11/);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
+  });
+});
+
+test("slow pre-commit IPC shrinks the commit deadline below the host hook window", async () => {
+  await withBridge({ messages: [deliveredRow(12)], statusDelayMs: 800, bindDelayMs: 800, takeDelayMs: 800, commitDelayMs: 2500 }, async ({ cwd, bridge }) => {
+    const startedAt = Date.now();
+    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    const elapsedMs = Date.now() - startedAt;
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /Parle responsive delivery seq=12/);
+    assert.match(result.stderr, /Parle hook failed open: timeout/);
+    assert.ok(elapsedMs >= 4000 && elapsedMs < 4900, `hook should stop inside its 5s host window, took ${elapsedMs}ms`);
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
   });
 });
 

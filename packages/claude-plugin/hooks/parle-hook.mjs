@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 const MAX_INPUT = 256 * 1024;
 const MAX_RESPONSE = 512 * 1024;
 const SOCKET_TIMEOUT_MS = 1000;
+const HOST_HOOK_BUDGET_MS = 4500;
 
 function parseArgs(argv) {
   let bind = false;
@@ -85,11 +86,11 @@ function socketEntries(scope, hostParentPid) {
   }
 }
 
-function request(path, payload) {
+function request(path, payload, timeoutMs = SOCKET_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const socket = connect(path);
     socket.setEncoding("utf8");
-    socket.setTimeout(SOCKET_TIMEOUT_MS, () => socket.destroy(new Error("timeout")));
+    socket.setTimeout(timeoutMs, () => socket.destroy(new Error("timeout")));
     let response = "";
     socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
     socket.on("data", (chunk) => {
@@ -232,6 +233,7 @@ function reportFailure(error) {
 }
 
 async function main() {
+  const deadline = Date.now() + HOST_HOOK_BUDGET_MS;
   let outputWritten = false;
   try {
     const args = parseArgs(process.argv.slice(2));
@@ -273,7 +275,9 @@ async function main() {
     await writeOutput(output || {});
     outputWritten = true;
     if (!deliveryBatch || !output) return;
-    const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId });
+    const commitBudgetMs = Math.floor(deadline - Date.now());
+    if (commitBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before acknowledgement");
+    const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId }, commitBudgetMs);
     if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
   } catch (error) {
     reportFailure(error);
