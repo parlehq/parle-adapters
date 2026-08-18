@@ -30953,7 +30953,7 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4, rmSync as rmSync4 } from "node:fs";
+import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "node:fs";
 import { connect } from "node:net";
 import { join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -32311,16 +32311,356 @@ function knownAddressContextFor(catalogPath, input, now = /* @__PURE__ */ new Da
   return renderKnownAddressContext(readKnownAddressRegistry(catalogPath, now, { prune: false }), input);
 }
 
+// ../client/dist/responsive-delivery.js
+import { chmodSync as chmodSync2, closeSync as closeSync2, constants as constants2, fstatSync as fstatSync2, linkSync as linkSync2, lstatSync as lstatSync3, mkdirSync as mkdirSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, renameSync as renameSync2, rmSync as rmSync2, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
+import { join as join5 } from "node:path";
+var RESPONSIVE_DELIVERY_SKEW_MS = 3e4;
+var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
+var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
+var RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
+var RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS = 512;
+var RESPONSIVE_DELIVERY_PRUNE_LIMIT = 32;
+var RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT = 64;
+var ACTIVE = /* @__PURE__ */ new Set(["starting", "watching", "backoff"]);
+var PUBLISHED = /* @__PURE__ */ new Set(["starting", "watching", "backoff", "stopped", "terminal"]);
+var STANDALONE_WAKE_ONLY_PUBLISHER = "@parlehq/mcp-server:standalone-watch";
+var ISO = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
+var string4 = (value, max = 256) => typeof value === "string" && value.length > 0 && value.length <= max ? value : void 0;
+var pruneCursor2 = /* @__PURE__ */ new Map();
+var systemCode2 = (error51) => typeof error51?.code === "string" ? error51.code : void 0;
+var NO_FOLLOW2 = typeof constants2.O_NOFOLLOW === "number" ? constants2.O_NOFOLLOW : 0;
+function readBoundedText(path, maxBytes) {
+  const fd = openSync2(path, constants2.O_RDONLY | NO_FOLLOW2);
+  try {
+    const stat = fstatSync2(fd);
+    if (!stat.isFile() || stat.size > maxBytes)
+      throw new Error("Responsive-delivery evidence exceeds its byte limit.");
+    const output = Buffer.allocUnsafe(maxBytes + 1);
+    let offset = 0;
+    while (offset < output.length) {
+      const count = readSync2(fd, output, offset, output.length - offset, null);
+      if (count === 0)
+        break;
+      offset += count;
+    }
+    if (offset > maxBytes)
+      throw new Error("Responsive-delivery evidence exceeds its byte limit.");
+    return output.subarray(0, offset).toString("utf8");
+  } finally {
+    closeSync2(fd);
+  }
+}
+function redactResponsiveDeliveryDiagnostic(value) {
+  if (typeof value !== "string")
+    return void 0;
+  const text = value.slice(0, RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS).replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]").replace(/\bparle_[a-z]+_[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]").replace(/\b(parle_(?:ses|tok|secret)[A-Za-z0-9_\-.]*)\b/gi, "[REDACTED]").replace(/\b(authorization|token|secret|password|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
+  return text || void 0;
+}
+function cleanSnapshot(input) {
+  const lastError = input.lastError ? { message: redactResponsiveDeliveryDiagnostic(input.lastError.message) || "[REDACTED]", at: input.lastError.at } : void 0;
+  return {
+    ...input,
+    publisher: { ...input.publisher, ...input.publisher.version ? { version: input.publisher.version.slice(0, 128) } : {} },
+    target: { ...input.target },
+    ...lastError ? { lastError } : {},
+    ...redactResponsiveDeliveryDiagnostic(input.reason) ? { reason: redactResponsiveDeliveryDiagnostic(input.reason) } : {}
+  };
+}
+function buildResponsiveDeliverySnapshot(base, state, event = {}, now = /* @__PURE__ */ new Date()) {
+  const updatedAt = now.toISOString();
+  const expected = Math.max(0, Math.min(RESPONSIVE_DELIVERY_MAX_LEASE_MS - RESPONSIVE_DELIVERY_SKEW_MS, Math.trunc(event.expectedProgressMs ?? 0)));
+  const expiresAt = new Date(now.getTime() + (ACTIVE.has(state) ? expected + RESPONSIVE_DELIVERY_SKEW_MS : RESPONSIVE_DELIVERY_TOMBSTONE_MS)).toISOString();
+  const message = typeof event.lastError === "string" ? event.lastError : event.lastError?.message;
+  const errorAt = typeof event.lastError === "string" ? updatedAt : event.lastError?.at || updatedAt;
+  return cleanSnapshot({
+    ...base,
+    schemaVersion: 1,
+    state,
+    updatedAt,
+    expiresAt,
+    ...event.lastSuccessAt ? { lastSuccessAt: event.lastSuccessAt } : {},
+    ...event.lastWakeAt ? { lastWakeAt: event.lastWakeAt } : {},
+    ...event.retryAt ? { retryAt: event.retryAt } : {},
+    ...message ? { lastError: { message, at: errorAt } } : {},
+    ...event.reason ? { reason: event.reason } : {}
+  });
+}
+function responsiveDeliveryRuntimeDirPath(cwd) {
+  return join5(cwd, ".parle", "runtime", "responsive");
+}
+function responsiveDeliveryRuntimeFilePath(cwd, pid) {
+  return join5(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
+}
+function writeResponsiveDeliverySnapshot(cwd, snapshot) {
+  const dir = responsiveDeliveryRuntimeDirPath(cwd);
+  mkdirSync2(dir, { recursive: true, mode: 448 });
+  chmodSync2(dir, 448);
+  const tmp = join5(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
+  writeFileSync(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
+  chmodSync2(tmp, 384);
+  renameSync2(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
+  try {
+    pruneResponsiveDeliverySnapshots(cwd, {
+      now: new Date(snapshot.updatedAt),
+      inspectPid: inspectResponsiveDeliveryPid,
+      excludePid: snapshot.pid
+    });
+  } catch {
+  }
+}
+function parseResponsiveDeliverySnapshot(value) {
+  if (!value || typeof value !== "object")
+    return void 0;
+  const row = value;
+  if (row.schemaVersion !== 1 || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !PUBLISHED.has(row.state) || !ISO(row.processStartedAt) || !ISO(row.updatedAt) || !ISO(row.expiresAt))
+    return void 0;
+  const name = string4(row.publisher?.name);
+  const instance = string4(row.publisher?.clientInstanceId);
+  const agentSessionId = string4(row.target?.agentSessionId);
+  if (!name || !instance || !agentSessionId)
+    return void 0;
+  const snapshot = {
+    schemaVersion: 1,
+    pid: row.pid,
+    processStartedAt: row.processStartedAt,
+    publisher: { name, clientInstanceId: instance, ...string4(row.publisher.version, 128) ? { version: string4(row.publisher.version, 128) } : {} },
+    target: { agentSessionId, ...string4(row.target.participantId) ? { participantId: string4(row.target.participantId) } : {}, ...string4(row.target.roomId) ? { roomId: string4(row.target.roomId) } : {} },
+    state: row.state,
+    updatedAt: row.updatedAt,
+    expiresAt: row.expiresAt
+  };
+  for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"])
+    if (ISO(row[key]))
+      snapshot[key] = row[key];
+  if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string")
+    snapshot.lastError = { message: redactResponsiveDeliveryDiagnostic(row.lastError.message) || "[REDACTED]", at: row.lastError.at };
+  const reason = redactResponsiveDeliveryDiagnostic(row.reason);
+  if (reason)
+    snapshot.reason = reason;
+  return snapshot;
+}
+function readResponsiveDeliverySnapshots(cwd) {
+  let names;
+  try {
+    names = readdirSync2(responsiveDeliveryRuntimeDirPath(cwd));
+  } catch {
+    return [];
+  }
+  const result2 = [];
+  for (const name of names) {
+    if (!/^\d+\.json$/.test(name))
+      continue;
+    try {
+      const raw = readBoundedText(join5(responsiveDeliveryRuntimeDirPath(cwd), name), RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+      const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+      if (snapshot)
+        result2.push(snapshot);
+    } catch {
+    }
+  }
+  return result2;
+}
+function inspectResponsiveDeliveryPid(pid) {
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (error51) {
+    return error51?.code === "ESRCH" ? "dead" : "unknown";
+  }
+}
+function inspection(pid, inspectPid) {
+  if (!inspectPid)
+    return "unknown";
+  try {
+    return inspectPid(pid);
+  } catch {
+    return "unknown";
+  }
+}
+function isFresh(snapshot, now) {
+  return Date.parse(snapshot.expiresAt) >= now.getTime() && Date.parse(snapshot.updatedAt) <= now.getTime() + RESPONSIVE_DELIVERY_SKEW_MS;
+}
+function isActiveLive(snapshot, now, inspectPid) {
+  if (!isFresh(snapshot, now))
+    return false;
+  const checked = inspection(snapshot.pid, inspectPid);
+  if (checked === "dead" || typeof checked === "object" && (checked.status === "dead" || checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt))
+    return false;
+  return true;
+}
+function result(state, snapshot, now = /* @__PURE__ */ new Date()) {
+  if (!snapshot)
+    return { state };
+  return { state, updatedAt: snapshot.updatedAt, ...snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}, ...snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}, ...snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}, ...snapshot.lastError ? { lastError: snapshot.lastError } : {}, ...snapshot.reason ? { reason: snapshot.reason } : {}, evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...snapshot.publisher.version ? { version: snapshot.publisher.version } : {} } };
+}
+function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
+  const now = options.now || /* @__PURE__ */ new Date();
+  const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
+  const owners = exact.filter((snapshot) => snapshot.publisher.name !== STANDALONE_WAKE_ONLY_PUBLISHER);
+  const selected = owners.length > 0 ? owners : exact;
+  const active = selected.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
+  if (owners.length > 0 && active.length > 1)
+    return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
+  if (active.length > 0) {
+    const newest = active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+    return result(newest.state, newest, now);
+  }
+  const tombstones = selected.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
+  if (tombstones.length) {
+    const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+    return result(newest.state, newest, now);
+  }
+  const stale = selected.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return stale.length ? result("stale", stale[0], now) : { state: "unknown", reason: "no_evidence_for_session" };
+}
+function isDefinitelyGone(snapshot, inspectPid) {
+  const checked = inspection(snapshot.pid, inspectPid);
+  return checked === "dead" || typeof checked === "object" && (checked.status === "dead" || Boolean(checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt));
+}
+function boundedLimit2(value, fallback) {
+  const parsed = Math.trunc(value ?? fallback);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
+}
+function rotatedCandidates2(dir, names, limit) {
+  if (!names.length || limit === 0)
+    return [];
+  names.sort();
+  const start = (pruneCursor2.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  pruneCursor2.set(dir, (start + count) % names.length);
+  return selected;
+}
+function restoreResponsiveCandidate(path, quarantine) {
+  try {
+    linkSync2(quarantine, path);
+    unlinkSync2(quarantine);
+  } catch (error51) {
+    if (systemCode2(error51) === "EEXIST") {
+      try {
+        unlinkSync2(quarantine);
+      } catch (unlinkError) {
+        if (systemCode2(unlinkError) !== "ENOENT")
+          throw unlinkError;
+      }
+      return;
+    }
+    throw error51;
+  }
+}
+function removeResponsiveCandidateIf(path, shouldRemove) {
+  let stat;
+  try {
+    stat = lstatSync3(path);
+  } catch {
+    return false;
+  }
+  if (!stat.isFile() || stat.nlink !== 1 || process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 511) !== 384))
+    return false;
+  try {
+    const raw = readBoundedText(path, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+    if (!snapshot || !shouldRemove(snapshot))
+      return false;
+  } catch {
+    return false;
+  }
+  const quarantine = `${path}.prune-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    renameSync2(path, quarantine);
+  } catch (error51) {
+    if (systemCode2(error51) === "ENOENT")
+      return false;
+    throw error51;
+  }
+  let remove = false;
+  try {
+    const raw = readBoundedText(quarantine, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
+    remove = Boolean(snapshot && shouldRemove(snapshot));
+  } catch {
+    remove = false;
+  }
+  if (remove) {
+    try {
+      unlinkSync2(quarantine);
+    } catch (error51) {
+      if (systemCode2(error51) !== "ENOENT")
+        throw error51;
+    }
+    return true;
+  }
+  restoreResponsiveCandidate(path, quarantine);
+  return false;
+}
+function pruneResponsiveDeliverySnapshots(cwd, options = {}) {
+  const now = options.now || /* @__PURE__ */ new Date();
+  const dir = responsiveDeliveryRuntimeDirPath(cwd);
+  let names;
+  try {
+    names = readdirSync2(dir).filter((name) => /^\d+\.json$/.test(name));
+  } catch {
+    return;
+  }
+  const maxInspections = boundedLimit2(options.maxInspections, RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT);
+  const maxRemovals = boundedLimit2(options.maxRemovals, RESPONSIVE_DELIVERY_PRUNE_LIMIT);
+  let removed = 0;
+  for (const name of rotatedCandidates2(dir, names, maxInspections)) {
+    if (removed >= maxRemovals)
+      break;
+    const path = join5(dir, name);
+    if (removeResponsiveCandidateIf(path, (snapshot) => snapshot.pid !== options.excludePid && Date.parse(snapshot.expiresAt) <= now.getTime() && isDefinitelyGone(snapshot, options.inspectPid)))
+      removed += 1;
+  }
+}
+var ResponsiveDeliveryRecorder = class {
+  options;
+  target;
+  latest;
+  constructor(options) {
+    this.options = options;
+    this.target = { ...options.target };
+  }
+  record(state, event = {}) {
+    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, event, this.options.now?.() || /* @__PURE__ */ new Date());
+    this.latest = snapshot;
+    if (this.options.persist && this.options.cwd)
+      writeResponsiveDeliverySnapshot(this.options.cwd, snapshot);
+    return snapshot;
+  }
+  starting(event) {
+    return this.record("starting", event);
+  }
+  watching(event) {
+    return this.record("watching", event);
+  }
+  backoff(event) {
+    return this.record("backoff", event);
+  }
+  stopped(event) {
+    return this.record("stopped", event);
+  }
+  terminal(event) {
+    return this.record("terminal", event);
+  }
+  retarget(target) {
+    this.target = { ...target };
+  }
+  snapshot() {
+    return this.latest && { ...this.latest, publisher: { ...this.latest.publisher }, target: { ...this.latest.target } };
+  }
+};
+
 // ../client/dist/account.js
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { chmodSync as chmodSync2, existsSync as existsSync5, lstatSync as lstatSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync3, realpathSync, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync } from "node:fs";
-import { basename as basename2, dirname as dirname5, isAbsolute as isAbsolute2, join as join6, parse as parse3, relative, resolve, sep } from "node:path";
+import { chmodSync as chmodSync3, existsSync as existsSync5, lstatSync as lstatSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync3, realpathSync, statSync as statSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename as basename2, dirname as dirname5, isAbsolute as isAbsolute2, join as join7, parse as parse3, relative, resolve, sep } from "node:path";
 
 // ../client/dist/hardening.js
 import { createHash } from "node:crypto";
-import { closeSync as closeSync2, existsSync as existsSync4, fsyncSync as fsyncSync2, fstatSync as fstatSync2, ftruncateSync, lstatSync as lstatSync3, mkdirSync as mkdirSync2, openSync as openSync2, readFileSync as readFileSync2, unlinkSync as unlinkSync2, writeSync as writeSync2 } from "node:fs";
-import { dirname as dirname4, join as join5 } from "node:path";
+import { closeSync as closeSync3, existsSync as existsSync4, fsyncSync as fsyncSync2, fstatSync as fstatSync3, ftruncateSync, lstatSync as lstatSync4, mkdirSync as mkdirSync3, openSync as openSync3, readFileSync as readFileSync2, unlinkSync as unlinkSync3, writeSync as writeSync2 } from "node:fs";
+import { dirname as dirname4, join as join6 } from "node:path";
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var MAX_SECRET_BYTES = 8 * 1024;
 var MAX_RESPONSE_BYTES = 64 * 1024;
@@ -32390,7 +32730,7 @@ function ownerAndMode2(stat, mode, label) {
 function assertSecureDirectory(path, label) {
   let entry;
   try {
-    entry = lstatSync3(path);
+    entry = lstatSync4(path);
   } catch {
     throw new HardeningError(`${label} is missing.`);
   }
@@ -32401,7 +32741,7 @@ function assertSecureDirectory(path, label) {
 function assertSecureFile(path, label, maxBytes = MAX_SECRET_BYTES) {
   let entry;
   try {
-    entry = lstatSync3(path);
+    entry = lstatSync4(path);
   } catch {
     throw new HardeningError(`${label} is missing.`);
   }
@@ -32415,7 +32755,7 @@ function assertSecureFile(path, label, maxBytes = MAX_SECRET_BYTES) {
 function createSecureDirectory(path, label) {
   if (!existsSync4(path)) {
     try {
-      mkdirSync2(path, { mode: 448 });
+      mkdirSync3(path, { mode: 448 });
     } catch {
       throw new HardeningError(`Could not create ${label}.`);
     }
@@ -32425,7 +32765,7 @@ function createSecureDirectory(path, label) {
 function syncDirectory2(path) {
   let fd;
   try {
-    fd = openSync2(path, "r");
+    fd = openSync3(path, "r");
     fsyncSync2(fd);
   } catch (error51) {
     if (!["EINVAL", "ENOTSUP", "EPERM"].includes(error51?.code))
@@ -32433,7 +32773,7 @@ function syncDirectory2(path) {
   } finally {
     if (fd !== void 0)
       try {
-        closeSync2(fd);
+        closeSync3(fd);
       } catch {
       }
   }
@@ -32447,7 +32787,7 @@ function secureUnlink(path, label) {
     return;
   assertSecureFile(path, label);
   try {
-    unlinkSync2(path);
+    unlinkSync3(path);
   } catch {
     throw new HardeningError(`Could not remove ${label}.`);
   }
@@ -32506,25 +32846,25 @@ function isAmbiguous(error51) {
   return error51 instanceof HardeningTransportError || error51 instanceof HardeningHttpError && error51.ambiguous;
 }
 function ceremonyPath(config2) {
-  return join5(config2.stateDir, "hardening", CEREMONY_DIR);
+  return join6(config2.stateDir, "hardening", CEREMONY_DIR);
 }
 function rootPath(config2) {
-  return join5(config2.stateDir, "hardening");
+  return join6(config2.stateDir, "hardening");
 }
 function outputPath(config2, file2) {
-  return join5(ceremonyPath(config2), file2);
+  return join6(ceremonyPath(config2), file2);
 }
 function resolveHardeningConfig(cwd, env) {
-  const dotEnvPath = join5(cwd, ".env");
+  const dotEnvPath = join6(cwd, ".env");
   const dotEnv = existsSync4(dotEnvPath) ? parseDotEnv(readFileSync2(dotEnvPath, "utf8")) : {};
   const catalogPath = resolveProfileCatalogPath(firstValue("PARLE_PROFILES_PATH", env, dotEnv), cwd, env);
   const stateDir = dirname4(catalogPath);
-  const parent = lstatSync3(stateDir);
+  const parent = lstatSync4(stateDir);
   if (parent.isSymbolicLink() || !parent.isDirectory())
     throw new HardeningError("Parle state directory must be a real directory.");
   if (process.platform !== "win32" && parent.uid !== process.getuid?.())
     throw new HardeningError("Parle state directory must be owned by the current user.");
-  const sessionPath = join5(stateDir, "session");
+  const sessionPath = join6(stateDir, "session");
   assertSecureFile(sessionPath, "Parle human session file", 8192);
   const sessionCookie = readFileSync2(sessionPath, "utf8").trim();
   if (!sessionCookie || /[\r\n]/.test(sessionCookie))
@@ -32577,7 +32917,7 @@ var ParleHardeningClient = class {
       return void 0;
     }
     assertSecureDirectory(dir, "Parle hardening ceremony directory");
-    const path = join5(dir, STATE_FILE);
+    const path = join6(dir, STATE_FILE);
     assertSecureFile(path, "Parle hardening state", MAX_SECRET_BYTES);
     const raw = parseJson(readFileSync2(path, "utf8"));
     const state = raw && typeof raw === "object" ? raw : void 0;
@@ -32597,7 +32937,7 @@ var ParleHardeningClient = class {
     const dir = ceremonyPath(config2);
     assertSecureDirectory(rootPath(config2), "Parle hardening root");
     assertSecureDirectory(dir, "Parle hardening ceremony directory");
-    const statePath = join5(dir, STATE_FILE);
+    const statePath = join6(dir, STATE_FILE);
     if (expectedGeneration !== void 0 && existsSync4(statePath)) {
       const current = this.readState(config2);
       if (current.generation !== expectedGeneration)
@@ -32660,9 +33000,9 @@ var ParleHardeningClient = class {
     let fd;
     let created = false;
     try {
-      fd = openSync2(path, "wx", 384);
+      fd = openSync3(path, "wx", 384);
       created = true;
-      const stat = fstatSync2(fd);
+      const stat = fstatSync3(fd);
       if (!stat.isFile() || stat.nlink !== 1)
         throw new HardeningError("Protected hardening input is unsafe.");
       ownerAndMode2(stat, 384, "Protected hardening input");
@@ -32670,19 +33010,19 @@ var ParleHardeningClient = class {
       while (written < value.length)
         written += writeSync2(fd, value, written, value.length - written);
       fsyncSync2(fd);
-      closeSync2(fd);
+      closeSync3(fd);
       fd = void 0;
       assertSecureFile(path, `Parle hardening ${file2}`);
       syncDirectory2(dir);
     } catch (error51) {
       try {
         if (fd !== void 0)
-          closeSync2(fd);
+          closeSync3(fd);
       } catch {
       }
       try {
         if (created && existsSync4(path))
-          unlinkSync2(path);
+          unlinkSync3(path);
       } catch {
       }
       if (error51 instanceof HardeningError)
@@ -32696,8 +33036,8 @@ var ParleHardeningClient = class {
     const path = outputPath(config2, file2);
     let fd;
     try {
-      fd = openSync2(path, "wx", 384);
-      const stat = fstatSync2(fd);
+      fd = openSync3(path, "wx", 384);
+      const stat = fstatSync3(fd);
       if (!stat.isFile() || stat.nlink !== 1)
         throw new HardeningError("Protected hardening output is unsafe.");
       ownerAndMode2(stat, 384, "Protected hardening output");
@@ -32705,7 +33045,7 @@ var ParleHardeningClient = class {
     } catch (error51) {
       try {
         if (fd !== void 0)
-          closeSync2(fd);
+          closeSync3(fd);
       } catch {
       }
       if (error51 instanceof HardeningError)
@@ -32715,7 +33055,7 @@ var ParleHardeningClient = class {
   }
   discardSink(config2, sink) {
     try {
-      closeSync2(sink.fd);
+      closeSync3(sink.fd);
     } catch {
     }
     try {
@@ -32733,7 +33073,7 @@ var ParleHardeningClient = class {
       while (written < value.length)
         written += writeSync2(sink.fd, value, written, value.length - written);
       fsyncSync2(sink.fd);
-      closeSync2(sink.fd);
+      closeSync3(sink.fd);
       closed = true;
       assertSecureFile(sink.path, "protected hardening output");
       syncDirectory2(ceremonyPath(config2));
@@ -32745,7 +33085,7 @@ var ParleHardeningClient = class {
         } catch {
         }
         try {
-          closeSync2(sink.fd);
+          closeSync3(sink.fd);
         } catch {
         }
         try {
@@ -32920,7 +33260,7 @@ var ParleHardeningClient = class {
     if (state.phase !== "hardened_recovery_captured" || !state.recoveryCaptured)
       throw new HardeningError("Recovery storage acknowledgement is not expected yet.");
     assertSecureFile(outputPath(config2, "recovery-codes.txt"), "protected recovery codes");
-    const path = join5(ceremonyPath(config2), ACK_FILE);
+    const path = join6(ceremonyPath(config2), ACK_FILE);
     const value = Buffer.from(JSON.stringify({ schemaVersion: 1, acknowledgedAt: this.now().toISOString() }) + "\n", "utf8");
     try {
       this.createSecret(config2, ACK_FILE, value);
@@ -33215,7 +33555,7 @@ var ParleHardeningClient = class {
     this.assertBound(config2, state);
     if (state.phase !== "hardened_recovery_captured" || !state.recoveryCaptured || !state.assuranceVerified)
       throw new HardeningError("Hardening cannot finalize until hardened assurance and durable recovery capture are verified.");
-    const ack = join5(ceremonyPath(config2), ACK_FILE);
+    const ack = join6(ceremonyPath(config2), ACK_FILE);
     assertSecureFile(ack, "recovery storage acknowledgement");
     const parsed = parseJson(readFileSync2(ack, "utf8"));
     if (!parsed || typeof parsed !== "object" || parsed.schemaVersion !== 1 || typeof parsed.acknowledgedAt !== "string")
@@ -33477,7 +33817,7 @@ function parseDotEnv2(text) {
   return values;
 }
 function safeFile(path, label, allowSymlink) {
-  const link = lstatSync4(path);
+  const link = lstatSync5(path);
   if (!allowSymlink && link.isSymbolicLink())
     throw new Error(`${label} must not be a symbolic link: ${path}`);
   const stat = link.isSymbolicLink() ? statSync2(path) : link;
@@ -33503,7 +33843,7 @@ function assertGitSafeDirectory(path) {
   }
 }
 function safeDirectory(path, label) {
-  const link = lstatSync4(path);
+  const link = lstatSync5(path);
   if (link.isSymbolicLink() || !link.isDirectory())
     throw new Error(`${label} must be a real directory: ${path}`);
   if (process.platform !== "win32") {
@@ -33515,11 +33855,11 @@ function safeDirectory(path, label) {
   return realpathSync(path);
 }
 function inviteDirectory(config2, create) {
-  const directory = join6(config2.stateDir, "invites");
+  const directory = join7(config2.stateDir, "invites");
   if (create) {
-    mkdirSync3(directory, { recursive: true, mode: 448 });
+    mkdirSync4(directory, { recursive: true, mode: 448 });
     if (process.platform !== "win32")
-      chmodSync2(directory, 448);
+      chmodSync3(directory, 448);
   } else if (!existsSync5(directory)) {
     throw new Error(`Private Parle invite directory does not exist: ${directory}`);
   }
@@ -33543,11 +33883,11 @@ function validateSessionCookie(raw) {
   return value;
 }
 function resolveAccountBaseConfig(cwd, env, options = {}) {
-  const dotEnvPath = join6(cwd, ".env");
+  const dotEnvPath = join7(cwd, ".env");
   const dotEnv = existsSync5(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue2("PARLE_PROFILES_PATH", env, dotEnv);
   const catalogPath = resolveProfileCatalogPath(profilesOverride, cwd, env);
-  const sessionPath = join6(dirname5(catalogPath), "session");
+  const sessionPath = join7(dirname5(catalogPath), "session");
   let sessionCookie = firstValue2("PARLE_SESSION_COOKIE", env, dotEnv);
   if (!sessionCookie && existsSync5(sessionPath)) {
     assertNoSymlinkPathComponents(sessionPath);
@@ -33588,7 +33928,7 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
   };
 }
 function resolveInventoryLocalConfig(cwd, env) {
-  const dotEnvPath = join6(cwd, ".env");
+  const dotEnvPath = join7(cwd, ".env");
   const dotEnv = existsSync5(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const directRoomId = firstValue2("PARLE_ROOM_ID", env, dotEnv);
   return {
@@ -33599,7 +33939,7 @@ function resolveInventoryLocalConfig(cwd, env) {
 function resolveAccountConfig(cwd, env) {
   const config2 = resolveAccountBaseConfig(cwd, env);
   if (!config2.sessionCookie)
-    throw new Error(`Parle human session is not configured. Run parle_login complete or mint-from-session so ${join6(dirname5(config2.catalogPath), "session")} exists.`);
+    throw new Error(`Parle human session is not configured. Run parle_login complete or mint-from-session so ${join7(dirname5(config2.catalogPath), "session")} exists.`);
   return config2;
 }
 function validateUUID(raw, label) {
@@ -33760,19 +34100,19 @@ function validateProfileLabel(raw) {
   return value;
 }
 function sessionCookieFilePath(catalogPath) {
-  return join6(dirname5(catalogPath), "session");
+  return join7(dirname5(catalogPath), "session");
 }
 function pendingLoginCookieFilePath(catalogPath) {
-  return join6(dirname5(catalogPath), "login");
+  return join7(dirname5(catalogPath), "login");
 }
 function assertNoSymlinkPathComponents(path) {
   const absolute = resolve(path);
   const root = parse3(absolute).root;
   let current = root;
   for (const component of relative(root, absolute).split(sep).filter(Boolean)) {
-    current = join6(current, component);
+    current = join7(current, component);
     if (existsSync5(current)) {
-      const componentStat = lstatSync4(current);
+      const componentStat = lstatSync5(current);
       if (componentStat.isSymbolicLink() && (process.platform === "win32" || componentStat.uid === process.getuid?.())) {
         throw new Error(`Refusing to write Parle credentials through a user-owned symlinked path component: ${current}`);
       }
@@ -33783,9 +34123,9 @@ function assertNoSymlinkPathComponents(path) {
 function ensureProfileDirectory(path) {
   const directory = assertNoSymlinkPathComponents(dirname5(path));
   if (!existsSync5(directory))
-    mkdirSync3(directory, { recursive: true, mode: 448 });
+    mkdirSync4(directory, { recursive: true, mode: 448 });
   assertNoSymlinkPathComponents(directory);
-  const link = lstatSync4(directory);
+  const link = lstatSync5(directory);
   if (link.isSymbolicLink())
     throw new Error(`Refusing to write Parle profiles through a symlinked directory: ${directory}`);
   if (!link.isDirectory())
@@ -33797,13 +34137,13 @@ function ensureProfileDirectory(path) {
   if (process.platform !== "win32" && target.uid !== process.getuid?.())
     throw new Error(`Refusing to write Parle profiles because ${directory} does not resolve to a directory owned by the current user.`);
   if (process.platform !== "win32")
-    chmodSync2(writeDirectory, 448);
+    chmodSync3(writeDirectory, 448);
   return writeDirectory;
 }
 function safeProfileWritePath(path) {
   if (!existsSync5(path))
     return path;
-  const link = lstatSync4(path);
+  const link = lstatSync5(path);
   if (process.platform !== "win32" && link.uid !== process.getuid?.())
     throw new Error(`Refusing to write Parle profiles because ${path} is not owned by the current user.`);
   if (link.isSymbolicLink())
@@ -33820,8 +34160,8 @@ function safeProfileWritePath(path) {
 }
 function writeCookieFile(catalogPath, filename, cookie) {
   const directory = ensureProfileDirectory(catalogPath);
-  const path = join6(dirname5(catalogPath), filename);
-  const writePath = safeProfileWritePath(join6(directory, basename2(path)));
+  const path = join7(dirname5(catalogPath), filename);
+  const writePath = safeProfileWritePath(join7(directory, basename2(path)));
   atomicReplaceOwnerOnlyFile(writePath, `${cookie}
 `, {
     label: `Parle ${filename} credential`,
@@ -33849,7 +34189,7 @@ function removePendingLoginCookieFile(catalogPath) {
   if (!existsSync5(path))
     return;
   safeFile(path, "Parle pending login credential", false);
-  unlinkSync3(path);
+  unlinkSync4(path);
 }
 function renderProfile(profile) {
   return [
@@ -33865,18 +34205,18 @@ function preflightProfileWrite(profileName, force, catalogPath) {
   if (!PROFILE_LABEL_RE.test(profileName))
     throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
-  const writePath = safeProfileWritePath(join6(directory, basename2(catalogPath)));
+  const writePath = safeProfileWritePath(join7(directory, basename2(catalogPath)));
   const original = existsSync5(writePath) ? readFileSync3(writePath, "utf8") : "";
   if (original)
     parseProfiles(original, catalogPath);
   if (profileSectionRange(original, profileName) && !force)
     throw new Error(`Parle profile ${profileName} already exists in ${catalogPath}. Pass force=true to replace only that profile.`);
-  const probe = join6(dirname5(writePath), `.profiles-write-test-${process.pid}`);
+  const probe = join7(dirname5(writePath), `.profiles-write-test-${process.pid}`);
   try {
-    writeFileSync(probe, "ok\n", { mode: 384, flag: "wx" });
+    writeFileSync2(probe, "ok\n", { mode: 384, flag: "wx" });
   } finally {
     try {
-      unlinkSync3(probe);
+      unlinkSync4(probe);
     } catch {
     }
   }
@@ -33885,7 +34225,7 @@ function writeProfile(profile, force, catalogPath) {
   if (!PROFILE_LABEL_RE.test(profile.name))
     throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
-  const writePath = safeProfileWritePath(join6(directory, basename2(catalogPath)));
+  const writePath = safeProfileWritePath(join7(directory, basename2(catalogPath)));
   return withOwnerOnlyFileLock(writePath, { label: "Parle profile catalog", durability: "none" }, () => {
     const original = existsSync5(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
     const profiles = original ? parseProfiles(original, catalogPath) : /* @__PURE__ */ new Map();
@@ -33904,7 +34244,7 @@ function writeProfile(profile, force, catalogPath) {
 }
 function preflightNewProfile(path, profileName) {
   const directory = ensureProfileDirectory(path);
-  const writePath = safeProfileWritePath(join6(directory, basename2(path)));
+  const writePath = safeProfileWritePath(join7(directory, basename2(path)));
   const original = existsSync5(writePath) ? readFileSync3(writePath, "utf8") : "";
   const profiles = original ? parseProfiles(original, path) : /* @__PURE__ */ new Map();
   if (profiles.has(profileName))
@@ -35264,346 +35604,6 @@ function compactStatusCardFromStatus(status) {
   });
 }
 
-// ../client/dist/responsive-delivery.js
-import { chmodSync as chmodSync3, closeSync as closeSync3, constants as constants2, fstatSync as fstatSync3, linkSync as linkSync2, lstatSync as lstatSync5, mkdirSync as mkdirSync4, openSync as openSync3, readdirSync as readdirSync2, readSync as readSync2, renameSync as renameSync2, rmSync as rmSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join7 } from "node:path";
-var RESPONSIVE_DELIVERY_SKEW_MS = 3e4;
-var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
-var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
-var RESPONSIVE_DELIVERY_MAX_FILE_BYTES = 64 * 1024;
-var RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS = 512;
-var RESPONSIVE_DELIVERY_PRUNE_LIMIT = 32;
-var RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT = 64;
-var ACTIVE = /* @__PURE__ */ new Set(["starting", "watching", "backoff"]);
-var PUBLISHED = /* @__PURE__ */ new Set(["starting", "watching", "backoff", "stopped", "terminal"]);
-var STANDALONE_WAKE_ONLY_PUBLISHER = "@parlehq/mcp-server:standalone-watch";
-var ISO = (value) => typeof value === "string" && Number.isFinite(Date.parse(value));
-var string4 = (value, max = 256) => typeof value === "string" && value.length > 0 && value.length <= max ? value : void 0;
-var pruneCursor2 = /* @__PURE__ */ new Map();
-var systemCode2 = (error51) => typeof error51?.code === "string" ? error51.code : void 0;
-var NO_FOLLOW2 = typeof constants2.O_NOFOLLOW === "number" ? constants2.O_NOFOLLOW : 0;
-function readBoundedText(path, maxBytes) {
-  const fd = openSync3(path, constants2.O_RDONLY | NO_FOLLOW2);
-  try {
-    const stat = fstatSync3(fd);
-    if (!stat.isFile() || stat.size > maxBytes)
-      throw new Error("Responsive-delivery evidence exceeds its byte limit.");
-    const output = Buffer.allocUnsafe(maxBytes + 1);
-    let offset = 0;
-    while (offset < output.length) {
-      const count = readSync2(fd, output, offset, output.length - offset, null);
-      if (count === 0)
-        break;
-      offset += count;
-    }
-    if (offset > maxBytes)
-      throw new Error("Responsive-delivery evidence exceeds its byte limit.");
-    return output.subarray(0, offset).toString("utf8");
-  } finally {
-    closeSync3(fd);
-  }
-}
-function redactResponsiveDeliveryDiagnostic(value) {
-  if (typeof value !== "string")
-    return void 0;
-  const text = value.slice(0, RESPONSIVE_DELIVERY_MAX_DIAGNOSTIC_CHARS).replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]").replace(/\bparle_[a-z]+_[A-Za-z0-9_-]{20,}\b/gi, "[REDACTED]").replace(/\b(parle_(?:ses|tok|secret)[A-Za-z0-9_\-.]*)\b/gi, "[REDACTED]").replace(/\b(authorization|token|secret|password|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
-  return text || void 0;
-}
-function cleanSnapshot(input) {
-  const lastError = input.lastError ? { message: redactResponsiveDeliveryDiagnostic(input.lastError.message) || "[REDACTED]", at: input.lastError.at } : void 0;
-  return {
-    ...input,
-    publisher: { ...input.publisher, ...input.publisher.version ? { version: input.publisher.version.slice(0, 128) } : {} },
-    target: { ...input.target },
-    ...lastError ? { lastError } : {},
-    ...redactResponsiveDeliveryDiagnostic(input.reason) ? { reason: redactResponsiveDeliveryDiagnostic(input.reason) } : {}
-  };
-}
-function buildResponsiveDeliverySnapshot(base, state, event = {}, now = /* @__PURE__ */ new Date()) {
-  const updatedAt = now.toISOString();
-  const expected = Math.max(0, Math.min(RESPONSIVE_DELIVERY_MAX_LEASE_MS - RESPONSIVE_DELIVERY_SKEW_MS, Math.trunc(event.expectedProgressMs ?? 0)));
-  const expiresAt = new Date(now.getTime() + (ACTIVE.has(state) ? expected + RESPONSIVE_DELIVERY_SKEW_MS : RESPONSIVE_DELIVERY_TOMBSTONE_MS)).toISOString();
-  const message = typeof event.lastError === "string" ? event.lastError : event.lastError?.message;
-  const errorAt = typeof event.lastError === "string" ? updatedAt : event.lastError?.at || updatedAt;
-  return cleanSnapshot({
-    ...base,
-    schemaVersion: 1,
-    state,
-    updatedAt,
-    expiresAt,
-    ...event.lastSuccessAt ? { lastSuccessAt: event.lastSuccessAt } : {},
-    ...event.lastWakeAt ? { lastWakeAt: event.lastWakeAt } : {},
-    ...event.retryAt ? { retryAt: event.retryAt } : {},
-    ...message ? { lastError: { message, at: errorAt } } : {},
-    ...event.reason ? { reason: event.reason } : {}
-  });
-}
-function responsiveDeliveryRuntimeDirPath(cwd) {
-  return join7(cwd, ".parle", "runtime", "responsive");
-}
-function responsiveDeliveryRuntimeFilePath(cwd, pid) {
-  return join7(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
-}
-function writeResponsiveDeliverySnapshot(cwd, snapshot) {
-  const dir = responsiveDeliveryRuntimeDirPath(cwd);
-  mkdirSync4(dir, { recursive: true, mode: 448 });
-  chmodSync3(dir, 448);
-  const tmp = join7(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
-  writeFileSync2(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
-  chmodSync3(tmp, 384);
-  renameSync2(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
-  try {
-    pruneResponsiveDeliverySnapshots(cwd, {
-      now: new Date(snapshot.updatedAt),
-      inspectPid: inspectResponsiveDeliveryPid,
-      excludePid: snapshot.pid
-    });
-  } catch {
-  }
-}
-function parseResponsiveDeliverySnapshot(value) {
-  if (!value || typeof value !== "object")
-    return void 0;
-  const row = value;
-  if (row.schemaVersion !== 1 || !Number.isSafeInteger(row.pid) || row.pid <= 0 || !PUBLISHED.has(row.state) || !ISO(row.processStartedAt) || !ISO(row.updatedAt) || !ISO(row.expiresAt))
-    return void 0;
-  const name = string4(row.publisher?.name);
-  const instance = string4(row.publisher?.clientInstanceId);
-  const agentSessionId = string4(row.target?.agentSessionId);
-  if (!name || !instance || !agentSessionId)
-    return void 0;
-  const snapshot = {
-    schemaVersion: 1,
-    pid: row.pid,
-    processStartedAt: row.processStartedAt,
-    publisher: { name, clientInstanceId: instance, ...string4(row.publisher.version, 128) ? { version: string4(row.publisher.version, 128) } : {} },
-    target: { agentSessionId, ...string4(row.target.participantId) ? { participantId: string4(row.target.participantId) } : {}, ...string4(row.target.roomId) ? { roomId: string4(row.target.roomId) } : {} },
-    state: row.state,
-    updatedAt: row.updatedAt,
-    expiresAt: row.expiresAt
-  };
-  for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"])
-    if (ISO(row[key]))
-      snapshot[key] = row[key];
-  if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string")
-    snapshot.lastError = { message: redactResponsiveDeliveryDiagnostic(row.lastError.message) || "[REDACTED]", at: row.lastError.at };
-  const reason = redactResponsiveDeliveryDiagnostic(row.reason);
-  if (reason)
-    snapshot.reason = reason;
-  return snapshot;
-}
-function readResponsiveDeliverySnapshots(cwd) {
-  let names;
-  try {
-    names = readdirSync2(responsiveDeliveryRuntimeDirPath(cwd));
-  } catch {
-    return [];
-  }
-  const result2 = [];
-  for (const name of names) {
-    if (!/^\d+\.json$/.test(name))
-      continue;
-    try {
-      const raw = readBoundedText(join7(responsiveDeliveryRuntimeDirPath(cwd), name), RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
-      const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
-      if (snapshot)
-        result2.push(snapshot);
-    } catch {
-    }
-  }
-  return result2;
-}
-function inspectResponsiveDeliveryPid(pid) {
-  try {
-    process.kill(pid, 0);
-    return "alive";
-  } catch (error51) {
-    return error51?.code === "ESRCH" ? "dead" : "unknown";
-  }
-}
-function inspection(pid, inspectPid) {
-  if (!inspectPid)
-    return "unknown";
-  try {
-    return inspectPid(pid);
-  } catch {
-    return "unknown";
-  }
-}
-function isFresh(snapshot, now) {
-  return Date.parse(snapshot.expiresAt) >= now.getTime() && Date.parse(snapshot.updatedAt) <= now.getTime() + RESPONSIVE_DELIVERY_SKEW_MS;
-}
-function isActiveLive(snapshot, now, inspectPid) {
-  if (!isFresh(snapshot, now))
-    return false;
-  const checked = inspection(snapshot.pid, inspectPid);
-  if (checked === "dead" || typeof checked === "object" && (checked.status === "dead" || checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt))
-    return false;
-  return true;
-}
-function result(state, snapshot, now = /* @__PURE__ */ new Date()) {
-  if (!snapshot)
-    return { state };
-  return { state, updatedAt: snapshot.updatedAt, ...snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}, ...snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}, ...snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}, ...snapshot.lastError ? { lastError: snapshot.lastError } : {}, ...snapshot.reason ? { reason: snapshot.reason } : {}, evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...snapshot.publisher.version ? { version: snapshot.publisher.version } : {} } };
-}
-function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
-  const now = options.now || /* @__PURE__ */ new Date();
-  const exact = snapshots.filter((snapshot) => snapshot.target.agentSessionId === agentSessionId);
-  const owners = exact.filter((snapshot) => snapshot.publisher.name !== STANDALONE_WAKE_ONLY_PUBLISHER);
-  const selected = owners.length > 0 ? owners : exact;
-  const active = selected.filter((snapshot) => ACTIVE.has(snapshot.state) && isActiveLive(snapshot, now, options.inspectPid));
-  if (owners.length > 0 && active.length > 1)
-    return result("conflict", active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0], now);
-  if (active.length > 0) {
-    const newest = active.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
-    return result(newest.state, newest, now);
-  }
-  const tombstones = selected.filter((snapshot) => !ACTIVE.has(snapshot.state) && isFresh(snapshot, now));
-  if (tombstones.length) {
-    const newest = tombstones.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
-    return result(newest.state, newest, now);
-  }
-  const stale = selected.filter((snapshot) => ACTIVE.has(snapshot.state)).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  return stale.length ? result("stale", stale[0], now) : { state: "unknown", reason: "no_evidence_for_session" };
-}
-function isDefinitelyGone(snapshot, inspectPid) {
-  const checked = inspection(snapshot.pid, inspectPid);
-  return checked === "dead" || typeof checked === "object" && (checked.status === "dead" || Boolean(checked.processStartedAt && checked.processStartedAt !== snapshot.processStartedAt));
-}
-function boundedLimit2(value, fallback) {
-  const parsed = Math.trunc(value ?? fallback);
-  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback;
-}
-function rotatedCandidates2(dir, names, limit) {
-  if (!names.length || limit === 0)
-    return [];
-  names.sort();
-  const start = (pruneCursor2.get(dir) ?? 0) % names.length;
-  const count = Math.min(limit, names.length);
-  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
-  pruneCursor2.set(dir, (start + count) % names.length);
-  return selected;
-}
-function restoreResponsiveCandidate(path, quarantine) {
-  try {
-    linkSync2(quarantine, path);
-    unlinkSync4(quarantine);
-  } catch (error51) {
-    if (systemCode2(error51) === "EEXIST") {
-      try {
-        unlinkSync4(quarantine);
-      } catch (unlinkError) {
-        if (systemCode2(unlinkError) !== "ENOENT")
-          throw unlinkError;
-      }
-      return;
-    }
-    throw error51;
-  }
-}
-function removeResponsiveCandidateIf(path, shouldRemove) {
-  let stat;
-  try {
-    stat = lstatSync5(path);
-  } catch {
-    return false;
-  }
-  if (!stat.isFile() || stat.nlink !== 1 || process.platform !== "win32" && (stat.uid !== process.getuid?.() || (stat.mode & 511) !== 384))
-    return false;
-  try {
-    const raw = readBoundedText(path, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
-    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
-    if (!snapshot || !shouldRemove(snapshot))
-      return false;
-  } catch {
-    return false;
-  }
-  const quarantine = `${path}.prune-${process.pid}-${Math.random().toString(36).slice(2)}`;
-  try {
-    renameSync2(path, quarantine);
-  } catch (error51) {
-    if (systemCode2(error51) === "ENOENT")
-      return false;
-    throw error51;
-  }
-  let remove = false;
-  try {
-    const raw = readBoundedText(quarantine, RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
-    const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
-    remove = Boolean(snapshot && shouldRemove(snapshot));
-  } catch {
-    remove = false;
-  }
-  if (remove) {
-    try {
-      unlinkSync4(quarantine);
-    } catch (error51) {
-      if (systemCode2(error51) !== "ENOENT")
-        throw error51;
-    }
-    return true;
-  }
-  restoreResponsiveCandidate(path, quarantine);
-  return false;
-}
-function pruneResponsiveDeliverySnapshots(cwd, options = {}) {
-  const now = options.now || /* @__PURE__ */ new Date();
-  const dir = responsiveDeliveryRuntimeDirPath(cwd);
-  let names;
-  try {
-    names = readdirSync2(dir).filter((name) => /^\d+\.json$/.test(name));
-  } catch {
-    return;
-  }
-  const maxInspections = boundedLimit2(options.maxInspections, RESPONSIVE_DELIVERY_PRUNE_INSPECTION_LIMIT);
-  const maxRemovals = boundedLimit2(options.maxRemovals, RESPONSIVE_DELIVERY_PRUNE_LIMIT);
-  let removed = 0;
-  for (const name of rotatedCandidates2(dir, names, maxInspections)) {
-    if (removed >= maxRemovals)
-      break;
-    const path = join7(dir, name);
-    if (removeResponsiveCandidateIf(path, (snapshot) => snapshot.pid !== options.excludePid && Date.parse(snapshot.expiresAt) <= now.getTime() && isDefinitelyGone(snapshot, options.inspectPid)))
-      removed += 1;
-  }
-}
-var ResponsiveDeliveryRecorder = class {
-  options;
-  target;
-  latest;
-  constructor(options) {
-    this.options = options;
-    this.target = { ...options.target };
-  }
-  record(state, event = {}) {
-    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, event, this.options.now?.() || /* @__PURE__ */ new Date());
-    this.latest = snapshot;
-    if (this.options.persist && this.options.cwd)
-      writeResponsiveDeliverySnapshot(this.options.cwd, snapshot);
-    return snapshot;
-  }
-  starting(event) {
-    return this.record("starting", event);
-  }
-  watching(event) {
-    return this.record("watching", event);
-  }
-  backoff(event) {
-    return this.record("backoff", event);
-  }
-  stopped(event) {
-    return this.record("stopped", event);
-  }
-  terminal(event) {
-    return this.record("terminal", event);
-  }
-  retarget(target) {
-    this.target = { ...target };
-  }
-  snapshot() {
-    return this.latest && { ...this.latest, publisher: { ...this.latest.publisher }, target: { ...this.latest.target } };
-  }
-};
-
 // ../client/dist/delivery.js
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 var DEFAULT_MAX_DRAIN_BATCHES = 100;
@@ -36246,6 +36246,17 @@ var DEFAULT_API_BASE3 = "https://api.parle.sh";
 var DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
+function cleanupLocalAdapterState(cwd, now = /* @__PURE__ */ new Date()) {
+  for (const cleanup of [
+    () => pruneRuntimeFiles(cwd, now),
+    () => pruneResponsiveDeliverySnapshots(cwd, { now, inspectPid: inspectResponsiveDeliveryPid })
+  ]) {
+    try {
+      cleanup();
+    } catch {
+    }
+  }
+}
 var INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 var INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
 var SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted directly; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
@@ -36845,12 +36856,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.integrationName = options.integrationName ? assertClientName(options.integrationName) : void 0;
     this.integrationVersion = options.integrationVersion ? assertClientVersion(options.integrationVersion) : void 0;
     this.clientInstanceId = assertClientInstanceId(options.clientInstanceId || processClientInstanceId());
-    if (this.publishRuntime) {
-      try {
-        pruneRuntimeFiles(this.cwd, this.now());
-      } catch {
-      }
-    }
+    cleanupLocalAdapterState(this.cwd, this.now());
   }
   status() {
     return {
@@ -38444,8 +38450,10 @@ import {
   mkdirSync as mkdirSync5,
   readdirSync as readdirSync3,
   renameSync as renameSync3,
+  rmdirSync,
   rmSync as rmSync3,
   statSync as statSync3,
+  unlinkSync as unlinkSync5,
   symlinkSync
 } from "node:fs";
 import { createServer } from "node:net";
@@ -38483,6 +38491,102 @@ function processIsAlive(pid) {
   } catch (error51) {
     if (error51?.code === "ESRCH") return false;
     return true;
+  }
+}
+var CLEANUP_INSPECTION_LIMIT = 64;
+var cleanupCursors = /* @__PURE__ */ new Map();
+function cleanupCandidates(dir, names, limit) {
+  if (!names.length || limit <= 0) return [];
+  names.sort();
+  const start = (cleanupCursors.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  cleanupCursors.set(dir, (start + count) % names.length);
+  return selected;
+}
+function artifactPid(name, nested) {
+  const ordinary = name.match(nested ? /^(\d+)\.(?:sock|runtime\.json)(?:\.tmp)?$/ : /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp(?:-[0-9a-f-]{36})?)?$/i);
+  if (ordinary) return Number(ordinary[1]);
+  const atomic = name.match(/^\.(\d+)\.runtime\.json\.(\d+)\.[0-9a-f-]{36}\.tmp$/i);
+  return atomic && atomic[1] === atomic[2] ? Number(atomic[1]) : void 0;
+}
+function safeArtifact(stat, name) {
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return false;
+  if (name.includes(".node")) return stat.isSymbolicLink();
+  return (stat.isFile() || stat.isSocket()) && (process.platform === "win32" || (stat.mode & 63) === 0);
+}
+function validRuntimeDescriptor(path, name, pid, hostParentPid) {
+  if (!name.endsWith(".runtime.json")) return true;
+  try {
+    const value = JSON.parse(readOwnerOnlyTextFile(path, { label: "Parle hook bridge runtime descriptor", maxBytes: 16 * 1024 }));
+    return value?.pid === pid && (hostParentPid === void 0 ? value.hostParentPid === void 0 : value.hostParentPid === hostParentPid);
+  } catch {
+    return false;
+  }
+}
+function removeDeadHookBridgeArtifact(path, name, nested = false, hostParentPid, deps = {}) {
+  const pid = artifactPid(name, nested);
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  const inspect = deps.lstat || lstatSync7;
+  const alive = deps.processIsAlive || processIsAlive;
+  try {
+    const before = inspect(path);
+    if (!safeArtifact(before, name) || !validRuntimeDescriptor(path, name, pid, hostParentPid) || alive(pid)) return false;
+    const after = inspect(path);
+    if (before.dev !== after.dev || before.ino !== after.ino || alive(pid)) return false;
+    (deps.remove || unlinkSync5)(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function safeDirectory2(stat) {
+  return stat.isDirectory() && !stat.isSymbolicLink() && (typeof process.getuid !== "function" || stat.uid === process.getuid()) && (process.platform === "win32" || (stat.mode & 63) === 0);
+}
+function cleanupHookBridgeArtifacts(stateDir, deps = {}) {
+  const read = deps.readdir || readdirSync3;
+  const inspect = deps.lstat || lstatSync7;
+  const removeDir = deps.rmdir || rmdirSync;
+  const alive = deps.processIsAlive || processIsAlive;
+  let inspected = 0;
+  let stateStat;
+  let names;
+  try {
+    stateStat = inspect(stateDir);
+    if (!safeDirectory2(stateStat)) return;
+    names = read(stateDir);
+  } catch {
+    return;
+  }
+  const removeArtifact = (dir, name, nested, hostParentPid) => {
+    if (inspected >= CLEANUP_INSPECTION_LIMIT) return;
+    if (artifactPid(name, nested) === void 0) return;
+    inspected += 1;
+    removeDeadHookBridgeArtifact(join10(dir, name), name, nested, hostParentPid, deps);
+  };
+  for (const name of cleanupCandidates(stateDir, names, CLEANUP_INSPECTION_LIMIT)) {
+    if (inspected >= CLEANUP_INSPECTION_LIMIT) break;
+    const hostPid = /^\d+$/.test(name) ? Number(name) : void 0;
+    if (!hostPid) {
+      removeArtifact(stateDir, name, false);
+      continue;
+    }
+    inspected += 1;
+    const hostDir = join10(stateDir, name);
+    try {
+      if (!safeDirectory2(inspect(hostDir))) continue;
+      const children = read(hostDir);
+      for (const child of cleanupCandidates(hostDir, children, CLEANUP_INSPECTION_LIMIT - inspected)) {
+        removeArtifact(hostDir, child, true, hostPid);
+      }
+      if (!alive(hostPid)) {
+        try {
+          removeDir(hostDir);
+        } catch {
+        }
+      }
+    } catch {
+    }
   }
 }
 var HookDeliveryBridge = class {
@@ -38671,6 +38775,7 @@ var HookDeliveryBridge = class {
   }
   async listen() {
     this.assertCurrentHostParent();
+    cleanupHookBridgeArtifacts(hookBridgeStateDir(this.scope));
     const path = hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid);
     const stateDir = hookBridgeStateDir(this.scope);
     const dir = dirname7(path);
@@ -38684,7 +38789,6 @@ var HookDeliveryBridge = class {
       const after = lstatSync7(candidate);
       if ((after.mode & 63) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${candidate}`);
     }
-    if (this.hostParentPid === void 0) this.removeDeadRuntimeArtifacts(stateDir);
     this.removeOwnRuntimeArtifacts();
     this.publishRuntimeArtifacts();
     try {
@@ -38736,14 +38840,6 @@ var HookDeliveryBridge = class {
       `${hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid)}.tmp`,
       `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`
     ]) rmSync3(path, { force: true });
-  }
-  removeDeadRuntimeArtifacts(dir) {
-    const stalePattern = /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp)?$/;
-    for (const name of readdirSync3(dir)) {
-      const match = name.match(stalePattern);
-      if (!match || processIsAlive(Number(match[1]))) continue;
-      rmSync3(join10(dir, name), { force: true });
-    }
   }
   assertCurrentHostParent() {
     if (this.hostParentPid !== void 0 && this.readParentPid() !== this.hostParentPid) {
@@ -39550,7 +39646,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.47";
+var MCP_CLIENT_VERSION = "0.7.48";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -39592,6 +39688,9 @@ async function runStdio() {
   if (hostProcessMode && hostProcessMode !== "direct-parent") {
     throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
   }
+  const hostParentPid = hostProcessMode === "direct-parent" ? process.ppid : void 0;
+  let stopPreRuntimeParentCheck = hostParentPid === void 0 ? () => {
+  } : scheduleHostParentCheck(hostParentPid, () => process.exit(0));
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
     const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
@@ -39605,7 +39704,7 @@ async function runStdio() {
       process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd(),
       process.execPath,
       process.cwd(),
-      hostProcessMode === "direct-parent" ? process.ppid : void 0
+      hostParentPid
     ) : void 0;
     if (deliveryBridge) {
       const baseStatus = client.status.bind(client);
@@ -39617,12 +39716,15 @@ async function runStdio() {
   const activateRuntime = (runtime2) => {
     if (activated) return;
     activated = true;
+    stopPreRuntimeParentCheck();
+    stopPreRuntimeParentCheck = () => {
+    };
     const stopEagerBootstrap = scheduleEagerBootstrap(runtime2.client, runtime2.deliveryBridge, {
       onError(error51) {
         console.error(`Parle hook delivery bridge stopped: ${redactString(error51 instanceof Error ? error51.message : String(error51))}`);
       }
     });
-    installLifecycleHandlers(runtime2.client, runtime2.deliveryBridge, stopEagerBootstrap);
+    installLifecycleHandlers(runtime2.client, runtime2.deliveryBridge, stopEagerBootstrap, hostParentPid);
   };
   let runtime;
   let configError;
@@ -39697,12 +39799,33 @@ function scheduleEagerBootstrap(client, deliveryBridge, options = {}) {
     timer = void 0;
   };
 }
+function scheduleHostParentCheck(expectedPid, shutdown, options = {}) {
+  const readParentPid = options.readParentPid || (() => process.ppid);
+  const setCheckInterval = options.setInterval || ((callback, delayMs) => setInterval(callback, delayMs));
+  const clearCheckInterval = options.clearInterval || ((timer2) => clearInterval(timer2));
+  let stopped = false;
+  const timer = setCheckInterval(() => {
+    if (stopped || readParentPid() === expectedPid) return;
+    stopped = true;
+    clearCheckInterval(timer);
+    shutdown();
+  }, 5e3);
+  timer.unref?.();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearCheckInterval(timer);
+  };
+}
 function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = () => {
-}) {
+}, hostParentPid) {
   let ending = false;
+  let stopHostParentCheck = () => {
+  };
   const shutdown = () => {
     if (ending) return;
     ending = true;
+    stopHostParentCheck();
     stopEagerBootstrap();
     const timer = setTimeout(() => process.exit(0), 2e3);
     void deliveryBridge?.stop().catch(() => {
@@ -39712,6 +39835,7 @@ function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = (
       process.exit(0);
     });
   };
+  if (hostParentPid !== void 0) stopHostParentCheck = scheduleHostParentCheck(hostParentPid, shutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.on("exit", () => client.discardRuntimeFile());
@@ -39790,6 +39914,7 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}
   }).sort();
   const legacyPaths = entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).flatMap((entry) => {
     const path = join11(stateDir, entry.name);
+    if (removeDeadHookBridgeArtifact(path, entry.name, false, void 0, { lstat, processIsAlive: isProcessAlive })) return [];
     let socketState;
     try {
       socketState = lstat(path);
@@ -39798,12 +39923,7 @@ async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}
       return [];
     }
     if (socketState.isSymbolicLink() || typeof process.getuid === "function" && socketState.uid !== process.getuid() || (socketState.mode & 63) !== 0) return [];
-    if (isProcessAlive(Number(entry.name.slice(0, -5)))) return [path];
-    try {
-      rmSync4(path, { force: true });
-    } catch {
-    }
-    return [];
+    return [path];
   }).sort();
   const paths = [...currentPaths, ...legacyPaths];
   const probeErrors = /* @__PURE__ */ new Map();
@@ -39866,5 +39986,6 @@ export {
   resolveIntegrationMetadata,
   runStdio,
   runWatcher,
-  scheduleEagerBootstrap
+  scheduleEagerBootstrap,
+  scheduleHostParentCheck
 };

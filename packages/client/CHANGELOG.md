@@ -1,8 +1,21 @@
 # Changelog
 
+## 0.8.42 (2026-08-18)
+
+- Run bounded cleanup for expired runtime and responsive-delivery snapshots during every client construction (#149).
+
 ## 0.8.41 (2026-08-18)
 
 - Add a typed first-time onboarding flow, preserve server-owned start guidance and unknown fields with a privacy-safe fallback, and save or recover onboarding sessions without exposing credentials or replaying spent codes.
+
+## 0.8.41 (2026-08-18)
+
+<<<<<<< HEAD
+- Add a typed first-time onboarding flow, preserve server-owned start guidance and unknown fields with a privacy-safe fallback, and save or recover onboarding sessions without exposing credentials or replaying spent codes.
+||||||| parent of b438dd4 (feat: add bounded adapter startup hygiene (#149))
+=======
+- Run bounded cleanup for expired runtime and responsive-delivery snapshots during every client construction (#149).
+>>>>>>> b438dd4 (feat: add bounded adapter startup hygiene (#149))
 
 ## 0.8.40 (2026-08-17)
 

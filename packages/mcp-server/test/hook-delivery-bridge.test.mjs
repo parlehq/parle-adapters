@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -18,6 +20,7 @@ import { connect } from "node:net";
 import { ParleApiError } from "@parlehq/agent-client";
 import {
   HookDeliveryBridge,
+  cleanupHookBridgeArtifacts,
   hookBridgeHostDir,
   hookBridgeRuntimeDescriptorPath,
   hookBridgeRuntimeHandlePath,
@@ -25,6 +28,11 @@ import {
 } from "../dist/hook-delivery-bridge.js";
 
 const ROOM = "room-1";
+
+function cleanupFixture(cwd) {
+  rmSync(cwd, { recursive: true, force: true });
+  rmSync(hookBridgeStateDir(cwd), { recursive: true, force: true });
+}
 
 function bridgeRuntime(overrides = {}) {
   return {
@@ -88,8 +96,8 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
   const staleSocket = join(hostDir, `${stalePid}.sock`);
   const staleDescriptor = join(hostDir, `${stalePid}.runtime.json`);
   const staleHandle = join(stateDir, `${stalePid}.node`);
-  writeFileSync(staleSocket, "");
-  writeFileSync(staleDescriptor, "{}\n");
+  writeFileSync(staleSocket, "", { mode: 0o600 });
+  writeFileSync(staleDescriptor, `${JSON.stringify({ execPath: process.execPath, pid: stalePid, hostParentPid: process.ppid, startedAt: new Date().toISOString() })}\n`, { mode: 0o600 });
   symlinkSync(process.execPath, staleHandle);
   const acknowledgements = [];
   let drainCalls = 0;
@@ -138,9 +146,9 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     assert.equal(typeof descriptor.startedAt, "string");
     assert.equal(statSync(descriptorPath).mode & 0o077, 0);
     assert.equal(readlinkSync(handlePath), process.execPath);
-    assert.equal(existsSync(staleSocket), true, "a stale sibling must not block publication or be deleted");
-    assert.equal(existsSync(staleDescriptor), true);
-    assert.equal(existsSync(staleHandle), true);
+    assert.equal(existsSync(staleSocket), false, "a definitively dead sibling is cleaned before publication");
+    assert.equal(existsSync(staleDescriptor), false);
+    assert.equal(existsSync(staleHandle), false);
     await eventually(() => bridge.status().pending === 1);
     assert.deepEqual(acknowledgements, []);
     assert.equal(bridge.status().lastError, undefined);
@@ -177,7 +185,81 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     assert.equal(existsSync(bridge.status().socketPath), false);
   } finally {
     if (!stopped) await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge cleanup is bounded, conservative, and current-scope only", () => {
+  const scope = mkdtempSync(join(tmpdir(), "parle-hook-cleanup-"));
+  const stateDir = hookBridgeStateDir(scope);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  try {
+    const deadHost = 8_000_001;
+    const uncertainHost = 8_000_002;
+    const deadHostDir = hookBridgeHostDir(scope, deadHost);
+    const uncertainHostDir = hookBridgeHostDir(scope, uncertainHost);
+    const currentHostDir = hookBridgeHostDir(scope, process.ppid);
+    mkdirSync(deadHostDir, { mode: 0o700 });
+    mkdirSync(uncertainHostDir, { mode: 0o700 });
+    mkdirSync(currentHostDir, { mode: 0o700 });
+    writeFileSync(join(deadHostDir, "8000011.runtime.json"), JSON.stringify({ pid: 8_000_011, hostParentPid: deadHost }), { mode: 0o600 });
+    writeFileSync(join(deadHostDir, "8000012.runtime.json"), JSON.stringify({ pid: 8_000_012, hostParentPid: deadHost }), { mode: 0o640 });
+    writeFileSync(join(deadHostDir, "8000014.runtime.json"), "{}\n", { mode: 0o600 });
+    symlinkSync(process.execPath, join(stateDir, "8000011.node"));
+    symlinkSync(process.execPath, join(stateDir, "8000013.sock"));
+    writeFileSync(join(currentHostDir, `${process.pid}.runtime.json`), JSON.stringify({ pid: process.pid, hostParentPid: process.ppid }), { mode: 0o600 });
+    symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
+    for (let index = 0; index < 70; index += 1) {
+      const pid = 8_100_000 + index;
+      writeFileSync(join(stateDir, `${pid}.runtime.json`), JSON.stringify({ pid }), { mode: 0o600 });
+    }
+
+    const alive = (pid) => pid === uncertainHost || pid === 8_000_012 || pid === 8_000_013;
+    cleanupHookBridgeArtifacts(stateDir, { processIsAlive: alive });
+    assert.ok(readdirSync(stateDir).some((name) => /^81\d+\.runtime\.json$/.test(name)), "one bounded sweep leaves later candidates");
+    cleanupHookBridgeArtifacts(stateDir, { processIsAlive: alive });
+
+    assert.equal(existsSync(join(deadHostDir, "8000011.runtime.json")), false);
+    assert.equal(existsSync(join(deadHostDir, "8000012.runtime.json")), true, "unsafe mode is retained");
+    assert.equal(existsSync(join(deadHostDir, "8000014.runtime.json")), true, "a malformed descriptor is retained");
+    assert.equal(existsSync(join(stateDir, "8000011.node")), false, "the expected dead executable symlink is removed without following it");
+    assert.equal(existsSync(join(stateDir, "8000013.sock")), true, "an unexpected symlink shape is retained");
+    assert.equal(existsSync(uncertainHostDir), true, "ambiguous host liveness retains an empty directory");
+    assert.equal(existsSync(join(currentHostDir, `${process.pid}.runtime.json`)), true, "cleanup retains the current process's artifacts");
+    assert.equal(existsSync(join(stateDir, `${process.pid}.node`)), true);
+    assert.equal(existsSync(currentHostDir), true, "cleanup retains the current live host directory");
+    assert.equal(readdirSync(stateDir).filter((name) => /^81\d+\.runtime\.json$/.test(name)).length, 0, "bounded repeated sweeps make progress");
+  } finally {
+    cleanupFixture(scope);
+  }
+});
+
+test("hook bridge cleanup retains a raced replacement and continues", () => {
+  const scope = mkdtempSync(join(tmpdir(), "parle-hook-cleanup-race-"));
+  const stateDir = hookBridgeStateDir(scope);
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const replacedPid = 8_200_001;
+  const removablePid = 8_200_002;
+  const replacedPath = join(stateDir, `${replacedPid}.runtime.json`);
+  const removablePath = join(stateDir, `${removablePid}.runtime.json`);
+  writeFileSync(replacedPath, JSON.stringify({ pid: replacedPid }), { mode: 0o600 });
+  writeFileSync(removablePath, JSON.stringify({ pid: removablePid }), { mode: 0o600 });
+  let targetInspections = 0;
+  try {
+    cleanupHookBridgeArtifacts(stateDir, {
+      processIsAlive: () => false,
+      lstat(path) {
+        if (path === replacedPath && ++targetInspections === 2) {
+          rmSync(path, { force: true });
+          writeFileSync(path, JSON.stringify({ pid: replacedPid }), { mode: 0o600 });
+        }
+        return lstatSync(path);
+      },
+    });
+    assert.equal(existsSync(replacedPath), true, "an inode replacement observed before removal wins");
+    assert.equal(existsSync(removablePath), false, "one raced candidate does not abort the sweep");
+  } finally {
+    cleanupFixture(scope);
   }
 });
 
@@ -206,7 +288,7 @@ test("hook bridge binding recovers an unbound bridge but only SessionStart may r
     assert.equal(bridge.status().pending, 1, "an active lease blocks replacement without discarding work");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -233,7 +315,7 @@ test("hook bridge rejects invalid or changed direct-parent correlation", async (
     assert.match(binding.error, /correlation is no longer valid/);
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -274,7 +356,7 @@ test("hook bridge wait is race-free, single-waiter, and survives session revisio
     );
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -304,7 +386,7 @@ test("hook bridge wait cleans up disconnected clients and reports shutdown", asy
     assert.deepEqual(await waiting, { ok: false, error: "Parle hook bridge stopped" });
   } finally {
     if (!stopped) await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -336,7 +418,7 @@ test("hook delivery bridge restarts its owned wake stream on a client session re
     assert.equal(bridge.status().lastError, undefined);
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -368,9 +450,11 @@ test("hook delivery bridge preserves alias-scoped unacked baseline delivery", as
     assert.equal(drains, settledDrains, "the baseline drain should terminate on a no-progress batch");
     assert.ok(settledDrains < 10, `the baseline drain should stop far below the batch cap, saw ${settledDrains}`);
     assert.equal(bridge.status().pending, 1);
+    await bridge.stop();
+    assert.deepEqual(acknowledgements, [], "shutdown never acknowledges an uncommitted lease");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -409,7 +493,7 @@ test("hook delivery bridge skips session-scoped baseline and queues rows arrivin
     assert.deepEqual(acknowledgements, [[3, "stale-3"], [4, "stale-4"]]);
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -460,7 +544,7 @@ test("hook delivery bridge keeps its artifacts through a terminal wake failure a
     assert.deepEqual(acknowledgements, [], "recovered rows still ack only through hook commit");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -506,7 +590,7 @@ test("hook delivery bridge keys pending work by room so identical seq/event ids 
     assert.equal(bridge.status().pending, 0);
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -558,7 +642,7 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
     assert.deepEqual(acknowledgements, [], "old exact-session work is never acked through the successor");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -595,7 +679,8 @@ test("hook delivery bridge renews lifecycle evidence on observed progress and to
     assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "stopped");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(queueScope);
+    cleanupFixture(cwd);
   }
 });
 
@@ -637,7 +722,7 @@ test("hook delivery bridge publishes terminal evidence when socket listen fails"
     assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "watching");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -660,6 +745,6 @@ test("hook delivery bridge records runtime publication failure without throwing"
     assert.equal(evidence.reason, "bridge_start_failed");
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });

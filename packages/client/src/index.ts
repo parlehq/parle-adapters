@@ -10,6 +10,7 @@ import { ProfileConfigError, ProfileDeletionError, catalogGitExposureWarning, de
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
 import { enrollKnownAddress, shortenKnownAddressAfterUnprocessable } from "./known-address-registry.js";
+import { inspectResponsiveDeliveryPid, pruneResponsiveDeliverySnapshots } from "./responsive-delivery.js";
 
 export * from "./protocol.js";
 export * from "./account.js";
@@ -33,6 +34,15 @@ export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
+
+export function cleanupLocalAdapterState(cwd: string, now = new Date()): void {
+  for (const cleanup of [
+    () => pruneRuntimeFiles(cwd, now),
+    () => pruneResponsiveDeliverySnapshots(cwd, { now, inspectPid: inspectResponsiveDeliveryPid }),
+  ]) {
+    try { cleanup(); } catch { /* Local state hygiene must never block client construction. */ }
+  }
+}
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
 export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
 export const SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted directly; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
@@ -971,13 +981,7 @@ export class ParleAgentClient {
     this.integrationName = options.integrationName ? assertClientName(options.integrationName) : undefined;
     this.integrationVersion = options.integrationVersion ? assertClientVersion(options.integrationVersion) : undefined;
     this.clientInstanceId = assertClientInstanceId(options.clientInstanceId || processClientInstanceId());
-    if (this.publishRuntime) {
-      try {
-        pruneRuntimeFiles(this.cwd, this.now());
-      } catch {
-        // Local state hygiene must never block client construction.
-      }
-    }
+    cleanupLocalAdapterState(this.cwd, this.now());
   }
 
   status() {

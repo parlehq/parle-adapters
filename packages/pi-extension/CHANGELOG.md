@@ -1,8 +1,21 @@
 # Changelog
 
+## 0.7.50 (2026-08-18)
+
+- Bundle shared startup cleanup for expired local runtime evidence (#149).
+
 ## 0.7.49 (2026-08-18)
 
 - Expose first-time onboarding separately from returning login and route setup guidance by explicit user intent.
+
+## 0.7.49 (2026-08-18)
+
+<<<<<<< HEAD
+- Expose first-time onboarding separately from returning login and route setup guidance by explicit user intent.
+||||||| parent of b438dd4 (feat: add bounded adapter startup hygiene (#149))
+=======
+- Bundle shared startup cleanup for expired local runtime evidence (#149).
+>>>>>>> b438dd4 (feat: add bounded adapter startup hygiene (#149))
 
 ## 0.7.48 (2026-08-17)
 

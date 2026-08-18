@@ -23,6 +23,11 @@ function stateDir(scope) {
   return join(homedir(), ".local", "state", "parle", "hook-bridge", key);
 }
 
+function cleanupFixture(cwd) {
+  rmSync(cwd, { recursive: true, force: true });
+  rmSync(stateDir(cwd), { recursive: true, force: true });
+}
+
 let nextOwnerPid = 900_000_000;
 
 // A stub bridge that records every action and answers with a scripted reply.
@@ -134,7 +139,7 @@ async function withBridge(options, body) {
     return await body({ cwd, bridge });
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 }
 
@@ -228,7 +233,7 @@ test("MCP and hook children derive the same parent and isolate two hosts in both
       }
     } finally {
       await Promise.all([bridges.a.stop(), bridges.b.stop()]);
-      rmSync(cwd, { recursive: true, force: true });
+      cleanupFixture(cwd);
     }
   }
 });
@@ -265,7 +270,7 @@ test("an empty matched bridge never falls through to another top-level host", as
     assert.deepEqual(other.actions, []);
   } finally {
     await Promise.all([current.stop(), other.stop()]);
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -291,7 +296,7 @@ test("multiple responding bridges or a responding parent mismatch fail closed be
     assert.deepEqual(mismatched.actions.map((action) => action.action), ["status"]);
   } finally {
     await mismatched.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -311,6 +316,6 @@ test("only SessionStart may replace a different live host-session binding", asyn
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
   } finally {
     await bridge.stop();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });

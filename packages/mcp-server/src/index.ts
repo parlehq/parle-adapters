@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
-import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive } from "./hook-delivery-bridge.js";
+import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact } from "./hook-delivery-bridge.js";
 import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.47";
+export const MCP_CLIENT_VERSION = "0.7.48";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -64,6 +64,10 @@ export async function runStdio() {
   if (hostProcessMode && hostProcessMode !== "direct-parent") {
     throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
   }
+  const hostParentPid = hostProcessMode === "direct-parent" ? process.ppid : undefined;
+  let stopPreRuntimeParentCheck = hostParentPid === undefined
+    ? () => {}
+    : scheduleHostParentCheck(hostParentPid, () => process.exit(0));
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
     const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
@@ -78,7 +82,7 @@ export async function runStdio() {
         process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd(),
         process.execPath,
         process.cwd(),
-        hostProcessMode === "direct-parent" ? process.ppid : undefined,
+        hostParentPid,
       )
       : undefined;
     if (deliveryBridge) {
@@ -91,6 +95,8 @@ export async function runStdio() {
   const activateRuntime = (runtime: ReturnType<typeof createRuntime>) => {
     if (activated) return;
     activated = true;
+    stopPreRuntimeParentCheck();
+    stopPreRuntimeParentCheck = () => {};
     // Eager background bootstrap creates the session before the first tool call.
     // A retryable startup failure arms one unreferenced deadline at a time from
     // the shared client's server-derived nextRetryAt. Terminal or unconfigured
@@ -100,7 +106,7 @@ export async function runStdio() {
         console.error(`Parle hook delivery bridge stopped: ${redactString(error instanceof Error ? error.message : String(error))}`);
       },
     });
-    installLifecycleHandlers(runtime.client, runtime.deliveryBridge, stopEagerBootstrap);
+    installLifecycleHandlers(runtime.client, runtime.deliveryBridge, stopEagerBootstrap, hostParentPid);
   };
 
   let runtime: ReturnType<typeof createRuntime> | undefined;
@@ -192,11 +198,38 @@ export function scheduleEagerBootstrap(client: ParleAgentClient, deliveryBridge?
   };
 }
 
-function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge, stopEagerBootstrap: () => void = () => {}) {
+type HostParentCheckOptions = {
+  readParentPid?: () => number;
+  setInterval?: (callback: () => void, delayMs: number) => ReturnType<typeof setInterval>;
+  clearInterval?: (timer: ReturnType<typeof setInterval>) => void;
+};
+
+export function scheduleHostParentCheck(expectedPid: number, shutdown: () => void, options: HostParentCheckOptions = {}): () => void {
+  const readParentPid = options.readParentPid || (() => process.ppid);
+  const setCheckInterval = options.setInterval || ((callback, delayMs) => setInterval(callback, delayMs));
+  const clearCheckInterval = options.clearInterval || ((timer) => clearInterval(timer));
+  let stopped = false;
+  const timer = setCheckInterval(() => {
+    if (stopped || readParentPid() === expectedPid) return;
+    stopped = true;
+    clearCheckInterval(timer);
+    shutdown();
+  }, 5_000);
+  timer.unref?.();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearCheckInterval(timer);
+  };
+}
+
+function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge, stopEagerBootstrap: () => void = () => {}, hostParentPid?: number) {
   let ending = false;
+  let stopHostParentCheck = () => {};
   const shutdown = () => {
     if (ending) return;
     ending = true;
+    stopHostParentCheck();
     stopEagerBootstrap();
     const timer = setTimeout(() => process.exit(0), 2000);
     void deliveryBridge?.stop().catch(() => {}).then(() => client.endSession()).catch(() => {}).finally(() => {
@@ -204,6 +237,7 @@ function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: Hoo
       process.exit(0);
     });
   };
+  if (hostParentPid !== undefined) stopHostParentCheck = scheduleHostParentCheck(hostParentPid, shutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   // exit allows no async work; drop the runtime file so readers never see a
@@ -309,6 +343,7 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
     .filter((entry) => /^\d+\.sock$/.test(entry.name))
     .flatMap((entry) => {
       const path = join(stateDir, entry.name);
+      if (removeDeadHookBridgeArtifact(path, entry.name, false, undefined, { lstat, processIsAlive: isProcessAlive })) return [];
       let socketState;
       try { socketState = lstat(path); } catch (error) {
         recordDiscoveryError(error);
@@ -317,9 +352,7 @@ export async function runWatcher(_metaUrl: string, args: string[], cwd = process
       if (socketState.isSymbolicLink()
         || (typeof process.getuid === "function" && socketState.uid !== process.getuid())
         || (socketState.mode & 0o077) !== 0) return [];
-      if (isProcessAlive(Number(entry.name.slice(0, -5)))) return [path];
-      try { rmSync(path, { force: true }); } catch {}
-      return [];
+      return [path];
     })
     .sort();
   const paths = [...currentPaths, ...legacyPaths];

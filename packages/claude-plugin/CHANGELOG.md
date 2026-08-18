@@ -1,8 +1,21 @@
 # Changelog
 
+## 0.9.52 (2026-08-18)
+
+- Clean definitively stale local bridge artifacts at startup and stop orphaned MCP children after Claude parent correlation is lost (#149).
+
 ## 0.9.51 (2026-08-18)
 
 - Bundle the typed first-time onboarding tool and server-owned email-start guidance.
+
+## 0.9.51 (2026-08-18)
+
+<<<<<<< HEAD
+- Bundle the typed first-time onboarding tool and server-owned email-start guidance.
+||||||| parent of b438dd4 (feat: add bounded adapter startup hygiene (#149))
+=======
+- Clean definitively stale local bridge artifacts at startup and stop orphaned MCP children after Claude parent correlation is lost (#149).
+>>>>>>> b438dd4 (feat: add bounded adapter startup hygiene (#149))
 
 ## 0.9.50 (2026-08-17)
 

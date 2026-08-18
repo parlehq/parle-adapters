@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, processStartedAtIso } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, runWatcher, scheduleEagerBootstrap } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -141,6 +141,36 @@ test("eager MCP bootstrap retries a transient bridge start failure", async () =>
   assert.equal(starts, 2);
   assert.equal(errors.length, 1);
   assert.equal(timers.length, 1);
+});
+
+test("direct-parent check is unreferenced and shuts down once when correlation changes", () => {
+  let parentPid = 42;
+  let callback;
+  let cleared = 0;
+  let shutdowns = 0;
+  const timer = { unrefCalled: false, unref() { this.unrefCalled = true; } };
+  const stop = scheduleHostParentCheck(42, () => { shutdowns += 1; }, {
+    readParentPid: () => parentPid,
+    setInterval(next, delayMs) {
+      assert.equal(delayMs, 5_000);
+      callback = next;
+      return timer;
+    },
+    clearInterval(value) {
+      assert.equal(value, timer);
+      cleared += 1;
+    },
+  });
+
+  assert.equal(timer.unrefCalled, true);
+  callback();
+  assert.equal(shutdowns, 0);
+  parentPid = 7;
+  callback();
+  callback();
+  stop();
+  assert.equal(shutdowns, 1);
+  assert.equal(cleared, 1);
 });
 
 test("direct-run detection handles URL-encoded paths", () => {

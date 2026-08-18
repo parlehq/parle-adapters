@@ -9,6 +9,8 @@ import {
   processClientInstanceId,
   isLiveRuntimeSnapshot,
   pruneRuntimeFiles,
+  responsiveDeliveryRuntimeDirPath,
+  responsiveDeliveryRuntimeFilePath,
   runtimeDirPath,
   runtimeFilePath,
 } from "../dist/index.js";
@@ -60,6 +62,36 @@ function deadPid() {
   const child = spawnSync(process.execPath, ["-e", ""], { encoding: "utf8" });
   return child.pid;
 }
+
+test("client construction prunes shared runtime state even without publication", () => {
+  const cwd = tempCwd();
+  try {
+    const now = new Date();
+    const gone = deadPid();
+    const runtimeDir = runtimeDirPath(cwd);
+    const responsiveDir = responsiveDeliveryRuntimeDirPath(cwd);
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    mkdirSync(responsiveDir, { recursive: true, mode: 0o700 });
+    writeFileSync(runtimeFilePath(cwd, gone), JSON.stringify(snapshotFor(gone, { expiresAt: new Date(now.getTime() - 1).toISOString() })), { mode: 0o600 });
+    writeFileSync(responsiveDeliveryRuntimeFilePath(cwd, gone), JSON.stringify({
+      schemaVersion: 1,
+      pid: gone,
+      processStartedAt: new Date(now.getTime() - 60_000).toISOString(),
+      publisher: { name: "test", clientInstanceId: "dead-instance" },
+      target: { agentSessionId: "dead-session" },
+      state: "watching",
+      updatedAt: new Date(now.getTime() - 60_000).toISOString(),
+      expiresAt: new Date(now.getTime() - 1).toISOString(),
+    }), { mode: 0o600 });
+
+    new ParleAgentClient({ cwd, env: ENV, now: () => now });
+
+    assert.equal(existsSync(runtimeFilePath(cwd, gone)), false);
+    assert.equal(existsSync(responsiveDeliveryRuntimeFilePath(cwd, gone)), false);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test("concurrent bootstrap callers converge on a single session mint", async () => {
   const counters = {};

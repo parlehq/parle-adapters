@@ -7,8 +7,11 @@ import {
   mkdirSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
+  unlinkSync,
+  type Stats,
   symlinkSync,
 } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -27,6 +30,7 @@ import {
   type SessionCommitPlan,
   ResponsiveDeliveryRecorder,
   processStartedAtIso,
+  readOwnerOnlyTextFile,
 } from "@parlehq/agent-client";
 
 const MAX_PENDING = 100;
@@ -99,6 +103,125 @@ export function processIsAlive(pid: number): boolean {
   } catch (error: any) {
     if (error?.code === "ESRCH") return false;
     return true;
+  }
+}
+
+const CLEANUP_INSPECTION_LIMIT = 64;
+const cleanupCursors = new Map<string, number>();
+
+type HookBridgeArtifactDeps = {
+  lstat?: typeof lstatSync;
+  remove?: typeof unlinkSync;
+  processIsAlive?: (pid: number) => boolean;
+};
+
+type HookBridgeCleanupDeps = HookBridgeArtifactDeps & {
+  readdir?: typeof readdirSync;
+  rmdir?: typeof rmdirSync;
+};
+
+function cleanupCandidates(dir: string, names: string[], limit: number): string[] {
+  if (!names.length || limit <= 0) return [];
+  names.sort();
+  const start = (cleanupCursors.get(dir) ?? 0) % names.length;
+  const count = Math.min(limit, names.length);
+  const selected = Array.from({ length: count }, (_, offset) => names[(start + offset) % names.length]);
+  cleanupCursors.set(dir, (start + count) % names.length);
+  return selected;
+}
+
+function artifactPid(name: string, nested: boolean): number | undefined {
+  const ordinary = name.match(nested
+    ? /^(\d+)\.(?:sock|runtime\.json)(?:\.tmp)?$/
+    : /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp(?:-[0-9a-f-]{36})?)?$/i);
+  if (ordinary) return Number(ordinary[1]);
+  const atomic = name.match(/^\.(\d+)\.runtime\.json\.(\d+)\.[0-9a-f-]{36}\.tmp$/i);
+  return atomic && atomic[1] === atomic[2] ? Number(atomic[1]) : undefined;
+}
+
+function safeArtifact(stat: Stats, name: string): boolean {
+  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return false;
+  if (name.includes(".node")) return stat.isSymbolicLink();
+  return (stat.isFile() || stat.isSocket()) && (process.platform === "win32" || (stat.mode & 0o077) === 0);
+}
+
+function validRuntimeDescriptor(path: string, name: string, pid: number, hostParentPid?: number): boolean {
+  if (!name.endsWith(".runtime.json")) return true;
+  try {
+    const value = JSON.parse(readOwnerOnlyTextFile(path, { label: "Parle hook bridge runtime descriptor", maxBytes: 16 * 1024 }));
+    return value?.pid === pid && (hostParentPid === undefined ? value.hostParentPid === undefined : value.hostParentPid === hostParentPid);
+  } catch {
+    return false;
+  }
+}
+
+export function removeDeadHookBridgeArtifact(path: string, name: string, nested = false, hostParentPid?: number, deps: HookBridgeArtifactDeps = {}): boolean {
+  const pid = artifactPid(name, nested);
+  if (!Number.isSafeInteger(pid) || pid! <= 1 || pid === process.pid) return false;
+  const inspect = deps.lstat || lstatSync;
+  const alive = deps.processIsAlive || processIsAlive;
+  try {
+    const before = inspect(path);
+    if (!safeArtifact(before, name) || !validRuntimeDescriptor(path, name, pid!, hostParentPid) || alive(pid!)) return false;
+    const after = inspect(path);
+    if (before.dev !== after.dev || before.ino !== after.ino || alive(pid!)) return false;
+    (deps.remove || unlinkSync)(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeDirectory(stat: Stats): boolean {
+  return stat.isDirectory()
+    && !stat.isSymbolicLink()
+    && (typeof process.getuid !== "function" || stat.uid === process.getuid())
+    && (process.platform === "win32" || (stat.mode & 0o077) === 0);
+}
+
+/** Best-effort, bounded cleanup for artifacts owned by definitively dead processes in one scope. */
+export function cleanupHookBridgeArtifacts(stateDir: string, deps: HookBridgeCleanupDeps = {}): void {
+  const read = deps.readdir || readdirSync;
+  const inspect = deps.lstat || lstatSync;
+  const removeDir = deps.rmdir || rmdirSync;
+  const alive = deps.processIsAlive || processIsAlive;
+  let inspected = 0;
+  let stateStat: Stats;
+  let names: string[];
+  try {
+    stateStat = inspect(stateDir);
+    if (!safeDirectory(stateStat)) return;
+    names = read(stateDir);
+  } catch {
+    return;
+  }
+
+  const removeArtifact = (dir: string, name: string, nested: boolean, hostParentPid?: number) => {
+    if (inspected >= CLEANUP_INSPECTION_LIMIT) return;
+    if (artifactPid(name, nested) === undefined) return;
+    inspected += 1;
+    removeDeadHookBridgeArtifact(join(dir, name), name, nested, hostParentPid, deps);
+  };
+
+  for (const name of cleanupCandidates(stateDir, names, CLEANUP_INSPECTION_LIMIT)) {
+    if (inspected >= CLEANUP_INSPECTION_LIMIT) break;
+    const hostPid = /^\d+$/.test(name) ? Number(name) : undefined;
+    if (!hostPid) {
+      removeArtifact(stateDir, name, false);
+      continue;
+    }
+    inspected += 1;
+    const hostDir = join(stateDir, name);
+    try {
+      if (!safeDirectory(inspect(hostDir))) continue;
+      const children = read(hostDir);
+      for (const child of cleanupCandidates(hostDir, children, CLEANUP_INSPECTION_LIMIT - inspected)) {
+        removeArtifact(hostDir, child, true, hostPid);
+      }
+      if (!alive(hostPid)) {
+        try { removeDir(hostDir); } catch { /* Non-empty or raced directories remain. */ }
+      }
+    } catch { /* One raced or unsafe host directory must not block startup. */ }
   }
 }
 
@@ -306,6 +429,7 @@ export class HookDeliveryBridge {
 
   private async listen(): Promise<void> {
     this.assertCurrentHostParent();
+    cleanupHookBridgeArtifacts(hookBridgeStateDir(this.scope));
     const path = hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid);
     const stateDir = hookBridgeStateDir(this.scope);
     const dir = dirname(path);
@@ -319,7 +443,6 @@ export class HookDeliveryBridge {
       const after = lstatSync(candidate);
       if ((after.mode & 0o077) !== 0) throw new Error(`Parle hook bridge directory is not owner-only: ${candidate}`);
     }
-    if (this.hostParentPid === undefined) this.removeDeadRuntimeArtifacts(stateDir);
     this.removeOwnRuntimeArtifacts();
     this.publishRuntimeArtifacts();
     try {
@@ -373,15 +496,6 @@ export class HookDeliveryBridge {
       `${hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid)}.tmp`,
       `${hookBridgeRuntimeHandlePath(this.scope)}.tmp`,
     ]) rmSync(path, { force: true });
-  }
-
-  private removeDeadRuntimeArtifacts(dir: string): void {
-    const stalePattern = /^(\d+)\.(?:sock|node|runtime\.json)(?:\.tmp)?$/;
-    for (const name of readdirSync(dir)) {
-      const match = name.match(stalePattern);
-      if (!match || processIsAlive(Number(match[1]))) continue;
-      rmSync(join(dir, name), { force: true });
-    }
   }
 
   private assertCurrentHostParent(): void {

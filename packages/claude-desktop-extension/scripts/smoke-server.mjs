@@ -35,6 +35,7 @@ try {
     "parle_inbox",
     "parle_login",
     "parle_mint_principal_invite",
+    "parle_onboard",
     "parle_owned_alias_delivery",
     "parle_owned_alias_release",
     "parle_read",

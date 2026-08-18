@@ -23,6 +23,11 @@ function bridgeStateDir(scope, home = homedir()) {
   return join(home, ".local", "state", "parle", "hook-bridge", key);
 }
 
+function cleanupFixture(cwd) {
+  rmSync(cwd, { recursive: true, force: true });
+  rmSync(bridgeStateDir(cwd), { recursive: true, force: true });
+}
+
 async function startBridge(cwd, agentSessionId) {
   const stateDir = bridgeStateDir(cwd);
   const hostDir = join(stateDir, String(process.pid));
@@ -103,11 +108,11 @@ test("watch waits on the matching local hook bridge and opens no network watcher
     assert.match(watch.out(), /responsive delivery queued/);
   } finally {
     await bridge.close();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
-test("watch times out a stale listener and reaches the matching nested bridge", async () => {
+test("watch reaches the matching nested bridge without probing a stale flat listener", async () => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "parle-local-watch-stale-")));
   const session = "019f2946-aef5-77ad-a41d-747ce0fd6a12";
   const stateDir = bridgeStateDir(cwd);
@@ -128,15 +133,15 @@ test("watch times out a stale listener and reaches the matching nested bridge", 
   const bridge = await startBridge(cwd, session);
   try {
     const watch = runWatch(cwd, [session]);
-    await waitFor(() => bridge.actions.some((action) => action.action === "wait"), "watch did not continue after the stale listener timeout");
-    assert.equal(staleAccepted, true);
+    await waitFor(() => bridge.actions.some((action) => action.action === "wait"), "watch did not reach the matching nested bridge");
+    assert.equal(staleAccepted, false, "current nested candidates take precedence over legacy flat sockets");
     bridge.ready();
     assert.equal(await watch.exited, 0, watch.err());
   } finally {
     for (const socket of staleSockets) socket.destroy();
     await new Promise((resolveClose) => stale.close(resolveClose));
     await bridge.close();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -150,7 +155,7 @@ test("watch fails closed when no bridge owns the requested session", async () =>
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status"]);
   } finally {
     await bridge.close();
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
 
@@ -163,6 +168,6 @@ test("watch rejects obsolete cursor and profile argument forms", async () => {
       assert.match(watch.err(), /Usage: parle-watch\.sh <agent_session_id>/);
     }
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    cleanupFixture(cwd);
   }
 });
