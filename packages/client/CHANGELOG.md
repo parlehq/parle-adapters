@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.45 (2026-08-18)
+
+- Publish the complete #156 room-recovery diagnostic fix under a unique client version.
+
 ## 0.8.44 (2026-08-18)
 
 - Track current responsive-delivery room errors by recovery domain and timestamp, clearing them only after matching success (#156).

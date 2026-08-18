@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.52 (2026-08-18)
+
+- Publish the complete #156 room-recovery diagnostic fix under a unique MCP version.
+
 ## 0.7.51 (2026-08-18)
 
 - Attribute active hook-bridge diagnostics to bridge, controller, or room state while preserving lifecycle error kinds (#156).

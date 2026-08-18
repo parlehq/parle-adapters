@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.53 (2026-08-18)
+
+- Publish the complete #156 room-recovery diagnostic fix under a unique Codex plugin version.
+
 ## 0.6.52 (2026-08-18)
 
 - Clear recovered room diagnostics without masking active failures in other responsive-delivery domains (#156).

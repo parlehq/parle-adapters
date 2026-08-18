@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.29 (2026-08-18)
+
+- Refresh the bundled client with the complete #156 room-recovery diagnostic fix.
+
 ## 0.7.28 (2026-08-18)
 
 - Bundle timestamped responsive-delivery room diagnostics that clear only after same-domain recovery (#156).

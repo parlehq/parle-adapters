@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.52 (2026-08-18)
+
+- Publish the complete #156 room-recovery diagnostic fix under a unique Desktop extension version.
+
 ## 0.8.51 (2026-08-18)
 
 - Bundle attributed, timestamped responsive-delivery diagnostics from the shared MCP runtime (#156).
