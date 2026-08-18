@@ -122,7 +122,7 @@ Only stages that a surface directly observes may be claimed. Route issuance is n
 
 ## Shared and isolated state
 
-Two sessions started from the same directory may share installed bytes, plugin caches, a profile catalog, selected credentials, durable agent identity, rooms, and cwd-scoped snapshot directories. They still own separate host processes, adapter processes, client instances, live agent sessions, participants, cursors, wake streams, controllers, queues, leases, and dedupe state.
+Two sessions started from the same directory may share installed bytes, plugin caches, a profile catalog, selected credentials, durable agent identity, rooms, and cwd-scoped snapshot directories. Host and MCP process multiplicity is host-owned. When sessions use separate adapter processes, each process owns its client instance, live agent session, participants, cursors, wake stream, controller, queue, leases, and dedupe state. A shared adapter process shares that process-local state rather than isolating it by cwd.
 
 Bridge discovery differs by host:
 
