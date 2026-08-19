@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.53";
+const PI_EXTENSION_VERSION = "0.7.54";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -1447,8 +1447,11 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       watcherLoopRunning = false;
       setStatus(ctx, cfg);
       if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
-        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
-        await watcherSleep(retryDelay, signal).catch(() => undefined);
+        let retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
+        while (retryDelay > 0 && !signal.aborted) {
+          await watcherSleep(retryDelay, signal).catch(() => undefined);
+          retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : 0;
+        }
         if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher() && !shutdownRequested && !lifecycleEnded) {
           startWatcher(pi, ctx, cfg);
         }
