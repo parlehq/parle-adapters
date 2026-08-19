@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.55 (2026-08-19)
+
+- Add content-free responsive-delivery stage evidence through the shared MCP bridge (#880).
+
 ## 0.6.54 (2026-08-18)
 
 - Expose additive responsive-delivery acknowledgement evidence while preserving fetch liveness (#157).

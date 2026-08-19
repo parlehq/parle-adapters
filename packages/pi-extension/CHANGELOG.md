@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.55 (2026-08-19)
+
+- Refresh the bundled client with responsive-delivery stage correlation (#880).
+
 ## 0.7.54 (2026-08-19)
 
 - Preserve autonomous startup bootstrap retries when a timer wakes just before the server retry deadline (#139).

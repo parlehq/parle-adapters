@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.47 (2026-08-19)
+
+- Emit content-free wake, trigger, fetch, handling, and acknowledgement correlation for responsive-delivery diagnosis (#880).
+
 ## 0.8.46 (2026-08-18)
 
 - Distinguish wake, fetch, handling, and acknowledgement progress while preserving liveness and adding `lastAckAt` evidence (#157).

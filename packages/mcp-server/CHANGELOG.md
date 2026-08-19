@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.54 (2026-08-19)
+
+- Log bounded responsive-delivery stages through bridge queue readiness without message content (#880).
+
 ## 0.7.53 (2026-08-18)
 
 - Publish acknowledgement-backed `lastAckAt` without mistaking fetch liveness for completed delivery (#157).

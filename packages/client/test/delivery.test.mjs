@@ -107,7 +107,13 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta",
     }
     if (path.includes("/responsive-delivery")) {
       const roomId = path.split("/")[3];
-      return json({ delivery: { cursor_scope: "session" }, messages: queues.get(roomId) || [] });
+      const messages = queues.get(roomId) || [];
+      return json({
+        delivery: { cursor_scope: "session" },
+        scanned_max: messages.reduce((max, row) => Math.max(max, row.seq || 0), 0),
+        held_backlog: { first_held_seq: 0, held_count: 0 },
+        messages,
+      });
     }
     if (path.endsWith("/end")) return new Response(null, { status: 204 });
     throw new Error(`unexpected ${path}`);
@@ -159,12 +165,15 @@ test("an empty fetch reports liveness without handling or acknowledgement", asyn
   const progress = [];
   const controller = new ResponsiveDeliveryController(h.client, {
     handler: async () => "handled",
-    onProgress: (kind) => progress.push(kind),
+    onProgress: (kind, detail) => progress.push([kind, detail]),
   });
   try {
     await h.client.connect();
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_success"]);
+    assert.deepEqual(progress, [
+      ["fetch_started", { roomId: ALPHA, trigger: "test" }],
+      ["fetch_success", { roomId: ALPHA, trigger: "test", rowCount: 0, scannedMax: 0, firstHeldSeq: 0, heldCount: 0 }],
+    ]);
   } finally {
     await controller.stop();
     h.cleanup();
@@ -215,14 +224,14 @@ test("handler and acknowledgement failures stop at the last completed stage", as
   try {
     await client.connect();
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_success"], "handler failure emits no later stage");
+    assert.deepEqual(progress, ["fetch_started", "fetch_success"], "handler failure emits no later stage");
 
     handlerFails = false;
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_success", "fetch_success", "handling_complete"], "ack failure stops after handling");
+    assert.deepEqual(progress, ["fetch_started", "fetch_success", "fetch_started", "fetch_success", "handling_complete"], "ack failure stops after handling");
 
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_success", "fetch_success", "handling_complete", "fetch_success", "ack_success"], "ack retry never reruns handling");
+    assert.deepEqual(progress, ["fetch_started", "fetch_success", "fetch_started", "fetch_success", "handling_complete", "fetch_started", "fetch_success", "ack_success"], "ack retry never reruns handling");
   } finally {
     await controller.stop();
     h.cleanup();
@@ -284,11 +293,13 @@ test("poison acknowledgement does not claim successful handling", async () => {
 test("a wake hint drains only the named room and acknowledges after handling", async () => {
   const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "a1" }], [BETA]: [{ seq: 1, event_id: "b1" }] } });
   const handled = [];
+  const progress = [];
   let opened = false;
   const controller = new ResponsiveDeliveryController(h.client, {
     handler: async ({ roomId, roomHandle, profile, message }) => { handled.push([roomId, roomHandle, profile, message.event_id]); return "handled"; },
     reconnectDelayMs: 5,
     onWakeOpen: () => { opened = true; },
+    onProgress: (kind, detail) => progress.push([kind, detail]),
   });
   try {
     await h.client.connect();
@@ -300,9 +311,14 @@ test("a wake hint drains only the named room and acknowledges after handling", a
     // A later hint drains only the room it names.
     h.queues.set(ALPHA, [{ seq: 2, event_id: "a2" }]);
     h.queues.set(BETA, [{ seq: 2, event_id: "b2" }]);
+    const beforeHint = progress.length;
     h.wake({ room_id: BETA });
     await eventually(() => handled.some(([, , , id]) => id === "b2"));
     assert.equal(handled.some(([, , , id]) => id === "a2"), false, "an unhinted room is not drained");
+    assert.deepEqual(progress.slice(beforeHint, beforeHint + 2), [
+      ["wake_hint", { roomId: BETA }],
+      ["fetch_started", { roomId: BETA, trigger: "wake_hint" }],
+    ], "a hint names the fetch it caused without timing inference");
     // Each ack authenticates with its own room's bearer.
     assert.deepEqual(h.acks.find(([room]) => room === ALPHA)?.[2], "Bearer parle_agt_alpha");
     assert.deepEqual(h.acks.find(([room]) => room === BETA)?.[2], "Bearer parle_agt_beta");

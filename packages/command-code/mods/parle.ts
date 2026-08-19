@@ -4664,7 +4664,7 @@ var ResponsiveDeliveryController = class {
   // Retrying one of these re-acknowledges only; the handler never re-runs.
   handled = /* @__PURE__ */ new Map();
   poisonedKeys = /* @__PURE__ */ new Set();
-  rerunRequested = /* @__PURE__ */ new Set();
+  rerunRequested = /* @__PURE__ */ new Map();
   stats = /* @__PURE__ */ new Map();
   // Rows a host accepted for later effective handling. They are never
   // re-offered to the handler and never acknowledged until the host reports
@@ -4724,7 +4724,7 @@ var ResponsiveDeliveryController = class {
     this.unsubscribeRevision = this.client.onSessionRevision?.(() => {
       this.wakeAbort?.abort();
     });
-    await this.drainAll();
+    await this.drainAll("startup");
     const loop = this.watchLoop();
     this.loop = loop;
     void loop.catch((error51) => {
@@ -4754,7 +4754,7 @@ var ResponsiveDeliveryController = class {
     const deferred = this.deferred.get(key);
     if (deferred && !deferred.completionReported) {
       deferred.completionReported = true;
-      this.reportProgress("handling_complete");
+      this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
@@ -4763,7 +4763,7 @@ var ResponsiveDeliveryController = class {
       return false;
     }
     this.clearRoomError(roomId, "ack");
-    this.reportProgress("ack_success");
+    this.reportProgress("ack_success", { roomId, eventId: message.event_id, seq: message.seq });
     this.deferred.delete(key);
     this.handled.delete(key);
     this.remember(key);
@@ -4779,7 +4779,7 @@ var ResponsiveDeliveryController = class {
     const room = this.configuredRooms().find((entry) => entry.roomId === roomId);
     if (!room)
       return Promise.resolve();
-    return this.drainRoom(room);
+    return this.drainRoom(room, "test");
   }
   configuredRooms() {
     return this.client.runtime.rooms || [];
@@ -4805,7 +4805,7 @@ var ResponsiveDeliveryController = class {
             throw new Error("Parle wake stream has no body");
           const cancelRead = () => void reader.cancel().catch(() => void 0);
           wakeAbort.signal.addEventListener("abort", cancelRead, { once: true });
-          await this.drainAll();
+          await this.drainAll("wake_open");
           if (wakeAbort.signal.aborted)
             continue;
           this.lastError = void 0;
@@ -4865,7 +4865,7 @@ var ResponsiveDeliveryController = class {
       }
       if (signal.aborted)
         return;
-      await this.drainAll();
+      await this.drainAll("fallback");
     }
   }
   applyWakeConfig(data) {
@@ -4901,22 +4901,23 @@ var ResponsiveDeliveryController = class {
     } catch {
     }
     if (!hinted)
-      return this.drainAll();
+      return this.drainAll("wake_open");
     const room = this.configuredRooms().find((entry) => entry.roomId === hinted);
     if (!room) {
       this.ignoredWakeHints += 1;
       this.lastIgnoredWakeRoomId = hinted;
       return;
     }
-    await this.drainDeliverable(room);
+    this.reportProgress("wake_hint", { roomId: hinted });
+    await this.drainDeliverable(room, "wake_hint");
   }
-  async drainAll() {
-    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room).catch(() => void 0)));
+  async drainAll(trigger) {
+    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room, trigger).catch(() => void 0)));
   }
   // A degraded room is recovered before it is drained. Recovery reconciles
   // room entry and re-reads the watermark; a room that cannot be recovered is
   // left degraded with its error recorded rather than silently skipped.
-  async drainDeliverable(room) {
+  async drainDeliverable(room, trigger) {
     if (room.state !== "ready") {
       const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
       if (!recovered) {
@@ -4927,27 +4928,29 @@ var ResponsiveDeliveryController = class {
     }
     this.clearRoomError(room.roomId, "recover");
     const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
-    await this.drainRoom(current);
+    await this.drainRoom(current, trigger);
   }
   // Coalescing must not swallow a requested drain. Joining an in-flight drain
   // would lose a wake, reconnect, revision, or fallback pass because the
   // in-flight drain may already have read past the new rows. One rerun is queued
   // per room instead.
-  drainRoom(room) {
+  drainRoom(room, trigger) {
     const existing = this.drainInFlight.get(room.roomId);
     if (existing) {
-      this.rerunRequested.add(room.roomId);
+      this.rerunRequested.set(room.roomId, trigger);
       return existing;
     }
     const run = (async () => {
       try {
-        await this.doDrainRoom(room);
+        await this.doDrainRoom(room, trigger);
       } finally {
         this.drainInFlight.delete(room.roomId);
       }
-      if (this.rerunRequested.delete(room.roomId) && !this.abort.signal.aborted) {
+      const rerunTrigger = this.rerunRequested.get(room.roomId);
+      this.rerunRequested.delete(room.roomId);
+      if (rerunTrigger && !this.abort.signal.aborted) {
         const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
-        await this.drainRoom(current);
+        await this.drainRoom(current, rerunTrigger);
       }
     })();
     this.drainInFlight.set(room.roomId, run);
@@ -4972,21 +4975,30 @@ var ResponsiveDeliveryController = class {
     if (stat.lastError?.domain === domain2)
       stat.lastError = void 0;
   }
-  reportProgress(kind) {
+  reportProgress(kind, detail) {
     try {
-      this.onProgress?.(kind);
+      this.onProgress?.(kind, detail);
     } catch {
     }
   }
-  async doDrainRoom(room) {
+  async doDrainRoom(room, trigger) {
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted)
         return;
       let delivery;
       try {
+        this.reportProgress("fetch_started", { roomId: room.roomId, trigger });
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
         this.clearRoomError(room.roomId, "drain");
-        this.reportProgress("fetch_success");
+        const held = delivery?.held_backlog;
+        this.reportProgress("fetch_success", {
+          roomId: room.roomId,
+          trigger,
+          rowCount: Array.isArray(delivery?.messages) ? delivery.messages.length : 0,
+          scannedMax: Number.isSafeInteger(delivery?.scanned_max) ? delivery.scanned_max : 0,
+          firstHeldSeq: Number.isSafeInteger(held?.first_held_seq) ? held.first_held_seq : 0,
+          heldCount: Number.isSafeInteger(held?.held_count) ? held.held_count : 0
+        });
       } catch (error51) {
         this.setRoomError(room.roomId, "drain", error51);
         return;
@@ -5037,7 +5049,7 @@ var ResponsiveDeliveryController = class {
           this.deferred.set(key, { roomId: room.roomId, message });
           return true;
         }
-        this.reportProgress("handling_complete");
+        this.reportProgress("handling_complete", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
       } catch (error51) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
@@ -5058,7 +5070,7 @@ var ResponsiveDeliveryController = class {
       return false;
     }
     this.clearRoomError(room.roomId, "ack");
-    this.reportProgress("ack_success");
+    this.reportProgress("ack_success", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
     this.handled.delete(key);
     this.remember(key);
     if (outcome === "intentionally_skipped")
@@ -22683,7 +22695,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.30";
+var ADAPTER_VERSION = "0.7.31";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
@@ -22722,7 +22734,7 @@ var NativeResponsiveDelivery = class {
         const at = (/* @__PURE__ */ new Date()).toISOString();
         this.publish("watching", {
           ...["wake_open", "fetch_success"].includes(kind) ? { lastSuccessAt: at } : {},
-          ...kind === "wake_open" ? { lastWakeAt: at } : {},
+          ...kind === "wake_hint" ? { lastWakeAt: at } : {},
           ...kind === "ack_success" ? { lastAckAt: at } : {}
         });
       },

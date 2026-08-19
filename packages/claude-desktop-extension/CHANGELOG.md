@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.54 (2026-08-19)
+
+- Add content-free responsive-delivery stage evidence through hook bridge queue readiness (#880).
+
 ## 0.8.53 (2026-08-18)
 
 - Expose additive responsive-delivery acknowledgement evidence while preserving fetch liveness (#157).

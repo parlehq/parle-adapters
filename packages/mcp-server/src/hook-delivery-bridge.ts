@@ -268,12 +268,13 @@ export class HookDeliveryBridge {
     this.controller = new ResponsiveDeliveryController(client, {
       handler: (input) => this.handleDelivery(input),
       maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
-      onProgress: (kind) => {
+      onProgress: (kind, detail) => {
         const at = new Date().toISOString();
+        console.error(JSON.stringify({ event: "parle_responsive_delivery", stage: kind, at, ...detail }));
         this.publishEvidence("watching", {
           expectedProgressMs: 570_000,
           ...(["wake_open", "fetch_success"].includes(kind) ? { lastSuccessAt: at } : {}),
-          ...(kind === "wake_open" ? { lastWakeAt: at } : {}),
+          ...(kind === "wake_hint" ? { lastWakeAt: at } : {}),
           ...(kind === "ack_success" ? { lastAckAt: at } : {}),
         });
       },
@@ -440,6 +441,14 @@ export class HookDeliveryBridge {
       agentSessionId: String(runtime.agentSessionId || ""),
     });
     this.queuedKeys.add(key);
+    console.error(JSON.stringify({
+      event: "parle_responsive_delivery",
+      stage: "bridge_queue_ready",
+      at: new Date().toISOString(),
+      roomId: input.roomId,
+      eventId: input.message.event_id,
+      seq: input.message.seq,
+    }));
     this.finishWaiter({ ok: true, ready: true });
   }
 
