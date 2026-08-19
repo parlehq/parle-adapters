@@ -7264,7 +7264,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.53";
+var PI_EXTENSION_VERSION = "0.7.54";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -8301,8 +8301,11 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
       watcherLoopRunning = false;
       setStatus(ctx, cfg);
       if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
-        const retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
-        await watcherSleep(retryDelay, signal).catch(() => void 0);
+        let retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
+        while (retryDelay > 0 && !signal.aborted) {
+          await watcherSleep(retryDelay, signal).catch(() => void 0);
+          retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : 0;
+        }
         if (!signal.aborted && runId === activeWatcherRunId && !maybeParkRateLimitedWatcher() && !shutdownRequested && !lifecycleEnded) {
           startWatcher(pi, ctx, cfg);
         }

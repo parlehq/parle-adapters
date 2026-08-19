@@ -521,6 +521,12 @@ test("watcher bootstrap failure records status instead of escaping", async () =>
 test("watcher autonomously retries a retryable startup bootstrap failure", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\n");
   let sessionCreates = 0;
+  let wall = 1_000_000;
+  let releaseRetry;
+  let retrySleepStarted;
+  let unsubscribe;
+  let timeout;
+  const retrySleep = new Promise((resolve) => { retrySleepStarted = resolve; });
   globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) {
@@ -536,12 +542,51 @@ test("watcher autonomously retries a retryable startup bootstrap failure", async
     if (u.endsWith("/v/agent/wake")) return new Response(new ReadableStream({ start() {} }), { status: 200 });
     throw new Error(`unexpected ${u}`);
   };
+  __testing.setWatcherTiming({
+    wallNowMs: () => wall,
+    sleep(ms, signal) {
+      if (releaseRetry) {
+        wall += ms;
+        return Promise.resolve();
+      }
+      assert.equal(ms, 20);
+      retrySleepStarted();
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(new Error("aborted"));
+        signal?.addEventListener("abort", onAbort, { once: true });
+        releaseRetry = () => {
+          signal?.removeEventListener("abort", onAbort);
+          wall += 19;
+          resolve();
+        };
+      });
+    },
+  });
   const ctx = { cwd, ui: { setStatus() {} } };
-  __testing.startWatcher({ sendUserMessage() {} }, ctx, __testing.resolveConfig(cwd));
-  await eventually(() => __testing.runtimeState().bootstrapped === true);
-  assert.equal(sessionCreates, 2);
-  assert.equal(__testing.runtimeState().agentSessionId, "as-auto-retry");
-  __testing.resetRuntime();
+  try {
+    __testing.startWatcher({ sendUserMessage() {} }, ctx, __testing.resolveConfig(cwd));
+    await retrySleep;
+    assert.equal(sessionCreates, 1);
+    assert.equal(__testing.runtimeState().bootstrapped, false);
+    const bootstrapCommitted = new Promise((resolve) => {
+      unsubscribe = __testing.agentClient().onSessionRevision((event) => {
+        if (event.reason === "bootstrap") resolve();
+      });
+    });
+    releaseRetry();
+    await Promise.race([
+      bootstrapCommitted,
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("bootstrap retry did not commit")), 250); }),
+    ]);
+    assert.equal(sessionCreates, 2);
+    assert.equal(__testing.runtimeState().bootstrapped, true);
+    assert.equal(__testing.runtimeState().agentSessionId, "as-auto-retry");
+  } finally {
+    clearTimeout(timeout);
+    unsubscribe?.();
+    __testing.resetRuntime();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 });
 
 function installWatcherFailureHarness(wakeResponse) {
@@ -925,7 +970,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.53" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.54" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1611,7 +1656,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.53");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.54");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
