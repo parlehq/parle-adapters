@@ -143,7 +143,7 @@ Pi and Command Code remain native because they have capabilities MCP v1 does not
 - prompt injection into the active session
 - status/footer behavior
 
-MCP wrappers are better for hosts that need tool access and simple installation. Desktop and generic MCP hosts remain pull-only. Claude Code and Codex add responsive delivery only because they expose trusted lifecycle hooks; their MCP children reuse the shared controller and hook bridge rather than recreating Pi's native path. A future host must have a real injection boundary and use shared wake, drain, and acknowledgement primitives rather than polling `waitSeconds`.
+MCP wrappers are better for hosts that need tool access and simple installation. Desktop and generic MCP hosts remain pull-only. Claude Code and Codex add responsive delivery only because they expose trusted lifecycle hooks; their MCP children reuse the shared controller and hook bridge rather than recreating Pi's native path. A future host must have a real injection boundary. It must not poll `waitSeconds` for recurring delivery. It must open `/v/agent/wake` SSE, fetch `/v/rooms/{roomID}/responsive-delivery?wait=0` after each wake hint, then acknowledge through `POST /responsive-delivery/ack`.
 
 ## Future adapter routing rule
 
