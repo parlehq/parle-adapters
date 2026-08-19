@@ -3,7 +3,7 @@ import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.30";
+const ADAPTER_VERSION = "0.7.31";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 
@@ -47,7 +47,7 @@ export class NativeResponsiveDelivery {
         const at = new Date().toISOString();
         this.publish("watching", {
           ...(["wake_open", "fetch_success"].includes(kind) ? { lastSuccessAt: at } : {}),
-          ...(kind === "wake_open" ? { lastWakeAt: at } : {}),
+          ...(kind === "wake_hint" ? { lastWakeAt: at } : {}),
           ...(kind === "ack_success" ? { lastAckAt: at } : {}),
         });
       },

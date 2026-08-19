@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.31 (2026-08-19)
+
+- Distinguish wake hints from stream opens and bundle responsive-delivery stage correlation (#880).
+
 ## 0.7.30 (2026-08-18)
 
 - Separate delivery-loop liveness from acknowledgement evidence in native responsive delivery (#157).
