@@ -45,6 +45,30 @@ test("responsive recorder normalizes progress leases, recovery, and tombstones",
   assert.equal(resolveResponsiveDelivery([terminal], "agent-a", { now: now(), inspectPid: () => "dead" }).state, "terminal");
 });
 
+test("acknowledgement evidence survives later liveness publications and file round trips", () => {
+  ms = Date.parse("2026-01-01T01:00:00Z");
+  const cwd = mkdtempSync(join(tmpdir(), "parle-responsive-ack-"));
+  try {
+    const recorder = new ResponsiveDeliveryRecorder({ ...base(15), cwd, persist: true, now });
+    const first = recorder.watching({ expectedProgressMs: 570_000, lastSuccessAt: now().toISOString() });
+    ms += 300_000;
+    const ackAt = now().toISOString();
+    recorder.watching({ expectedProgressMs: 570_000, lastAckAt: ackAt });
+    ms += 300_000;
+    const refreshed = recorder.watching({ expectedProgressMs: 570_000, lastSuccessAt: now().toISOString() });
+
+    assert.equal(refreshed.lastAckAt, ackAt, "later fetch liveness retains the acknowledgement clock");
+    assert.ok(Date.parse(refreshed.expiresAt) > Date.parse(first.expiresAt), "repeated empty fetches renew the lease");
+    assert.equal(resolveResponsiveDelivery([refreshed], "agent-a", { now: new Date(Date.parse(first.expiresAt) + 1), inspectPid: live }).state, "watching");
+
+    const [parsed] = readResponsiveDeliverySnapshots(cwd);
+    assert.equal(parsed.lastAckAt, ackAt);
+    assert.equal(resolveResponsiveDelivery([parsed], "agent-a", { now: now(), inspectPid: live }).lastAckAt, ackAt);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("resolver expires wedged active owners and handles PID evidence conservatively", () => {
   ms = Date.parse("2026-01-01T01:00:00Z");
   const snapshot = active();

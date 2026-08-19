@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.46 (2026-08-18)
+
+- Distinguish wake, fetch, handling, and acknowledgement progress while preserving liveness and adding `lastAckAt` evidence (#157).
+
 ## 0.8.45 (2026-08-18)
 
 - Publish the complete #156 room-recovery diagnostic fix under a unique client version.

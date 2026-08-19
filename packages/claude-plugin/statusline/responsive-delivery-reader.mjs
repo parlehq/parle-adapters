@@ -75,6 +75,7 @@ export function buildResponsiveDeliverySnapshot(base, state, event = {}, now = n
     return cleanSnapshot({
         ...base, schemaVersion: 1, state, updatedAt, expiresAt,
         ...(event.lastSuccessAt ? { lastSuccessAt: event.lastSuccessAt } : {}),
+        ...(event.lastAckAt ? { lastAckAt: event.lastAckAt } : {}),
         ...(event.lastWakeAt ? { lastWakeAt: event.lastWakeAt } : {}),
         ...(event.retryAt ? { retryAt: event.retryAt } : {}),
         ...(message ? { lastError: { message, at: errorAt } } : {}),
@@ -119,7 +120,7 @@ export function parseResponsiveDeliverySnapshot(value) {
         target: { agentSessionId, ...(string(row.target.participantId) ? { participantId: string(row.target.participantId) } : {}), ...(string(row.target.roomId) ? { roomId: string(row.target.roomId) } : {}) },
         state: row.state, updatedAt: row.updatedAt, expiresAt: row.expiresAt,
     };
-    for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"])
+    for (const key of ["lastSuccessAt", "lastAckAt", "lastWakeAt", "retryAt"])
         if (ISO(row[key]))
             snapshot[key] = row[key];
     if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string")
@@ -183,7 +184,7 @@ function isActiveLive(snapshot, now, inspectPid) {
 function result(state, snapshot, now = new Date()) {
     if (!snapshot)
         return { state };
-    return { state, updatedAt: snapshot.updatedAt, ...(snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}), ...(snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}), ...(snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}), ...(snapshot.lastError ? { lastError: snapshot.lastError } : {}), ...(snapshot.reason ? { reason: snapshot.reason } : {}), evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...(snapshot.publisher.version ? { version: snapshot.publisher.version } : {}) } };
+    return { state, updatedAt: snapshot.updatedAt, ...(snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}), ...(snapshot.lastAckAt ? { lastAckAt: snapshot.lastAckAt } : {}), ...(snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}), ...(snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}), ...(snapshot.lastError ? { lastError: snapshot.lastError } : {}), ...(snapshot.reason ? { reason: snapshot.reason } : {}), evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...(snapshot.publisher.version ? { version: snapshot.publisher.version } : {}) } };
 }
 /** Pure selection: target identity is agentSessionId, never clientInstanceId. */
 export function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
@@ -326,7 +327,13 @@ export class ResponsiveDeliveryRecorder {
         this.target = { ...options.target };
     }
     record(state, event = {}) {
-        const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, event, this.options.now?.() || new Date());
+        const carried = this.latest?.target.agentSessionId === this.target.agentSessionId ? this.latest : undefined;
+        const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, {
+            ...event,
+            ...(state === "watching" && !event.lastSuccessAt && carried?.lastSuccessAt ? { lastSuccessAt: carried.lastSuccessAt } : {}),
+            ...(!event.lastAckAt && carried?.lastAckAt ? { lastAckAt: carried.lastAckAt } : {}),
+            ...(state === "watching" && !event.lastWakeAt && carried?.lastWakeAt ? { lastWakeAt: carried.lastWakeAt } : {}),
+        }, this.options.now?.() || new Date());
         this.latest = snapshot;
         if (this.options.persist && this.options.cwd)
             writeResponsiveDeliverySnapshot(this.options.cwd, snapshot);

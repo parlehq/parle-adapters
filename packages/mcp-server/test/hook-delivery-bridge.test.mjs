@@ -178,6 +178,8 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     assert.deepEqual(committed, { ok: true, committed: 1 });
     assert.deepEqual(acknowledgements, [[7, "evt-7"]]);
     assert.equal(bridge.status().pending, 0);
+    const evidence = JSON.parse(readFileSync(join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`), "utf8"));
+    assert.equal(typeof evidence.lastAckAt, "string", "bridge commit publishes acknowledgement evidence");
     await bridge.stop();
     stopped = true;
     assert.equal(existsSync(descriptorPath), false);
@@ -700,6 +702,8 @@ test("hook delivery bridge renews lifecycle evidence on observed progress and to
     await eventually(() => existsSync(evidencePath));
     const opened = JSON.parse(readFileSync(evidencePath, "utf8"));
     assert.equal(opened.state, "watching");
+    assert.equal(typeof opened.lastSuccessAt, "string", "empty fetches publish liveness");
+    assert.equal(opened.lastAckAt, undefined, "empty fetches do not claim acknowledgement");
     void bridge.start();
     const afterStatus = JSON.parse(readFileSync(evidencePath, "utf8"));
     assert.equal(afterStatus.state, "watching", "plain status startup must not clobber healthy evidence");
@@ -708,7 +712,10 @@ test("hook delivery bridge renews lifecycle evidence on observed progress and to
     await settle(5);
     wakeSink.push({ room_id: ROOM });
     await eventually(() => drains >= 3 && JSON.parse(readFileSync(evidencePath, "utf8")).updatedAt !== firstUpdatedAt);
-    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "watching");
+    const renewed = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(renewed.state, "watching");
+    assert.equal(typeof renewed.lastSuccessAt, "string");
+    assert.equal(renewed.lastAckAt, undefined);
     await bridge.stop();
     assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).state, "stopped");
   } finally {

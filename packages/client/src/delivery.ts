@@ -50,11 +50,12 @@ export type DeliveryControllerOptions = {
   // start(), this fires for every internal reconnect so host connectivity
   // state follows the live stream instead of the most recent failure.
   onWakeOpen?: () => void;
-  // Observed delivery-loop progress only: a wake stream opened or a
-  // responsive-delivery drain completed successfully. Host diagnostics must
-  // remain best-effort and must not interrupt delivery when this callback fails.
-  onProgress?: (kind: "wake_open" | "drain_success") => void;
+  // Observed delivery stages. Host diagnostics must remain best-effort and
+  // must not interrupt delivery when this callback fails.
+  onProgress?: (kind: DeliveryProgressKind) => void;
 };
+
+export type DeliveryProgressKind = "wake_open" | "fetch_success" | "handling_complete" | "ack_success";
 
 export type DeliveryErrorDomain = "recover" | "drain" | "handler" | "ack";
 
@@ -121,7 +122,7 @@ export class ResponsiveDeliveryController {
   private readonly random: () => number;
   private readonly onWakeError?: (error: unknown) => "continue" | "stop" | void;
   private readonly onWakeOpen?: () => void;
-  private readonly onProgress?: (kind: "wake_open" | "drain_success") => void;
+  private readonly onProgress?: (kind: DeliveryProgressKind) => void;
   private readonly now: () => Date;
   // Deduplication is keyed by (roomId, eventId) and deliberately survives
   // session replacement: a new participant restarts server-side ack state, so
@@ -137,7 +138,7 @@ export class ResponsiveDeliveryController {
   // Rows a host accepted for later effective handling. They are never
   // re-offered to the handler and never acknowledged until the host reports
   // completion, so a crash before injection leaves the row redeliverable.
-  private readonly deferred = new Map<string, { roomId: string; message: ResponsiveDeliveryMessage }>();
+  private readonly deferred = new Map<string, { roomId: string; message: ResponsiveDeliveryMessage; completionReported?: boolean }>();
   private readonly drainInFlight = new Map<string, Promise<void>>();
   private loop?: Promise<void>;
   private unsubscribeRevision?: () => void;
@@ -228,6 +229,11 @@ export class ResponsiveDeliveryController {
     const key = deliveryKey(roomId, message);
     if (this.seen.has(key)) return true;
     const stat = this.stat(roomId);
+    const deferred = this.deferred.get(key);
+    if (deferred && !deferred.completionReported) {
+      deferred.completionReported = true;
+      this.reportProgress("handling_complete");
+    }
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
     } catch (error) {
@@ -235,6 +241,7 @@ export class ResponsiveDeliveryController {
       return false;
     }
     this.clearRoomError(roomId, "ack");
+    this.reportProgress("ack_success");
     this.deferred.delete(key);
     this.handled.delete(key);
     this.remember(key);
@@ -452,7 +459,7 @@ export class ResponsiveDeliveryController {
     if (stat.lastError?.domain === domain) stat.lastError = undefined;
   }
 
-  private reportProgress(kind: "wake_open" | "drain_success"): void {
+  private reportProgress(kind: DeliveryProgressKind): void {
     try { this.onProgress?.(kind); } catch { /* diagnostics never interrupt delivery */ }
   }
 
@@ -463,7 +470,7 @@ export class ResponsiveDeliveryController {
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
         this.clearRoomError(room.roomId, "drain");
-        this.reportProgress("drain_success");
+        this.reportProgress("fetch_success");
       } catch (error) {
         this.setRoomError(room.roomId, "drain", error);
         return;
@@ -517,6 +524,7 @@ export class ResponsiveDeliveryController {
           this.deferred.set(key, { roomId: room.roomId, message });
           return true;
         }
+        this.reportProgress("handling_complete");
       } catch (error) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
@@ -540,6 +548,7 @@ export class ResponsiveDeliveryController {
       return false;
     }
     this.clearRoomError(room.roomId, "ack");
+    this.reportProgress("ack_success");
     this.handled.delete(key);
     this.remember(key);
     if (outcome === "intentionally_skipped") stat.skipped += 1;

@@ -61,7 +61,7 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.29");
+  assert.equal(pkg.version, "0.7.30");
   assert.match(readFileSync(resolve("src/index.ts"), "utf8"), new RegExp(`ADAPTER_VERSION = "${pkg.version}"`));
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
@@ -176,6 +176,32 @@ test("session replacement retains deferred work for the replacement turn", async
   const replacement = delivery.foldPending({ messages: [] });
   assert.deepEqual(replacement.messages, [projected]);
   assert.equal(delivery.status().pending, 1);
+});
+
+test("native progress keeps liveness separate from acknowledgement", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-command-code-progress-"));
+  try {
+    const client = { runtime: { agentSessionId: "agent-1" }, clientInstanceId: "test-client" };
+    const delivery = new source.NativeResponsiveDelivery({ cwd, session: { appendCustomMessageEntry() {} } }, client, () => {});
+    const evidencePath = join(cwd, ".parle", "runtime", "responsive", `${process.pid}.json`);
+
+    delivery.controller.onProgress("fetch_success");
+    const fetched = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(typeof fetched.lastSuccessAt, "string");
+    assert.equal(fetched.lastAckAt, undefined);
+
+    delivery.controller.onProgress("handling_complete");
+    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).lastAckAt, undefined);
+
+    delivery.controller.onProgress("ack_success");
+    const acknowledged = JSON.parse(readFileSync(evidencePath, "utf8"));
+    assert.equal(typeof acknowledged.lastAckAt, "string");
+
+    delivery.controller.onProgress("fetch_success");
+    assert.equal(JSON.parse(readFileSync(evidencePath, "utf8")).lastAckAt, acknowledged.lastAckAt, "later fetches retain the ack clock");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test("repeated start preserves persisted success and backoff evidence", async () => {

@@ -268,7 +268,15 @@ export class HookDeliveryBridge {
     this.controller = new ResponsiveDeliveryController(client, {
       handler: (input) => this.handleDelivery(input),
       maxHandlerAttempts: Number.MAX_SAFE_INTEGER,
-      onProgress: () => this.publishEvidence("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() }),
+      onProgress: (kind) => {
+        const at = new Date().toISOString();
+        this.publishEvidence("watching", {
+          expectedProgressMs: 570_000,
+          ...(["wake_open", "fetch_success"].includes(kind) ? { lastSuccessAt: at } : {}),
+          ...(kind === "wake_open" ? { lastWakeAt: at } : {}),
+          ...(kind === "ack_success" ? { lastAckAt: at } : {}),
+        });
+      },
       onWakeError: (error) => {
         const message = error instanceof Error ? error.message : String(error);
         const action = typeof error === "object" && error !== null ? (error as { action?: string }).action : undefined;
@@ -366,7 +374,7 @@ export class HookDeliveryBridge {
         this.baselineDone = true;
         this.lastError = undefined;
         this.lastErrorKind = undefined;
-        this.publishEvidence("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+        this.publishEvidence("watching", { expectedProgressMs: 570_000 });
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : String(error);
         this.lastErrorKind = "controller";

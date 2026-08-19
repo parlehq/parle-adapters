@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.53 (2026-08-18)
+
+- Refresh the bundled client with stage-accurate responsive-delivery progress and additive acknowledgement evidence (#157).
+
 ## 0.7.52 (2026-08-18)
 
 - Refresh the bundled client with the complete #156 room-recovery diagnostic fix.

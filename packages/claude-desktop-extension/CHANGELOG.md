@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.53 (2026-08-18)
+
+- Expose additive responsive-delivery acknowledgement evidence while preserving fetch liveness (#157).
+
 ## 0.8.52 (2026-08-18)
 
 - Publish the complete #156 room-recovery diagnostic fix under a unique Desktop extension version.

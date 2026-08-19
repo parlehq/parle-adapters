@@ -276,7 +276,7 @@ Responsive-delivery errors retain ownership:
 - Bridge errors carry bridge-owned `lastErrorKind` of `listen`, `startup`, `controller`, or `evidence`.
 - Flattened bridge status carries `lastErrorSource` of `bridge`, `controller`, or `room`. Direct bridge errors currently have source and kind but no independent bridge timestamp.
 
-Success clears only an error in the same owning domain. Unrelated fetch or wake success must not erase a handler or acknowledgement failure. Current `lastSuccessAt` progress remains broader than effective handling or acknowledgement; [issue #157](https://github.com/parlehq/parle-adapters/issues/157) owns that separate evidence refinement.
+Success clears only an error in the same owning domain. Unrelated fetch or wake success must not erase a handler or acknowledgement failure. `lastSuccessAt` records delivery-loop liveness from wake opens and successful fetches, while additive `lastAckAt` records the latest successful acknowledgement. Neither clock proves that a model turn began or completed.
 
 ## Verification map
 

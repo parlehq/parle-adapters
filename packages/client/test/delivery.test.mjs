@@ -154,6 +154,133 @@ test("the post-open drain closes the startup drain-to-subscribe race", async () 
   }
 });
 
+test("an empty fetch reports liveness without handling or acknowledgement", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha" });
+  const progress = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async () => "handled",
+    onProgress: (kind) => progress.push(kind),
+  });
+  try {
+    await h.client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(progress, ["fetch_success"]);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("progress diagnostics never interrupt delivery", async () => {
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "diagnostic-failure" }] }, profiles: "alpha" });
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async () => "handled",
+    onProgress: () => { throw new Error("diagnostic unavailable"); },
+  });
+  try {
+    await h.client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(h.acks.map(([, eventId]) => eventId), ["diagnostic-failure"]);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("handler and acknowledgement failures stop at the last completed stage", async () => {
+  let ackFailures = 1;
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "stage-row" }] }, profiles: "alpha" });
+  const baseFetch = h.client.fetchImpl;
+  let handlerFails = true;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      if (new URL(String(url)).pathname.endsWith("/responsive-delivery/ack") && ackFailures-- > 0) {
+        return json({ error: { code: "unavailable", message: "ack unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 503);
+      }
+      return baseFetch(url, init);
+    },
+  });
+  const progress = [];
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async () => {
+      if (handlerFails) throw new Error("handler unavailable");
+      return "handled";
+    },
+    maxDrainBatches: 1,
+    maxHandlerAttempts: 3,
+    onProgress: (kind) => progress.push(kind),
+  });
+  try {
+    await client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(progress, ["fetch_success"], "handler failure emits no later stage");
+
+    handlerFails = false;
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(progress, ["fetch_success", "fetch_success", "handling_complete"], "ack failure stops after handling");
+
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(progress, ["fetch_success", "fetch_success", "handling_complete", "fetch_success", "ack_success"], "ack retry never reruns handling");
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("deferred completion reports handling once and acknowledgement after retry", async () => {
+  let ackFailures = 1;
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "deferred-stage" }] }, profiles: "alpha" });
+  const baseFetch = h.client.fetchImpl;
+  const client = new ParleAgentClient({
+    cwd: h.client.cwd,
+    env: h.client.env,
+    fetch: async (url, init = {}) => {
+      if (new URL(String(url)).pathname.endsWith("/responsive-delivery/ack") && ackFailures-- > 0) {
+        return json({ error: { code: "unavailable", message: "ack unavailable", action: "retry_with_backoff", scope: "request", retryable: true } }, 503);
+      }
+      return baseFetch(url, init);
+    },
+  });
+  const progress = [];
+  let queued;
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async ({ message }) => { queued = message; return "deferred"; },
+    onProgress: (kind) => progress.push(kind),
+  });
+  try {
+    await client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.equal(progress.includes("handling_complete"), false, "queueing is not effective handling");
+    assert.equal(await controller.completeDeferred(ALPHA, queued), false);
+    assert.equal(await controller.completeDeferred(ALPHA, queued), true);
+    assert.deepEqual(progress.slice(-2), ["handling_complete", "ack_success"], "ack retry does not report host completion twice");
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("poison acknowledgement does not claim successful handling", async () => {
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "poison-stage" }] }, profiles: "alpha" });
+  const progress = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async () => { throw new Error("poisoned"); },
+    maxHandlerAttempts: 1,
+    onProgress: (kind) => progress.push(kind),
+  });
+  try {
+    await h.client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.equal(progress.includes("handling_complete"), false);
+    assert.equal(progress.includes("ack_success"), true);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
 test("a wake hint drains only the named room and acknowledges after handling", async () => {
   const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "a1" }], [BETA]: [{ seq: 1, event_id: "b1" }] } });
   const handled = [];

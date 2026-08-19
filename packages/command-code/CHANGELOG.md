@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.30 (2026-08-18)
+
+- Separate delivery-loop liveness from acknowledgement evidence in native responsive delivery (#157).
+
 ## 0.7.29 (2026-08-18)
 
 - Refresh the bundled client with the complete #156 room-recovery diagnostic fix.

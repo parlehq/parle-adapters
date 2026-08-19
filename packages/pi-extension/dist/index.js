@@ -1439,7 +1439,7 @@ function parseResponsiveDeliverySnapshot(value) {
     updatedAt: row.updatedAt,
     expiresAt: row.expiresAt
   };
-  for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"])
+  for (const key of ["lastSuccessAt", "lastAckAt", "lastWakeAt", "retryAt"])
     if (ISO(row[key]))
       snapshot[key] = row[key];
   if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string")
@@ -4552,6 +4552,11 @@ var ResponsiveDeliveryController = class {
     if (this.seen.has(key))
       return true;
     const stat = this.stat(roomId);
+    const deferred = this.deferred.get(key);
+    if (deferred && !deferred.completionReported) {
+      deferred.completionReported = true;
+      this.reportProgress("handling_complete");
+    }
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
     } catch (error) {
@@ -4559,6 +4564,7 @@ var ResponsiveDeliveryController = class {
       return false;
     }
     this.clearRoomError(roomId, "ack");
+    this.reportProgress("ack_success");
     this.deferred.delete(key);
     this.handled.delete(key);
     this.remember(key);
@@ -4781,7 +4787,7 @@ var ResponsiveDeliveryController = class {
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
         this.clearRoomError(room.roomId, "drain");
-        this.reportProgress("drain_success");
+        this.reportProgress("fetch_success");
       } catch (error) {
         this.setRoomError(room.roomId, "drain", error);
         return;
@@ -4832,6 +4838,7 @@ var ResponsiveDeliveryController = class {
           this.deferred.set(key, { roomId: room.roomId, message });
           return true;
         }
+        this.reportProgress("handling_complete");
       } catch (error) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
@@ -4852,6 +4859,7 @@ var ResponsiveDeliveryController = class {
       return false;
     }
     this.clearRoomError(room.roomId, "ack");
+    this.reportProgress("ack_success");
     this.handled.delete(key);
     this.remember(key);
     if (outcome === "intentionally_skipped")
@@ -7256,7 +7264,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.52";
+var PI_EXTENSION_VERSION = "0.7.53";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

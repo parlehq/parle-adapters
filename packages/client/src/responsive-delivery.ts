@@ -23,6 +23,7 @@ export type ResponsiveDeliverySnapshot = {
   updatedAt: string;
   expiresAt: string;
   lastSuccessAt?: string;
+  lastAckAt?: string;
   lastWakeAt?: string;
   retryAt?: string;
   lastError?: { message: string; at: string };
@@ -32,6 +33,7 @@ export type ResponsiveDeliveryResult = {
   state: ResponsiveDeliveryState;
   updatedAt?: string;
   lastSuccessAt?: string;
+  lastAckAt?: string;
   lastWakeAt?: string;
   retryAt?: string;
   lastError?: { message: string; at: string };
@@ -52,6 +54,7 @@ export type ResponsiveDeliveryPruneOptions = ResponsiveDeliveryResolveOptions & 
 export type ResponsiveDeliveryEvent = {
   expectedProgressMs?: number;
   lastSuccessAt?: string;
+  lastAckAt?: string;
   lastWakeAt?: string;
   retryAt?: string;
   lastError?: { message: string; at?: string } | string;
@@ -137,6 +140,7 @@ export function buildResponsiveDeliverySnapshot(
   return cleanSnapshot({
     ...base, schemaVersion: 1, state, updatedAt, expiresAt,
     ...(event.lastSuccessAt ? { lastSuccessAt: event.lastSuccessAt } : {}),
+    ...(event.lastAckAt ? { lastAckAt: event.lastAckAt } : {}),
     ...(event.lastWakeAt ? { lastWakeAt: event.lastWakeAt } : {}),
     ...(event.retryAt ? { retryAt: event.retryAt } : {}),
     ...(message ? { lastError: { message, at: errorAt } } : {}),
@@ -179,7 +183,7 @@ export function parseResponsiveDeliverySnapshot(value: unknown): ResponsiveDeliv
     target: { agentSessionId, ...(string(row.target.participantId) ? { participantId: string(row.target.participantId) } : {}), ...(string(row.target.roomId) ? { roomId: string(row.target.roomId) } : {}) },
     state: row.state, updatedAt: row.updatedAt, expiresAt: row.expiresAt,
   };
-  for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"] as const) if (ISO(row[key])) snapshot[key] = row[key];
+  for (const key of ["lastSuccessAt", "lastAckAt", "lastWakeAt", "retryAt"] as const) if (ISO(row[key])) snapshot[key] = row[key];
   if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string") snapshot.lastError = { message: redactResponsiveDeliveryDiagnostic(row.lastError.message) || "[REDACTED]", at: row.lastError.at };
   const reason = redactResponsiveDeliveryDiagnostic(row.reason); if (reason) snapshot.reason = reason;
   return snapshot;
@@ -215,7 +219,7 @@ function isActiveLive(snapshot: ResponsiveDeliverySnapshot, now: Date, inspectPi
 }
 function result(state: ResponsiveDeliveryState, snapshot?: ResponsiveDeliverySnapshot, now = new Date()): ResponsiveDeliveryResult {
   if (!snapshot) return { state };
-  return { state, updatedAt: snapshot.updatedAt, ...(snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}), ...(snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}), ...(snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}), ...(snapshot.lastError ? { lastError: snapshot.lastError } : {}), ...(snapshot.reason ? { reason: snapshot.reason } : {}), evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...(snapshot.publisher.version ? { version: snapshot.publisher.version } : {}) } };
+  return { state, updatedAt: snapshot.updatedAt, ...(snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}), ...(snapshot.lastAckAt ? { lastAckAt: snapshot.lastAckAt } : {}), ...(snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}), ...(snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}), ...(snapshot.lastError ? { lastError: snapshot.lastError } : {}), ...(snapshot.reason ? { reason: snapshot.reason } : {}), evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...(snapshot.publisher.version ? { version: snapshot.publisher.version } : {}) } };
 }
 
 /** Pure selection: target identity is agentSessionId, never clientInstanceId. */
@@ -320,7 +324,13 @@ export class ResponsiveDeliveryRecorder {
   private latest?: ResponsiveDeliverySnapshot;
   constructor(private readonly options: ResponsiveDeliveryRecorderOptions) { this.target = { ...options.target }; }
   record(state: ResponsiveDeliveryPublishedState, event: ResponsiveDeliveryEvent = {}): ResponsiveDeliverySnapshot {
-    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, event, this.options.now?.() || new Date());
+    const carried = this.latest?.target.agentSessionId === this.target.agentSessionId ? this.latest : undefined;
+    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, {
+      ...event,
+      ...(state === "watching" && !event.lastSuccessAt && carried?.lastSuccessAt ? { lastSuccessAt: carried.lastSuccessAt } : {}),
+      ...(!event.lastAckAt && carried?.lastAckAt ? { lastAckAt: carried.lastAckAt } : {}),
+      ...(state === "watching" && !event.lastWakeAt && carried?.lastWakeAt ? { lastWakeAt: carried.lastWakeAt } : {}),
+    }, this.options.now?.() || new Date());
     this.latest = snapshot; if (this.options.persist && this.options.cwd) writeResponsiveDeliverySnapshot(this.options.cwd, snapshot); return snapshot;
   }
   starting(event?: ResponsiveDeliveryEvent) { return this.record("starting", event); }

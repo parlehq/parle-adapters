@@ -3,7 +3,7 @@ import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.29";
+const ADAPTER_VERSION = "0.7.30";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 
@@ -43,7 +43,14 @@ export class NativeResponsiveDelivery {
   private createController(): ResponsiveDeliveryController {
     return new ResponsiveDeliveryController(this.client, {
       handler: (input) => this.handleDelivery(input),
-      onProgress: () => this.publish("watching", { lastSuccessAt: new Date().toISOString() }),
+      onProgress: (kind) => {
+        const at = new Date().toISOString();
+        this.publish("watching", {
+          ...(["wake_open", "fetch_success"].includes(kind) ? { lastSuccessAt: at } : {}),
+          ...(kind === "wake_open" ? { lastWakeAt: at } : {}),
+          ...(kind === "ack_success" ? { lastAckAt: at } : {}),
+        });
+      },
       onWakeOpen: () => this.handleWakeOpen(),
       onWakeError: (error) => this.handleWakeError(error),
     });
@@ -55,7 +62,6 @@ export class NativeResponsiveDelivery {
   handleWakeOpen(): void {
     this.lastError = undefined;
     this.terminalAction = undefined;
-    this.publish("watching", { lastSuccessAt: new Date().toISOString() });
     this.refreshStatus();
   }
 
@@ -104,7 +110,6 @@ export class NativeResponsiveDelivery {
       },
     });
     this.pending.push({ roomId: input.roomId, message: input.message, projected: appended.message, folded: false });
-    this.publish("watching", { lastSuccessAt: new Date().toISOString() });
     this.refreshStatus();
     return "deferred" as const;
   }
@@ -195,7 +200,7 @@ export class NativeResponsiveDelivery {
     }
     this.lastError = undefined;
     this.terminalAction = undefined;
-    this.publish("watching", { lastSuccessAt: new Date().toISOString() });
+    this.publish("watching", {});
     this.refreshStatus();
   }
 

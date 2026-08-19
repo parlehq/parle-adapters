@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.53 (2026-08-18)
+
+- Publish acknowledgement-backed `lastAckAt` without mistaking fetch liveness for completed delivery (#157).
+
 ## 0.7.52 (2026-08-18)
 
 - Publish the complete #156 room-recovery diagnostic fix under a unique MCP version.

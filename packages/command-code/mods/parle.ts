@@ -1386,6 +1386,7 @@ function buildResponsiveDeliverySnapshot(base, state, event = {}, now = /* @__PU
     updatedAt,
     expiresAt,
     ...event.lastSuccessAt ? { lastSuccessAt: event.lastSuccessAt } : {},
+    ...event.lastAckAt ? { lastAckAt: event.lastAckAt } : {},
     ...event.lastWakeAt ? { lastWakeAt: event.lastWakeAt } : {},
     ...event.retryAt ? { retryAt: event.retryAt } : {},
     ...message ? { lastError: { message, at: errorAt } } : {},
@@ -1436,7 +1437,7 @@ function parseResponsiveDeliverySnapshot(value) {
     updatedAt: row.updatedAt,
     expiresAt: row.expiresAt
   };
-  for (const key of ["lastSuccessAt", "lastWakeAt", "retryAt"])
+  for (const key of ["lastSuccessAt", "lastAckAt", "lastWakeAt", "retryAt"])
     if (ISO(row[key]))
       snapshot[key] = row[key];
   if (row.lastError && ISO(row.lastError.at) && typeof row.lastError.message === "string")
@@ -1498,7 +1499,7 @@ function isActiveLive(snapshot, now, inspectPid) {
 function result(state, snapshot, now = /* @__PURE__ */ new Date()) {
   if (!snapshot)
     return { state };
-  return { state, updatedAt: snapshot.updatedAt, ...snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}, ...snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}, ...snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}, ...snapshot.lastError ? { lastError: snapshot.lastError } : {}, ...snapshot.reason ? { reason: snapshot.reason } : {}, evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...snapshot.publisher.version ? { version: snapshot.publisher.version } : {} } };
+  return { state, updatedAt: snapshot.updatedAt, ...snapshot.lastSuccessAt ? { lastSuccessAt: snapshot.lastSuccessAt } : {}, ...snapshot.lastAckAt ? { lastAckAt: snapshot.lastAckAt } : {}, ...snapshot.lastWakeAt ? { lastWakeAt: snapshot.lastWakeAt } : {}, ...snapshot.retryAt ? { retryAt: snapshot.retryAt } : {}, ...snapshot.lastError ? { lastError: snapshot.lastError } : {}, ...snapshot.reason ? { reason: snapshot.reason } : {}, evidenceAgeMs: Math.max(0, now.getTime() - Date.parse(snapshot.updatedAt)), publisher: { name: snapshot.publisher.name, ...snapshot.publisher.version ? { version: snapshot.publisher.version } : {} } };
 }
 function resolveResponsiveDelivery(snapshots, agentSessionId, options = {}) {
   const now = options.now || /* @__PURE__ */ new Date();
@@ -1629,7 +1630,13 @@ var ResponsiveDeliveryRecorder = class {
     this.target = { ...options.target };
   }
   record(state, event = {}) {
-    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, event, this.options.now?.() || /* @__PURE__ */ new Date());
+    const carried = this.latest?.target.agentSessionId === this.target.agentSessionId ? this.latest : void 0;
+    const snapshot = buildResponsiveDeliverySnapshot({ pid: this.options.pid ?? process.pid, processStartedAt: this.options.processStartedAt, publisher: this.options.publisher, target: this.target }, state, {
+      ...event,
+      ...state === "watching" && !event.lastSuccessAt && carried?.lastSuccessAt ? { lastSuccessAt: carried.lastSuccessAt } : {},
+      ...!event.lastAckAt && carried?.lastAckAt ? { lastAckAt: carried.lastAckAt } : {},
+      ...state === "watching" && !event.lastWakeAt && carried?.lastWakeAt ? { lastWakeAt: carried.lastWakeAt } : {}
+    }, this.options.now?.() || /* @__PURE__ */ new Date());
     this.latest = snapshot;
     if (this.options.persist && this.options.cwd)
       writeResponsiveDeliverySnapshot(this.options.cwd, snapshot);
@@ -4744,6 +4751,11 @@ var ResponsiveDeliveryController = class {
     if (this.seen.has(key))
       return true;
     const stat = this.stat(roomId);
+    const deferred = this.deferred.get(key);
+    if (deferred && !deferred.completionReported) {
+      deferred.completionReported = true;
+      this.reportProgress("handling_complete");
+    }
     try {
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
     } catch (error51) {
@@ -4751,6 +4763,7 @@ var ResponsiveDeliveryController = class {
       return false;
     }
     this.clearRoomError(roomId, "ack");
+    this.reportProgress("ack_success");
     this.deferred.delete(key);
     this.handled.delete(key);
     this.remember(key);
@@ -4973,7 +4986,7 @@ var ResponsiveDeliveryController = class {
       try {
         delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
         this.clearRoomError(room.roomId, "drain");
-        this.reportProgress("drain_success");
+        this.reportProgress("fetch_success");
       } catch (error51) {
         this.setRoomError(room.roomId, "drain", error51);
         return;
@@ -5024,6 +5037,7 @@ var ResponsiveDeliveryController = class {
           this.deferred.set(key, { roomId: room.roomId, message });
           return true;
         }
+        this.reportProgress("handling_complete");
       } catch (error51) {
         const attempts = (this.attempts.get(key) || 0) + 1;
         this.attempts.set(key, attempts);
@@ -5044,6 +5058,7 @@ var ResponsiveDeliveryController = class {
       return false;
     }
     this.clearRoomError(room.roomId, "ack");
+    this.reportProgress("ack_success");
     this.handled.delete(key);
     this.remember(key);
     if (outcome === "intentionally_skipped")
@@ -22668,7 +22683,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.29";
+var ADAPTER_VERSION = "0.7.30";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
@@ -22703,7 +22718,14 @@ var NativeResponsiveDelivery = class {
   createController() {
     return new ResponsiveDeliveryController(this.client, {
       handler: (input) => this.handleDelivery(input),
-      onProgress: () => this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() }),
+      onProgress: (kind) => {
+        const at = (/* @__PURE__ */ new Date()).toISOString();
+        this.publish("watching", {
+          ...["wake_open", "fetch_success"].includes(kind) ? { lastSuccessAt: at } : {},
+          ...kind === "wake_open" ? { lastWakeAt: at } : {},
+          ...kind === "ack_success" ? { lastAckAt: at } : {}
+        });
+      },
       onWakeOpen: () => this.handleWakeOpen(),
       onWakeError: (error51) => this.handleWakeError(error51)
     });
@@ -22714,7 +22736,6 @@ var NativeResponsiveDelivery = class {
   handleWakeOpen() {
     this.lastError = void 0;
     this.terminalAction = void 0;
-    this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
     this.refreshStatus();
   }
   // Returning void keeps ordinary wake failures inside the controller's own
@@ -22756,7 +22777,6 @@ var NativeResponsiveDelivery = class {
       }
     });
     this.pending.push({ roomId: input.roomId, message: input.message, projected: appended.message, folded: false });
-    this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
     this.refreshStatus();
     return "deferred";
   }
@@ -22828,7 +22848,7 @@ var NativeResponsiveDelivery = class {
     }
     this.lastError = void 0;
     this.terminalAction = void 0;
-    this.publish("watching", { lastSuccessAt: (/* @__PURE__ */ new Date()).toISOString() });
+    this.publish("watching", {});
     this.refreshStatus();
   }
   publish(state, event) {

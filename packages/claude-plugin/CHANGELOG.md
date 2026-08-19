@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.58 (2026-08-18)
+
+- Expose additive responsive-delivery acknowledgement evidence while preserving fetch liveness (#157).
+
 ## 0.9.57 (2026-08-18)
 
 - Publish the complete #156 room-recovery diagnostic fix under a unique Claude plugin version.
