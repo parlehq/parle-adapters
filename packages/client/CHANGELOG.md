@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.49 (2026-08-21)
+
+- Fence exact-session acknowledgements across ended-session rebootstrap (#161).
+
 ## 0.8.48 (2026-08-20)
 
 - Prevent target-specific send and reply failures from latching healthy responsive delivery (#160).

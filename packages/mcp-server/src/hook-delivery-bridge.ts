@@ -434,11 +434,11 @@ export class HookDeliveryBridge {
       ...input.message,
       clientReplyPresentation: responsiveReplyPresentation(input.message),
       key,
-      sessionRevision: Number(runtime.sessionRevision || 0),
+      sessionRevision: input.sourceFence?.sessionRevision ?? Number(runtime.sessionRevision || 0),
       cursorScope: input.cursorScope,
       roomId: input.roomId,
-      sessionAlias: typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined,
-      agentSessionId: String(runtime.agentSessionId || ""),
+      sessionAlias: input.sourceFence?.sessionAlias ?? (typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined),
+      agentSessionId: input.sourceFence?.agentSessionId ?? String(runtime.agentSessionId || ""),
     });
     this.queuedKeys.add(key);
     console.error(JSON.stringify({
@@ -624,7 +624,15 @@ export class HookDeliveryBridge {
       // It makes stale exact-session work impossible to acknowledge with a
       // successor credential even if a future lifecycle path bypasses guards.
       this.assertMessageCurrent(message);
-      const acked = await this.controller.completeDeferred(message.roomId, message);
+      const acked = await this.controller.completeDeferred(
+        message.roomId,
+        message,
+        "handled",
+        message.cursorScope === "alias" ? undefined : {
+          sessionRevision: message.sessionRevision,
+          agentSessionId: message.agentSessionId,
+        },
+      );
       if (!acked) {
         const roomError = this.controller.status().rooms.find((room) => room.roomId === message.roomId)?.lastError;
         throw new Error(`Parle hook bridge acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
@@ -649,10 +657,24 @@ export class HookDeliveryBridge {
     return lease ? [...this.pending, ...lease.messages] : [...this.pending];
   }
 
+  private abandonEndedSessionWork(previous: Readonly<{ sessionRevision?: number; agentSessionId?: string }>): void {
+    const dropped = new Set<string>();
+    for (let index = this.pending.length - 1; index >= 0; index -= 1) {
+      const item = this.pending[index];
+      if (item.cursorScope === "alias" || item.sessionRevision !== Number(previous.sessionRevision || 0) || item.agentSessionId !== String(previous.agentSessionId || "")) continue;
+      this.pending.splice(index, 1);
+      this.queuedKeys.delete(item.key);
+      this.controller.abandonDeferred(item.roomId, item);
+      dropped.add(item.key);
+    }
+    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.lease = undefined;
+  }
+
   // In-flight responsive reads are fenced by the client itself, which tracks
   // every read it performs for the controller. The bridge guards only what the
   // client cannot see: rows queued or leased for the host's hook flow.
   private guardSessionCommit(plan: SessionCommitPlan): void {
+    if (plan.reason === "rebootstrap") this.abandonEndedSessionWork(plan.previous);
     const work = this.pendingWork();
     if (work.length === 0) return;
     if (plan.reason === "profile_switch") {

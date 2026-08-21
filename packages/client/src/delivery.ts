@@ -1,4 +1,4 @@
-import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, type ResponsiveCursorScope, type ResponsiveDeliveryMessage, type RoomRuntime } from "./index.js";
+import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, type ResponsiveCursorScope, type ResponsiveDeliveryAckFence, type ResponsiveDeliveryMessage, type ResponsiveDeliveryReadFence, type RoomRuntime } from "./index.js";
 
 // Shared responsive delivery controller (issue #63 S4, ADR-0059).
 //
@@ -25,6 +25,7 @@ export type DeliveryHandlerInput = {
   // Server room-context preamble for the batch, when present. Hosts that
   // render peer content into prompts validate exact server wrapping with it.
   preamble?: string;
+  sourceFence?: ResponsiveDeliveryReadFence;
   message: ResponsiveDeliveryMessage;
 };
 
@@ -142,7 +143,7 @@ export class ResponsiveDeliveryController {
   private readonly attempts = new Map<string, number>();
   // Rows whose handler ran but whose acknowledgement has not yet succeeded.
   // Retrying one of these re-acknowledges only; the handler never re-runs.
-  private readonly handled = new Map<string, DeliveryHandlerResult>();
+  private readonly handled = new Map<string, { outcome: DeliveryHandlerResult; cursorScope?: ResponsiveCursorScope; sourceFence?: ResponsiveDeliveryReadFence }>();
   private readonly poisonedKeys = new Set<string>();
   private readonly rerunRequested = new Map<string, DeliveryFetchTrigger>();
   private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastError?: { message: string; at: string; domain: DeliveryErrorDomain } }>();
@@ -236,7 +237,7 @@ export class ResponsiveDeliveryController {
   // A host reports effective handling of a deferred row. Only then is the row
   // acknowledged, and a failed acknowledgement is retried without re-running
   // the host handler.
-  async completeDeferred(roomId: string, message: ResponsiveDeliveryMessage, outcome: Exclude<DeliveryHandlerResult, "deferred"> = "handled"): Promise<boolean> {
+  async completeDeferred(roomId: string, message: ResponsiveDeliveryMessage, outcome: Exclude<DeliveryHandlerResult, "deferred"> = "handled", fence?: ResponsiveDeliveryAckFence): Promise<boolean> {
     const key = deliveryKey(roomId, message);
     if (this.seen.has(key)) return true;
     const stat = this.stat(roomId);
@@ -246,7 +247,7 @@ export class ResponsiveDeliveryController {
       this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence);
     } catch (error) {
       this.setRoomError(roomId, "ack", error);
       return false;
@@ -259,6 +260,15 @@ export class ResponsiveDeliveryController {
     if (outcome === "intentionally_skipped") stat.skipped += 1;
     else stat.delivered += 1;
     return true;
+  }
+
+  abandonDeferred(roomId: string, message: ResponsiveDeliveryMessage): void {
+    const key = deliveryKey(roomId, message);
+    this.deferred.delete(key);
+    this.handled.delete(key);
+    this.attempts.delete(key);
+    this.poisonedKeys.delete(key);
+    this.remember(key);
   }
 
   // Test seam for drain coalescing and acknowledgement retry, which are not
@@ -481,9 +491,24 @@ export class ResponsiveDeliveryController {
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted) return;
       let delivery: any;
+      let sourceFence: ResponsiveDeliveryReadFence;
+      let release = () => {};
       try {
         this.reportProgress("fetch_started", { roomId: room.roomId, trigger });
-        delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        if (typeof (this.client as any).drainResponsiveDeliveryWithFence === "function") {
+          const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId);
+          delivery = read.delivery;
+          sourceFence = read.fence;
+          release = read.release;
+        } else {
+          sourceFence = {
+            sessionRevision: this.client.runtime.sessionRevision || 0,
+            roomId: room.roomId,
+            sessionAlias: this.client.runtime.sessionAlias,
+            agentSessionId: this.client.runtime.agentSessionId || "",
+          };
+          delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        }
         this.clearRoomError(room.roomId, "drain");
         const held = delivery?.held_backlog;
         this.reportProgress("fetch_success", {
@@ -498,23 +523,35 @@ export class ResponsiveDeliveryController {
         this.setRoomError(room.roomId, "drain", error);
         return;
       }
-      const messages: ResponsiveDeliveryMessage[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
-      if (messages.length === 0) return;
-      const cursorScope: ResponsiveCursorScope | undefined = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias"
-        ? delivery.delivery.cursor_scope
-        : undefined;
-      const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : undefined;
-      let progressed = 0;
-      for (const message of messages) {
-        if (this.abort.signal.aborted) return;
-        const key = deliveryKey(room.roomId, message);
-        if (this.seen.has(key)) continue;
-        if (await this.processRow(room, message, key, cursorScope, preamble)) progressed += 1;
+      try {
+        const messages: ResponsiveDeliveryMessage[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
+        if (messages.length === 0) return;
+        const cursorScope: ResponsiveCursorScope | undefined = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias"
+          ? delivery.delivery.cursor_scope
+          : undefined;
+        sourceFence.cursorScope = cursorScope;
+        const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : undefined;
+        let progressed = 0;
+        for (const message of messages) {
+          if (this.abort.signal.aborted) return;
+          const key = deliveryKey(room.roomId, message);
+          if (this.seen.has(key)) continue;
+          const current = cursorScope === "alias"
+            ? Boolean(sourceFence.sessionAlias && sourceFence.sessionAlias === this.client.runtime.sessionAlias)
+            : sourceFence.sessionRevision === this.client.runtime.sessionRevision && sourceFence.agentSessionId === this.client.runtime.agentSessionId;
+          if (!current) {
+            this.remember(key);
+            continue;
+          }
+          if (await this.processRow(room, message, key, cursorScope, preamble, sourceFence)) progressed += 1;
+        }
+        // A batch where nothing could be handled or acknowledged is this drain's
+        // boundary. The room is not stopped: the next wake or revision drains it
+        // again, and rows whose handler already ran are only re-acknowledged.
+        if (progressed === 0) return;
+      } finally {
+        release();
       }
-      // A batch where nothing could be handled or acknowledged is this drain's
-      // boundary. The room is not stopped: the next wake or revision drains it
-      // again, and rows whose handler already ran are only re-acknowledged.
-      if (progressed === 0) return;
     }
     this.setRoomError(room.roomId, "drain", `responsive drain exceeded ${this.maxDrainBatches} batches`);
   }
@@ -523,9 +560,12 @@ export class ResponsiveDeliveryController {
   // and an ack that failed must never re-run the handler: the host has already
   // acted on the row (Pi injects it), so replaying it would duplicate a visible
   // side effect. Deduplication therefore guards the handler, not the ack.
-  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string, cursorScope?: ResponsiveCursorScope, preamble?: string): Promise<boolean> {
+  private async processRow(room: RoomRuntime, message: ResponsiveDeliveryMessage, key: string, cursorScope?: ResponsiveCursorScope, preamble?: string, sourceFence?: ResponsiveDeliveryReadFence): Promise<boolean> {
     const stat = this.stat(room.roomId);
-    let outcome = this.handled.get(key);
+    const prior = this.handled.get(key);
+    let outcome = prior?.outcome;
+    const ackCursorScope = prior?.cursorScope ?? cursorScope;
+    const ackSourceFence = prior?.sourceFence ?? sourceFence;
     // A row already awaiting host completion is not progress. Counting it
     // would spin the drain to its batch cap every time a room has pending
     // deferred work.
@@ -538,10 +578,11 @@ export class ResponsiveDeliveryController {
           ...(room.profile ? { profile: room.profile } : {}),
           ...(cursorScope ? { cursorScope } : {}),
           ...(preamble ? { preamble } : {}),
+          ...(sourceFence ? { sourceFence } : {}),
           message,
         });
         this.clearRoomError(room.roomId, "handler");
-        this.handled.set(key, outcome);
+        this.handled.set(key, { outcome, cursorScope, sourceFence });
         this.attempts.delete(key);
         if (outcome === "deferred") {
           this.deferred.set(key, { roomId: room.roomId, message });
@@ -558,13 +599,21 @@ export class ResponsiveDeliveryController {
         // permanently failing row unacknowledged wedges the whole room.
         this.attempts.delete(key);
         outcome = "intentionally_skipped";
-        this.handled.set(key, outcome);
+        this.handled.set(key, { outcome, cursorScope, sourceFence });
         this.poisonedKeys.add(key);
         stat.poisoned += 1;
       }
     }
     try {
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
+      await this.client.ackResponsiveDelivery(
+        message,
+        this.abort.signal,
+        room.roomId,
+        ackCursorScope === "alias" || !ackSourceFence ? undefined : {
+          sessionRevision: ackSourceFence.sessionRevision,
+          agentSessionId: ackSourceFence.agentSessionId,
+        },
+      );
     } catch (error) {
       // Only the acknowledgement is retried, and only on a later drain.
       this.setRoomError(room.roomId, "ack", error);

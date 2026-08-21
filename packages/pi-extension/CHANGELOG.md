@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.57 (2026-08-21)
+
+- Carry dead-session hook lease recovery through the refreshed shared client and MCP artifact (#161).
+
 ## 0.7.56 (2026-08-20)
 
 - Keep responsive delivery active after a target-specific send or reply failure (#160).

@@ -386,12 +386,17 @@ export type ResponsiveDeliveryMessage = {
   [key: string]: unknown;
 };
 
+export type ResponsiveDeliveryAckFence = {
+  sessionRevision: number;
+  agentSessionId: string;
+};
+
 export type SessionRevisionEvent = {
   revision: number;
   agentSessionId: string;
   generation: number;
   alias?: string;
-  reason: "bootstrap" | "rollover" | "profile_switch" | "alias_switch";
+  reason: "bootstrap" | "rebootstrap" | "rollover" | "profile_switch" | "alias_switch";
 };
 
 export type SessionCommitPlan = {
@@ -1340,7 +1345,7 @@ export class ParleAgentClient {
     }
   }
 
-  private async doBootstrapLocked(signal?: AbortSignal, preserveCursor = false, allowConfigReload = true): Promise<RuntimeState> {
+  private async doBootstrapLocked(signal?: AbortSignal, preserveCursor = false, allowConfigReload = true, reason: "bootstrap" | "rebootstrap" = "bootstrap"): Promise<RuntimeState> {
     const epoch = this.lifecycleEpoch;
     const previous = { ...this.runtime };
     const oldWasLive = previous.bootstrapped && Boolean(previous.sessionHandle);
@@ -1351,14 +1356,14 @@ export class ParleAgentClient {
       const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
-        this.assertSessionCommitAllowed(previous, prepared.state, "bootstrap");
+        this.assertSessionCommitAllowed(previous, prepared.state, reason);
       } catch (error) {
         await this.cancelCandidateWake(prepared.wake);
         if (!prepared.state.sessionAlias) await this.retireSession(prepared.state).catch(() => undefined);
         throw error;
       }
       const unusedPreviousWake = this.commitCandidate(prepared, epoch);
-      await this.completeCandidateHandoff(previous, prepared.state, "bootstrap", signal, unusedPreviousWake, oldWasLive);
+      await this.completeCandidateHandoff(previous, prepared.state, reason, signal, unusedPreviousWake, oldWasLive);
       this.assertExpectedAliasRecovered();
       this.clearAutomaticTerminalLatch();
       this.clearRolloverStormProtection();
@@ -1366,7 +1371,7 @@ export class ParleAgentClient {
       return { ...this.runtime };
     } catch (error: any) {
       if (allowConfigReload && error instanceof ParleApiError && error.action === "reauthorize" && this.refreshConfigIfAgentTokenChanged()) {
-        return this.doBootstrapLocked(signal, preserveCursor, false);
+        return this.doBootstrapLocked(signal, preserveCursor, false, reason);
       }
       this.consecutiveBootstrapFailures += 1;
       const api = error instanceof ParleApiError ? error : undefined;
@@ -1557,7 +1562,7 @@ export class ParleAgentClient {
 
   private assertSessionCommitAllowed(previous: RuntimeState, candidate: RuntimeState, reason: SessionRevisionEvent["reason"]): void {
     const plan: SessionCommitPlan = { reason, previous: Object.freeze({ ...previous }), candidate: Object.freeze({ ...candidate }) };
-    if (this.activeResponsiveReads.size > 0 && reason !== "bootstrap") {
+    if (this.activeResponsiveReads.size > 0 && !["bootstrap", "rebootstrap"].includes(reason)) {
       if (reason === "profile_switch") throw new Error("Parle profile switch is deferred while responsive delivery is being read");
       const aliasTransfers = Boolean(previous.sessionAlias
         && candidate.sessionAlias === previous.sessionAlias
@@ -2377,7 +2382,7 @@ export class ParleAgentClient {
         this.runtime.bootstrapState = "starting";
         this.publishRuntimeState();
         try {
-          await this.doBootstrapLocked(signal, true);
+          await this.doBootstrapLocked(signal, true, true, "rebootstrap");
           this.rebootstrapEpisode = { failedSessionHandle, attempted: true, healthySinceMs: this.now().getTime() };
         } catch (bootstrapError: any) {
           if (bootstrapError instanceof ParleApiError && ["fix_client", "reauthorize", "stop"].includes(bootstrapError.action || "")) {
@@ -2499,18 +2504,23 @@ export class ParleAgentClient {
     }
   }
 
-  async ackResponsiveDelivery(message: ResponsiveDeliveryMessage, signal?: AbortSignal, roomIdParam?: string): Promise<any> {
+  async ackResponsiveDelivery(message: ResponsiveDeliveryMessage, signal?: AbortSignal, roomIdParam?: string, fence?: ResponsiveDeliveryAckFence): Promise<any> {
     if (!responsiveDeliveryKey(message)) throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
     const roomId = this.roomTarget(roomIdParam ?? (typeof (message as any).room_id === "string" ? (message as any).room_id : undefined)).roomId!.value!;
     const result = await this.withRebootstrap(
-      () => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
+      () => {
+        if (fence && (fence.sessionRevision !== this.runtime.sessionRevision || fence.agentSessionId !== this.runtime.agentSessionId)) {
+          throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
+        }
+        return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
         method: "POST",
         session: true,
         roomId,
         signal,
         retry: false,
-        body: { seq: message.seq, event_id: message.event_id },
-      }),
+          body: { seq: message.seq, event_id: message.event_id },
+        });
+      },
       signal,
     );
     // The room runtime is the display authority for delivery progress; record

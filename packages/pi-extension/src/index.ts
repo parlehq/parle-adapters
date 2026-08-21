@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.56";
+const PI_EXTENSION_VERSION = "0.7.57";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -321,7 +321,7 @@ function agentClient(ctx: any, cfg: ParleConfig): ParleAgentClient {
   clientBinding = binding;
   unsubscribeCommitGuard = client.onBeforeSessionCommit((plan) => guardPiCommit(plan));
   unsubscribeSessionRevision = client.onSessionRevision((event) => {
-    if (event.reason !== "bootstrap" && event.reason !== "rollover") return;
+    if (!["bootstrap", "rebootstrap", "rollover"].includes(event.reason)) return;
     if (client?.runtime.sessionAlias || !runtime.baselineAt) return;
     // The replaced session's server-side backlog must be skipped, never
     // injected. The boundary is the drain that runs under the flag: joining
@@ -354,11 +354,20 @@ function detachClient() {
 // the client itself.
 function guardPiCommit(plan: SessionCommitPlan) {
   if (lifecycleEnded) throw new Error("Parle Pi lifecycle has ended");
+  if (plan.reason === "rebootstrap") {
+    for (let index = pendingResponsiveMessages.length - 1; index >= 0; index -= 1) {
+      const item = pendingResponsiveMessages[index];
+      if (item.fence.cursorScope === "alias" || item.fence.sessionRevision !== (plan.previous.sessionRevision || 0) || item.fence.agentSessionId !== plan.previous.agentSessionId) continue;
+      pendingResponsiveMessages.splice(index, 1);
+      if (item.fence.roomId) deliveryController?.abandonDeferred(item.fence.roomId, item.message);
+    }
+    updatePendingResponsiveState();
+  }
   const work = pendingResponsiveMessages.map((item) => item.fence);
   if (plan.reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
     throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
   }
-  if (work.length === 0 && !responsiveFlushRunning) return;
+  if (work.length === 0 && (!responsiveFlushRunning || plan.reason === "rebootstrap")) return;
   const aliasTransfers = Boolean(plan.previous.sessionAlias
     && plan.candidate.sessionAlias === plan.previous.sessionAlias
     && plan.candidate.responsiveContinuity === "alias"
@@ -863,7 +872,7 @@ function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: 
     key,
     message: input.message,
     responsePreamble: input.preamble,
-    fence: {
+    fence: input.sourceFence ?? {
       sessionRevision: view.sessionRevision || 0,
       cursorScope: input.cursorScope,
       roomId: input.roomId,
@@ -1170,15 +1179,23 @@ function assertDeliveryFenceCurrent(fence: DeliveryFence) {
 }
 
 // Host-owned synchronous pre-commit fence plus the controller's deferred
-// completion. No await occurs between the fence check and the credentialed
-// acknowledgement, so a successor credential can never be attached to
-// exact-session work from its predecessor. Acknowledgements run per row in
-// queue order, so a crash mid-batch leaves the un-acked suffix redeliverable.
+// completion. The exact-session fence is also checked inside any acknowledgement
+// retry after rebootstrap, so a successor credential can never acknowledge
+// predecessor work. Acknowledgements run per row in queue order, so a crash
+// mid-batch leaves the un-acked suffix redeliverable.
 async function completePendingResponsive(pi: any, ctx: any, cfg: ParleConfig, item: PendingResponsiveMessage): Promise<void> {
   assertDeliveryFenceCurrent(item.fence);
   const controller = ensureDeliveryController(pi, ctx, cfg);
   const roomId = item.fence.roomId || cfg.roomId?.value || "";
-  const acked = await controller.completeDeferred(roomId, { seq: item.message.seq, event_id: item.message.event_id }, item.skip ? "intentionally_skipped" : "handled");
+  const acked = await controller.completeDeferred(
+    roomId,
+    { seq: item.message.seq, event_id: item.message.event_id },
+    item.skip ? "intentionally_skipped" : "handled",
+    item.fence.cursorScope === "alias" ? undefined : {
+      sessionRevision: item.fence.sessionRevision,
+      agentSessionId: item.fence.agentSessionId || "",
+    },
+  );
   if (!acked) {
     const roomError = controller.status().rooms.find((room) => room.roomId === roomId)?.lastError;
     throw new Error(`Parle responsive acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);

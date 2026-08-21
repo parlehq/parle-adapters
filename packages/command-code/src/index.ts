@@ -1,9 +1,9 @@
-import { ParleAccountClient, ParleAgentClient, ProfileConfigError, ResponsiveDeliveryController, ResponsiveDeliveryRecorder, processClientInstanceId, processStartedAtIso, responsiveReplyPresentation } from "@parlehq/agent-client";
+import { ParleAccountClient, ParleAgentClient, ProfileConfigError, ResponsiveDeliveryController, ResponsiveDeliveryRecorder, processClientInstanceId, processStartedAtIso, responsiveReplyPresentation, type SessionCommitPlan } from "@parlehq/agent-client";
 import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type RegisterParleTool } from "@parlehq/mcp-server/tool-runtime";
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.32";
+const ADAPTER_VERSION = "0.7.33";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 
@@ -19,6 +19,7 @@ const SYSTEM_GUIDANCE = [
 type PendingMessage = {
   roomId: string;
   message: any;
+  sourceFence?: { sessionRevision: number; cursorScope?: "session" | "alias"; sessionAlias?: string; agentSessionId: string };
   projected: unknown;
   folded: boolean;
 };
@@ -35,9 +36,11 @@ export class NativeResponsiveDelivery {
   private baselineSkipped = 0;
   private lastError?: string;
   private terminalAction?: string;
+  private unsubscribeCommitGuard?: () => void;
 
   constructor(private readonly cmd: any, private readonly client: ParleAgentClient, private readonly refreshStatus: () => void) {
     this.controller = this.createController();
+    this.unsubscribeCommitGuard = (client as any).onBeforeSessionCommit?.((plan: SessionCommitPlan) => this.guardSessionCommit(plan));
   }
 
   private createController(): ResponsiveDeliveryController {
@@ -109,7 +112,7 @@ export class NativeResponsiveDelivery {
         eventId: input.message.event_id,
       },
     });
-    this.pending.push({ roomId: input.roomId, message: input.message, projected: appended.message, folded: false });
+    this.pending.push({ roomId: input.roomId, message: input.message, sourceFence: input.sourceFence, projected: appended.message, folded: false });
     this.refreshStatus();
     return "deferred" as const;
   }
@@ -144,6 +147,8 @@ export class NativeResponsiveDelivery {
   async stop(): Promise<void> {
     this.stopped = true;
     this.controllerStopped = true;
+    this.unsubscribeCommitGuard?.();
+    this.unsubscribeCommitGuard = undefined;
     this.publish("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
   }
@@ -161,7 +166,15 @@ export class NativeResponsiveDelivery {
   async completeFolded(): Promise<void> {
     for (const entry of [...this.pending]) {
       if (!entry.folded) continue;
-      const completed = await this.controller.completeDeferred(entry.roomId, entry.message);
+      const completed = await this.controller.completeDeferred(
+        entry.roomId,
+        entry.message,
+        "handled",
+        entry.sourceFence?.cursorScope === "alias" || !entry.sourceFence ? undefined : {
+          sessionRevision: entry.sourceFence.sessionRevision,
+          agentSessionId: entry.sourceFence.agentSessionId,
+        },
+      );
       if (completed) this.pending.splice(this.pending.indexOf(entry), 1);
     }
     this.refreshStatus();
@@ -178,8 +191,30 @@ export class NativeResponsiveDelivery {
     this.refreshStatus();
   }
 
+  private guardSessionCommit(plan: SessionCommitPlan): void {
+    if (plan.reason === "rebootstrap") {
+      for (let index = this.pending.length - 1; index >= 0; index -= 1) {
+        const entry = this.pending[index];
+        const fence = entry.sourceFence;
+        if (fence?.cursorScope === "alias" || (fence && (fence.sessionRevision !== (plan.previous.sessionRevision || 0) || fence.agentSessionId !== plan.previous.agentSessionId))) continue;
+        this.pending.splice(index, 1);
+        this.controller.abandonDeferred(entry.roomId, entry.message);
+      }
+      this.refreshStatus();
+    }
+    if (this.pending.length === 0) return;
+    const aliasTransfers = Boolean(plan.previous.sessionAlias
+      && plan.candidate.sessionAlias === plan.previous.sessionAlias
+      && plan.candidate.responsiveContinuity === "alias"
+      && this.pending.every((entry) => entry.sourceFence?.cursorScope === "alias"
+        && entry.sourceFence.sessionAlias === plan.previous.sessionAlias
+        && plan.previous.rooms.some((room) => room.roomId === entry.roomId)));
+    if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while Command Code delivery is pending");
+  }
+
   private async startDelivery(): Promise<void> {
     this.stopped = false;
+    if (!this.unsubscribeCommitGuard) this.unsubscribeCommitGuard = (this.client as any).onBeforeSessionCommit?.((plan: SessionCommitPlan) => this.guardSessionCommit(plan));
     // stop() aborts the controller permanently, so a later host start() must
     // construct a fresh instance rather than silently reuse a dead loop. A
     // loop settled by a terminal wake error keeps its controller and dedupe

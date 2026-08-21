@@ -4547,7 +4547,7 @@ var ResponsiveDeliveryController = class {
   // A host reports effective handling of a deferred row. Only then is the row
   // acknowledged, and a failed acknowledgement is retried without re-running
   // the host handler.
-  async completeDeferred(roomId, message, outcome = "handled") {
+  async completeDeferred(roomId, message, outcome = "handled", fence) {
     const key = deliveryKey(roomId, message);
     if (this.seen.has(key))
       return true;
@@ -4558,7 +4558,7 @@ var ResponsiveDeliveryController = class {
       this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId);
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence);
     } catch (error) {
       this.setRoomError(roomId, "ack", error);
       return false;
@@ -4573,6 +4573,14 @@ var ResponsiveDeliveryController = class {
     else
       stat.delivered += 1;
     return true;
+  }
+  abandonDeferred(roomId, message) {
+    const key = deliveryKey(roomId, message);
+    this.deferred.delete(key);
+    this.handled.delete(key);
+    this.attempts.delete(key);
+    this.poisonedKeys.delete(key);
+    this.remember(key);
   }
   // Test seam for drain coalescing and acknowledgement retry, which are not
   // observable through the wake stream alone.
@@ -4787,9 +4795,25 @@ var ResponsiveDeliveryController = class {
       if (this.abort.signal.aborted)
         return;
       let delivery;
+      let sourceFence;
+      let release = () => {
+      };
       try {
         this.reportProgress("fetch_started", { roomId: room.roomId, trigger });
-        delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        if (typeof this.client.drainResponsiveDeliveryWithFence === "function") {
+          const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId);
+          delivery = read.delivery;
+          sourceFence = read.fence;
+          release = read.release;
+        } else {
+          sourceFence = {
+            sessionRevision: this.client.runtime.sessionRevision || 0,
+            roomId: room.roomId,
+            sessionAlias: this.client.runtime.sessionAlias,
+            agentSessionId: this.client.runtime.agentSessionId || ""
+          };
+          delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
+        }
         this.clearRoomError(room.roomId, "drain");
         const held = delivery?.held_backlog;
         this.reportProgress("fetch_success", {
@@ -4804,23 +4828,33 @@ var ResponsiveDeliveryController = class {
         this.setRoomError(room.roomId, "drain", error);
         return;
       }
-      const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
-      if (messages.length === 0)
-        return;
-      const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
-      const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
-      let progressed = 0;
-      for (const message of messages) {
-        if (this.abort.signal.aborted)
+      try {
+        const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
+        if (messages.length === 0)
           return;
-        const key = deliveryKey(room.roomId, message);
-        if (this.seen.has(key))
-          continue;
-        if (await this.processRow(room, message, key, cursorScope, preamble))
-          progressed += 1;
+        const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
+        sourceFence.cursorScope = cursorScope;
+        const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
+        let progressed = 0;
+        for (const message of messages) {
+          if (this.abort.signal.aborted)
+            return;
+          const key = deliveryKey(room.roomId, message);
+          if (this.seen.has(key))
+            continue;
+          const current = cursorScope === "alias" ? Boolean(sourceFence.sessionAlias && sourceFence.sessionAlias === this.client.runtime.sessionAlias) : sourceFence.sessionRevision === this.client.runtime.sessionRevision && sourceFence.agentSessionId === this.client.runtime.agentSessionId;
+          if (!current) {
+            this.remember(key);
+            continue;
+          }
+          if (await this.processRow(room, message, key, cursorScope, preamble, sourceFence))
+            progressed += 1;
+        }
+        if (progressed === 0)
+          return;
+      } finally {
+        release();
       }
-      if (progressed === 0)
-        return;
     }
     this.setRoomError(room.roomId, "drain", `responsive drain exceeded ${this.maxDrainBatches} batches`);
   }
@@ -4828,9 +4862,12 @@ var ResponsiveDeliveryController = class {
   // and an ack that failed must never re-run the handler: the host has already
   // acted on the row (Pi injects it), so replaying it would duplicate a visible
   // side effect. Deduplication therefore guards the handler, not the ack.
-  async processRow(room, message, key, cursorScope, preamble) {
+  async processRow(room, message, key, cursorScope, preamble, sourceFence) {
     const stat = this.stat(room.roomId);
-    let outcome = this.handled.get(key);
+    const prior = this.handled.get(key);
+    let outcome = prior?.outcome;
+    const ackCursorScope = prior?.cursorScope ?? cursorScope;
+    const ackSourceFence = prior?.sourceFence ?? sourceFence;
     if (outcome === "deferred")
       return false;
     if (outcome === void 0) {
@@ -4841,10 +4878,11 @@ var ResponsiveDeliveryController = class {
           ...room.profile ? { profile: room.profile } : {},
           ...cursorScope ? { cursorScope } : {},
           ...preamble ? { preamble } : {},
+          ...sourceFence ? { sourceFence } : {},
           message
         });
         this.clearRoomError(room.roomId, "handler");
-        this.handled.set(key, outcome);
+        this.handled.set(key, { outcome, cursorScope, sourceFence });
         this.attempts.delete(key);
         if (outcome === "deferred") {
           this.deferred.set(key, { roomId: room.roomId, message });
@@ -4859,13 +4897,16 @@ var ResponsiveDeliveryController = class {
           return true;
         this.attempts.delete(key);
         outcome = "intentionally_skipped";
-        this.handled.set(key, outcome);
+        this.handled.set(key, { outcome, cursorScope, sourceFence });
         this.poisonedKeys.add(key);
         stat.poisoned += 1;
       }
     }
     try {
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId);
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId, ackCursorScope === "alias" || !ackSourceFence ? void 0 : {
+        sessionRevision: ackSourceFence.sessionRevision,
+        agentSessionId: ackSourceFence.agentSessionId
+      });
     } catch (error) {
       this.setRoomError(room.roomId, "ack", error);
       return false;
@@ -6044,7 +6085,7 @@ var ParleAgentClient = class _ParleAgentClient {
       this.bootstrapInFlight = null;
     }
   }
-  async doBootstrapLocked(signal, preserveCursor = false, allowConfigReload = true) {
+  async doBootstrapLocked(signal, preserveCursor = false, allowConfigReload = true, reason = "bootstrap") {
     const epoch = this.lifecycleEpoch;
     const previous = { ...this.runtime };
     const oldWasLive = previous.bootstrapped && Boolean(previous.sessionHandle);
@@ -6055,7 +6096,7 @@ var ParleAgentClient = class _ParleAgentClient {
       const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
-        this.assertSessionCommitAllowed(previous, prepared.state, "bootstrap");
+        this.assertSessionCommitAllowed(previous, prepared.state, reason);
       } catch (error) {
         await this.cancelCandidateWake(prepared.wake);
         if (!prepared.state.sessionAlias)
@@ -6063,7 +6104,7 @@ var ParleAgentClient = class _ParleAgentClient {
         throw error;
       }
       const unusedPreviousWake = this.commitCandidate(prepared, epoch);
-      await this.completeCandidateHandoff(previous, prepared.state, "bootstrap", signal, unusedPreviousWake, oldWasLive);
+      await this.completeCandidateHandoff(previous, prepared.state, reason, signal, unusedPreviousWake, oldWasLive);
       this.assertExpectedAliasRecovered();
       this.clearAutomaticTerminalLatch();
       this.clearRolloverStormProtection();
@@ -6071,7 +6112,7 @@ var ParleAgentClient = class _ParleAgentClient {
       return { ...this.runtime };
     } catch (error) {
       if (allowConfigReload && error instanceof ParleApiError && error.action === "reauthorize" && this.refreshConfigIfAgentTokenChanged()) {
-        return this.doBootstrapLocked(signal, preserveCursor, false);
+        return this.doBootstrapLocked(signal, preserveCursor, false, reason);
       }
       this.consecutiveBootstrapFailures += 1;
       const api = error instanceof ParleApiError ? error : void 0;
@@ -6257,7 +6298,7 @@ var ParleAgentClient = class _ParleAgentClient {
   }
   assertSessionCommitAllowed(previous, candidate, reason) {
     const plan = { reason, previous: Object.freeze({ ...previous }), candidate: Object.freeze({ ...candidate }) };
-    if (this.activeResponsiveReads.size > 0 && reason !== "bootstrap") {
+    if (this.activeResponsiveReads.size > 0 && !["bootstrap", "rebootstrap"].includes(reason)) {
       if (reason === "profile_switch")
         throw new Error("Parle profile switch is deferred while responsive delivery is being read");
       const aliasTransfers = Boolean(previous.sessionAlias && candidate.sessionAlias === previous.sessionAlias && candidate.responsiveContinuity === "alias" && [...this.activeResponsiveReads].every((fence) => fence.cursorScope === "alias" && fence.sessionAlias === previous.sessionAlias && previous.rooms.some((room) => room.roomId === fence.roomId)));
@@ -7003,7 +7044,7 @@ var ParleAgentClient = class _ParleAgentClient {
         this.runtime.bootstrapState = "starting";
         this.publishRuntimeState();
         try {
-          await this.doBootstrapLocked(signal, true);
+          await this.doBootstrapLocked(signal, true, true, "rebootstrap");
           this.rebootstrapEpisode = { failedSessionHandle, attempted: true, healthySinceMs: this.now().getTime() };
         } catch (bootstrapError) {
           if (bootstrapError instanceof ParleApiError && ["fix_client", "reauthorize", "stop"].includes(bootstrapError.action || "")) {
@@ -7124,18 +7165,23 @@ var ParleAgentClient = class _ParleAgentClient {
       read.release();
     }
   }
-  async ackResponsiveDelivery(message, signal, roomIdParam) {
+  async ackResponsiveDelivery(message, signal, roomIdParam, fence) {
     if (!responsiveDeliveryKey(message))
       throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
     const roomId = this.roomTarget(roomIdParam ?? (typeof message.room_id === "string" ? message.room_id : void 0)).roomId.value;
-    const result = await this.withRebootstrap(() => this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
-      method: "POST",
-      session: true,
-      roomId,
-      signal,
-      retry: false,
-      body: { seq: message.seq, event_id: message.event_id }
-    }), signal);
+    const result = await this.withRebootstrap(() => {
+      if (fence && (fence.sessionRevision !== this.runtime.sessionRevision || fence.agentSessionId !== this.runtime.agentSessionId)) {
+        throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
+      }
+      return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
+        method: "POST",
+        session: true,
+        roomId,
+        signal,
+        retry: false,
+        body: { seq: message.seq, event_id: message.event_id }
+      });
+    }, signal);
     const room = this.roomRuntimes.get(roomId);
     if (room) {
       room.lastAckedSeq = Math.max(room.lastAckedSeq || 0, message.seq);
@@ -7298,7 +7344,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.56";
+var PI_EXTENSION_VERSION = "0.7.57";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -7406,7 +7452,7 @@ function agentClient(ctx, cfg) {
   clientBinding = binding;
   unsubscribeCommitGuard = client.onBeforeSessionCommit((plan) => guardPiCommit(plan));
   unsubscribeSessionRevision = client.onSessionRevision((event) => {
-    if (event.reason !== "bootstrap" && event.reason !== "rollover") return;
+    if (!["bootstrap", "rebootstrap", "rollover"].includes(event.reason)) return;
     if (client?.runtime.sessionAlias || !runtime.baselineAt) return;
     baselineNeeded = true;
     const roomIds = (client?.runtime.rooms || []).map((room) => room.roomId).filter(Boolean);
@@ -7430,11 +7476,20 @@ function detachClient() {
 }
 function guardPiCommit(plan) {
   if (lifecycleEnded) throw new Error("Parle Pi lifecycle has ended");
+  if (plan.reason === "rebootstrap") {
+    for (let index = pendingResponsiveMessages.length - 1; index >= 0; index -= 1) {
+      const item = pendingResponsiveMessages[index];
+      if (item.fence.cursorScope === "alias" || item.fence.sessionRevision !== (plan.previous.sessionRevision || 0) || item.fence.agentSessionId !== plan.previous.agentSessionId) continue;
+      pendingResponsiveMessages.splice(index, 1);
+      if (item.fence.roomId) deliveryController?.abandonDeferred(item.fence.roomId, item.message);
+    }
+    updatePendingResponsiveState();
+  }
   const work = pendingResponsiveMessages.map((item) => item.fence);
   if (plan.reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
     throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
   }
-  if (work.length === 0 && !responsiveFlushRunning) return;
+  if (work.length === 0 && (!responsiveFlushRunning || plan.reason === "rebootstrap")) return;
   const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((fence) => fence.cursorScope === "alias" && fence.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === fence.roomId)));
   if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while responsive delivery is pending, injecting, or being read");
 }
@@ -7841,7 +7896,7 @@ function queuePendingResponsive(input, key, skip) {
     key,
     message: input.message,
     responsePreamble: input.preamble,
-    fence: {
+    fence: input.sourceFence ?? {
       sessionRevision: view.sessionRevision || 0,
       cursorScope: input.cursorScope,
       roomId: input.roomId,
@@ -8102,7 +8157,15 @@ async function completePendingResponsive(pi, ctx, cfg, item) {
   assertDeliveryFenceCurrent(item.fence);
   const controller = ensureDeliveryController(pi, ctx, cfg);
   const roomId = item.fence.roomId || cfg.roomId?.value || "";
-  const acked = await controller.completeDeferred(roomId, { seq: item.message.seq, event_id: item.message.event_id }, item.skip ? "intentionally_skipped" : "handled");
+  const acked = await controller.completeDeferred(
+    roomId,
+    { seq: item.message.seq, event_id: item.message.event_id },
+    item.skip ? "intentionally_skipped" : "handled",
+    item.fence.cursorScope === "alias" ? void 0 : {
+      sessionRevision: item.fence.sessionRevision,
+      agentSessionId: item.fence.agentSessionId || ""
+    }
+  );
   if (!acked) {
     const roomError = controller.status().rooms.find((room) => room.roomId === roomId)?.lastError;
     throw new Error(`Parle responsive acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);

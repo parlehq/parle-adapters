@@ -682,6 +682,122 @@ test("hook delivery bridge defers exact-session rollover and fences stale leased
   }
 });
 
+test("hook delivery bridge drops an old in-flight drain that resolves after rebootstrap", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-stale-drain-"));
+  const wakeSink = { push: () => {} };
+  const acknowledgements = [];
+  let drains = 0;
+  let releaseDrain;
+  const blockedDrain = new Promise((resolve) => { releaseDrain = resolve; });
+  const fakeClient = {
+    runtime: bridgeRuntime({ agentSessionId: "drain-old" }),
+    ensureBootstrapped: async () => {},
+    onSessionRevision: () => () => {},
+    drainResponsiveDeliveryWithFence: async () => {
+      drains += 1;
+      const fence = {
+        sessionRevision: fakeClient.runtime.sessionRevision,
+        roomId: ROOM,
+        sessionAlias: fakeClient.runtime.sessionAlias,
+        agentSessionId: fakeClient.runtime.agentSessionId,
+      };
+      if (drains === 1) return { delivery: { delivery: { cursor_scope: "session" }, messages: [] }, fence, release: () => {} };
+      const delivery = await blockedDrain;
+      return { delivery, fence, release: () => {} };
+    },
+    ackResponsiveDelivery: async (message) => acknowledgements.push(message),
+    openWakeStream: async (signal) => heldWakeStream(wakeSink, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    wakeSink.push({ room_id: ROOM });
+    await eventually(() => drains === 2);
+    fakeClient.runtime = bridgeRuntime({ sessionRevision: 2, agentSessionId: "drain-new" });
+    releaseDrain({ delivery: { cursor_scope: "session" }, messages: [{ seq: 8, event_id: "stale-in-flight", content: "old work" }] });
+    await settle(30);
+    assert.equal(bridge.status().pending, 0, "the old drain never inherits successor identity or reaches the host queue");
+    assert.deepEqual(acknowledgements, [], "stale in-flight work is never acknowledged through the successor");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook delivery bridge carries alias leases across same-alias rollover", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-alias-rollover-"));
+  let commitGuard;
+  const acknowledgements = [];
+  const fakeClient = {
+    runtime: bridgeRuntime({ agentSessionId: "alias-old", sessionAlias: "durable", responsiveContinuity: "alias" }),
+    ensureBootstrapped: async () => {},
+    onBeforeSessionCommit: (guard) => { commitGuard = guard; return () => { commitGuard = undefined; }; },
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "alias" }, messages: [] }),
+    ackResponsiveDelivery: async (message, _signal, _roomId, fence) => {
+      assert.equal(fence, undefined, "alias work is fenced by alias continuity, not predecessor session identity");
+      acknowledgements.push(message.event_id);
+    },
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    await request(bridge.status().socketPath, { action: "bind", sessionId: "host-1" });
+    bridge.enqueue({ roomId: ROOM, cursorScope: "alias", message: { seq: 9, event_id: "alias-work", content: "durable work" } });
+    const leased = await request(bridge.status().socketPath, { action: "take", sessionId: "host-1" });
+    const previous = { ...fakeClient.runtime };
+    const candidate = { ...previous, sessionRevision: 2, agentSessionId: "alias-new", responsiveContinuity: "alias" };
+    assert.doesNotThrow(() => commitGuard({ reason: "rollover", previous, candidate }));
+    fakeClient.runtime = candidate;
+    assert.deepEqual(await request(bridge.status().socketPath, { action: "commit", sessionId: "host-1", leaseId: leased.leaseId }), { ok: true, committed: 1 });
+    assert.deepEqual(acknowledgements, ["alias-work"]);
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook delivery bridge abandons dead exact-session work before rebootstrap commit", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-dead-session-"));
+  let commitGuard;
+  const acknowledgements = [];
+  const fakeClient = {
+    runtime: bridgeRuntime({ agentSessionId: "dead-session" }),
+    ensureBootstrapped: async () => {},
+    onBeforeSessionCommit: (guard) => { commitGuard = guard; return () => { commitGuard = undefined; }; },
+    onSessionRevision: () => () => {},
+    drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "session" }, messages: [] }),
+    ackResponsiveDelivery: async (message) => acknowledgements.push(message),
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+  const bridge = new HookDeliveryBridge(fakeClient, cwd);
+  try {
+    await bridge.start();
+    await request(bridge.status().socketPath, { action: "bind", sessionId: "host-1" });
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 10, event_id: "dead-work", content: "old work" } });
+    const leased = await request(bridge.status().socketPath, { action: "take", sessionId: "host-1" });
+    assert.equal(leased.messages.length, 1);
+    const previous = { ...fakeClient.runtime };
+    const candidate = { ...previous, sessionRevision: 2, agentSessionId: "successor", responsiveContinuity: "exact_session_not_transferred" };
+
+    assert.doesNotThrow(() => commitGuard({ reason: "rebootstrap", previous, candidate }));
+    fakeClient.runtime = candidate;
+    assert.equal(bridge.status().pending, 0);
+    const staleCommit = await request(bridge.status().socketPath, { action: "commit", sessionId: "host-1", leaseId: leased.leaseId });
+    assert.equal(staleCommit.ok, false);
+    assert.match(staleCommit.error, /missing or expired/);
+    assert.deepEqual(acknowledgements, [], "abandoned dead-session work is never acknowledged");
+
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 11, event_id: "fresh-work", content: "new work" } });
+    const fresh = await request(bridge.status().socketPath, { action: "take", sessionId: "host-1" });
+    assert.deepEqual(fresh.messages.map((message) => message.event_id), ["fresh-work"]);
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
 test("hook delivery bridge renews lifecycle evidence on observed progress and tombstones shutdown", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-evidence-"));
   const wakeSink = { push: () => {} };

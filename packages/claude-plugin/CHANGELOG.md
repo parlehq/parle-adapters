@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.61 (2026-08-21)
+
+- Recover from a server-ended exact session even when hook delivery was pending or leased (#161).
+
 ## 0.9.60 (2026-08-20)
 
 - Keep responsive delivery active after a target-specific send or reply failure (#160).

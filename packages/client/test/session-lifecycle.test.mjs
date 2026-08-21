@@ -485,6 +485,39 @@ test("a retained responsive fence permits ack-triggered rebootstrap without self
   await client.endSession();
 });
 
+test("an exact-session ack fence prevents retry through a rebootstrap successor", async () => {
+  let creates = 0;
+  let ackAttempts = 0;
+  const client = new ParleAgentClient({
+    env: { ...ENV, PARLE_SESSION_ALIAS: undefined },
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions") return json(session(`fenced-ack-${++creates}`), 201);
+      if (path.endsWith("/participants")) return json({ participant_id: `p-${creates}` }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return new Response(": ready\n\n");
+      if (path.endsWith("/responsive-delivery/ack")) {
+        ackAttempts += 1;
+        return json({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session" } }, 401);
+      }
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path} ${init.method || "GET"}`);
+    },
+  });
+  await client.connect();
+  const fence = { sessionRevision: client.runtime.sessionRevision, agentSessionId: client.runtime.agentSessionId };
+  await assert.rejects(
+    client.ackResponsiveDelivery({ seq: 1, event_id: "old-work" }, undefined, undefined, fence),
+    (error) => error.code === "responsive_delivery_session_changed" && error.scope === "request",
+  );
+  assert.equal(creates, 2);
+  assert.equal(ackAttempts, 1, "the stale ack is never retried with the successor credential");
+  assert.equal(client.runtime.agentSessionId, "fenced-ack-2");
+  assert.equal(client.runtime.rolloverLatched, false);
+  assert.equal(client.runtime.rolloverFailures || 0, 0);
+  await client.endSession();
+});
+
 test("bounded rollover storm protection retries after a quiet cooldown without a hot loop", async () => {
   let nowMs = Date.parse("2026-08-01T00:10:00Z");
   let creates = 0;

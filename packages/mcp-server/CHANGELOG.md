@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.56 (2026-08-21)
+
+- Abandon dead exact-session hook leases before rebootstrap without weakening live-session rollover fences (#161).
+
 ## 0.7.55 (2026-08-20)
 
 - Keep responsive delivery active after a target-specific send or reply failure (#160).
