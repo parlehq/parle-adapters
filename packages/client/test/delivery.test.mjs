@@ -183,6 +183,8 @@ test("dead-session replacement tolerates inherited backoff and recovers fresh de
   const home = mkdtempSync(join(tmpdir(), "parle-delivery-backoff-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "parle-delivery-backoff-project-"));
   mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  // The shared token pins one unavoidable terminal fetch per room. Backoff
+  // scaling beyond this two-room fixture is tracked separately in #163.
   writeFileSync(join(home, ".parle", "profiles"), `[alpha]\nroom_id = ${ALPHA}\nagent_token = parle_agt_shared\n\n[beta]\nroom_id = ${BETA}\nagent_token = parle_agt_shared\n`, { mode: 0o600 });
 
   const wakeSink = { push: () => {} };
