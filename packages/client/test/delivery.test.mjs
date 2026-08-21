@@ -179,6 +179,116 @@ test("the post-open drain closes the startup drain-to-subscribe race", async () 
   }
 });
 
+test("dead-session replacement tolerates inherited backoff and recovers fresh delivery without another session", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-delivery-backoff-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "parle-delivery-backoff-project-"));
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(join(home, ".parle", "profiles"), `[alpha]\nroom_id = ${ALPHA}\nagent_token = parle_agt_shared\n\n[beta]\nroom_id = ${BETA}\nagent_token = parle_agt_shared\n`, { mode: 0o600 });
+
+  const wakeSink = { push: () => {} };
+  const entries = [];
+  const replacementFetches = new Map();
+  const replacementTimeline = [];
+  const handled = [];
+  const acks = [];
+  let sessions = 0;
+  let originalFetches = 0;
+  let nowMs = 0;
+  let freshPending = true;
+
+  const client = new ParleAgentClient({
+    cwd,
+    env: { HOME: home, PARLE_PROFILES: "alpha,beta" },
+    now: () => new Date(Date.parse("2026-08-21T14:54:00Z") + nowMs),
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      const sessionCredential = init.headers?.["Parle-Agent-Session"];
+      if (path === "/v/agent/sessions") {
+        sessions += 1;
+        return json({
+          agent_session_id: `session-${sessions}`,
+          session_credential: `parle_ses_${sessions}`,
+          created_at: "2026-08-21T14:54:00Z",
+          expires_at: "2026-08-22T14:54:00Z",
+          address: `@p.a.session-${sessions}`,
+        }, 201);
+      }
+      if (path.endsWith("/participants")) {
+        entries.push([sessionCredential, path.split("/")[3]]);
+        return json({ participant_id: `participant-${entries.length}` }, 201);
+      }
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path === "/v/agent/wake") return heldWakeStream(wakeSink);
+      if (path.endsWith("/responsive-delivery/ack")) {
+        const body = JSON.parse(init.body);
+        acks.push([sessionCredential, path.split("/")[3], body.event_id]);
+        freshPending = false;
+        return json({ acked: true });
+      }
+      if (path.endsWith("/responsive-delivery")) {
+        const roomId = path.split("/")[3];
+        if (sessionCredential === "parle_ses_1") {
+          originalFetches += 1;
+          return json({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session" } }, 401);
+        }
+        const attempts = (replacementFetches.get(roomId) || 0) + 1;
+        replacementFetches.set(roomId, attempts);
+        replacementTimeline.push([roomId, nowMs]);
+        if (nowMs < 1000) {
+          return json({ error: { code: "rate_limited", message: "back off", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 1000 } }, 429);
+        }
+        const messages = roomId === ALPHA && freshPending ? [{ seq: 1, event_id: "fresh-replacement-row" }] : [];
+        return json({ delivery: { cursor_scope: "session" }, held_backlog: { first_held_seq: 0, held_count: 0 }, messages });
+      }
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  const controller = new ResponsiveDeliveryController(client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+  });
+
+  try {
+    await client.connect();
+    await controller.start();
+    await eventually(() => replacementFetches.get(ALPHA) === 3 && replacementFetches.get(BETA) === 3);
+
+    assert.equal(sessions, 2, "concurrent dead-session faults share one replacement");
+    assert.equal(originalFetches, 2, "one already-in-flight fetch per room observes authoritative session death");
+    assert.equal(entries.length, 4, "each session enters each configured room once");
+    assert.deepEqual(handled, [], "nothing is handled inside the inherited backoff window");
+    assert.deepEqual(acks, [], "no stale exact-session work is acknowledged");
+    assert.ok(controller.status().rooms.every((room) => room.lastErrorDomain === "drain" && /back off/.test(room.lastError)), "the inherited 429 remains visible as historical room evidence");
+    const containedFetches = [...replacementFetches.values()];
+    assert.ok(replacementTimeline.every(([, at]) => at === 0), "all contained requests occur at the start of the modeled window");
+    nowMs = 999;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual([...replacementFetches.values()], containedFetches, "the held watcher makes no hot-loop request through the modeled backoff window");
+
+    nowMs = 1000;
+    wakeSink.push({ room_id: ALPHA });
+    await eventually(() => acks.length === 1);
+
+    assert.equal(sessions, 2, "recovery never creates a third session");
+    assert.equal(client.runtime.agentSessionId, "session-2");
+    assert.equal(client.runtime.rolloverLatched, false);
+    assert.equal(client.runtime.rolloverFailures || 0, 0);
+    assert.equal(client.runtime.lastHttpStatus, 200);
+    assert.ok(client.runtime.rooms.every((room) => (room.heldBacklogCount || 0) === 0));
+    assert.deepEqual(handled, ["fresh-replacement-row"]);
+    assert.deepEqual(acks, [["parle_ses_2", ALPHA, "fresh-replacement-row"]]);
+    assert.ok(replacementTimeline.some(([roomId, at]) => roomId === ALPHA && at === 1000), "fresh delivery resumes only at the represented server deadline");
+    const status = controller.status();
+    assert.equal(status.running, true);
+    assert.equal(status.rooms.find((room) => room.roomId === ALPHA).lastError, undefined, "same-room success clears the recovered drain error");
+    assert.match(status.rooms.find((room) => room.roomId === BETA).lastError, /back off/, "another room's success does not erase historical failure evidence");
+  } finally {
+    await controller.stop();
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("target-specific send and reply failures cannot poison responsive delivery", async () => {
   const h = harness();
   const handled = [];
