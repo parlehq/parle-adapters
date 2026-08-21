@@ -948,6 +948,7 @@ export class ParleAgentClient {
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   private automaticTerminalBinding?: string;
+  private readonly recordedTerminalErrors = new WeakSet<object>();
   private missingAliasWarning?: string;
   readonly registryCatalogPath: string;
 
@@ -1092,8 +1093,7 @@ export class ParleAgentClient {
     const api = error instanceof ParleApiError ? error : undefined;
     if (!api || !["fix_client", "reauthorize", "stop"].includes(api.action || "")) return;
     // A request-scoped error is about that one call, not the binding. Latching
-    // on it would let a caller mistake such as an omitted roomId stop this
-    // session's automatic work, including its wake stream, for good.
+    // on it would let a caller mistake stop this session's automatic work.
     if (api.scope === "request") return;
     const sameBinding = this.automaticTerminalBinding === this.bindingKey();
     this.automaticTerminalBinding = this.bindingKey();
@@ -1107,6 +1107,25 @@ export class ParleAgentClient {
       occurredAt: this.now().toISOString(),
       streak: sameBinding ? (this.runtime.terminalCause?.streak || 0) + 1 : 1,
     };
+    this.recordedTerminalErrors.add(api);
+  }
+
+  private recordRoomOperationTerminalCause(error: unknown, roomId: string, requestLocal = false): void {
+    const api = error instanceof ParleApiError ? error : undefined;
+    // An empty room means setup or bootstrap failed before the operation ran;
+    // bootstrap already owns any binding-wide terminal record for that call.
+    if (!api || !roomId || requestLocal || this.recordedTerminalErrors.has(api) || api.scope === "request" || !["fix_client", "reauthorize", "stop"].includes(api.action || "")) return;
+    if (api.scope === "agent_token" || api.scope === "agent_session") {
+      this.recordTerminalCause(error);
+      return;
+    }
+    const room = this.roomRuntimes.get(roomId);
+    const cause = terminalCauseFor(api, this.now().toISOString());
+    if (!room || !cause) return;
+    room.state = "degraded";
+    room.lastError = redactString(api.message);
+    room.terminalCause = cause;
+    this.publishRoomRuntimes();
   }
 
   // Disk-backed credentials are the one safe automatic recovery input. A
@@ -2334,7 +2353,7 @@ export class ParleAgentClient {
     };
   }
 
-  async withRebootstrap<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  async withRebootstrap<T>(fn: () => Promise<T>, signal?: AbortSignal, terminalOwner: "automatic" | "request" = "automatic"): Promise<T> {
     this.resetRebootstrapEpisodeIfHealthy();
     await this.ensureBootstrapped(signal);
     try {
@@ -2343,7 +2362,7 @@ export class ParleAgentClient {
       return result;
     } catch (error: any) {
       if (!(error instanceof ParleApiError) || error.action !== "rebootstrap") {
-        this.recordTerminalCause(error);
+        if (terminalOwner === "automatic") this.recordTerminalCause(error);
         throw error;
       }
       const failedSessionHandle = this.runtime.sessionHandle || "<missing-session>";
@@ -2591,7 +2610,7 @@ export class ParleAgentClient {
         const deliveryStatus = summarizeSendDelivery(result);
         const clientWarnings = sendAttentionWarnings(result);
         return { ...result, roomId, idempotencyKey, ...(clientWarnings ? { clientWarnings } : {}), ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
-      }, signal));
+      }, signal, "request"));
       if (params.to && details?.routing?.mode === "direct" && details.routing.target_level !== "none" && details.routing.continuity !== "none") {
         try {
           enrollKnownAddress(this.registryCatalogPath, {
@@ -2605,6 +2624,7 @@ export class ParleAgentClient {
       return details;
     } catch (error: any) {
       if (error instanceof ParleApiError) {
+        this.recordRoomOperationTerminalCause(error, roomId, error.code === "address_not_deliverable");
         if (error.code === "address_not_deliverable" && params.to && roomId) {
           try {
             shortenKnownAddressAfterUnprocessable(this.registryCatalogPath, {
@@ -2641,9 +2661,10 @@ export class ParleAgentClient {
         });
         const deliveryStatus = summarizeSendDelivery(result);
         return { ...result, roomId, idempotencyKey, ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };
-      }, signal));
+      }, signal, "request"));
     } catch (error: any) {
       if (error instanceof ParleApiError) {
+        this.recordRoomOperationTerminalCause(error, roomId);
         return { ok: false, roomId, ...parleApiErrorFields(error), idempotencyKey, error: redactString(error.message) };
       }
       throw error;

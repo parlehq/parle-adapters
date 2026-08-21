@@ -930,6 +930,55 @@ test("send reuses generated idempotency key across agent-session rebootstrap", a
   assert.equal(client.runtime.rooms[0].cursor, 44);
 });
 
+test("send bootstrap and request failures each record exactly one terminal episode", async () => {
+  let sessionAttempts = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "revoked-token" },
+    fetch: async (url) => {
+      const path = String(url);
+      if (path.endsWith("/v/agent/sessions")) {
+        sessionAttempts += 1;
+        if (sessionAttempts === 1) return json({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }, 401);
+        return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", expires_at: "later" }, 201);
+      }
+      if (path.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (path.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (path.endsWith("/messages")) return json({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }, 401);
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  const bootstrapFailure = await client.send({ body: "first" });
+  assert.equal(bootstrapFailure.code, "invalid_agent_token");
+  assert.equal(client.runtime.terminalCause?.streak, 1);
+
+  const requestFailure = await client.send({ body: "second" });
+  assert.equal(requestFailure.code, "invalid_agent_token");
+  assert.equal(client.runtime.terminalCause?.streak, 1, "successful bootstrap clears the prior episode before the request failure relatches");
+  await assert.rejects(() => client.openWakeStream(), { code: "invalid_agent_token" });
+});
+
+test("a failed request-triggered rebootstrap records one terminal episode", async () => {
+  let sessionAttempts = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "token" },
+    fetch: async (url) => {
+      const path = String(url);
+      if (path.endsWith("/v/agent/sessions")) {
+        sessionAttempts += 1;
+        if (sessionAttempts === 1) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", expires_at: "later" }, 201);
+        return json({ error: { code: "invalid_agent_token", message: "revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }, 401);
+      }
+      if (path.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (path.includes("/projection")) return json({ watermark: 0, messages: [] });
+      if (path.endsWith("/messages")) return json({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session" } }, 401);
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+  const result = await client.send({ body: "hello" });
+  assert.equal(result.code, "invalid_agent_token");
+  assert.equal(client.runtime.terminalCause?.streak, 1);
+});
+
 test("send maps bootstrap setup errors into structured send failure", async () => {
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1" },

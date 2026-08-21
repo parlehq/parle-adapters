@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.55 (2026-08-20)
+
+- Keep responsive delivery active after a target-specific send or reply failure (#160).
+
 ## 0.7.54 (2026-08-19)
 
 - Log bounded responsive-delivery stages through bridge queue readiness without message content (#880).

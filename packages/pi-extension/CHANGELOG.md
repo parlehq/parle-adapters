@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.56 (2026-08-20)
+
+- Keep responsive delivery active after a target-specific send or reply failure (#160).
+
 ## 0.7.55 (2026-08-19)
 
 - Refresh the bundled client with responsive-delivery stage correlation (#880).

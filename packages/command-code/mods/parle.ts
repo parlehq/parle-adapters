@@ -5882,6 +5882,7 @@ var ParleAgentClient = class _ParleAgentClient {
   // This latch is deliberately consulted only by automatic work. Explicit
   // connect/read/send and raw requestJson calls remain recovery paths.
   automaticTerminalBinding;
+  recordedTerminalErrors = /* @__PURE__ */ new WeakSet();
   missingAliasWarning;
   registryCatalogPath;
   constructor(options = {}) {
@@ -6027,6 +6028,24 @@ var ParleAgentClient = class _ParleAgentClient {
       occurredAt: this.now().toISOString(),
       streak: sameBinding ? (this.runtime.terminalCause?.streak || 0) + 1 : 1
     };
+    this.recordedTerminalErrors.add(api);
+  }
+  recordRoomOperationTerminalCause(error51, roomId, requestLocal = false) {
+    const api = error51 instanceof ParleApiError ? error51 : void 0;
+    if (!api || !roomId || requestLocal || this.recordedTerminalErrors.has(api) || api.scope === "request" || !["fix_client", "reauthorize", "stop"].includes(api.action || ""))
+      return;
+    if (api.scope === "agent_token" || api.scope === "agent_session") {
+      this.recordTerminalCause(error51);
+      return;
+    }
+    const room = this.roomRuntimes.get(roomId);
+    const cause = terminalCauseFor(api, this.now().toISOString());
+    if (!room || !cause)
+      return;
+    room.state = "degraded";
+    room.lastError = redactString(api.message);
+    room.terminalCause = cause;
+    this.publishRoomRuntimes();
   }
   // Disk-backed credentials are the one safe automatic recovery input. A
   // changed binding clears only the automatic gate, never suppressing an
@@ -7180,7 +7199,7 @@ var ParleAgentClient = class _ParleAgentClient {
       next: SESSION_ESTABLISHED_NEXT_GUIDANCE
     };
   }
-  async withRebootstrap(fn, signal) {
+  async withRebootstrap(fn, signal, terminalOwner = "automatic") {
     this.resetRebootstrapEpisodeIfHealthy();
     await this.ensureBootstrapped(signal);
     try {
@@ -7189,7 +7208,8 @@ var ParleAgentClient = class _ParleAgentClient {
       return result2;
     } catch (error51) {
       if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap") {
-        this.recordTerminalCause(error51);
+        if (terminalOwner === "automatic")
+          this.recordTerminalCause(error51);
         throw error51;
       }
       const failedSessionHandle = this.runtime.sessionHandle || "<missing-session>";
@@ -7419,7 +7439,7 @@ var ParleAgentClient = class _ParleAgentClient {
         const deliveryStatus = summarizeSendDelivery(result2);
         const clientWarnings = sendAttentionWarnings(result2);
         return { ...result2, roomId, idempotencyKey, ...clientWarnings ? { clientWarnings } : {}, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
-      }, signal));
+      }, signal, "request"));
       if (params.to && details?.routing?.mode === "direct" && details.routing.target_level !== "none" && details.routing.continuity !== "none") {
         try {
           enrollKnownAddress(this.registryCatalogPath, {
@@ -7434,6 +7454,7 @@ var ParleAgentClient = class _ParleAgentClient {
       return details;
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
+        this.recordRoomOperationTerminalCause(error51, roomId, error51.code === "address_not_deliverable");
         if (error51.code === "address_not_deliverable" && params.to && roomId) {
           try {
             shortenKnownAddressAfterUnprocessable(this.registryCatalogPath, {
@@ -7470,9 +7491,10 @@ var ParleAgentClient = class _ParleAgentClient {
         });
         const deliveryStatus = summarizeSendDelivery(result2);
         return { ...result2, roomId, idempotencyKey, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
-      }, signal));
+      }, signal, "request"));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
+        this.recordRoomOperationTerminalCause(error51, roomId);
         return { ok: false, roomId, ...parleApiErrorFields(error51), idempotencyKey, error: redactString(error51.message) };
       }
       throw error51;
@@ -22695,7 +22717,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.31";
+var ADAPTER_VERSION = "0.7.32";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

@@ -970,7 +970,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.55" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.56" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1656,7 +1656,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.55");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.56");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2884,23 +2884,42 @@ test("mid-run unpinned rebootstrap baselines the new session before the next del
   assert.ok((__testing.runtimeState().baselineSkipped || 0) >= 1);
 });
 
-test("parle_send treats direct addressing failures as non-retryable with hint", async () => {
-  const harness = installSendHarness(async (url) => {
+test("parle_send keeps the armed watcher healthy after a direct addressing failure", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-send\nPARLE_ROOM_AGENT_TOKEN=token-send\n");
+  const wakeControllers = [];
+  globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u.endsWith("/v/rooms/room-send/messages")) {
-      return new Response(JSON.stringify({ error: { code: "address_not_deliverable", message: "address not deliverable" } }), { status: 422 });
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-send", session_credential: "parle_ses_send", expires_at: "2099-01-01T00:00:00Z" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-send" }), { status: 201 });
+    if (u.includes("/projection") || u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
+    if (u.endsWith("/v/agent/wake")) {
+      return new Response(new ReadableStream({ start(controller) { wakeControllers.push(controller); } }), { status: 200 });
     }
-    return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-  });
+    if (u.endsWith("/v/rooms/room-send/messages")) {
+      return new Response(JSON.stringify({ error: { code: "address_not_deliverable", message: "address not deliverable", action: "fix_client", retryable: false, scope: "room_access" } }), { status: 422 });
+    }
+    throw new Error(`unexpected ${u}`);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  await eventually(() => wakeControllers.length === 1);
 
   const result = await harness.call("parle_send", { body: "hello", to: "@missing.agent", idempotencyKey: "idem-3" });
-
   assert.equal(result.details.ok, false);
   assert.equal(result.details.retryable, false);
   assert.equal(result.details.idempotencyKey, "idem-3");
   assert.match(result.details.hint, /without local peer tagging/);
   assert.match(result.details.hint, /server is the sole deliverability authority/);
   assert.match(result.details.error, /address not deliverable/);
+
+  const nextWake = await __testing.agentClient().openWakeStream();
+  assert.equal(nextWake.status, 200, "the next watcher edge remains openable");
+  assert.equal(wakeControllers.length, 2);
+  const status = await harness.call("parle_status");
+  assert.equal(status.details.runtime.terminalCause, undefined);
+  assert.equal(status.details.runtime.watcherState, "watching", "Pi never reuses the failed send as watcher state");
+  await nextWake.body?.cancel();
+  wakeControllers[0].close();
 });
 
 test("Pi delegates delivery summary wording and precedence to agent client", async () => {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.55 (2026-08-20)
+
+- Keep responsive delivery active after a target-specific send or reply failure (#160).
+
 ## 0.8.54 (2026-08-19)
 
 - Add content-free responsive-delivery stage evidence through hook bridge queue readiness (#880).

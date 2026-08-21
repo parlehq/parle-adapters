@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.32 (2026-08-20)
+
+- Keep responsive delivery active after a target-specific send or reply failure (#160).
+
 ## 0.7.31 (2026-08-19)
 
 - Distinguish wake hints from stream opens and bundle responsive-delivery stage correlation (#880).

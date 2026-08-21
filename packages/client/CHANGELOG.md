@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.48 (2026-08-20)
+
+- Prevent target-specific send and reply failures from latching healthy responsive delivery (#160).
+
 ## 0.8.47 (2026-08-19)
 
 - Emit content-free wake, trigger, fetch, handling, and acknowledgement correlation for responsive-delivery diagnosis (#880).

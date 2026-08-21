@@ -115,6 +115,25 @@ function harness({ rooms = { [ALPHA]: [], [BETA]: [] }, profiles = "alpha,beta",
         messages,
       });
     }
+    if (path.endsWith("/messages")) {
+      const body = JSON.parse(init.body);
+      if (body.addressing?.to === "@p.a.stale") {
+        return json({ error: { code: "address_not_deliverable", message: "address not deliverable", action: "fix_client", retryable: false, scope: "room_access" } }, 422);
+      }
+      if (body.addressing?.to === "@p.a.revoked") {
+        return json({ error: { code: "participant_revoked", message: "participant revoked", action: "stop", retryable: false, scope: "room_access" } }, 403);
+      }
+      if (body.addressing?.to === "@p.a.bad-token") {
+        return json({ error: { code: "invalid_agent_token", message: "token revoked", action: "reauthorize", retryable: false, scope: "agent_token" } }, 401);
+      }
+      if (body.addressing?.to === "@p.a.bad-session") {
+        return json({ error: { code: "agent_session_alias_conflict", message: "session invalid", action: "fix_client", retryable: false, scope: "agent_session" } }, 409);
+      }
+      return json({ event_id: "sent", seq: 2, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" } }, 201);
+    }
+    if (path.endsWith("/replies")) {
+      return json({ error: { code: "not_found", message: "reply route unavailable", action: "stop", retryable: false, scope: "request" } }, 404);
+    }
     if (path.endsWith("/end")) return new Response(null, { status: 204 });
     throw new Error(`unexpected ${path}`);
   };
@@ -157,6 +176,61 @@ test("the post-open drain closes the startup drain-to-subscribe race", async () 
   } finally {
     await controller.stop();
     h.cleanup();
+  }
+});
+
+test("target-specific send and reply failures cannot poison responsive delivery", async () => {
+  const h = harness();
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+  });
+  try {
+    await h.client.connect();
+    await controller.start();
+    const [failed, accepted] = await Promise.all([
+      h.client.send({ roomId: ALPHA, to: "@p.a.stale", body: "stale" }),
+      h.client.send({ roomId: ALPHA, to: "@p.a.live", body: "live" }),
+    ]);
+    const reply = await h.client.submitReply({ roomId: ALPHA, replyRouteId: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61", body: "reply" });
+    assert.equal(failed.code, "address_not_deliverable");
+    assert.equal(accepted.event_id, "sent");
+    assert.equal(reply.code, "not_found");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.client.runtime.terminalCause, undefined, "request failures never become a delayed watcher terminal cause");
+
+    h.queues.set(ALPHA, [{ seq: 3, event_id: "after-failed-send" }]);
+    h.wake({ room_id: ALPHA });
+    await eventually(() => handled.includes("after-failed-send"));
+    assert.equal(h.wakeOpens(), 1, "the original healthy watcher remains active");
+
+    const revoked = await h.client.send({ roomId: ALPHA, to: "@p.a.revoked", body: "room" });
+    assert.equal(revoked.code, "participant_revoked");
+    assert.deepEqual(h.client.runtime.rooms.map(({ roomId, state }) => [roomId, state]), [[ALPHA, "degraded"], [BETA, "ready"]]);
+    assert.equal(h.client.runtime.terminalCause, undefined, "a room failure degrades only its room");
+
+    const credential = await h.client.send({ roomId: BETA, to: "@p.a.bad-token", body: "credential" });
+    assert.equal(credential.code, "invalid_agent_token");
+    assert.equal(h.client.runtime.terminalCause?.code, "invalid_agent_token", "a credential failure still gates the shared binding");
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("explicit sends preserve shared credential and session terminal gates", async () => {
+  for (const [to, code] of [["@p.a.bad-token", "invalid_agent_token"], ["@p.a.bad-session", "agent_session_alias_conflict"]]) {
+    const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha" });
+    try {
+      await h.client.connect();
+      const result = await h.client.send({ roomId: ALPHA, to, body: "terminal" });
+      assert.equal(result.code, code);
+      assert.equal(h.client.runtime.terminalCause?.code, code);
+      await assert.rejects(() => h.client.openWakeStream(), { code });
+      assert.equal(h.wakeOpens(), 0, "a terminal binding fails closed without another wake request");
+    } finally {
+      h.cleanup();
+    }
   }
 });
 
