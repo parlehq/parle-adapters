@@ -970,7 +970,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.57" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.58" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1418,8 +1418,8 @@ test("parle_switch_profile prepares the target before atomically replacing room 
       order.push("target-session");
       return new Response(JSON.stringify({ agent_session_id: "as-target", session_credential: "parle_ses_target", session_handle: "target", expires_at: "later", address: "@p.a.target" }), { status: 201 });
     }
-    if (u.endsWith(`/v/rooms/${oldRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-old", room_handle: "old-room" }), { status: 201 });
-    if (u.endsWith(`/v/rooms/${newRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-target", room_handle: "target-room" }), { status: 201 });
+    if (u.endsWith(`/v/rooms/${oldRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-old", room_handle: "old-room", generation: "g0", baseline_seq: 5 }), { status: 201 });
+    if (u.endsWith(`/v/rooms/${newRoom}/participants`)) return new Response(JSON.stringify({ participant_id: "part-target", room_handle: "target-room", generation: "g0", baseline_seq: 42 }), { status: 201 });
     if (u.includes(`/v/rooms/${oldRoom}/inbound`)) return new Response(JSON.stringify({ watermark: 7, messages: [{ seq: 7, event_id: "same-event", participant_id: "old-peer", content: "old room" }] }), { status: 200 });
     if (u.includes(`/v/rooms/${oldRoom}/projection`)) return new Response(JSON.stringify({ watermark: 5, messages: [] }), { status: 200 });
     if (u.includes(`/v/rooms/${newRoom}/projection`)) {
@@ -1485,7 +1485,7 @@ function aliasSwitchProject(options = {}) {
     if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
       return new Response(JSON.stringify({ agent_session_id: target ? "as-target" : "as-old", session_credential: target ? "parle_ses_target" : "parle_ses_old", session_handle: target ? "target" : "old", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: target ? "@p.a.target" : "@p.a.old" }), { status: 201 });
     }
-    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: target ? "part-target" : "part-old", room_handle: path.includes(newRoom) ? "target-room" : "old-room" }), { status: 201 });
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: target ? "part-target" : "part-old", room_handle: path.includes(newRoom) ? "target-room" : "old-room", generation: "g0", baseline_seq: path.includes(newRoom) ? 42 : 5 }), { status: 201 });
     if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: path.includes(newRoom) ? 42 : 5, messages: [] }), { status: 200 });
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
     if (path === "/v/agent/session-aliases/main") {
@@ -1656,7 +1656,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.57");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.58");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2455,7 +2455,7 @@ test("parle_inbox reads the inbound attention surface", async () => {
   const harness = installSendHarness(async (url) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-inbox", session_credential: "parle_ses_" + String("inbox-session"), session_handle: "inbox-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.inbox-session" }), { status: 201 });
-    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-inbox" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-inbox", generation: "g0", baseline_seq: 3 }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 3, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) {
       inboxURL = u;
@@ -2474,17 +2474,17 @@ test("parle_inbox reads the inbound attention surface", async () => {
   assert.match(result.details.note, /no target-responsive work for that peer/);
   assert.match(result.details.note, /do not guess from participant_id or provenance fields/);
   assert.match(harness.tools.parle_inbox.description, /Manual inbox reads and responsive delivery are distinct observation paths/);
-  assert.match(harness.tools.parle_inbox.description, /An empty messages array means no inbox rows were disclosed through the returned watermark/);
+  assert.match(harness.tools.parle_inbox.description, /An empty messages array means no inbox rows were disclosed in this page/);
   assert.match(harness.tools.parle_inbox.description, /parle_send with to set exactly to that message's author\.address/);
 });
 
-async function runPiCursorRead({ cursor, messages = [], watermark = 20, params = {} }) {
+async function runPiCursorRead({ cursor, messages = [], watermark = 20, nextSinceSeq, params = {} }) {
   const harness = installSendHarness(async (url) => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-cursor", session_credential: "parle_ses_cursor-session", session_handle: "cursor-session", expires_at: "2099-07-04T00:00:00Z", address: "@p.a.cursor-session" }), { status: 201 });
-    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-cursor" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-cursor", generation: "g0", baseline_seq: 7 }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
-    if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark, messages }), { status: 200 });
+    if (u.includes("/inbound")) return new Response(JSON.stringify({ generation: "g0", watermark, messages, has_more: false, ...(typeof nextSinceSeq === "number" ? { next_since_seq: nextSinceSeq } : {}) }), { status: 200 });
     throw new Error("unexpected " + u);
   });
   await harness.call("parle_status");
@@ -2507,8 +2507,13 @@ test("Pi read cursor semantics stay aligned with the shared-client contract", as
   const emptyExplicit = await runPiCursorRead({ messages: [], watermark: 20, params: { sinceSeq: 2, advanceCursor: true } });
   assert.equal(emptyExplicit.result.details.cursor, 7);
 
+  // A page with no rows moves the cursor only by its own progress. The
+  // participant-wide watermark is never a cursor (ADR-0106 item 3).
   const emptyDefault = await runPiCursorRead({ messages: [], watermark: 20 });
-  assert.equal(emptyDefault.result.details.cursor, 20);
+  assert.equal(emptyDefault.result.details.cursor, 7);
+
+  const progressOnly = await runPiCursorRead({ messages: [], watermark: 20, nextSinceSeq: 15 });
+  assert.equal(progressOnly.result.details.cursor, 15);
 
   const monotonic = await runPiCursorRead({ cursor: 12, messages: [{ seq: 8 }, { seq: 9 }], params: { sinceSeq: 2, advanceCursor: true } });
   assert.equal(monotonic.result.details.cursor, 12);
@@ -3097,7 +3102,7 @@ function multiRoomPiProject({ env = "PARLE_WATCH_ENABLED=0\nPARLE_PROFILES=alpha
       sessionCreates += 1;
       return new Response(JSON.stringify({ agent_session_id: "as-multi", session_credential: "parle_ses_multi", session_handle: "multi", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.multi" }), { status: 201 });
     }
-    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: path.includes(roomA) ? "part-a" : "part-b", room_handle: path.includes(roomA) ? "room-alpha" : "room-beta" }), { status: 201 });
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: path.includes(roomA) ? "part-a" : "part-b", room_handle: path.includes(roomA) ? "room-alpha" : "room-beta", generation: "g0", baseline_seq: path.includes(roomA) ? 10 : 20 }), { status: 201 });
     if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: path.includes(roomA) ? 10 : 20, messages: [] }), { status: 200 });
     if (path.includes("/inbound")) return new Response(JSON.stringify({ watermark: path.includes(roomA) ? 11 : 21, messages: [{ seq: path.includes(roomA) ? 11 : 21, event_id: "row", payload: { body: "x" } }] }), { status: 200 });
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });

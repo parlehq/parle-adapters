@@ -34,6 +34,19 @@ export const DEFAULT_API_BASE = "https://api.parle.sh";
 export const DEFAULT_WAKE_BASE = "https://wake.parle.sh";
 export const DEFAULT_READ_MESSAGE_LIMIT = 50;
 export const READ_LIMIT_BYTES = 256 * 1024;
+// Floor for a caller-supplied byte budget. capProjectionMessages truncates a
+// row's content to at least 512 bytes before giving up on it, so a budget under
+// that cannot express "fit fewer bytes" — it only decides whether the row is
+// surfaced whole. Clamping keeps a tiny or accidental limitBytes from turning
+// every read into a single oversized row.
+export const MIN_READ_LIMIT_BYTES = 1024;
+// ADR-0106: a room read returns one server-owned candidate page, so deep
+// catch-up needs several round trips. Draining is always EXPLICIT and always
+// bounded: no read path loops on has_more on its own, and the explicit drain
+// stops at this many pages rather than pulling an unbounded transcript into
+// process or model context. Exhausting the cap is an error, never a silently
+// truncated prefix.
+export const DEFAULT_MAX_DRAIN_PAGES = 10;
 
 export function cleanupLocalAdapterState(cwd: string, now = new Date()): void {
   for (const cleanup of [
@@ -44,7 +57,7 @@ export function cleanupLocalAdapterState(cwd: string, now = new Date()): void {
   }
 }
 export const INBOX_REPLY_GUIDANCE = "For each returned message you answer, call parle_send with to set exactly to that message's author.address. Omitting to creates an unaddressed durable room row but no target-responsive work for that peer. If author.address is absent, do not guess from participant_id or provenance fields.";
-export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed through the returned watermark. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
+export const INBOX_COMPLETENESS_GUIDANCE = "Manual inbox reads and responsive delivery are distinct observation paths. An empty messages array means no inbox rows were disclosed in this page. If held_backlog.held_count is positive, the result is non-exhaustive: a held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist; the room-level marker does not prove any held row is inbound or responsive-eligible.";
 export const SEND_ATTENTION_GUIDANCE = "An explicitly known exact address may be attempted directly; the server is the sole deliverability authority. Successful sends return server-authored routing and attention. attention.inbound_scope describes inbound eligibility; attention.responsive_scope describes autonomous responsive eligibility, not wake, injection, acknowledgement, or action. Omitting to creates an unaddressed durable room row with no target-responsive work. Broadcast is likewise not a substitute for direct addressing when acknowledgement or action is required. Treat any reported responsive_scope other than target conservatively and do not infer attention from addressing or moderation. Room wake SSE hints are broad and advisory.";
 
 const RESERVED_PROTOCOL_HEADERS = new Set([
@@ -192,8 +205,20 @@ export type ReadParams = {
   sinceSeq?: number;
   waitSeconds?: number;
   limitMessages?: number;
+  // Local byte budget for the rows this call surfaces, clamped to
+  // [MIN_READ_LIMIT_BYTES, READ_LIMIT_BYTES]. A drain passes its REMAINING
+  // aggregate budget so the caps bound the whole drain, not each page
+  // separately.
+  limitBytes?: number;
   advanceCursor?: boolean;
   roomId?: string;
+};
+
+// A drain reads pages from the cursor while the server reports has_more. Both
+// bounds are the client's: maxPages caps the round trips (hard, and exhausting
+// it is an error) and limitMessages caps what reaches model context.
+export type DrainParams = ReadParams & {
+  maxPages?: number;
 };
 
 export type SendParams = {
@@ -219,6 +244,26 @@ export type RoomRuntime = {
   roomHandle?: string;
   participantId: string;
   cursor: number;
+  // The stream generation the cursor belongs to (#766), learned at room entry
+  // and re-checked on every read. A different generation retires the cursor.
+  streamGeneration?: string;
+  // True once this room's cursor came from a server position (the entry
+  // baseline) rather than from the uninitialized zero. An established cursor
+  // is preserved across rebootstrap and recovery; a cursor that was never
+  // established is the only one an entry baseline may replace, which is what
+  // keeps recovery from replaying a room from zero.
+  cursorEstablished?: boolean;
+  // Set when a stream reset retired this room's cursor at ROOM ENTRY, where
+  // there is no read result to carry the fact. The next read reports it and
+  // clears it, so the caller learns its position moved for a reason.
+  pendingStreamReset?: boolean;
+  // Generations this room HELD and then retired, newest last and bounded. Reads
+  // overlap, so a response minted before a reset can land after it: without this
+  // fence its generation looks like just another change and would drag the
+  // cursor and the stored generation back to retired coordinates.
+  retiredGenerations?: string[];
+  // How many responses this room discarded as stale. Diagnostic only.
+  staleGenerationReads?: number;
   state: "ready" | "degraded";
   lastError?: string;
   unreadCount?: number;
@@ -770,14 +815,137 @@ export function parseSSEBlocks(buffer: string): { events: Array<{ event: string;
   return { events, rest };
 }
 
-export function updateCursorFromMessages(cursor: number, messages: unknown[], watermark?: unknown): number {
+function maxSurfacedSeq(cursor: number, messages: unknown[]): number {
   let next = cursor || 0;
   for (const message of messages) {
     const seq = typeof (message as any)?.seq === "number" ? (message as any).seq : 0;
     if (seq > next) next = seq;
   }
-  if (messages.length === 0 && typeof watermark === "number" && watermark > next) next = watermark;
   return next;
+}
+
+export function pageProgress(response: unknown): number | undefined {
+  const next = (response as any)?.next_since_seq;
+  return Number.isSafeInteger(next) && next >= 0 ? next : undefined;
+}
+
+export function pageHasMore(response: unknown): boolean {
+  return (response as any)?.has_more === true;
+}
+
+/**
+ * The ADR-0106 continuation rule. A response is ONE bounded page of the delta
+ * after the cursor, and `next_since_seq` is that page's own scan progress:
+ * following it consumes blocked, own-authored and differently addressed rows
+ * without ever passing an allowed row the page did not return.
+ *
+ * The returned `watermark` is never a cursor. It is participant-wide disclosure
+ * authorization that a concurrent read for the same participant can push past
+ * the rows this response carried, so adopting it would skip undisclosed rows.
+ *
+ * Two cases fall back to the returned rows themselves:
+ *  - `droppedRows`: the local response cap surfaced fewer rows than the server
+ *    returned, so progress must stop at the last row the caller actually saw.
+ *  - no `next_since_seq` at all (ADR-0106 item 9, the permanent rollback
+ *    valve): the envelope is a complete delta, and its next cursor is the
+ *    response-local max(current cursor, max returned seq).
+ */
+export function nextCursorFromPage(cursor: number, messages: unknown[], response?: unknown, droppedRows = false): number {
+  const surfaced = maxSurfacedSeq(cursor, messages);
+  if (droppedRows) return surfaced;
+  const progress = pageProgress(response);
+  return progress !== undefined && progress > surfaced ? progress : surfaced;
+}
+
+// ADR-0106 item 7: room entry returns the held-safe starting position for this
+// participant — at room head, or parked immediately before the first retained
+// held row, and never below the retention floor. It is a CURSOR, never a
+// watermark, and it is the only thing a fresh room read needs: replaying
+// retained history to discover a starting point is what made the first read of
+// a deep room cost the whole transcript.
+function entryBaselineSeq(entry: any): number {
+  const baseline = entry?.baseline_seq;
+  return Number.isSafeInteger(baseline) && baseline >= 0 ? baseline : 0;
+}
+
+// How many retired generations a room remembers. The fence only has to outlive
+// the requests that were already in flight when a reset landed, so a small
+// window is enough and keeps a long-lived room from accumulating strings.
+const MAX_RETIRED_GENERATIONS = 8;
+
+/**
+ * Record a response's generation as the room's current one, RETIRING the
+ * generation it replaces. Every adoption goes through here, so the fence below
+ * is complete by construction rather than by remembering to update it.
+ */
+function adoptStreamGeneration(room: RoomRuntime, source: any): void {
+  const generation = source?.generation;
+  if (typeof generation !== "string" || !generation || generation === room.streamGeneration) return;
+  if (room.streamGeneration) {
+    const retired = (room.retiredGenerations ?? []).filter((entry) => entry !== room.streamGeneration);
+    retired.push(room.streamGeneration);
+    room.retiredGenerations = retired.slice(-MAX_RETIRED_GENERATIONS);
+  }
+  room.streamGeneration = generation;
+}
+
+/**
+ * Whether a response belongs to a generation this room already retired.
+ *
+ * Reads overlap. A request minted before a reset can land after the reset was
+ * adopted, and its generation differs from the stored one exactly the way a
+ * genuine change does — so without this fence a delayed response would be read
+ * as another reset and would drag the cursor and the stored generation back to
+ * coordinates that no longer exist. Fencing on what the room has HELD is enough
+ * to tell "stale" from "new to us"; the two never look alike, because a
+ * generation the room never held cannot be in this list.
+ */
+function isStaleGeneration(room: RoomRuntime, source: any): boolean {
+  const generation = source?.generation;
+  return typeof generation === "string" && Boolean(generation)
+    && generation !== room.streamGeneration
+    && (room.retiredGenerations ?? []).includes(generation);
+}
+
+/**
+ * Whether a response's stream generation retires the cursor this room holds
+ * (#766). It must be asked BEFORE the new generation is recorded: once
+ * adopted, the comparison can never fail and an established cursor from the
+ * retired stream would be preserved — its seq numbers name rows in a stream
+ * that no longer exists, so the room would read nothing new until the fresh
+ * stream's seqs happened to pass the stale number.
+ */
+function retiresCursor(room: RoomRuntime, source: any): boolean {
+  const generation = source?.generation;
+  return typeof generation === "string" && Boolean(generation) && Boolean(room.streamGeneration) && generation !== room.streamGeneration;
+}
+
+/**
+ * Adopt the generation of a page whose ROWS ARE DISCARDED — the bootstrap and
+ * recovery validation reads, which exist to prove the session can read the room
+ * and to pick up the held-backlog marker, not to deliver messages.
+ *
+ * The comparison runs here too, because the stream can be replaced between room
+ * entry and this read: entry hands back a generation and a baseline, and if the
+ * page comes back under a different generation the baseline is already a number
+ * from a stream that no longer exists. Adopting the new generation while keeping
+ * that cursor strands the room AND hides every later reset, since the stored
+ * generation would then match forever.
+ *
+ * The replacement position must not skip the rows this page is about to throw
+ * away, and the request's own since_seq names the retired stream, so the safe
+ * position is immediately before the earliest row the page disclosed — or, when
+ * it disclosed none, its own progress over the rows it consumed.
+ */
+function adoptDiscardedPageGeneration(room: RoomRuntime, page: any): void {
+  if (retiresCursor(room, page)) {
+    room.pendingStreamReset = true;
+    const rows = Array.isArray(page?.messages) ? page.messages : [];
+    const seqs = rows.map((row: any) => (typeof row?.seq === "number" ? row.seq : 0)).filter((seq: number) => seq > 0);
+    room.cursor = seqs.length > 0 ? Math.max(0, Math.min(...seqs) - 1) : (pageProgress(page) ?? 0);
+    room.cursorEstablished = true;
+  }
+  adoptStreamGeneration(room, page);
 }
 
 function refreshHeldBacklogCount(room: RoomRuntime, response: any): boolean {
@@ -787,18 +955,31 @@ function refreshHeldBacklogCount(room: RoomRuntime, response: any): boolean {
   return true;
 }
 
-function readCompletenessNote(surface: "projection" | "inbound", response: any, rawMessages: unknown[]): string {
+function readCompletenessNote(surface: "projection" | "inbound", response: any, rawMessages: unknown[], droppedRows = false): string {
   const held = Number.isSafeInteger(response?.held_backlog?.held_count) && response.held_backlog.held_count > 0;
-  if (rawMessages.length > 0 && !held) return "";
+  const hasMore = pageHasMore(response) || droppedRows;
+  if (rawMessages.length > 0 && !held && !hasMore) return "";
   const label = surface === "inbound" ? "inbox" : "projection";
-  const watermark = typeof response?.watermark === "number" ? ` through watermark ${response.watermark}` : " through the returned watermark";
+  // ADR-0106: completeness is now a property of the PAGE, not of the returned
+  // watermark. has_more is the exact statement that unread candidates remain;
+  // locally dropped rows remain too, whatever the server said about its page.
+  const more = droppedRows
+    ? " Rows the server returned were dropped by the local response cap, so the cursor stopped at the last row shown: read again from the returned cursor."
+    : hasMore
+      ? " has_more is true: this page does not reach the end of the delta, so read again from the returned cursor."
+      : "";
   const bounded = rawMessages.length === 0
-    ? `No ${label} rows were disclosed${watermark}. This is a bounded snapshot.`
-    : `Some ${label} rows were disclosed${watermark}, but this result is non-exhaustive while room-level held backlog remains in flight.`;
+    ? `No ${label} rows were disclosed in this page. This is one bounded page, not the whole delta.`
+    : `Some ${label} rows were disclosed in this page, but this result is non-exhaustive.`;
   if (held) {
-    return `${bounded} A held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist. The held marker does not prove any held row is inbound or responsive-eligible.`;
+    return `${bounded}${more} A held row parks the shared watermark in order, so held_count does not bound how many later rows remain undisclosed. Do not conclude that no inbound or responsive messages exist. The held marker does not prove any held row is inbound or responsive-eligible.`;
   }
-  return bounded;
+  return `${bounded}${more}`;
+}
+
+export function clampReadLimitBytes(limitBytes?: number): number {
+  if (!Number.isFinite(limitBytes) || (limitBytes as number) <= 0) return READ_LIMIT_BYTES;
+  return Math.min(Math.max(Math.trunc(limitBytes as number), MIN_READ_LIMIT_BYTES), READ_LIMIT_BYTES);
 }
 
 export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT_READ_MESSAGE_LIMIT, maxBytes = READ_LIMIT_BYTES) {
@@ -817,7 +998,14 @@ export function capProjectionMessages(messages: unknown[], maxMessages = DEFAULT
     const bytes = Buffer.byteLength(text, "utf8");
     if (returnedBytes + bytes > maxBytes) {
       truncated = true;
-      if (capped.length === 0) capped.push(copy);
+      // A single row larger than the whole budget is still surfaced rather than
+      // returning nothing — but it is ACCOUNTED, so returnedBytes always states
+      // what the caller actually received and can exceed maxBytes only by this
+      // one unsplittable row.
+      if (capped.length === 0) {
+        capped.push(copy);
+        returnedBytes += bytes;
+      }
       break;
     }
     capped.push(copy);
@@ -1436,6 +1624,24 @@ export class ParleAgentClient {
           ...(roomCfg.roomHandle?.value ? { roomHandle: roomCfg.roomHandle.value } : {}),
           participantId: "",
           cursor: preserveCursor ? (this.roomRuntimes.get(roomId)?.cursor ?? 0) : 0,
+          cursorEstablished: preserveCursor ? (this.roomRuntimes.get(roomId)?.cursorEstablished ?? false) : false,
+          ...(preserveCursor && this.roomRuntimes.get(roomId)?.streamGeneration
+            ? { streamGeneration: this.roomRuntimes.get(roomId)!.streamGeneration }
+            : {}),
+          ...(preserveCursor && this.roomRuntimes.get(roomId)?.pendingStreamReset ? { pendingStreamReset: true } : {}),
+          // The fence outlives the rebootstrap with the generation it fences,
+          // because requests in flight across a rollover are exactly the ones
+          // it exists to catch.
+          ...(preserveCursor && this.roomRuntimes.get(roomId)?.retiredGenerations?.length
+            ? { retiredGenerations: [...this.roomRuntimes.get(roomId)!.retiredGenerations!] }
+            : {}),
+          // A preserved cursor skips the bootstrap page, so nothing would
+          // refresh this diagnostic: carry it, or an ordinary rollover would
+          // silently clear a standing held-backlog warning and read as a room
+          // with nothing in flight.
+          ...(preserveCursor && this.roomRuntimes.get(roomId)?.heldBacklogCount !== undefined
+            ? { heldBacklogCount: this.roomRuntimes.get(roomId)!.heldBacklogCount }
+            : {}),
           state: "degraded",
         };
         rooms.set(roomId, room);
@@ -1445,14 +1651,35 @@ export class ParleAgentClient {
           });
           room.participantId = String(entry.participant_id || "");
           if (typeof entry.room_handle === "string" && entry.room_handle) room.roomHandle = entry.room_handle;
-          // Projection initialization is deliberately pre-claim. Once claim is
+          // Ask BEFORE adopting: a generation change at entry retires the
+          // carried cursor along with the stream it belonged to.
+          const entryReset = retiresCursor(room, entry);
+          if (entryReset) room.pendingStreamReset = true;
+          adoptStreamGeneration(room, entry);
+          // Cursor initialization is deliberately pre-claim. Once claim is
           // submitted, no later preparation failure may discard an authoritative
           // candidate whose response was lost.
-          if (!preserveCursor) {
-            const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/projection?wait=0`, {
+          //
+          // A FRESH room cursor is the entry baseline (#927/ADR-0106 item 7).
+          // The cursor-zero read that used to open every room is gone: it
+          // fetched and discarded the whole retained transcript just to learn
+          // where to start. An ESTABLISHED cursor is preserved as-is — the entry
+          // baseline never replaces one, or a rebootstrap would skip everything
+          // in between. A RETIRED cursor is the one exception: a stream reset
+          // makes the carried number meaningless, so the room restarts from the
+          // new stream's baseline exactly like a room that never had a cursor.
+          if (entryReset || !room.cursorEstablished) {
+            room.cursor = entryBaselineSeq(entry);
+            room.cursorEstablished = true;
+            // One page FROM THE BASELINE, never from zero: it proves this
+            // session can read the room and carries the room-level held-backlog
+            // marker the connection card reports. Its rows are not consumed —
+            // the cursor stays at the baseline and the first real read returns
+            // them.
+            const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/projection?since_seq=${encodeURIComponent(String(room.cursor))}&wait=0`, {
               roomId, sessionCredential: candidate.sessionHandle, signal, retry: false,
             });
-            room.cursor = typeof projection.watermark === "number" ? projection.watermark : 0;
+            adoptDiscardedPageGeneration(room, projection);
             refreshHeldBacklogCount(room, projection);
           }
           room.state = "ready";
@@ -1653,11 +1880,14 @@ export class ParleAgentClient {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) await this.bootstrap(signal);
   }
 
-  // Room entry and projection initialization are separate failures. A room can
+  // Room entry and cursor initialization are separate failures. A room can
   // hold a real participant binding while its cursor was never initialized,
   // which leaves it degraded but genuinely entered: the server will deliver to
-  // it and wake on it. Recovery reconciles entry (idempotent) and re-reads the
-  // watermark instead of treating the room as never entered.
+  // it and wake on it. Recovery reconciles entry (idempotent) instead of
+  // treating the room as never entered. An ESTABLISHED cursor survives
+  // recovery untouched; a room that never got one, or one whose stream
+  // generation changed at entry, takes the entry baseline. So recovery can
+  // neither replay from zero nor skip forward over a still-valid cursor.
   async recoverRoom(roomId: string, signal?: AbortSignal): Promise<boolean> {
     const cfg = this.roomTarget(roomId);
     const room = this.roomRuntime(roomId);
@@ -1670,10 +1900,18 @@ export class ParleAgentClient {
       room.participantId = String(entry.participant_id || room.participantId || "");
       if (typeof entry.room_handle === "string" && entry.room_handle) room.roomHandle = entry.room_handle;
       else if (!room.roomHandle && cfg.roomHandle?.value) room.roomHandle = cfg.roomHandle.value;
-      const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/projection?wait=0`, {
+      // Ask BEFORE adopting; see prepareCandidate. A reset retires the cursor.
+      const entryReset = retiresCursor(room, entry);
+      if (entryReset) room.pendingStreamReset = true;
+      adoptStreamGeneration(room, entry);
+      if (entryReset || !room.cursorEstablished) {
+        room.cursor = entryBaselineSeq(entry);
+        room.cursorEstablished = true;
+      }
+      const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/projection?since_seq=${encodeURIComponent(String(room.cursor))}&wait=0`, {
         roomId, session: true, signal, retry: false,
       });
-      room.cursor = typeof projection.watermark === "number" ? projection.watermark : room.cursor;
+      adoptDiscardedPageGeneration(room, projection);
       refreshHeldBacklogCount(room, projection);
       room.state = "ready";
       room.lastError = undefined;
@@ -2336,7 +2574,7 @@ export class ParleAgentClient {
       agentSessionId: this.runtime.agentSessionId,
       expiresAt: this.runtime.expiresAt,
       rooms: this.runtime.rooms.map((room) => ({ ...room })),
-      note: "each room carries its own cursor: this process's read position in that room, initialized at the projection watermark observed during bootstrap.",
+      note: "each room carries its own cursor: this process's read position in that room, initialized at the held-safe baseline the server returned when this session entered the room.",
       next: CONNECT_NEXT_GUIDANCE,
     };
   }
@@ -2542,6 +2780,179 @@ export class ParleAgentClient {
     return this.readSurface("inbound", params, signal);
   }
 
+  async drainProjection(params: DrainParams = {}, signal?: AbortSignal) {
+    return this.drainSurfacePages("projection", params, signal);
+  }
+
+  async drainInbox(params: DrainParams = {}, signal?: AbortSignal) {
+    return this.drainSurfacePages("inbound", params, signal);
+  }
+
+  /**
+   * The explicit, bounded catch-up over ADR-0106 continuation. A single read
+   * returns one server page, so a room that has moved a long way ahead of the
+   * cursor needs several. Nothing else in this client loops on has_more: a
+   * caller asks for this, and even then it is bounded twice over.
+   *
+   * - The local response caps are AGGREGATE, not per page: each page read is
+   *   given only the row and byte budget the pages before it left, so a drain
+   *   returns at most one response's worth of rows and bytes however many
+   *   round trips it took. Stopping there is reported (`complete: false`),
+   *   never hidden. The one documented overshoot is a single row larger than
+   *   the whole byte budget on the FIRST page, which the response cap surfaces
+   *   rather than returning nothing — exactly what one plain read would do. A
+   *   later page that would overshoot is left unconsumed instead, so paging can
+   *   never stack a second one, and `returnedBytes` always reports what was
+   *   actually returned.
+   * - The page cap is hard. Exhausting it THROWS instead of handing back a
+   *   prefix that reads like the whole delta.
+   *
+   * The room cursor is committed only after the loop ends, so a throw consumes
+   * nothing and the next drain re-reads the same rows. An explicit `sinceSeq`
+   * makes the whole drain an audit read that never commits.
+   */
+  private async drainSurfacePages(surface: "projection" | "inbound", params: DrainParams, signal?: AbortSignal) {
+    const roomId = this.roomTarget(params.roomId).roomId!.value!;
+    const maxPages = Math.max(1, Math.min(Math.trunc(params.maxPages || DEFAULT_MAX_DRAIN_PAGES), DEFAULT_MAX_DRAIN_PAGES));
+    const maxMessages = Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT);
+    const maxBytes = clampReadLimitBytes(params.limitBytes);
+    const room = this.roomRuntime(roomId);
+    const cursorBefore = room.cursor;
+    let cursor = typeof params.sinceSeq === "number" ? params.sinceSeq : room.cursor || 0;
+    const messages: unknown[] = [];
+    let returnedBytes = 0;
+    let pagesRead = 0;
+    let hasMore = false;
+    let stoppedLocally = false;
+    let streamReset = false;
+    let staleGeneration = false;
+    let truncated = false;
+    let lastPage: any;
+    while (pagesRead < maxPages) {
+      // A budget too small to express "fit fewer bytes" would be clamped back
+      // up to the floor and could only decide whether one more oversized row
+      // gets surfaced. Stop instead, so the aggregate budget is never exceeded
+      // by a page this loop chose to read.
+      if (pagesRead > 0 && maxBytes - returnedBytes < MIN_READ_LIMIT_BYTES) { stoppedLocally = true; break; }
+      // Each page is read against what the earlier pages LEFT, so the caps
+      // below bound the drain as a whole rather than every page separately.
+      const page = await this.readSurface(surface, {
+        roomId,
+        sinceSeq: cursor,
+        waitSeconds: 0,
+        advanceCursor: false,
+        limitMessages: maxMessages - messages.length,
+        limitBytes: maxBytes - returnedBytes,
+      }, signal);
+      pagesRead += 1;
+      // A page from a retired generation applied nothing and continues nothing.
+      // Its rows would mix a dead stream's history into this result, so stop
+      // without consuming it; the cursor still stands where the reset left it.
+      if (page.staleGeneration) { staleGeneration = true; stoppedLocally = true; break; }
+      const pageBytes = typeof page.returnedBytes === "number" ? page.returnedBytes : 0;
+      // The response cap surfaces a single row larger than its whole budget
+      // rather than returning nothing. That is right for ONE read, but a drain
+      // must not let paging stack such rows on top of a budget already spent:
+      // a later page that would overshoot is left unconsumed — its rows are
+      // dropped and the cursor stays put — so the next drain re-reads it with
+      // a full budget. Only the first page can overshoot, exactly as a single
+      // read would. A page that reports a stream reset is always accepted, so
+      // the boundary is never masked by a byte decision.
+      if (pagesRead > 1 && !page.streamReset && returnedBytes + pageBytes > maxBytes) { stoppedLocally = true; break; }
+      lastPage = page;
+      truncated = truncated || page.truncated === true;
+      for (const message of page.messages) messages.push(message);
+      returnedBytes += pageBytes;
+      hasMore = page.hasMore === true;
+      if (page.streamReset) {
+        // Either way the drain stops at the boundary rather than paging across
+        // it. What differs is whose continuation is trustworthy:
+        //
+        // - cursorRetired: the generation CHANGED inside this read, so this
+        //   page's continuation is anchored in a stream that just went away.
+        //   readSurface already put the room cursor on the new stream; take it.
+        // - otherwise the reset was adopted at room entry and this page is only
+        //   carrying the NOTICE. It belongs to the current stream, so its
+        //   continuation is consumed normally — discarding it would hand back
+        //   rows the next drain then repeats.
+        cursor = page.cursorRetired ? room.cursor : Math.max(cursor, page.nextCursor);
+        streamReset = true;
+        stoppedLocally = true;
+        break;
+      }
+      if (page.nextCursor > cursor) cursor = page.nextCursor;
+      // A page the local caps had to cut — rows dropped or content truncated —
+      // spent the remaining budget mid-page, so the aggregate cap is reached
+      // exactly here. The equality checks cover a page that fit the budget
+      // precisely and left none.
+      if (page.truncated === true || messages.length >= maxMessages || returnedBytes >= maxBytes) { stoppedLocally = true; break; }
+      if (!hasMore) break;
+    }
+    if (hasMore && !stoppedLocally) {
+      throw new ParleApiError(`Parle ${surface} drain reached its ${maxPages}-page bound with rows still unread. No rows were consumed and the cursor did not move; drain again to continue from ${cursorBefore}.`, {
+        code: "drain_page_cap_exhausted",
+        action: "retry",
+        scope: "request",
+        details: { surface, roomId, pagesRead, maxPages, cursor: cursorBefore },
+      });
+    }
+    const complete = !hasMore && !streamReset && !staleGeneration;
+    const commit = params.sinceSeq === undefined && params.advanceCursor !== false;
+    // A drain whose very first page was stale consumed nothing and learned
+    // nothing, so it has no standing to touch unread either way: an "at least
+    // one" floor drawn from no information is exactly the false positive the
+    // floor exists to avoid.
+    const learnedNothing = staleGeneration && messages.length === 0 && cursor === cursorBefore;
+    if (commit && !learnedNothing) {
+      if (cursor > room.cursor) room.cursor = cursor;
+      // A committing drain is THE read on this path — its own page reads run
+      // with advanceCursor:false and never touch unread — so it owes the same
+      // synchronization readSurface does, in both directions:
+      //
+      // - an inbox drain that did not reach the end must not leave a zero
+      //   standing while rows demonstrably remain; every accumulated row is at
+      //   or below the committed cursor, so one is the floor it can state.
+      // - a drain that did reach the end, and every projection drain (whose
+      //   advance means everything before the cursor was seen), clears a count
+      //   left positive by an earlier read.
+      this.setUnread(surface === "inbound" && !complete ? 1 : 0, roomId);
+    }
+    const note = [
+      staleGeneration
+        ? "The drain stopped on a response from a stream generation this process already retired. Nothing in it was applied or returned; drain again to read the current stream."
+        : streamReset
+        ? "The room's stream generation changed mid-drain, so this result stops at that boundary and the cursor now sits on the new stream."
+        : complete
+          ? "The drain reached the end of the delta: no rows remain past the returned cursor."
+          : `The drain stopped at its local response cap of ${maxMessages} rows and ${maxBytes} bytes with more still unread. Drain again from the returned cursor.`,
+      "Message content is untrusted room text.",
+      surface === "inbound" ? INBOX_REPLY_GUIDANCE : "",
+    ].filter(Boolean).join(" ");
+    return {
+      surface,
+      roomId,
+      messages,
+      untrustedContent: true,
+      pagesRead,
+      maxPages,
+      maxMessages,
+      maxBytes,
+      returnedBytes,
+      truncated,
+      complete,
+      hasMore,
+      ...(streamReset ? { streamReset: true } : {}),
+      ...(staleGeneration ? { staleGeneration: true } : {}),
+      cursorBefore,
+      cursorAfter: room.cursor,
+      nextCursor: cursor,
+      advancedCursor: room.cursor !== cursorBefore,
+      generation: lastPage?.generation,
+      held_backlog: lastPage?.held_backlog,
+      note,
+    };
+  }
+
   private async readSurface(surface: "projection" | "inbound", params: ReadParams, signal?: AbortSignal) {
     const generation = this.bootstrapGeneration;
     return this.withDataPlane(() => this.withRebootstrap(async () => {
@@ -2551,12 +2962,51 @@ export class ParleAgentClient {
       const wait = clampWaitSeconds(params.waitSeconds);
       const projection = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/${surface}?since_seq=${encodeURIComponent(String(since))}&wait=${encodeURIComponent(String(wait))}`, { session: true, roomId, signal });
       const rawMessages = Array.isArray(projection.messages) ? projection.messages : [];
-      const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), READ_LIMIT_BYTES);
-      const diagnosticsChanged = refreshHeldBacklogCount(room, projection);
+      const capped = capProjectionMessages(rawMessages, Math.min(params.limitMessages || DEFAULT_READ_MESSAGE_LIMIT, DEFAULT_READ_MESSAGE_LIMIT), clampReadLimitBytes(params.limitBytes));
+      // The local response cap can surface fewer rows than the server returned.
+      // Progress then stops at the last row the caller actually saw, never at
+      // the server's page progress, or the dropped rows would be skipped.
+      const droppedRows = capped.messages.length < rawMessages.length;
+      // A response from a generation this room already retired raced a reset
+      // that has since been adopted. It is not a new reset, and none of it
+      // applies: its cursor, progress, generation and diagnostics all describe
+      // a stream that is gone. Discard every room-state effect and count it.
+      const staleGeneration = isStaleGeneration(room, projection);
+      const diagnosticsChanged = staleGeneration ? false : refreshHeldBacklogCount(room, projection);
       const cursorBefore = room.cursor;
-      const shouldAdvanceCursor = params.advanceCursor === true || (params.advanceCursor === undefined && params.sinceSeq === undefined);
+      // A generation change is a stream reset (#766): the room's stream was
+      // restored or re-partitioned, so the old cursor names a retired stream
+      // and its number means nothing here. Restart from the position the
+      // server reported for this response instead of carrying it forward. A
+      // reset that happened at ROOM ENTRY, where there was no response to
+      // report it, is carried on the room and surfaced by this first read.
+      const responseReset = !staleGeneration && retiresCursor(room, projection);
+      const streamReset = !staleGeneration && (responseReset || room.pendingStreamReset === true);
+      if (staleGeneration) {
+        room.staleGenerationReads = (room.staleGenerationReads || 0) + 1;
+        this.publishRoomRuntimes();
+      } else {
+        room.pendingStreamReset = undefined;
+        if (responseReset) room.cursor = droppedRows ? maxSurfacedSeq(0, capped.messages) : nextCursorFromPage(0, capped.messages, projection);
+        adoptStreamGeneration(room, projection);
+      }
+      // Where a CONTINUATION of this page starts. Anchored at the position this
+      // page was read from — except after a reset, when that position names the
+      // retired stream and only the new stream's own coordinates are meaningful.
+      // The room cursor advance is anchored at the room cursor instead, so an
+      // explicit read from a position ahead of the cursor can never jump the
+      // cursor over the rows in between.
+      // A stale response continues nothing: the room's own cursor is where the
+      // reader still stands.
+      const pageCursor = staleGeneration ? room.cursor : nextCursorFromPage(responseReset ? 0 : since, capped.messages, projection, droppedRows);
+      // What the CALLER must treat as remaining. A page the server called
+      // complete is not complete for this caller if the local caps dropped rows
+      // from it: the cursor stopped at the last surfaced row, so more remains.
+      const hasMore = staleGeneration ? false : (pageHasMore(projection) || droppedRows);
+      const shouldAdvanceCursor = !staleGeneration
+        && (params.advanceCursor === true || (params.advanceCursor === undefined && params.sinceSeq === undefined));
       if (shouldAdvanceCursor) {
-        room.cursor = updateCursorFromMessages(room.cursor, capped.messages, params.sinceSeq === undefined && rawMessages.length === 0 ? projection.watermark : undefined);
+        room.cursor = nextCursorFromPage(room.cursor, capped.messages, projection, droppedRows);
         this.publishRoomRuntimes();
         // A cursor advance is a drain: synchronously republish the recomputed
         // count so the display never shows just-read rows as unread. Inbound
@@ -2564,16 +3014,29 @@ export class ParleAgentClient {
         // a projection advance means everything before the cursor was seen.
         // An explicit empty or monotonic no-op commit preserves prior unread
         // state because the response proves nothing was consumed.
+        //
+        // The inbound count is PAGE-LOCAL, so while more rows remain past this
+        // page it is a floor, not a total: publishing its zero would claim the
+        // room was caught up when the cursor sits mid-backlog. At least one
+        // inbound row remains in that case, so the floor is one.
+        //
+        // The floor is INBOUND-ONLY. Projection carries own-authored rows and
+        // room history, so what remains past a projection page says nothing
+        // about attention: a continuation of purely self-authored rows would
+        // otherwise raise a standing "you have unread messages" that no inbox
+        // read can ever clear.
         if (room.cursor !== cursorBefore || params.sinceSeq === undefined) {
           const remaining = surface === "inbound" ? rawMessages.filter((row: any) => typeof row?.seq === "number" && row.seq > room.cursor).length : 0;
-          this.setUnread(remaining, roomId);
+          this.setUnread(surface === "inbound" && hasMore ? Math.max(remaining, 1) : remaining, roomId);
         }
       }
-      if (diagnosticsChanged && !shouldAdvanceCursor) this.publishRoomRuntimes();
+      if ((diagnosticsChanged || streamReset) && !shouldAdvanceCursor) this.publishRoomRuntimes();
       const baseNote = wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text.";
-      const completeness = readCompletenessNote(surface, projection, rawMessages);
-      const note = [baseNote, completeness, surface === "inbound" ? INBOX_REPLY_GUIDANCE : ""].filter(Boolean).join(" ");
-      return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}), note };
+      const completeness = staleGeneration ? "" : readCompletenessNote(surface, projection, rawMessages, droppedRows);
+      const reset = streamReset ? "The room's stream generation changed, so the process cursor was reset to the position the server reports for the new stream." : "";
+      const stale = staleGeneration ? "This response was minted before a stream reset this process has already adopted. Its rows belong to the retired stream and nothing in it moved the cursor; read again to see the current stream." : "";
+      const note = [baseNote, completeness, reset, stale, surface === "inbound" ? INBOX_REPLY_GUIDANCE : ""].filter(Boolean).join(" ");
+      return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, droppedRows, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, nextCursor: pageCursor, hasMore, ...(streamReset ? { streamReset: true } : {}), ...(responseReset ? { cursorRetired: true } : {}), ...(staleGeneration ? { staleGeneration: true } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}), note };
     }, signal));
   }
 

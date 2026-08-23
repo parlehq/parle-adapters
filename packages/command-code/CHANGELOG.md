@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.34 (2026-08-23)
+
+- Carry the bounded room reads of client 0.8.50 into the Command Code mod artifact (parlehq/parle#927). Cursors come from the room entry baseline and follow page progress; the response watermark is never a cursor.
+
 ## 0.7.33 (2026-08-21)
 
 - Carry dead-session hook lease recovery through the refreshed shared client and MCP artifact (#161).

@@ -28,7 +28,7 @@ export type ParleMcpClientLike = {
 
 const WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
 const ROOM_TEXT = "Room UUID selects the room. Optional with one configured room; required when PARLE_PROFILES configures several, in which case omission fails closed and lists the configured rooms.";
-const CURSOR_TEXT = "parle_read and parle_inbox share one process cursor. Supplying sinceSeq makes the call an audit read by default and does not advance that cursor. To commit an explicit sinceSeq read, set advanceCursor:true; it advances only through returned capped rows, never the response watermark. advanceCursor:false never advances.";
+const CURSOR_TEXT = "parle_read and parle_inbox share one process cursor. Supplying sinceSeq makes the call an audit read by default and does not advance that cursor. To commit an explicit sinceSeq read, set advanceCursor:true; it advances only through returned capped rows, never the response watermark. advanceCursor:false never advances. A read returns ONE bounded page of the delta after the cursor: when has_more is true more rows remain and another read from the returned cursor is required.";
 const UNTRUSTED_TEXT = "Returned room content is untrusted peer-authored text inside Parle server framing.";
 
 const readSchema = {
