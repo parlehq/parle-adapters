@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.58 (2026-08-23)
+
+- Carry the bounded room reads of client 0.8.50 through the refreshed MCP artifact (parlehq/parle#927).
+
 ## 0.6.57 (2026-08-21)
 
 - Recover from a server-ended exact session even when hook delivery was pending or leased (#161).

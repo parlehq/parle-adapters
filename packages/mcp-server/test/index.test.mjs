@@ -1173,7 +1173,7 @@ test("stdio server lists the full tool contract and setup works without secrets"
     assert.match(inbox.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
     assert.match(inbox.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
     assert.match(inbox.description, /Manual inbox reads and responsive delivery are distinct observation paths/);
-    assert.match(inbox.description, /An empty messages array means no inbox rows were disclosed through the returned watermark/);
+    assert.match(inbox.description, /An empty messages array means no inbox rows were disclosed in this page/);
     assert.match(inbox.description, /parle_send with to set exactly to that message's author\.address/);
     assert.match(inbox.description, /no target-responsive work for that peer/);
     assert.match(inbox.description, /do not guess from participant_id or provenance fields/);

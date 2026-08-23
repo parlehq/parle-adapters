@@ -36,7 +36,9 @@ import {
   summarizeSendDelivery,
   terminalStatusFor,
   truncateText,
-  updateCursorFromMessages,
+  nextCursorFromPage,
+  pageHasMore,
+  pageProgress,
 } from "../dist/index.js";
 
 test("Parle API error fields preserve only object details", () => {
@@ -488,9 +490,24 @@ test("wake, zero-wait drain, and ack stay in shared client primitives", async ()
   assert.equal(calls[2].init.method, "POST");
 });
 
-test("cursor math advances from messages or watermark", () => {
-  assert.equal(updateCursorFromMessages(1, [{ seq: 3 }, { seq: 2 }]), 3);
-  assert.equal(updateCursorFromMessages(3, [], 5), 5);
+test("cursor math follows page progress and never the watermark", () => {
+  // Absence rule (ADR-0106 item 9): no next_since_seq means a complete delta
+  // whose next cursor is response-local max(cursor, max returned seq).
+  assert.equal(nextCursorFromPage(1, [{ seq: 3 }, { seq: 2 }]), 3);
+  assert.equal(nextCursorFromPage(9, [{ seq: 3 }]), 9, "a cursor never regresses");
+  assert.equal(nextCursorFromPage(3, [], { watermark: 99 }), 3, "the watermark is not a cursor");
+  assert.equal(nextCursorFromPage(3, [], { watermark: 99, next_since_seq: 40 }), 40);
+  // Progress-only pages advance over consumed rows that were never returned.
+  assert.equal(nextCursorFromPage(3, [{ seq: 5 }], { next_since_seq: 12, has_more: true }), 12);
+  // Rows the local cap dropped are never passed, whatever progress reports.
+  assert.equal(nextCursorFromPage(3, [{ seq: 5 }], { next_since_seq: 12 }, true), 5);
+  for (const bad of [undefined, null, {}, { next_since_seq: -1 }, { next_since_seq: "12" }, { next_since_seq: 1.5 }]) {
+    assert.equal(nextCursorFromPage(4, [{ seq: 6 }], bad), 6);
+    assert.equal(pageProgress(bad), undefined);
+    assert.equal(pageHasMore(bad), false);
+  }
+  assert.equal(pageProgress({ next_since_seq: 0 }), 0);
+  assert.equal(pageHasMore({ has_more: true }), true);
 });
 
 test("message cap does not drop an oversized first content row", () => {
@@ -620,7 +637,7 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
       const u = String(url);
       requests.push({ url: u, init });
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", address: "@p.a.s1", expires_at: "later" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 3 }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 4, messages: [{ seq: 4, content: "hello" }] });
       if (u.includes("/messages")) return json({ event_id: "evt-1", seq: 5, replayed: false, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, moderation: { delivery_state: "accepted_scan_skipped", held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending" } }, 201);
@@ -791,7 +808,7 @@ test("read cursor advances only through returned capped messages", async () => {
     fetch: async (url) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_" + String("s1"), session_handle: "s1", expires_at: "later" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 3 }, 201);
       if (u.includes("/projection")) return json({ watermark: 3, messages: [] });
       if (u.includes("/inbound")) return json({ watermark: 5, messages: [{ seq: 4, content: "returned" }, { seq: 5, content: "not returned" }] });
       return json({});
@@ -805,14 +822,26 @@ test("read cursor advances only through returned capped messages", async () => {
 test("agent-session rebootstrap retries once and preserves cursor", async () => {
   let sessions = 0;
   let readAttempts = 0;
+  // Bootstrap reads one page from the entry baseline; the caller's own read
+  // follows. Both are since_seq reads now, so the fixture separates them by
+  // order rather than by URL shape. Only the FIRST bootstrap reads a page: the
+  // rebootstrap preserves the established cursor and reads nothing.
+  let justEntered = false;
   const client = new ParleAgentClient({
     env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
     fetch: async (url) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
-      if (u.includes("/projection?wait=0")) return json({ watermark: 12, messages: [] });
-      if (u.includes("/projection?since_seq=")) {
+      if (u.endsWith("/participants")) {
+        justEntered = sessions === 1;
+        return json({ participant_id: "part-1", generation: "g0", baseline_seq: 12 }, 201);
+      }
+      if (u.includes("/projection")) {
+        if (justEntered) {
+          justEntered = false;
+          assert.equal(u.includes("since_seq=12"), true, "the bootstrap page is read from the entry baseline");
+          return json({ generation: "g0", watermark: 12, next_since_seq: 12, has_more: false, messages: [] });
+        }
         readAttempts += 1;
         return json({ error: { code: "invalid_agent_session", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
       }
@@ -833,8 +862,8 @@ test("repeated agent-session terminal failure does not rebootstrap twice in one 
     fetch: async (url) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
-      if (u.includes("/projection?wait=0")) return json({ watermark: 21, messages: [] });
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 21 }, 201);
+      if (u.includes("/projection")) return json({ generation: "g0", watermark: 21, next_since_seq: 21, has_more: false, messages: [] });
       if (u.includes("/inbound")) {
         inboxAttempts += 1;
         return json({ error: { code: "invalid_agent_session", message: "missing", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
@@ -860,12 +889,12 @@ test("concurrent terminal failures share one rebootstrap flight", async () => {
         if (sessions === 2) await new Promise((resolve) => setTimeout(resolve, 5));
         return json({ agent_session_id: `as-${sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
       }
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
-      if (u.includes("/projection?wait=0")) return json({ watermark: 22, messages: [] });
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 22 }, 201);
+      if (u.includes("/projection")) return json({ generation: "g0", watermark: 22, next_since_seq: 22, has_more: false, messages: [] });
       if (u.includes("/inbound")) {
         inboxAttempts += 1;
         if (inboxAttempts <= 2) return json({ error: { code: "agent_session_ended", message: "ended", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
-        return json({ watermark: 23, messages: [] });
+        return json({ generation: "g0", watermark: 23, next_since_seq: 23, has_more: false, messages: [] });
       }
       return json({});
     },
@@ -885,8 +914,8 @@ test("affordances rebootstrap after agent-session terminal error and preserve cu
     fetch: async (url) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
-      if (u.includes("/projection?wait=0")) return json({ watermark: 33, messages: [] });
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 33 }, 201);
+      if (u.includes("/projection")) return json({ generation: "g0", watermark: 33, next_since_seq: 33, has_more: false, messages: [] });
       if (u.includes("/affordances")) {
         affordanceAttempts += 1;
         if (affordanceAttempts === 1) return json({ error: { code: "agent_session_expired", message: "missing", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }, 401);
@@ -912,8 +941,8 @@ test("send reuses generated idempotency key across agent-session rebootstrap", a
     fetch: async (url, init = {}) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, expires_at: "later" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
-      if (u.includes("/projection?wait=0")) return json({ watermark: 44, messages: [] });
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 44 }, 201);
+      if (u.includes("/projection")) return json({ generation: "g0", watermark: 44, next_since_seq: 44, has_more: false, messages: [] });
       if (u.includes("/messages")) {
         messageAttempts += 1;
         messageKeys.push(init.headers["Idempotency-Key"]);
@@ -1161,7 +1190,7 @@ test("connect bootstraps once, returns factual summary, and reuses live sessions
     fetch: async (url) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: `as-${++sessions}`, session_credential: `parle_ses_s${sessions}`, session_handle: `s${sessions}`, address: "@p.a.s1", expires_at: "2999-01-01T00:00:00Z" }, 201);
-      if (u.endsWith("/participants")) return json({ participant_id: "part-1" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 7 }, 201);
       if (u.includes("/projection")) return json({ watermark: 7, messages: [], held_backlog: { held_count: 2 } });
       return json({});
     },
@@ -1420,7 +1449,7 @@ test("client profile switch prepares a scratch session, adopts room identity, an
       }
       if (path.endsWith("/participants")) {
         const target = path.includes("019f7b46-178f-7a5a-9f7b-b4af2e045261");
-        return json({ participant_id: target ? "part-target" : "part-old", room_handle: target ? "target-room" : "old-room" }, 201);
+        return json({ participant_id: target ? "part-target" : "part-old", room_handle: target ? "target-room" : "old-room", generation: "g0", baseline_seq: target ? 42 : 7 }, 201);
       }
       if (path.endsWith("/projection")) return json({ watermark: path.includes("019f7b46-178f-7a5a-9f7b-b4af2e045261") ? 42 : 7, messages: [] });
       if (path === "/v/agent/sessions/as-old/end") {
@@ -1472,7 +1501,7 @@ function aliasSwitchHarness(options = {}) {
     }
     if (path.endsWith("/participants")) {
       const targetRoom = path.includes("019f7b46-178f-7a5a-9f7b-b4af2e045261");
-      return json({ participant_id: targetRoom ? "part-target" : "part-old", room_handle: targetRoom ? "target-room" : "old-room" }, 201);
+      return json({ participant_id: targetRoom ? "part-target" : "part-old", room_handle: targetRoom ? "target-room" : "old-room", generation: "g0", baseline_seq: targetRoom ? 42 : 7 }, 201);
     }
     if (path.endsWith("/projection")) return json({ watermark: path.includes("019f7b46-178f-7a5a-9f7b-b4af2e045261") ? 42 : 7, messages: [] });
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
@@ -1989,7 +2018,7 @@ function twoRoomClient(options = {}) {
       const room = path.includes(alpha) ? "alpha" : "beta";
       if (options.denyEntry === room) return json({ error: { code: "forbidden", message: "no seat", action: "fix_client", scope: "request" } }, 403);
       if (options.sessionDeny === room) return json({ error: { code: "agent_mismatch", message: "session not valid here", action: "rebootstrap", scope: "agent_session" } }, 403);
-      return json({ participant_id: `part-${room}`, room_handle: `${room}-room` }, 201);
+      return json({ participant_id: `part-${room}`, room_handle: `${room}-room`, generation: "g0", baseline_seq: room === "alpha" ? 10 : 20 }, 201);
     }
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
     if (path.includes("/projection")) return json({ watermark: path.includes(alpha) ? 10 : 20, messages: [] });

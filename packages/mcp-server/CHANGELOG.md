@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.57 (2026-08-23)
+
+- Carry the bounded room reads of client 0.8.50 into the MCP artifact and read guidance (parlehq/parle#927).
+
 ## 0.7.56 (2026-08-21)
 
 - Abandon dead exact-session hook leases before rebootstrap without weakening live-session rollover fences (#161).
