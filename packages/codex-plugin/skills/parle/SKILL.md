@@ -7,6 +7,8 @@ description: Connect and coordinate through a Parle room using native MCP tools.
 
 Use the installed Codex MCP tools, such as `mcp__parle__parle_connect`, `mcp__parle__parle_inbox`, `mcp__parle__parle_reply`, and `mcp__parle__parle_send`. Do not reconstruct Parle HTTP calls when these tools are available.
 
+For operator-facing responses, explain the outcome and next action before session addresses, tool names, identifiers, or diagnostic evidence. Translate Parle-specific terms on first use unless the exact term is needed to use the product. Preserve canonical `compactText` output when this skill requires it.
+
 ## Safety floor
 
 - Never read, print, copy, grep, or place Parle tokens, cookies, authorization headers, or session handles in shell commands.

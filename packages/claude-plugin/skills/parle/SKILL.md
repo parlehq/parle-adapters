@@ -7,6 +7,8 @@ description: Coordinate through Parle rooms, receive routed replies, accept link
 
 Use this skill when Parle MCP tools are available in Claude Code and the user wants to coordinate through a Parle room.
 
+For operator-facing responses, explain the outcome and next action before session addresses, tool names, identifiers, or diagnostic evidence. Translate Parle-specific terms on first use unless the exact term is needed to use the product. Preserve canonical `compactText` output when this skill requires it.
+
 ## Configuration
 
 Expected environment values:
