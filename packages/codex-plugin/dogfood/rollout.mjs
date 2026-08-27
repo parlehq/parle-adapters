@@ -10,8 +10,13 @@
 const HOOK_DELIVERY_MARKER = "Parle responsive delivery seq=";
 const STATUS_TOOL_NAMES = new Set(["mcp__parle__parle_status", "parle_status"]);
 const SHELL_TOOL_NAMES = new Set(["shell", "exec_command", "local_shell", "container.exec", "shell_command"]);
-const POLLING_SHAPE = /\b(?:sleep|while|until|for\b.*\bin\b|watch)\b/;
-const POLLING_TARGET = /parle|curl/i;
+// A loop or sleep counts only in command position: at the start of the
+// command or after a separator / `do` / `then`. `git log --until ...` is an
+// argument, not a construct.
+const POLLING_SHAPE = /(?:^|[;&|(\n]\s*|\b(?:do|then)\s+)(?:while|until|for\s+\S+\s+in|sleep\s+\d|watch)\b/;
+// The same command must also talk to Parle: an HTTP client aimed at a parle
+// host or a /v/ path, a parle URL, or an inbox/read tool invoked from shell.
+const POLLING_TARGET = /\b(?:curl|wget|http)\b[^;&|\n]*(?:parle|\/v\/)|https?:\/\/[^\s"']*parle|\bparle_(?:inbox|read)\b/i;
 
 function parseJsonLoose(text) {
   if (typeof text !== "string") return text;
@@ -147,11 +152,27 @@ function argsMatchSubset(args, subset) {
   return Object.entries(subset).every(([key, value]) => deepEqual(args[key], value));
 }
 
+function forbiddenBy(args, predicates) {
+  if (!predicates || !args || typeof args !== "object") return [];
+  return Object.entries(predicates).filter(([key, predicate]) => {
+    const value = args[key];
+    if (typeof value !== "number") return false;
+    if (predicate.gt !== undefined && value > predicate.gt) return true;
+    return predicate.eq !== undefined && value === predicate.eq;
+  }).map(([key]) => `${key}=${args[key]}`);
+}
+
 function shellCommandText(call) {
   if (!SHELL_TOOL_NAMES.has(call.name)) return undefined;
   const args = call.args || {};
   const command = args.command ?? args.cmd ?? args.input;
-  if (Array.isArray(command)) return command.join(" ");
+  if (Array.isArray(command)) {
+    // Codex's shell tool wraps scripts as ["bash", "-lc", script]; the script
+    // is the command whose first word matters.
+    const [shell, flag, ...rest] = command;
+    const wrapped = rest.length > 0 && /(?:^|\/)(?:ba|z|da)?sh$/.test(String(shell)) && /^-[a-z]*c[a-z]*$/.test(String(flag));
+    return wrapped ? rest.join(" ") : command.join(" ");
+  }
   return typeof command === "string" ? command : undefined;
 }
 
@@ -176,10 +197,12 @@ function evaluateToolCalls(parsed, check) {
   const matching = parsed.toolCalls.filter((call) => call.name === check.tool && argsMatchSubset(call.args, check.argsSubset));
   const count = matching.length;
   const min = check.min ?? 0;
-  const pass = count >= min && (check.max === undefined || count <= check.max);
+  const forbidden = matching.flatMap((call) => forbiddenBy(call.args, check.argsForbid));
+  const pass = count >= min && (check.max === undefined || count <= check.max) && forbidden.length === 0;
   const subset = check.argsSubset ? ` with args ⊇ ${JSON.stringify(check.argsSubset)}` : "";
   const bound = check.max === undefined ? `>= ${min}` : `in [${min}, ${check.max}]`;
-  return { pass, detail: `${count} call(s) to ${check.tool}${subset}; expected ${bound}` };
+  const forbid = forbidden.length ? `; forbidden args present: ${forbidden.join(", ")}` : "";
+  return { pass, detail: `${count} call(s) to ${check.tool}${subset}; expected ${bound}${forbid}` };
 }
 
 function evaluateStatusText(parsed, check) {

@@ -7,9 +7,14 @@
 // executables), and the gzip container is written by hand so its header carries
 // no timestamp, name, or platform OS byte. The tar writer is a minimal ustar
 // implementation so no external tar flags (which differ between bsdtar and GNU
-// tar) or extra dependencies are involved. The only remaining platform input
-// is Node's bundled zlib deflate output, which is stable for a given Node
-// release; the repo pins Node through mise.
+// tar) or extra dependencies are involved.
+//
+// The canonical artifact identity is the uncompressed tar stream, recorded as
+// `tarSha256` in the metadata: it depends only on the tree and the commit. The
+// .tar.gz bytes (`sha256`, the sidecar) additionally depend on Node's bundled
+// zlib deflate output; mise pins the Node major, but the exact zlib patch may
+// vary between Node releases, so provenance comparisons across machines use
+// tarSha256 and consumers verify the downloaded .tar.gz against its sidecar.
 //
 // Usage: node scripts/build-artifact.mjs [--out <dir>] [--allow-dirty]
 // Exit 2 when the worktree is dirty and --allow-dirty was not passed.
@@ -31,6 +36,9 @@ const pluginPrefix = `plugins/${pluginName}`;
 // documents. Nothing from test/, scripts/, node_modules/, or out/.
 const pluginFiles = [".codex-plugin/plugin.json", ".mcp.json", "README.md", "CHANGELOG.md", "package.json", "dist/parle-mcp.js"];
 const pluginDirectories = ["hooks", "skills"];
+// Shipped beside the installable subtree so parle's driver reads the scenario
+// manifest and rollout helpers from the same immutable artifact it installs.
+const dogfoodFiles = ["dogfood/rollout.mjs", "dogfood/scenarios.json", "dogfood/scenarios.schema.json"];
 
 function git(args) {
   return execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
@@ -154,13 +162,16 @@ export function buildArtifact(options) {
     const mode = statSync(source).mode & 0o111 ? 0o755 : 0o644;
     files.set(`${pluginPrefix}/${relative}`, { content: readFileSync(source), mode });
   }
+  for (const relative of dogfoodFiles) files.set(relative, { content: readFileSync(resolve(packageRoot, relative)), mode: 0o644 });
   const names = [...files.keys()].sort();
   const entries = [
     ...directoriesFor(names).map((name) => ({ name, type: "5" })),
     ...names.map((name) => ({ name, type: "0", ...files.get(name) })),
   ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
-  const tarball = gzipDeterministic(writeTar(entries, commitTime));
+  const tar = writeTar(entries, commitTime);
+  const tarSha256 = createHash("sha256").update(tar).digest("hex");
+  const tarball = gzipDeterministic(tar);
   const sha256 = createHash("sha256").update(tarball).digest("hex");
   const baseName = `${pluginName}-${version}-${gitSha.slice(0, 12)}.tar.gz`;
   mkdirSync(options.out, { recursive: true });
@@ -174,6 +185,7 @@ export function buildArtifact(options) {
     gitDirty: dirty,
     builtFromCommitTime: new Date(commitTime * 1000).toISOString(),
     sha256,
+    tarSha256,
     files: names,
   };
   writeFileSync(`${tarballPath}.metadata.json`, `${JSON.stringify(metadata, null, 2)}\n`);

@@ -64,7 +64,7 @@ test("rollout parser extracts code-mode tool calls from exec input", () => {
   ]);
   const rows = evaluateDiagnostics(parsed, [
     { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } },
-    { kind: "status-text", contains: ["Acting as     @fixture.codex", "idle wake unavailable"], excludes: ["idle wake unarmed"] },
+    { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake unavailable)"], excludes: ["idle wake unarmed"] },
     { kind: "no-shell-polling" },
   ]);
   assert.deepEqual(rows.map((row) => row.pass), [true, true, true]);
@@ -73,7 +73,7 @@ test("rollout parser extracts code-mode tool calls from exec input", () => {
 const kinds = [
   { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } },
   { kind: "no-shell-polling" },
-  { kind: "status-text", contains: ["Acting as     @fixture.codex", "idle wake unavailable"], excludes: ["arm or verify", "idle wake unarmed"] },
+  { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake unavailable)"], excludes: ["arm or verify", "idle wake unarmed"] },
   { kind: "agent-message", containsAny: ["mismatch", "does not match", "could not confirm"] },
   { kind: "hook-delivery-present" },
 ];
@@ -100,9 +100,33 @@ test("diagnostic tool-calls honors max and argsSubset", () => {
   assert.match(subset.detail, /0 call\(s\)/);
 });
 
+test("diagnostic tool-calls argsForbid rejects a counted call whose numeric arg matches gt or eq", () => {
+  const control = { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 1, max: 1, argsForbid: { waitSeconds: { gt: 0 } } };
+  const pass = evaluateOne("tool-calls-control-pass", control);
+  assert.equal(pass.pass, true, pass.detail);
+  const fail = evaluateOne("tool-calls-control-fail", control);
+  assert.equal(fail.pass, false);
+  assert.match(fail.detail, /forbidden args present: waitSeconds=30/);
+  const eq = evaluateOne("tool-calls-control-pass", { ...control, argsForbid: { waitSeconds: { eq: 0 } } });
+  assert.equal(eq.pass, false);
+  const absent = evaluateOne("tool-calls-control-pass", { ...control, argsForbid: { limit: { gt: 0 } } });
+  assert.equal(absent.pass, true, "a missing argument never matches a forbid predicate");
+});
+
 test("diagnostic no-shell-polling names the offending command", () => {
   const row = evaluateOne("no-shell-polling-fail", { kind: "no-shell-polling" });
   assert.match(row.detail, /while true; do curl/);
+});
+
+test("diagnostic no-shell-polling ignores loops and --until that do not touch Parle", () => {
+  const shell = (command) => parseRollout([JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["bash", "-lc", command] }), call_id: "c" } })]);
+  const verdict = (command) => evaluateDiagnostics(shell(command), [{ kind: "no-shell-polling" }])[0].pass;
+  assert.equal(verdict("git log --until 2026-08-01 -- packages/parle"), true);
+  assert.equal(verdict("for f in packages/parle/*; do wc -l \"$f\"; done"), true);
+  assert.equal(verdict("curl -s https://ai.parle.sh/v/agent/inbox"), true, "a single request is not polling");
+  assert.equal(verdict("sleep 5; curl -s https://ai.parle.sh/v/agent/inbox"), false);
+  assert.equal(verdict("until grep -q beacon out.txt; do parle_inbox >> out.txt; done"), false);
+  assert.equal(verdict("watch -n 5 curl -s http://localhost:8080/v/agent/inbox"), false);
 });
 
 test("diagnostic agent-message requires all of contains and one of containsAny", () => {

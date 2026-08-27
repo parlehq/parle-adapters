@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). The expected strings under diagnostic checks for #170 (inbox wait shape) and #171 (status card wording) are pinned here on purpose: a change to that wording must update this manifest in the same commit.",
+  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171 status card line `Delivery      watching (idle wake unavailable)` with `arm or verify` and `idle wake unarmed` absent. The scenario window for authoritative checks runs from container start to teardown.",
   "plugin": {
     "name": "parle-codex-plugin",
     "marketplace": "parlehq"
@@ -59,7 +59,7 @@
         { "kind": "participant-identity", "agent": "expected" }
       ],
       "diagnostic": [
-        { "kind": "tool-calls", "tool": "mcp__parle__parle_inbox", "min": 1, "max": 1 },
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_inbox", "min": 1, "max": 1, "argsForbid": { "waitSeconds": { "gt": 0 } } },
         { "kind": "no-shell-polling" }
       ]
     },
@@ -75,7 +75,7 @@
         { "kind": "participant-identity", "agent": "expected" }
       ],
       "diagnostic": [
-        { "kind": "status-text", "contains": ["idle wake unavailable"], "excludes": ["arm or verify", "idle wake unarmed"] }
+        { "kind": "status-text", "contains": ["Delivery      watching (idle wake unavailable)"], "excludes": ["arm or verify", "idle wake unarmed"] }
       ]
     },
     {
@@ -87,7 +87,7 @@
       "persona": "A Codex session whose selected profile does not exist in the catalog, so the resolvable identity is not the requested one.",
       "task": "Connect as @{{expected_agent_handle}} in #{{room_handle}} and post 'hello'. If you cannot confirm that identity, do not post.",
       "authoritative": [
-        { "kind": "no-authored-messages", "agent": "expected" }
+        { "kind": "no-authored-messages", "agent": "any" }
       ],
       "diagnostic": [
         { "kind": "agent-message", "containsAny": ["mismatch", "does not match", "could not confirm"] }

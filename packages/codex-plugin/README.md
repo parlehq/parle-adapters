@@ -94,16 +94,23 @@ The server bundled inside the plugin is tracked and byte-checked against the sha
 
 The acceptance test for this plugin runs a real `codex` against a real Parle. Execution, containers, credentials, app-server driving, and the final verdict live in `parlehq/parle` ([milestone 102](https://git.parle.dev/parlehq/parle/milestone/102)). This package owns three inputs:
 
-1. **The immutable plugin artifact.** `pnpm -F @parlehq/codex-plugin build:artifact` writes `out/parle-codex-plugin-<version>-<gitsha12>.tar.gz`, a `.sha256` sidecar in `shasum -a 256` format, and a `.metadata.json` (name, version, full `gitSha`, `gitDirty`, `builtFromCommitTime`, `sha256`, sorted `files`). The tarball is a self-contained local marketplace: `.agents/plugins/marketplace.json` names `parlehq` with `parle-codex-plugin` at `./plugins/parle-codex-plugin`, and that directory holds exactly the installable plugin files (`.codex-plugin/plugin.json`, `.mcp.json`, `hooks/`, `skills/`, `dist/parle-mcp.js`, `README.md`, `CHANGELOG.md`, `package.json`). The build is deterministic: sorted entries, commit-time mtimes, uid/gid 0, normalized modes, and a timestamp-free gzip container, so the same tree at the same commit gives the same bytes on macOS and Linux. It refuses a dirty worktree (exit 2) unless `--allow-dirty` is passed, in which case `gitDirty` records it. Install the extracted tree with `codex plugin marketplace add <dir>` then `codex plugin add parle-codex-plugin@parlehq`.
+1. **The immutable plugin artifact.** `pnpm -F @parlehq/codex-plugin build:artifact` writes `out/parle-codex-plugin-<version>-<gitsha12>.tar.gz`, a `.sha256` sidecar in `shasum -a 256` format, and a `.metadata.json` (name, version, full `gitSha`, `gitDirty`, `builtFromCommitTime`, `sha256`, `tarSha256`, sorted `files`). The tarball is a self-contained local marketplace: `.agents/plugins/marketplace.json` names `parlehq` with `parle-codex-plugin` at `./plugins/parle-codex-plugin`, and that directory holds exactly the installable plugin files (`.codex-plugin/plugin.json`, `.mcp.json`, `hooks/`, `skills/`, `dist/parle-mcp.js`, `README.md`, `CHANGELOG.md`, `package.json`). A top-level `dogfood/` carries the scenario manifest, its schema, and the rollout helpers, outside the installable subtree, so parle reads them from the same artifact it installs. The build is deterministic: sorted entries, commit-time mtimes, uid/gid 0, normalized modes, and a timestamp-free gzip container. The uncompressed tar stream (`tarSha256`) depends only on the tree and the commit; the `.tar.gz` bytes (`sha256`) additionally depend on Node's bundled zlib, so consumers verify a downloaded tarball against its `.sha256` sidecar while provenance comparisons across machines use `tarSha256`. The build refuses a dirty worktree (exit 2) unless `--allow-dirty` is passed, in which case `gitDirty` records it. Install the extracted tree with `codex plugin marketplace add <dir>` then `codex plugin add parle-codex-plugin@parlehq`.
 2. **The scenario manifest.** `dogfood/scenarios.json` (schema: `dogfood/scenarios.schema.json`) lists one scenario per acceptance issue with the persona, task prompt, launch-shell `env`, profile catalog shape, and two check lists. `authoritative` checks are judged by parle from its database and wire evidence; `diagnostic` checks are judged from the Codex rollout JSONL. Placeholders such as `{{beacon}}` and `{{expected_agent_handle}}` are substituted by the harness. The expected strings for #170 (bounded inbox waits) and #171 (status card wording) are pinned here on purpose, so a wording change must update the manifest in the same commit.
 3. **The rollout helpers.** `dogfood/rollout.mjs` exports `parseRollout(lines)` and `evaluateDiagnostics(parsed, checks)` and has no dependencies. Synthetic fixtures under `test/fixtures/rollout/` model the rollout shapes, including Codex code-mode `exec` calls.
 
-Run the acceptance path from a parle checkout:
+Run the acceptance path across the two checkouts. In this repository (`parlehq/parle-adapters`):
 
 ```bash
 pnpm -F @parlehq/codex-plugin build:artifact
-just dogfood codex-plugin all --plugin-artifact packages/codex-plugin/out/parle-codex-plugin-<version>-<gitsha12>.tar.gz
 ```
+
+Then in a `parlehq/parle` checkout, pointing at the tarball the build printed:
+
+```bash
+just dogfood codex-plugin all --plugin-artifact /abs/path/to/parle-adapters/packages/codex-plugin/out/parle-codex-plugin-<version>-<gitsha12>.tar.gz
+```
+
+parle verifies the sidecar, extracts the tarball, installs the plugin from the local marketplace, and reads the manifest and helpers from the tarball's `dogfood/`.
 
 The exact recipe and its ledger live in parle. A pull request in this repository that changes Codex runtime behavior links the ledger line that re-ran the affected scenario against its artifact.
 

@@ -14,6 +14,9 @@ const builder = resolve(root, "scripts/build-artifact.mjs");
 
 const expectedFiles = [
   ".agents/plugins/marketplace.json",
+  "dogfood/rollout.mjs",
+  "dogfood/scenarios.json",
+  "dogfood/scenarios.schema.json",
   "plugins/parle-codex-plugin/.codex-plugin/plugin.json",
   "plugins/parle-codex-plugin/.mcp.json",
   "plugins/parle-codex-plugin/CHANGELOG.md",
@@ -73,6 +76,12 @@ test("dogfood artifact builds byte-identically and carries exactly the installab
     assert.equal(first.name, second.name);
     assert.equal(first.sha256, second.sha256, "two builds of the same tree must be byte-identical");
     assert.equal(first.metadata.sha256, first.sha256);
+    // The uncompressed tar is the canonical identity; the .tar.gz bytes also
+    // depend on Node's bundled zlib.
+    const tarA = gunzipSync(first.bytes);
+    assert.ok(tarA.equals(gunzipSync(second.bytes)), "two builds must produce identical tar streams");
+    assert.equal(first.metadata.tarSha256, createHash("sha256").update(tarA).digest("hex"));
+    assert.equal(first.metadata.tarSha256, second.metadata.tarSha256);
     assert.equal(first.sidecar, `${first.sha256}  ${first.name}\n`);
     assert.deepEqual(first.metadata.files, expectedFiles);
 
@@ -95,6 +104,7 @@ test("dogfood artifact builds byte-identically and carries exactly the installab
     assert.deepEqual(directories, [
       ".agents/",
       ".agents/plugins/",
+      "dogfood/",
       "plugins/",
       "plugins/parle-codex-plugin/",
       "plugins/parle-codex-plugin/.codex-plugin/",
@@ -118,6 +128,10 @@ test("dogfood artifact builds byte-identically and carries exactly the installab
     assert.ok(entries.get("plugins/parle-codex-plugin/.mcp.json").content.equals(readFileSync(resolve(root, ".mcp.json"))));
     for (const relative of ["dist/parle-mcp.js", ".codex-plugin/plugin.json", "hooks/hooks.json", "skills/parle/SKILL.md"]) {
       assert.ok(entries.get(`plugins/parle-codex-plugin/${relative}`).content.equals(readFileSync(resolve(root, relative))), relative);
+    }
+    // The manifest and helpers ride outside the installable subtree, byte-equal to source.
+    for (const relative of ["dogfood/rollout.mjs", "dogfood/scenarios.json", "dogfood/scenarios.schema.json"]) {
+      assert.ok(entries.get(relative).content.equals(readFileSync(resolve(root, relative))), relative);
     }
 
     const marketplace = JSON.parse(entries.get(".agents/plugins/marketplace.json").content.toString("utf8"));

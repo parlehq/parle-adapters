@@ -67,18 +67,18 @@
       }
     },
     "authoritativeCheck": {
-      "description": "Judged by parle from room state. participant-identity: the live participant belongs to the seeded identity and the room. authored-probe: the expected participant authored a message containing bodyContains. beacon-echo: an authored reply contains {{beacon}}. cursor-advanced: responsive_delivery_cursor.last_acked_seq >= the ask seq. no-authored-messages: zero authored rows for the agent.",
+      "description": "Judged by parle from room state. participant-identity: the live participant belongs to the seeded identity and the room. authored-probe: the expected participant authored a message containing bodyContains. beacon-echo: an authored reply contains {{beacon}}. cursor-advanced: responsive_delivery_cursor.last_acked_seq >= the ask seq. no-authored-messages: zero messages authored during the scenario window by the named seeded identity, or with agent `any` by every seeded identity's session, so a fallback to the wrong identity still fails. The scenario window runs from container start to teardown.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
       "properties": {
         "kind": { "enum": ["participant-identity", "authored-probe", "beacon-echo", "cursor-advanced", "no-authored-messages"] },
-        "agent": { "enum": ["expected", "peer"] },
+        "agent": { "enum": ["expected", "peer", "any"] },
         "bodyContains": { "type": "string", "minLength": 1 }
       }
     },
     "diagnosticCheck": {
-      "description": "Judged from the Codex rollout JSONL. tool-calls: count of calls to `tool` within [min, max], optionally only counting calls whose arguments contain argsSubset. no-shell-polling: no shell command that loops or sleeps around parle or curl. status-text: applied to the text returned by parle_status tool results. agent-message: applied to the final assistant message (contains = all, containsAny = at least one). hook-delivery-present: a developer or user message carries 'Parle responsive delivery seq='.",
+      "description": "Judged from the Codex rollout JSONL. tool-calls: count of calls to `tool` within [min, max], optionally only counting calls whose arguments contain argsSubset; fails if any counted call has an argument matching argsForbid (numeric `gt` / `eq` predicates per argument name). no-shell-polling: no shell command with a loop or sleep in command position (while, until, for … in, sleep, watch) that also performs a Parle network or inbox operation (curl/wget/http to a parle host or /v/ path, or a parle_inbox/parle_read invocation). status-text: applied to the text returned by parle_status tool results. agent-message: applied to the final assistant message (contains = all, containsAny = at least one). hook-delivery-present: a developer or user message carries 'Parle responsive delivery seq='.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
@@ -88,6 +88,14 @@
         "min": { "type": "integer", "minimum": 0 },
         "max": { "type": "integer", "minimum": 0 },
         "argsSubset": { "type": "object" },
+        "argsForbid": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "gt": { "type": "number" }, "eq": { "type": "number" } }
+          }
+        },
         "contains": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
         "containsAny": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
         "excludes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }

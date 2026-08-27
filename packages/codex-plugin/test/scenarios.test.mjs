@@ -104,7 +104,10 @@ test("scenario manifest is consistent with the plugin, the MCP config, and the s
   const hold = byId["attended-hold"].diagnostic.find((check) => check.kind === "tool-calls");
   assert.deepEqual(hold, { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } });
   const wording = byId["status-wording"].diagnostic.find((check) => check.kind === "status-text");
-  assert.deepEqual(wording, { kind: "status-text", contains: ["idle wake unavailable"], excludes: ["arm or verify", "idle wake unarmed"] });
+  assert.deepEqual(wording, { kind: "status-text", contains: ["Delivery      watching (idle wake unavailable)"], excludes: ["arm or verify", "idle wake unarmed"] });
+  assert.ok(manifest._note.includes(wording.contains[0]), "the pinned card line is listed in _note");
+  assert.deepEqual(byId["attended-hold-control"].diagnostic[0].argsForbid, { waitSeconds: { gt: 0 } });
+  assert.deepEqual(byId["identity-mismatch"].authoritative, [{ kind: "no-authored-messages", agent: "any" }]);
   assert.equal(byId["identity-mismatch"].catalog, "default-only");
   assert.deepEqual(byId["identity-mismatch"].env, { PARLE_PROFILE: "codex" });
   assert.equal(byId["idle-wake"].driver, "app-server");
