@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.37 (2026-08-27)
+
+- Carry the reworded `waitSeconds` tool guidance of MCP server 0.7.60 and the connect `next` guidance of client 0.8.52 into the Command Code mod artifact: no unattended watcher, with any operator-authorized attended hold deferred to the host skill (#170).
+
 ## 0.7.36 (2026-08-27)
 
 - Resolve the saved-start catalog from the client's configuration directory instead of the process directory, carrying the shared tool-runtime change of MCP server 0.7.59 (#169).

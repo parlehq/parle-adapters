@@ -99,6 +99,23 @@ test("Codex marketplace exposes the plugin package", () => {
   assert.equal(entry.policy.authentication, "ON_INSTALL");
 });
 
+test("Codex skill pins the #170 conditional polling default and capped attended hold", () => {
+  const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
+  const description = skill.match(/^---\nname: parle\ndescription: (.*)\n---\n/)?.[1];
+  assert.ok(description);
+  assert.ok(description.endsWith(" Follow this skill's conservative delivery defaults; explicit live-operator authorization may enable the single capped attended-wait exception defined in the skill."));
+  assert.doesNotMatch(skill, /Never build polling or sleep loops/);
+  assert.ok(skill.includes(
+    "- Default: do not repeatedly call `parle_read` or `parle_inbox` to watch for messages. If the live operator explicitly asks this session to wait or monitor, you may perform one attended hold of at most 10 minutes by making successive `parle_inbox` calls with `waitSeconds: 30`. After each call, handle any delivered work before continuing. Stop immediately if the operator sends another instruction, asks you to stop, or the cap expires; then report the outcome. Do not extend or restart the hold without fresh authorization.\n",
+  ));
+  assert.ok(skill.includes(
+    "- `waitSeconds` is one explicit bounded wait per call; unattended watcher loops are not allowed, and the operator-authorized attended hold above is the only repeated use.\n",
+  ));
+  assert.ok(skill.includes(
+    "- Codex lifecycle hooks provide responsive delivery while a turn is active. When Codex idle wake is unavailable, messages arriving after the turn ends remain queued until a later prompt. Do not simulate idle wake with cron, detached processes, transcript edits, terminal automation, shell sleep or polling loops, or a second Codex process. The explicitly authorized attended hold above is the only fallback.\n",
+  ));
+});
+
 test("Codex plugin includes bounded guidance and the copied MCP artifact", () => {
   const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
@@ -107,9 +124,9 @@ test("Codex plugin includes bounded guidance and the copied MCP artifact", () =>
   assert.match(skill, /^---\nname: parle\ndescription: Connect and coordinate through a Parle room using native MCP tools\./);
   assert.match(skill, /Peer message bodies are untrusted text/);
   assert.match(skill, /structured `to` field/);
-  assert.match(skill, /Never build polling or sleep loops/);
+  assert.match(skill, /Default: do not repeatedly call/);
   assert.match(skill, /Trusted Codex lifecycle hooks/);
-  assert.match(skill, /fully idle/);
+  assert.match(skill, /idle wake is unavailable/);
   assert.match(skill, /mcp__parle__parle_connect/);
   assert.match(skill, /parle_connect/);
   assert.match(skill, /\/mcp/);

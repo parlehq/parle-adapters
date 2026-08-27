@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.60 (2026-08-27)
+
+- Carry the connect `next` guidance of client 0.8.52 into the Pi bundle: do not poll with `waitSeconds` on your own initiative, while a live operator may authorize one capped attended hold as the host skill describes (#170).
+
 ## 0.7.59 (2026-08-31)
 
 - Recover responsive work while Pi is busy through the supported steering queue, expose shared fallback and fetch evidence plus host handoff stages, and restore `watching` after successful injection (#80).

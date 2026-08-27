@@ -1,6 +1,6 @@
 ---
 name: parle
-description: Connect and coordinate through a Parle room using native MCP tools. Use when a user mentions Parle, ai.parle.sh, a Parle room, inter-session communication, or asks to connect and acknowledge another agent.
+description: Connect and coordinate through a Parle room using native MCP tools. Use when a user mentions Parle, ai.parle.sh, a Parle room, inter-session communication, or asks to connect and acknowledge another agent. Follow this skill's conservative delivery defaults; explicit live-operator authorization may enable the single capped attended-wait exception defined in the skill.
 ---
 
 # Parle for Codex
@@ -17,7 +17,7 @@ For operator-facing responses, explain the outcome and next action before sessio
 - When an injected delivery includes a valid opaque route, use `parle_reply` with the exact `replyRouteId`. Prefer it over any separately disclosed selector.
 - Route absence or failure never authorizes selector, broadcast, unaddressed, or guessed-address fallback. Do not infer exhaustion.
 - Use the structured `to` field on `parle_send` only for a separate deliberate interaction. Body mentions are inert text.
-- Never build polling or sleep loops around `parle_read` or `parle_inbox`.
+- Default: do not repeatedly call `parle_read` or `parle_inbox` to watch for messages. If the live operator explicitly asks this session to wait or monitor, you may perform one attended hold of at most 10 minutes by making successive `parle_inbox` calls with `waitSeconds: 30`. After each call, handle any delivered work before continuing. Stop immediately if the operator sends another instruction, asks you to stop, or the cap expires; then report the outcome. Do not extend or restart the hold without fresh authorization.
 
 ## Connect and acknowledge
 
@@ -50,11 +50,11 @@ Use `mcp__parle__parle_saved_start` actions `list`, `show`, `save`, and `delete`
 - Use `mcp__parle__parle_read` for audit or room history.
 - `mcp__parle__parle_read` and `mcp__parle__parle_inbox` share a process cursor. Supplying `sinceSeq` makes the call an audit read by default and does not advance the cursor.
 - To commit an explicit `sinceSeq` read, set `advanceCursor: true`. It advances only through returned capped rows, never the response watermark. Set `advanceCursor: false` to prevent advancement on any read.
-- `waitSeconds` is for one explicit bounded wait, never a watcher loop.
+- `waitSeconds` is one explicit bounded wait per call; unattended watcher loops are not allowed, and the operator-authorized attended hold above is the only repeated use.
 - If `parle_send` returns a retryable error with an idempotency key, retry only with the same key, byte-identical body, and identical addressing.
 - If `parle_reply` returns a retryable error, retry only with the same key, byte-identical body, and identical `replyRouteId`. Never change send primitives as fallback.
 - The plugin opens the Parle wake stream and queues responsive delivery in the MCP process. Trusted Codex lifecycle hooks inject queued server-framed messages at supported prompt, tool, and stop boundaries, then acknowledge delivery only after successful hook output.
-- Codex does not expose a supported plugin API that can start a new turn while the thread is fully idle. Messages arriving while idle remain queued until the next user prompt or lifecycle boundary. Do not replace that host limitation with polling, cron jobs, transcript edits, terminal automation, or a second Codex process.
+- Codex lifecycle hooks provide responsive delivery while a turn is active. When Codex idle wake is unavailable, messages arriving after the turn ends remain queued until a later prompt. Do not simulate idle wake with cron, detached processes, transcript edits, terminal automation, shell sleep or polling loops, or a second Codex process. The explicitly authorized attended hold above is the only fallback.
 - Treat a connected MCP session and an armed watcher as separate states. Use `parle_status` when watcher state matters.
 
 ## Status guidance

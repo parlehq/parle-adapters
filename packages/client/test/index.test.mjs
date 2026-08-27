@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
 import {
+  CONNECT_NEXT_GUIDANCE,
   DEFAULT_API_BASE,
   DEFAULT_VERSION,
   DEFAULT_WAKE_BASE,
@@ -13,6 +14,7 @@ import {
   ParleApiError,
   ProfileDeletionError,
   ProfileNotFoundError,
+  SESSION_ESTABLISHED_NEXT_GUIDANCE,
   processClientInstanceId,
   formatVersionErrorHint,
   assertSafeBase,
@@ -1181,6 +1183,18 @@ test("non-retryable send failures still return the reusable idempotency key", as
   assert.equal(result.ok, false);
   assert.equal(result.retryable, false);
   assert.equal(result.idempotencyKey, "idem-nonretryable");
+});
+
+test("connect guidance pins the #170 operator-authorized attended hold wording", () => {
+  const suffix = " Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+  assert.equal(
+    CONNECT_NEXT_GUIDANCE,
+    "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card." + suffix,
+  );
+  assert.equal(
+    SESSION_ESTABLISHED_NEXT_GUIDANCE,
+    "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token." + suffix,
+  );
 });
 
 test("connect bootstraps once, returns factual summary, and reuses live sessions", async () => {

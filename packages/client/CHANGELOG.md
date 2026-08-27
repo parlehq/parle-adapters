@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.52 (2026-08-27)
+
+- Reword the connect and session-established `next` guidance: do not poll with `waitSeconds` on your own initiative, while a live operator may authorize one capped attended hold as the host skill describes (#170).
+
 ## 0.8.51 (2026-08-31)
 
 - Expose body-free fallback deadlines, fetch results, row positions, acknowledgement attempts, and bounded recent progress in shared responsive-delivery status. An overdue fallback is now explicitly stale instead of appearing healthy (#80).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.65 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.60 and client 0.8.52, which reword the `waitSeconds` tool guidance and connect `next` guidance to defer any operator-authorized attended hold to the host skill; this host's skill and idle-wake watcher are unchanged (#170).
+
 ## 0.9.64 (2026-08-27)
 
 - Refresh the bundled MCP artifact to server 0.7.59, which carries opt-in launch-directory configuration; this host does not enable it, so configuration resolution is unchanged (#169).

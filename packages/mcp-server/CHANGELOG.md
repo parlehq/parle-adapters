@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.60 (2026-08-27)
+
+- Reword the `waitSeconds` tool guidance on `parle_read` and `parle_inbox`: one server-side bounded wait of 0–30 seconds per call, never an unattended watcher, with the operator-authorized capped attended hold deferred to the host skill; carries the client 0.8.52 connect guidance (#170).
+
 ## 0.7.59 (2026-08-27)
 
 - Add opt-in launch-directory configuration: when a host manifest sets `PARLE_CONFIG_CWD_FROM_PWD=1` (the Codex plugin does), resolve configuration from a valid absolute `PWD` before the process directory; report `configCwd` provenance in healthy and degraded status (#169).

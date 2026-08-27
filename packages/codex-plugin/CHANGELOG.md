@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.62 (2026-08-27)
+
+- Make the skill's polling prohibition a conditional default: the live operator may explicitly authorize one attended hold of at most 10 minutes made of successive `parle_inbox` calls with `waitSeconds: 30`, and the catalog description now says so; unattended watcher loops, cron, detached processes, and other idle-wake simulations remain forbidden. Carries MCP server 0.7.60 and client 0.8.52 guidance (#170).
+
 ## 0.6.61 (2026-08-27)
 
 - Add the real-Codex dogfood surface: a deterministic local-marketplace artifact build (`pnpm -F @parlehq/codex-plugin build:artifact`), the scenario manifest and schema under `dogfood/`, and zero-dependency rollout JSONL helpers for diagnostic checks (#173). No runtime behavior changed.

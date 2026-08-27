@@ -1168,10 +1168,11 @@ test("stdio server lists the full tool contract and setup works without secrets"
     assert.match(read.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
     assert.match(read.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
     assert.match(read.description, /advanceCursor:false never advances/);
-    assert.match(read.description, /bounded single wait/);
-    assert.match(read.description, /Do not loop/);
+    const waitText = "waitSeconds performs one server-side bounded wait of 0–30 seconds for this call. Do not use it as an unattended watcher. If the live operator explicitly authorizes an attended wait, the Parle skill permits successive parle_inbox(waitSeconds:30) calls for one capped hold; otherwise call once. Responsive delivery remains event-driven.";
+    assert.ok(read.description.includes(waitText), "parle_read carries the #170 waitSeconds text");
     assert.match(read.description, /untrusted/);
     const inbox = tools.tools.find((tool) => tool.name === "parle_inbox");
+    assert.ok(inbox.description.includes(waitText), "parle_inbox carries the #170 waitSeconds text");
     assert.match(inbox.description, /Supplying sinceSeq makes the call an audit read by default and does not advance/);
     assert.match(inbox.description, /set advanceCursor:true; it advances only through returned capped rows, never the response watermark/);
     assert.match(inbox.description, /Manual inbox reads and responsive delivery are distinct observation paths/);
