@@ -2,7 +2,7 @@
 
 ## 0.7.59 (2026-08-27)
 
-- Resolve configuration from a valid absolute `PWD` launch directory before the process directory and report `configCwd` provenance in status (#169).
+- Add opt-in launch-directory configuration: when a host manifest sets `PARLE_CONFIG_CWD_FROM_PWD=1` (the Codex plugin does), resolve configuration from a valid absolute `PWD` before the process directory; report `configCwd` provenance in healthy and degraded status (#169).
 
 ## 0.7.58 (2026-08-31)
 

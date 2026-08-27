@@ -2,7 +2,7 @@
 
 ## 0.8.59 (2026-08-27)
 
-- Carry the launch-directory configuration resolution of MCP server 0.7.59 through the refreshed MCP artifact (#169).
+- Refresh the bundled MCP artifact to server 0.7.59, which carries opt-in launch-directory configuration; this host does not enable it, so configuration resolution is unchanged (#169).
 
 ## 0.8.58 (2026-08-31)
 
