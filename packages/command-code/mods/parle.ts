@@ -4519,6 +4519,7 @@ var ParleAccountClient = class {
 };
 
 // ../client/dist/format.js
+var HOST_IDLE_WAKE_LINE_STATES = /* @__PURE__ */ new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
 var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
 var CARD_RULE = "========================================";
 function nextTextFor(key) {
@@ -4536,6 +4537,12 @@ function nextTextFor(key) {
       return "arm or verify responsive delivery.";
     case "idle-wake-unavailable":
       return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+    case "idle-wake-queue-only":
+      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
+    case "idle-wake-daemon-attached":
+      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
+    case "idle-wake-degraded":
+      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "recover-watcher":
@@ -4565,8 +4572,8 @@ function deliveryLine(input) {
     return void 0;
   if (typeof input === "string")
     return input;
-  if (input.idleWake === "unavailable")
-    return `${input.state} (idle wake unavailable)`;
+  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
+    return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
@@ -4605,7 +4612,18 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
   });
 }
 function unknownWatcherNext(idleWake) {
-  return idleWake === "unavailable" ? "idle-wake-unavailable" : "arm-or-verify-watcher";
+  switch (idleWake) {
+    case "unavailable":
+      return "idle-wake-unavailable";
+    case "queue-only":
+      return "idle-wake-queue-only";
+    case "daemon-attached":
+      return "idle-wake-daemon-attached";
+    case "degraded":
+      return "idle-wake-degraded";
+    default:
+      return "arm-or-verify-watcher";
+  }
 }
 function compactStatusCardFromStatus(status) {
   const runtime = status.runtime;
@@ -22482,16 +22500,44 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
-function idleWakeState(host, bridgeStatus) {
+var HOST_IDLE_WAKE_STATES = /* @__PURE__ */ new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
+function hostIdleWakeEvidence(host, bridgeStatus) {
   if (host.idleWake === "none")
-    return "unavailable";
-  return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
+    return { state: "unavailable" };
+  if (host.idleWake === "codex-queue") {
+    const wake = bridgeStatus?.idleWake;
+    if (!bridgeStatus)
+      return { state: "unavailable", reason: "host-bridge-unavailable" };
+    if (!wake || typeof wake.state !== "string" || !HOST_IDLE_WAKE_STATES.has(wake.state))
+      return { state: "unavailable", reason: "host-correlation-unavailable" };
+    if (bridgeStatus.running !== true)
+      return { state: "unavailable", reason: "host-bridge-not-running" };
+    return { state: wake.state, ...typeof wake.reason === "string" ? { reason: wake.reason } : {} };
+  }
+  return { state: bridgeStatus?.waiterAttached === true ? "armed" : "unarmed" };
 }
-function withHostNextGuidance(result2, host) {
-  if (host.idleWake !== "none" || !result2 || typeof result2 !== "object")
+function idleWakeState(host, bridgeStatus) {
+  return hostIdleWakeEvidence(host, bridgeStatus).state;
+}
+function hostIdleWakeNext(idleWake) {
+  switch (idleWake) {
+    case "unavailable":
+      return { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
+    case "queue-only":
+      return { nextActionKey: "idle-wake-queue-only", nextAction: "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds" };
+    case "daemon-attached":
+      return { nextActionKey: "idle-wake-daemon-attached", nextAction: "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately" };
+    case "degraded":
+      return { nextActionKey: "idle-wake-degraded", nextAction: "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once" };
+    default:
+      return void 0;
+  }
+}
+function withHostNextGuidance(result2, host, idleWake) {
+  if (host.idleWake === void 0 || !result2 || typeof result2 !== "object")
     return result2;
   const value = result2;
-  const guidance = nextTextFor("idle-wake-unavailable");
+  const guidance = nextTextFor(hostIdleWakeNext(idleWake)?.nextActionKey ?? "idle-wake-unavailable");
   const session = value.session;
   return {
     ...value,
@@ -22533,13 +22579,14 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
   }
   if (!resolved)
     return void 0;
-  const idleWakeUnarmed = bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
+  const idleWakeUnarmed = host.idleWake !== "codex-queue" && bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
   if (idleWakeUnarmed)
     resolved = { ...resolved, reason: "idle_wake_unarmed" };
-  const idleWake = idleWakeState(host, bridgeStatus);
-  resolved = { ...resolved, idleWake };
-  const idleWakeUnavailableNext = { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? idleWake === "unavailable" ? idleWakeUnavailableNext : { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : idleWake === "unavailable" ? idleWakeUnavailableNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
+  const evidence = hostIdleWakeEvidence(host, bridgeStatus);
+  const idleWake = evidence.state;
+  resolved = { ...resolved, idleWake, ...evidence.reason ? { idleWakeReason: evidence.reason } : {} };
+  const hostNext = hostIdleWakeNext(idleWake);
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? hostNext ?? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : hostNext ? hostNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -22587,6 +22634,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     if (sessionId)
       deliveryBridge?.bindHostSession(sessionId);
   };
+  const hostGuidance = (result2) => withHostNextGuidance(result2, host, idleWakeState(host, deliveryBridge?.status()));
   registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. The canonical responsiveDelivery field resolves shared credential-free lifecycle evidence; MCP connectivity and unread observation never imply healthy delivery. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -22663,9 +22711,10 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    const summary = withHostNextGuidance(await client.connect(), host);
+    const connected = await client.connect();
     if (deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
+    const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
@@ -23004,7 +23053,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.readProjection(params), host));
+    return safeTool(async () => hostGuidance(await client.readProjection(params)));
   });
   registerTool("parle_inbox", {
     title: "Parle Inbox",
@@ -23013,7 +23062,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.readInbox(params), host));
+    return safeTool(async () => hostGuidance(await client.readInbox(params)));
   });
   registerTool("parle_affordances", {
     title: "Parle Affordances",
@@ -23060,7 +23109,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.send(params), host));
+    return safeTool(async () => hostGuidance(await client.send(params)));
   });
   registerTool("parle_reply", {
     title: "Parle Reply",
@@ -23069,7 +23118,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.submitReply(params), host));
+    return safeTool(async () => hostGuidance(await client.submitReply(params)));
   });
   if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
@@ -23111,7 +23160,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.39";
+var ADAPTER_VERSION = "0.7.40";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

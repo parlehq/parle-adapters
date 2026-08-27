@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.63 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.63 and client 0.8.54, which add Codex queue idle wake behind a manifest literal this host does not set; its behavior is unchanged (#174).
+
 ## 0.8.62 (2026-08-27)
 
 - Refresh the bundled MCP artifact to server 0.7.62, which adds the credential-free `identity` checkpoint to `parle_connect` and connected `parle_status` results and the no-identity-switch guidance for a missing profile (#172).

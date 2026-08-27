@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { connect } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
@@ -15,6 +15,7 @@ const HOST_HOOK_BUDGET_MS = 4500;
 function parseArgs(argv) {
   let bind = false;
   let directParent = false;
+  let shellLaunched = false;
   let knownAddressContext = false;
   let stopAdditionalContext = false;
   let idleWakeLauncher;
@@ -22,6 +23,10 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--bind") bind = true;
     else if (argv[index] === "--direct-parent") directParent = true;
+    // The host runs hook commands through a shell chain, so the correlated
+    // host process is an ancestor rather than this process's parent, and a
+    // host that has not started its bridge yet is not an error.
+    else if (argv[index] === "--shell-launched") shellLaunched = true;
     else if (argv[index] === "--known-address-context") knownAddressContext = true;
     else if (argv[index] === "--stop-additional-context") stopAdditionalContext = true;
     else if (argv[index] === "--idle-wake-launcher") {
@@ -34,7 +39,7 @@ function parseArgs(argv) {
     }
     else throw new Error(`Unknown Parle hook argument: ${argv[index]}`);
   }
-  return { bind, directParent, knownAddressContext, stopAdditionalContext, idleWakeLauncher, scope };
+  return { bind, directParent, shellLaunched, knownAddressContext, stopAdditionalContext, idleWakeLauncher, scope };
 }
 
 function renderKnownAddressContext(cwd) {
@@ -118,33 +123,75 @@ function isNonResponding(error) {
     || error?.message === "bridge closed without a response";
 }
 
-async function selectBridge(scope) {
-  const hostParentPid = process.ppid;
-  const matches = [];
-  for (const entry of socketEntries(scope, hostParentPid)) {
-    let status;
-    try {
-      status = await request(entry.path, { action: "status" });
-    } catch (error) {
-      if (isNonResponding(error)) continue;
-      throw error;
-    }
-    if (!status?.ok
-      || status.running !== true
-      || status.ownerPid !== entry.ownerPid
-      || status.hostParentPid !== hostParentPid
-      || status.currentParentPid !== hostParentPid) {
-      throw new Error("Parle hook bridge process correlation mismatch");
-    }
-    matches.push({ ...entry, status });
+const MAX_HOST_ANCESTRY = 8;
+
+// Parent of a live process: /proc where it exists, otherwise the fixed ps
+// binary. Undefined ends the walk.
+function parentPidOf(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+    if (Number.isSafeInteger(parent)) return parent;
+  } catch {
+    // Not Linux, or the process is gone.
   }
-  if (matches.length !== 1) throw new Error(`Parle hook bridge correlation found ${matches.length} matching endpoints`);
-  return matches[0];
+  if (process.platform === "win32") return undefined;
+  try {
+    const parent = Number(execFileSync("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 1000, windowsHide: true }).trim());
+    return Number.isSafeInteger(parent) ? parent : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-async function take(scope, sessionId, allowBind, event, directParent) {
+// The nearest ancestor that owns a bridge directory is the host. The direct
+// parent is checked first without any process probe; ancestors beyond it are
+// resolved only for shell-launched hooks and only while nothing matched.
+function* hostParentCandidates(shellLaunched) {
+  let pid = process.ppid;
+  yield pid;
+  if (!shellLaunched) return;
+  for (let depth = 1; depth < MAX_HOST_ANCESTRY; depth += 1) {
+    const parent = parentPidOf(pid);
+    if (!Number.isSafeInteger(parent) || parent <= 1 || parent === pid) return;
+    pid = parent;
+    yield pid;
+  }
+}
+
+async function selectBridge(scope, shellLaunched) {
+  for (const hostParentPid of hostParentCandidates(shellLaunched)) {
+    const entries = socketEntries(scope, hostParentPid);
+    if (entries.length === 0) continue;
+    const matches = [];
+    for (const entry of entries) {
+      let status;
+      try {
+        status = await request(entry.path, { action: "status" });
+      } catch (error) {
+        if (isNonResponding(error)) continue;
+        throw error;
+      }
+      if (!status?.ok
+        || status.running !== true
+        || status.ownerPid !== entry.ownerPid
+        || status.hostParentPid !== hostParentPid
+        || status.currentParentPid !== hostParentPid) {
+        throw new Error("Parle hook bridge process correlation mismatch");
+      }
+      matches.push({ ...entry, status });
+    }
+    if (matches.length !== 1) throw new Error(`Parle hook bridge correlation found ${matches.length} matching endpoints`);
+    return matches[0];
+  }
+  if (shellLaunched) return undefined;
+  throw new Error("Parle hook bridge correlation found 0 matching endpoints");
+}
+
+async function take(scope, sessionId, allowBind, event, directParent, shellLaunched) {
   if (directParent) {
-    const selected = await selectBridge(scope);
+    const selected = await selectBridge(scope, shellLaunched);
+    if (!selected) return undefined;
     let bound = selected.status.hostSessionBound === true;
     if (allowBind) {
       const binding = await request(selected.path, { action: "bind", sessionId, allowReplace: event === "SessionStart" });
@@ -251,7 +298,7 @@ async function main() {
     const cwd = typeof payload.cwd === "string" && payload.cwd ? payload.cwd : process.cwd();
     const scope = args.scope || cwd;
     const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : undefined;
-    const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent) : undefined;
+    const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent, args.shellLaunched) : undefined;
     const deliveryBatch = delivery && Array.isArray(delivery.messages) && delivery.messages.length > 0 ? delivery : undefined;
     const rearm = args.idleWakeLauncher
       && payload.hook_event_name === "Stop"

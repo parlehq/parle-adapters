@@ -7261,15 +7261,15 @@ var makeIssue = (params) => {
       message: issueData.message
     };
   }
-  let errorMessage = "";
+  let errorMessage2 = "";
   const maps = errorMaps.filter((m) => !!m).slice().reverse();
   for (const map2 of maps) {
-    errorMessage = map2(fullIssue, { data, defaultError: errorMessage }).message;
+    errorMessage2 = map2(fullIssue, { data, defaultError: errorMessage2 }).message;
   }
   return {
     ...issueData,
     path: fullPath,
-    message: errorMessage
+    message: errorMessage2
   };
 };
 function addIssueToContext(ctx, issueData) {
@@ -27061,19 +27061,19 @@ var getRefs = (options) => {
 };
 
 // ../../node_modules/.pnpm/zod-to-json-schema@3.25.2_zod@4.4.3/node_modules/zod-to-json-schema/dist/esm/errorMessages.js
-function addErrorMessage(res, key, errorMessage, refs) {
+function addErrorMessage(res, key, errorMessage2, refs) {
   if (!refs?.errorMessages)
     return;
-  if (errorMessage) {
+  if (errorMessage2) {
     res.errorMessage = {
       ...res.errorMessage,
-      [key]: errorMessage
+      [key]: errorMessage2
     };
   }
 }
-function setResponseValueAndErrors(res, key, value, errorMessage, refs) {
+function setResponseValueAndErrors(res, key, value, errorMessage2, refs) {
   res[key] = value;
-  addErrorMessage(res, key, errorMessage, refs);
+  addErrorMessage(res, key, errorMessage2, refs);
 }
 
 // ../../node_modules/.pnpm/zod-to-json-schema@3.25.2_zod@4.4.3/node_modules/zod-to-json-schema/dist/esm/getRelativePath.js
@@ -28384,8 +28384,8 @@ var Protocol = class {
                   if (queuedMessage.type === "response") {
                     resolver(message);
                   } else {
-                    const errorMessage = message;
-                    const error51 = new McpError(errorMessage.error.code, errorMessage.error.message, errorMessage.error.data);
+                    const errorMessage2 = message;
+                    const error51 = new McpError(errorMessage2.error.code, errorMessage2.error.message, errorMessage2.error.data);
                     resolver(error51);
                   }
                 } else {
@@ -29685,23 +29685,23 @@ var Server = class extends Protocol {
       const wrappedHandler = async (request, extra) => {
         const validatedRequest = safeParse2(CallToolRequestSchema, request);
         if (!validatedRequest.success) {
-          const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage}`);
+          const errorMessage2 = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage2}`);
         }
         const { params } = validatedRequest.data;
         const result2 = await Promise.resolve(handler(request, extra));
         if (params.task) {
           const taskValidationResult = safeParse2(CreateTaskResultSchema, result2);
           if (!taskValidationResult.success) {
-            const errorMessage = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
-            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage}`);
+            const errorMessage2 = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
+            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage2}`);
           }
           return taskValidationResult.data;
         }
         const validationResult = safeParse2(CallToolResultSchema, result2);
         if (!validationResult.success) {
-          const errorMessage = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage}`);
+          const errorMessage2 = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage2}`);
         }
         return validationResult.data;
       };
@@ -30195,12 +30195,12 @@ var McpServer = class {
    * @param errorMessage - The error message.
    * @returns The tool error result.
    */
-  createToolError(errorMessage) {
+  createToolError(errorMessage2) {
     return {
       content: [
         {
           type: "text",
-          text: errorMessage
+          text: errorMessage2
         }
       ],
       isError: true
@@ -30218,8 +30218,8 @@ var McpServer = class {
     const parseResult = await safeParseAsync2(schemaToParse, args);
     if (!parseResult.success) {
       const error51 = "error" in parseResult ? parseResult.error : "Unknown error";
-      const errorMessage = getParseErrorMessage(error51);
-      throw new McpError(ErrorCode.InvalidParams, `Input validation error: Invalid arguments for tool ${toolName}: ${errorMessage}`);
+      const errorMessage2 = getParseErrorMessage(error51);
+      throw new McpError(ErrorCode.InvalidParams, `Input validation error: Invalid arguments for tool ${toolName}: ${errorMessage2}`);
     }
     return parseResult.data;
   }
@@ -30243,8 +30243,8 @@ var McpServer = class {
     const parseResult = await safeParseAsync2(outputObj, result2.structuredContent);
     if (!parseResult.success) {
       const error51 = "error" in parseResult ? parseResult.error : "Unknown error";
-      const errorMessage = getParseErrorMessage(error51);
-      throw new McpError(ErrorCode.InvalidParams, `Output validation error: Invalid structured content for tool ${toolName}: ${errorMessage}`);
+      const errorMessage2 = getParseErrorMessage(error51);
+      throw new McpError(ErrorCode.InvalidParams, `Output validation error: Invalid structured content for tool ${toolName}: ${errorMessage2}`);
     }
   }
   /**
@@ -30456,8 +30456,8 @@ var McpServer = class {
         const parseResult = await safeParseAsync2(argsObj, request.params.arguments);
         if (!parseResult.success) {
           const error51 = "error" in parseResult ? parseResult.error : "Unknown error";
-          const errorMessage = getParseErrorMessage(error51);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for prompt ${request.params.name}: ${errorMessage}`);
+          const errorMessage2 = getParseErrorMessage(error51);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for prompt ${request.params.name}: ${errorMessage2}`);
         }
         const args = parseResult.data;
         const cb = prompt.callback;
@@ -30953,9 +30953,9 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4, realpathSync as realpathSync2, statSync as statSync4 } from "node:fs";
+import { lstatSync as lstatSync8, readFileSync as readFileSync7, readdirSync as readdirSync4, realpathSync as realpathSync2, statSync as statSync5 } from "node:fs";
 import { connect } from "node:net";
-import { isAbsolute as isAbsolute4, join as join11 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
@@ -35512,6 +35512,7 @@ var ParleAccountClient = class {
 };
 
 // ../client/dist/format.js
+var HOST_IDLE_WAKE_LINE_STATES = /* @__PURE__ */ new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
 var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
 var CARD_RULE = "========================================";
 function nextTextFor(key) {
@@ -35529,6 +35530,12 @@ function nextTextFor(key) {
       return "arm or verify responsive delivery.";
     case "idle-wake-unavailable":
       return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+    case "idle-wake-queue-only":
+      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
+    case "idle-wake-daemon-attached":
+      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
+    case "idle-wake-degraded":
+      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "recover-watcher":
@@ -35558,8 +35565,8 @@ function deliveryLine(input) {
     return void 0;
   if (typeof input === "string")
     return input;
-  if (input.idleWake === "unavailable")
-    return `${input.state} (idle wake unavailable)`;
+  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
+    return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
@@ -35598,7 +35605,18 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
   });
 }
 function unknownWatcherNext(idleWake) {
-  return idleWake === "unavailable" ? "idle-wake-unavailable" : "arm-or-verify-watcher";
+  switch (idleWake) {
+    case "unavailable":
+      return "idle-wake-unavailable";
+    case "queue-only":
+      return "idle-wake-queue-only";
+    case "daemon-attached":
+      return "idle-wake-daemon-attached";
+    case "degraded":
+      return "idle-wake-degraded";
+    default:
+      return "arm-or-verify-watcher";
+  }
 }
 function compactStatusCardFromStatus(status) {
   const runtime = status.runtime;
@@ -38856,6 +38874,289 @@ var ParleAgentClient = class _ParleAgentClient {
   }
 };
 
+// src/codex-host.ts
+import { execFile as nodeExecFile } from "node:child_process";
+import { readFileSync as readFileSync6, readlinkSync, statSync as statSync3 } from "node:fs";
+import { isAbsolute as isAbsolute3 } from "node:path";
+var CODEX_QUEUE_WAKE_TRIGGER = "Parle wake trigger. Follow only the trusted Parle hook additionalContext attached to this turn; this trigger contains no peer content. If no Parle delivery context is present, call `parle_status` once and stop. Do not poll or infer a reply route.";
+var MIN_CODEX_QUEUE_VERSION = "0.149.0";
+var VERSION_TIMEOUT_MS = 1e4;
+var QUEUE_TIMEOUT_MS = 2e4;
+var PROBE_TIMEOUT_MS = 3e3;
+var BACKOFF_BASE_MS = 1e3;
+var BACKOFF_CAP_MS = 6e4;
+var MAX_QUEUE_ATTEMPTS = 5;
+var STDERR_DETAIL_LIMIT = 240;
+var HOST_ENV_NAMES = ["HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "CODEX_HOME"];
+function errorMessage(error51) {
+  return error51 instanceof Error ? error51.message : String(error51);
+}
+function defaultExecFile(file2, args, options) {
+  return new Promise((resolve2) => {
+    nodeExecFile(file2, args, { timeout: options.timeout, env: options.env, maxBuffer: 256 * 1024, windowsHide: true, encoding: "utf8" }, (error51, stdout, stderr) => {
+      const out = { stdout: String(stdout || ""), stderr: String(stderr || "") };
+      if (!error51) return resolve2({ ...out, code: 0, signal: null, ambiguous: false });
+      const failure = error51;
+      if (typeof failure.code === "string" && !failure.code.startsWith("ERR_")) {
+        return resolve2({ ...out, code: null, signal: null, spawnError: `${failure.code}: ${failure.message}`, ambiguous: false });
+      }
+      const code = typeof failure.code === "number" ? failure.code : null;
+      resolve2({ ...out, code, signal: failure.signal ?? null, ambiguous: code === null });
+    });
+  });
+}
+function hostSubprocessEnv(env = process.env) {
+  const result2 = {};
+  for (const name of HOST_ENV_NAMES) {
+    const value = env[name];
+    if (typeof value === "string") result2[name] = value;
+  }
+  return result2;
+}
+function parseCodexVersion(output) {
+  const match = output.match(/^\s*codex-cli\s+(\d+\.\d+\.\d+)/m);
+  return match?.[1];
+}
+function compareSemver(left, right) {
+  const a = left.split(".").map(Number);
+  const b = right.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  }
+  return 0;
+}
+async function readParentProcess(pid, platform, deps) {
+  if (platform === "linux") {
+    const readlink = deps.readlink ?? readlinkSync;
+    const readFile = deps.readFile ?? ((path3) => readFileSync6(path3, "utf8"));
+    const path2 = readlink(`/proc/${pid}/exe`);
+    let args2 = [];
+    try {
+      args2 = readFile(`/proc/${pid}/cmdline`).split("\0").filter(Boolean);
+    } catch {
+    }
+    return { path: path2, args: args2 };
+  }
+  if (platform !== "darwin") throw new Error(`parent process discovery is unsupported on ${platform}`);
+  const execFile = deps.execFile ?? defaultExecFile;
+  const env = hostSubprocessEnv(deps.env);
+  const probe = async (args2) => {
+    const outcome = await execFile("/bin/ps", ["-o", ...args2, "-p", String(pid)], { timeout: PROBE_TIMEOUT_MS, env });
+    if (outcome.code !== 0) throw new Error(`/bin/ps exited ${outcome.code ?? outcome.signal}`);
+    return outcome.stdout.trim();
+  };
+  let path = await probe(["comm="]);
+  if (!isAbsolute3(path)) {
+    const outcome = await execFile("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: PROBE_TIMEOUT_MS, env });
+    const executable = outcome.stdout.split("\n").find((line2) => line2.startsWith("n/"));
+    if (outcome.code !== 0 || !executable) throw new Error("parent executable path is not absolute");
+    path = executable.slice(1);
+  }
+  const args = (await probe(["args="])).split(/\s+/).filter(Boolean);
+  return { path, args };
+}
+async function resolveCodexHostExecutable(hostParentPid, deps = {}) {
+  const platform = deps.platform ?? process.platform;
+  const readParentPid = deps.readParentPid ?? (() => process.ppid);
+  const stat = deps.stat ?? statSync3;
+  const getuid = deps.getuid ?? (() => typeof process.getuid === "function" ? process.getuid() : void 0);
+  const execFile = deps.execFile ?? defaultExecFile;
+  if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
+  let parent;
+  try {
+    parent = await readParentProcess(hostParentPid, platform, deps);
+  } catch (error51) {
+    return { ok: false, reason: "parent-not-codex", detail: errorMessage(error51) };
+  }
+  if (!isAbsolute3(parent.path)) return { ok: false, reason: "parent-not-codex", detail: "parent executable path is not absolute" };
+  if (parent.args.some((arg) => arg === "--remote" || arg.startsWith("--remote="))) return { ok: false, reason: "remote-topology" };
+  let stats;
+  try {
+    stats = stat(parent.path);
+  } catch (error51) {
+    return { ok: false, reason: "not-executable", detail: errorMessage(error51) };
+  }
+  const uid = getuid();
+  if (uid !== void 0 && stats.uid !== uid) return { ok: false, reason: "wrong-uid" };
+  if (!stats.isFile() || (stats.mode & 73) === 0) return { ok: false, reason: "not-executable" };
+  if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
+  let outcome;
+  try {
+    outcome = await execFile(parent.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: hostSubprocessEnv(deps.env) });
+  } catch (error51) {
+    return { ok: false, reason: "parent-not-codex", detail: errorMessage(error51) };
+  }
+  const version2 = outcome.code === 0 ? parseCodexVersion(outcome.stdout) : void 0;
+  if (!version2) return { ok: false, reason: "parent-not-codex", detail: "no codex-cli version banner" };
+  if (compareSemver(version2, MIN_CODEX_QUEUE_VERSION) < 0) return { ok: false, reason: "version-too-old", detail: version2 };
+  return { ok: true, executable: { path: parent.path, version: version2, parentPid: hostParentPid } };
+}
+function classifyQueueFailure(stderr) {
+  if (/queue (?:is )?full|too many queued|queue limit/i.test(stderr)) return "queue-full";
+  if (/no rollout found|failed to read thread|thread (?:id )?(?:was )?not found|unknown thread|invalid thread/i.test(stderr)) return "invalid-thread";
+  if (/permission denied|not permitted|EACCES|EPERM|unauthori[sz]ed/i.test(stderr)) return "permission";
+  return void 0;
+}
+var CodexQueueWake = class {
+  constructor(hostParentPid, deps = {}) {
+    this.hostParentPid = hostParentPid;
+    this.deps = deps;
+    if (!Number.isSafeInteger(hostParentPid) || hostParentPid <= 1) throw new Error("Codex queue wake host parent pid must be greater than 1");
+  }
+  hostParentPid;
+  deps;
+  resolution;
+  verifying;
+  outstanding = false;
+  inflight = false;
+  retryTimer;
+  nextRetryAt;
+  attempts = 0;
+  degraded = false;
+  stopReason;
+  lastError;
+  triggers = 0;
+  lastTriggerAt;
+  stopped = false;
+  start() {
+    void this.verify();
+  }
+  stop() {
+    this.stopped = true;
+    this.clearRetry();
+  }
+  status() {
+    const base = {
+      outstanding: this.outstanding,
+      triggers: this.triggers,
+      ...this.resolution?.ok ? { host: { path: this.resolution.executable.path, version: this.resolution.executable.version } } : {},
+      ...this.lastError ? { lastError: this.lastError } : {},
+      ...this.lastTriggerAt ? { lastTriggerAt: this.lastTriggerAt } : {},
+      ...this.nextRetryAt ? { nextRetryAt: new Date(this.nextRetryAt).toISOString() } : {}
+    };
+    if (!this.resolution) return { state: "unavailable", reason: "host-verification-pending", ...base };
+    if (!this.resolution.ok) return { state: "unavailable", reason: this.resolution.reason, ...this.resolution.detail ? { detail: this.resolution.detail } : {}, ...base };
+    if (this.degraded) return { state: "degraded", reason: "trigger-outcome-unknown", ...base };
+    if (this.stopReason) return { state: "unavailable", reason: this.stopReason, ...base };
+    return { state: "queue-only", ...base };
+  }
+  requestWake(threadId, stillPending) {
+    if (this.stopped || !threadId || this.outstanding || this.inflight || this.retryTimer || this.degraded || this.stopReason) return;
+    void this.trigger(threadId, stillPending);
+  }
+  consumeWake() {
+    this.outstanding = false;
+    this.degraded = false;
+    this.stopReason = void 0;
+    this.attempts = 0;
+    this.clearRetry();
+  }
+  verify() {
+    if (this.resolution?.ok) return Promise.resolve(this.resolution);
+    if (!this.verifying) {
+      this.verifying = resolveCodexHostExecutable(this.hostParentPid, this.deps).then((resolution) => {
+        this.resolution = resolution;
+        this.verifying = void 0;
+        this.log(resolution.ok ? { stage: "host_verified", version: resolution.executable.version } : { stage: "host_unavailable", reason: resolution.reason, ...resolution.detail ? { detail: redactString(resolution.detail) } : {} });
+        return resolution;
+      });
+    }
+    return this.verifying;
+  }
+  async trigger(threadId, stillPending) {
+    this.inflight = true;
+    try {
+      const resolution = await this.verify();
+      if (this.stopped || !resolution.ok) return;
+      if ((this.deps.readParentPid ?? (() => process.ppid))() !== this.hostParentPid) {
+        this.resolution = { ok: false, reason: "parent-changed" };
+        return;
+      }
+      const execFile = this.deps.execFile ?? defaultExecFile;
+      const outcome = await execFile(resolution.executable.path, ["queue", "--thread", threadId, "--message", CODEX_QUEUE_WAKE_TRIGGER], {
+        timeout: QUEUE_TIMEOUT_MS,
+        env: hostSubprocessEnv(this.deps.env)
+      });
+      this.handleOutcome(outcome, threadId, stillPending);
+    } catch (error51) {
+      this.scheduleRetry(threadId, stillPending, errorMessage(error51));
+    } finally {
+      this.inflight = false;
+    }
+  }
+  handleOutcome(outcome, threadId, stillPending) {
+    if (outcome.spawnError) {
+      this.scheduleRetry(threadId, stillPending, outcome.spawnError);
+      return;
+    }
+    if (outcome.code === 0) {
+      this.outstanding = true;
+      this.attempts = 0;
+      this.lastError = void 0;
+      this.triggers += 1;
+      this.lastTriggerAt = new Date(this.now()).toISOString();
+      this.log({ stage: "trigger_queued" });
+      return;
+    }
+    const detail = redactString(outcome.stderr.trim().slice(0, STDERR_DETAIL_LIMIT));
+    if (outcome.ambiguous) {
+      this.degraded = true;
+      this.outstanding = true;
+      this.lastError = `codex queue outcome unknown (${outcome.signal ?? "no exit status"})${detail ? `: ${detail}` : ""}`;
+      this.log({ stage: "trigger_ambiguous", signal: outcome.signal });
+      return;
+    }
+    const reason = classifyQueueFailure(outcome.stderr);
+    const message = `codex queue exited ${outcome.code}${detail ? `: ${detail}` : ""}`;
+    if (reason) {
+      this.stopReason = reason;
+      this.lastError = message;
+      this.log({ stage: "trigger_rejected", reason, code: outcome.code });
+      return;
+    }
+    this.scheduleRetry(threadId, stillPending, message);
+  }
+  scheduleRetry(threadId, stillPending, error51) {
+    this.attempts += 1;
+    this.lastError = error51;
+    if (this.stopped) return;
+    if (this.attempts >= MAX_QUEUE_ATTEMPTS) {
+      this.stopReason = "queue-failed";
+      this.log({ stage: "trigger_failed", reason: "queue-failed", attempts: this.attempts });
+      return;
+    }
+    const base = Math.min(BACKOFF_BASE_MS * 2 ** (this.attempts - 1), BACKOFF_CAP_MS);
+    const jitter = base * 0.25 * (2 * (this.deps.random ?? Math.random)() - 1);
+    const delay = Math.max(1, Math.round(base + jitter));
+    this.nextRetryAt = this.now() + delay;
+    this.log({ stage: "trigger_retry", attempt: this.attempts, delayMs: delay });
+    const setTimer = this.deps.setTimer ?? ((callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs);
+      timer.unref?.();
+      return timer;
+    });
+    this.retryTimer = setTimer(() => {
+      this.retryTimer = void 0;
+      this.nextRetryAt = void 0;
+      if (this.stopped || !stillPending()) return;
+      void this.trigger(threadId, stillPending);
+    }, delay);
+  }
+  clearRetry() {
+    if (this.retryTimer !== void 0) (this.deps.clearTimer ?? ((timer) => clearTimeout(timer)))(this.retryTimer);
+    this.retryTimer = void 0;
+    this.nextRetryAt = void 0;
+  }
+  now() {
+    return (this.deps.now ?? Date.now)();
+  }
+  log(event) {
+    const entry = { event: "parle_idle_wake", at: new Date(this.now()).toISOString(), ...event };
+    if (this.deps.log) this.deps.log(entry);
+    else console.error(JSON.stringify(entry));
+  }
+};
+
 // src/hook-delivery-bridge.ts
 import { createHash as createHash3, randomUUID as randomUUID5 } from "node:crypto";
 import {
@@ -38868,13 +39169,13 @@ import {
   renameSync as renameSync3,
   rmdirSync,
   rmSync as rmSync3,
-  statSync as statSync3,
+  statSync as statSync4,
   unlinkSync as unlinkSync5,
   symlinkSync
 } from "node:fs";
 import { createServer } from "node:net";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname7, isAbsolute as isAbsolute3, join as join10 } from "node:path";
+import { dirname as dirname7, isAbsolute as isAbsolute4, join as join10 } from "node:path";
 var MAX_PENDING = 100;
 var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
@@ -39006,13 +39307,14 @@ function cleanupHookBridgeArtifacts(stateDir, deps = {}) {
   }
 }
 var HookDeliveryBridge = class {
-  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd(), hostParentPid, readParentPid = () => process.ppid) {
+  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd(), hostParentPid, readParentPid = () => process.ppid, idleWake) {
     this.client = client;
     this.scope = scope;
     this.runtimeExecPath = runtimeExecPath;
     this.evidenceCwd = evidenceCwd;
     this.hostParentPid = hostParentPid;
     this.readParentPid = readParentPid;
+    this.idleWake = idleWake;
     if (this.hostParentPid !== void 0 && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
       throw new Error("Parle hook bridge host parent pid must be greater than 1");
     }
@@ -39043,6 +39345,7 @@ var HookDeliveryBridge = class {
   evidenceCwd;
   hostParentPid;
   readParentPid;
+  idleWake;
   controller;
   pending = [];
   queuedKeys = /* @__PURE__ */ new Set();
@@ -39056,6 +39359,8 @@ var HookDeliveryBridge = class {
   lastError;
   lastErrorKind;
   hostSessionId;
+  metaHostSessionId;
+  idleWakeStarted = false;
   waiter;
   unsubscribeCommitGuard;
   evidence;
@@ -39076,6 +39381,9 @@ var HookDeliveryBridge = class {
       ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() },
       ...this.client.runtime?.agentSessionId ? { agentSessionId: String(this.client.runtime.agentSessionId) } : {},
       ...controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {},
+      ...this.hostSessionId ? { hostSessionId: this.hostSessionId } : {},
+      ...this.metaHostSessionId ? { metaHostSessionId: this.metaHostSessionId } : {},
+      ...this.idleWake ? { idleWake: this.idleWakeStatus() } : {},
       ...lastError ? { lastError } : {},
       ...lastErrorAt ? { lastErrorAt } : {},
       ...lastErrorSource ? { lastErrorSource } : {},
@@ -39084,10 +39392,18 @@ var HookDeliveryBridge = class {
   }
   bindHostSession(sessionId, allowReplace = false, correlated = false) {
     this.assertCurrentHostParent();
-    if (!sessionId || this.hostParentPid !== void 0 && !correlated) return false;
+    if (!sessionId) return false;
+    if (this.hostParentPid !== void 0 && !correlated) {
+      if (this.metaHostSessionId !== sessionId) {
+        this.metaHostSessionId = sessionId;
+        this.requestIdleWake();
+      }
+      return false;
+    }
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || this.hostSessionId && !allowReplace) return false;
     this.hostSessionId = sessionId;
+    this.requestIdleWake();
     return true;
   }
   async start() {
@@ -39101,6 +39417,7 @@ var HookDeliveryBridge = class {
   }
   async stop() {
     this.stopped = true;
+    this.idleWake?.stop?.();
     this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
@@ -39130,6 +39447,10 @@ var HookDeliveryBridge = class {
       }
       this.lastError = void 0;
       this.lastErrorKind = void 0;
+    }
+    if (!this.idleWakeStarted) {
+      this.idleWakeStarted = true;
+      this.idleWake?.start?.();
     }
     if (!this.controller.status().running) {
       this.baselineActive = !this.baselineDone;
@@ -39210,6 +39531,7 @@ var HookDeliveryBridge = class {
       seq: input.message.seq
     }));
     this.finishWaiter({ ok: true, ready: true });
+    this.requestIdleWake();
   }
   async listen() {
     this.assertCurrentHostParent();
@@ -39247,9 +39569,9 @@ var HookDeliveryBridge = class {
   }
   publishRuntimeArtifacts() {
     const execPath = this.runtimeExecPath;
-    if (!isAbsolute3(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
+    if (!isAbsolute4(execPath)) throw new Error("Parle hook bridge Node runtime path is not absolute");
     accessSync(execPath, constants3.X_OK);
-    if (!statSync3(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
+    if (!statSync4(execPath).isFile()) throw new Error("Parle hook bridge Node runtime path is not a file");
     const descriptorPath = hookBridgeRuntimeDescriptorPath(this.scope, process.pid, this.hostParentPid);
     const handlePath = hookBridgeRuntimeHandlePath(this.scope);
     const handleTemporary = `${handlePath}.tmp-${randomUUID5()}`;
@@ -39358,6 +39680,7 @@ var HookDeliveryBridge = class {
   }
   take() {
     if (this.liveLease()) return { ok: true, busy: true, messages: [] };
+    this.idleWake?.consumeWake();
     const messages = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
@@ -39398,11 +39721,33 @@ var HookDeliveryBridge = class {
       committed += 1;
     }
     this.lease = void 0;
+    this.requestIdleWake();
     return { ok: true, committed };
   }
   liveLease() {
     if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = void 0;
     return this.lease;
+  }
+  // Idle wake may start a turn only on the thread the trusted hook bound, and
+  // only once the MCP request metadata has named the same thread.
+  idleWakeThread() {
+    if (!this.hostSessionId) return { reason: "host-session-unbound" };
+    if (!this.metaHostSessionId) return { reason: "host-session-unconfirmed" };
+    if (this.metaHostSessionId !== this.hostSessionId) return { reason: "host-session-conflict" };
+    return { threadId: this.hostSessionId };
+  }
+  requestIdleWake() {
+    if (!this.idleWake || this.stopped || this.pending.length === 0 || this.liveLease()) return;
+    const { threadId } = this.idleWakeThread();
+    if (!threadId) return;
+    this.idleWake.requestWake(threadId, () => this.pending.length > 0 && !this.liveLease());
+  }
+  idleWakeStatus() {
+    if (!this.idleWake) return void 0;
+    const wake = this.idleWake.status();
+    if (wake.state !== "queue-only" && wake.state !== "daemon-attached") return wake;
+    const thread = this.idleWakeThread();
+    return thread.threadId ? wake : { ...wake, state: "unavailable", reason: thread.reason };
   }
   pendingWork() {
     const lease = this.liveLease();
@@ -39554,14 +39899,39 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
-function idleWakeState(host, bridgeStatus) {
-  if (host.idleWake === "none") return "unavailable";
-  return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
+var HOST_IDLE_WAKE_STATES = /* @__PURE__ */ new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
+function hostIdleWakeEvidence(host, bridgeStatus) {
+  if (host.idleWake === "none") return { state: "unavailable" };
+  if (host.idleWake === "codex-queue") {
+    const wake = bridgeStatus?.idleWake;
+    if (!bridgeStatus) return { state: "unavailable", reason: "host-bridge-unavailable" };
+    if (!wake || typeof wake.state !== "string" || !HOST_IDLE_WAKE_STATES.has(wake.state)) return { state: "unavailable", reason: "host-correlation-unavailable" };
+    if (bridgeStatus.running !== true) return { state: "unavailable", reason: "host-bridge-not-running" };
+    return { state: wake.state, ...typeof wake.reason === "string" ? { reason: wake.reason } : {} };
+  }
+  return { state: bridgeStatus?.waiterAttached === true ? "armed" : "unarmed" };
 }
-function withHostNextGuidance(result2, host) {
-  if (host.idleWake !== "none" || !result2 || typeof result2 !== "object") return result2;
+function idleWakeState(host, bridgeStatus) {
+  return hostIdleWakeEvidence(host, bridgeStatus).state;
+}
+function hostIdleWakeNext(idleWake) {
+  switch (idleWake) {
+    case "unavailable":
+      return { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
+    case "queue-only":
+      return { nextActionKey: "idle-wake-queue-only", nextAction: "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds" };
+    case "daemon-attached":
+      return { nextActionKey: "idle-wake-daemon-attached", nextAction: "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately" };
+    case "degraded":
+      return { nextActionKey: "idle-wake-degraded", nextAction: "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once" };
+    default:
+      return void 0;
+  }
+}
+function withHostNextGuidance(result2, host, idleWake) {
+  if (host.idleWake === void 0 || !result2 || typeof result2 !== "object") return result2;
   const value = result2;
-  const guidance = nextTextFor("idle-wake-unavailable");
+  const guidance = nextTextFor(hostIdleWakeNext(idleWake)?.nextActionKey ?? "idle-wake-unavailable");
   const session = value.session;
   return {
     ...value,
@@ -39602,12 +39972,13 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
     resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
   }
   if (!resolved) return void 0;
-  const idleWakeUnarmed = bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
+  const idleWakeUnarmed = host.idleWake !== "codex-queue" && bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
   if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
-  const idleWake = idleWakeState(host, bridgeStatus);
-  resolved = { ...resolved, idleWake };
-  const idleWakeUnavailableNext = { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? idleWake === "unavailable" ? idleWakeUnavailableNext : { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : idleWake === "unavailable" ? idleWakeUnavailableNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
+  const evidence = hostIdleWakeEvidence(host, bridgeStatus);
+  const idleWake = evidence.state;
+  resolved = { ...resolved, idleWake, ...evidence.reason ? { idleWakeReason: evidence.reason } : {} };
+  const hostNext = hostIdleWakeNext(idleWake);
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? hostNext ?? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : hostNext ? hostNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -39650,6 +40021,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     const sessionId = hostSessionIdFromMeta(extra?._meta);
     if (sessionId) deliveryBridge?.bindHostSession(sessionId);
   };
+  const hostGuidance = (result2) => withHostNextGuidance(result2, host, idleWakeState(host, deliveryBridge?.status()));
   registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. The canonical responsiveDelivery field resolves shared credential-free lifecycle evidence; MCP connectivity and unread observation never imply healthy delivery. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -39721,8 +40093,9 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    const summary = withHostNextGuidance(await client.connect(), host);
+    const connected = await client.connect();
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
+    const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
@@ -40051,7 +40424,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.readProjection(params), host));
+    return safeTool(async () => hostGuidance(await client.readProjection(params)));
   });
   registerTool("parle_inbox", {
     title: "Parle Inbox",
@@ -40060,7 +40433,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.readInbox(params), host));
+    return safeTool(async () => hostGuidance(await client.readInbox(params)));
   });
   registerTool("parle_affordances", {
     title: "Parle Affordances",
@@ -40102,7 +40475,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.send(params), host));
+    return safeTool(async () => hostGuidance(await client.send(params)));
   });
   registerTool("parle_reply", {
     title: "Parle Reply",
@@ -40111,7 +40484,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.submitReply(params), host));
+    return safeTool(async () => hostGuidance(await client.submitReply(params)));
   });
   if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
@@ -40152,7 +40525,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.62";
+var MCP_CLIENT_VERSION = "0.7.63";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -40165,10 +40538,10 @@ function resolveIntegrationMetadata(env = process.env) {
 }
 function resolveConfigCwd(env = process.env, fallback = process.cwd()) {
   const pwd = env.PWD;
-  if (env.PARLE_CONFIG_CWD_FROM_PWD === "1" && pwd && isAbsolute4(pwd)) {
+  if (env.PARLE_CONFIG_CWD_FROM_PWD === "1" && pwd && isAbsolute5(pwd)) {
     try {
       const resolved = realpathSync2(pwd);
-      if (statSync4(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
+      if (statSync5(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
     } catch {
     }
   }
@@ -40199,7 +40572,7 @@ function createParleMcpServer(client = createMcpAgentClient(), accountClient = n
 function resolveHostCapabilities(env = process.env) {
   const idleWake = env.PARLE_HOST_IDLE_WAKE;
   if (!idleWake) return {};
-  if (idleWake !== "none") throw new Error(`Unsupported PARLE_HOST_IDLE_WAKE mode: ${idleWake}`);
+  if (idleWake !== "none" && idleWake !== "codex-queue") throw new Error(`Unsupported PARLE_HOST_IDLE_WAKE mode: ${idleWake}`);
   return { idleWake };
 }
 async function runStdio() {
@@ -40225,12 +40598,15 @@ async function runStdio() {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
       };
     }
+    const idleWake = host.idleWake === "codex-queue" && hookBridgeEnabled && hostParentPid !== void 0 ? new CodexQueueWake(hostParentPid) : void 0;
     const deliveryBridge = hookBridgeEnabled ? new HookDeliveryBridge(
       client,
       process.env.PARLE_HOOK_BRIDGE_SCOPE || process.cwd(),
       process.execPath,
       process.cwd(),
-      hostParentPid
+      hostParentPid,
+      void 0,
+      idleWake
     ) : void 0;
     const baseStatus = client.status.bind(client);
     client.status = () => ({
@@ -40494,7 +40870,7 @@ async function runKnownAddressContext(cwd) {
   let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
   if (!profilesPathOverride) {
     try {
-      profilesPathOverride = parseKeyValueFile(readFileSync6(join11(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
+      profilesPathOverride = parseKeyValueFile(readFileSync7(join11(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
     } catch {
     }
   }
@@ -40514,9 +40890,12 @@ if (isDirectRun(import.meta.url)) {
   });
 }
 export {
+  CODEX_QUEUE_WAKE_TRIGGER,
+  CodexQueueWake,
   MCP_CLIENT_INSTANCE_ID,
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
+  MIN_CODEX_QUEUE_VERSION,
   WATCHER_USAGE,
   WatcherUsageError,
   createMcpAgentClient,
@@ -40525,6 +40904,7 @@ export {
   isDirectRun,
   parseWatcherArgs,
   registerParleTools,
+  resolveCodexHostExecutable,
   resolveConfigCwd,
   resolveHostCapabilities,
   resolveIntegrationMetadata,
