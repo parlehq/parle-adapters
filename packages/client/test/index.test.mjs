@@ -648,11 +648,13 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
   });
   const inbox = await client.readInbox({ waitSeconds: 2 });
   assert.equal(inbox.cursorAfter, 4);
+  assert.ok(inbox.note.startsWith("waitSeconds is one bounded wait per call. Do not loop on it as a watcher on your own initiative; only a live operator's explicit authorization, under the host skill's capped attended-hold rule, permits successive calls. "), "waited reads carry the #170 conditional wait note");
   assert.match(inbox.note, /parle_send with to set exactly to that message's author\.address/);
   assert.match(inbox.note, /Omitting to creates an unaddressed durable room row but no target-responsive work for that peer/);
   assert.match(inbox.note, /do not guess from participant_id or provenance fields/);
   const projection = await client.readProjection();
   assert.doesNotMatch(projection.note, /author\.address/);
+  assert.doesNotMatch(projection.note, /waitSeconds/);
   const sent = await client.send({ body: "hello", to: "@p.a.s1" });
   assert.equal(sent.idempotencyKey, "idem-1");
   assert.deepEqual(sent.routing, { mode: "direct", target_level: "session", continuity: "ephemeral" });
