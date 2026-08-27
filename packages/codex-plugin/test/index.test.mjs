@@ -21,7 +21,7 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   assert.equal(mcp.mcpServers.parle.command, "node");
   assert.deepEqual(mcp.mcpServers.parle.args, ["./dist/parle-mcp.js"]);
   assert.equal(mcp.mcpServers.parle.cwd, ".");
-  assert.deepEqual(mcp.mcpServers.parle.env_vars, ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME"]);
+  assert.deepEqual(mcp.mcpServers.parle.env_vars, ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME", "PARLE_ALLOW_INSECURE_LOCAL"]);
   assert.deepEqual(mcp.mcpServers.parle.env, {
     PARLE_CONFIG_CWD_FROM_PWD: "1",
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
@@ -63,6 +63,11 @@ test("Codex MCP config forwards only non-credential selectors from the launching
   assert.equal(server.env_vars.includes("PARLE_CONFIG_CWD_FROM_PWD"), false, "the opt-in is a literal value, never forwarded from the shell");
   assert.equal(server.env_vars.includes("CODEX_HOME"), true, "a later codex subprocess must target the parent's state store");
   assert.equal(server.env_vars.includes("PARLE_ROOM_AGENT_TOKEN"), false);
+  // A local Parle rig is reachable only when the shell opts in; the value is a
+  // non-secret flag and the shared client still admits loopback hosts only (#175).
+  assert.equal(server.env_vars.includes("PARLE_ALLOW_INSECURE_LOCAL"), true, "the loopback opt-in must reach the env-cleared child");
+  assert.doesNotMatch("PARLE_ALLOW_INSECURE_LOCAL", credentialShape);
+  assert.equal(Object.hasOwn(server.env, "PARLE_ALLOW_INSECURE_LOCAL"), false, "the opt-in is forwarded from the shell, never a manifest literal");
 });
 
 test("Codex MCP config declares that the host has no idle-wake arm action", () => {

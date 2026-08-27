@@ -11,7 +11,8 @@
         "PARLE_PROFILES",
         "PARLE_PROFILES_PATH",
         "PWD",
-        "CODEX_HOME"
+        "CODEX_HOME",
+        "PARLE_ALLOW_INSECURE_LOCAL"
       ],
       "env": {
         "PARLE_CONFIG_CWD_FROM_PWD": "1",
@@ -19,7 +20,7 @@
         "PARLE_HOOK_BRIDGE_SCOPE": "codex-plugin",
         "PARLE_HOST_IDLE_WAKE": "none",
         "PARLE_INTEGRATION_NAME": "@parlehq/codex-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.6.64"
+        "PARLE_INTEGRATION_VERSION": "0.6.65"
       }
     }
   }

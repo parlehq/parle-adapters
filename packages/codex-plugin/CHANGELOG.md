@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.65 (2026-08-27)
+
+- Forward `PARLE_ALLOW_INSECURE_LOCAL` through Codex's cleared MCP environment so a project can reach a local Parle rig (`http://127.0.0.1:<port>`) under Codex. The flag is a non-secret opt-in read from the launching shell's process environment; the shared client's loopback-only rule is unchanged, so it never admits a non-local host (#175).
+
 ## 0.6.64 (2026-08-27)
 
 - Add an identity checkpoint to the skill's safety floor, covering every send path including status-first auto-connect: before this session's first `parle_send` or `parle_reply`, compare the connect or connected-status result's `identity` with any profile, agent, or room the operator stated; on a mismatch or unconfirmable expectation, do not send and report `identity mismatch` with the expected and actual values. When the requested `PARLE_PROFILE` is not in the catalog, or the plugin booted without usable configuration, report it as an identity/configuration problem and never fall back to another profile or the default identity. Carries MCP server 0.7.62 (#172).

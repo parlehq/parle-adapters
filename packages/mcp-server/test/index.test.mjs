@@ -1473,7 +1473,7 @@ test("config cwd follows PWD only when the host opts in and PWD is an absolute e
 // env map reach the child. The fixtures below hand the server exactly that
 // environment; PARLE_* from the test runner's own environment never leaks in.
 const CODEX_DEFAULT_ENV_VARS = ["HOME", "PATH", "USER", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "LOGNAME"];
-const CODEX_FORWARDED_ENV_VARS = ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME"];
+const CODEX_FORWARDED_ENV_VARS = ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME", "PARLE_ALLOW_INSECURE_LOCAL"];
 // The configuration-relevant subset of the Codex manifest's literal env map.
 const CODEX_MANIFEST_ENV = { PARLE_CONFIG_CWD_FROM_PWD: "1" };
 
@@ -1820,5 +1820,53 @@ test("a degraded boot with a missing profile says the profile is not in the cata
     await client.close();
     await server.close();
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("env-cleared spawn accepts a loopback api_base only when PARLE_ALLOW_INSECURE_LOCAL is forwarded (#175)", async () => {
+  const fixture = envClearedLaunchFixture();
+  const api = createServer((request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const reply = (body, status = 200) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (url.pathname === "/v/agent/sessions") return reply({ agent_session_id: "as-local", session_credential: "parle_ses_local_secret", session_handle: "local", address: "@p.a.local", expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    if (url.pathname.endsWith("/participants")) return reply({ participant_id: "part-1", room_handle: "rig" }, 201);
+    if (url.pathname.endsWith("/projection")) return reply({ watermark: 0, messages: [] });
+    if (url.pathname.endsWith("/responsive-delivery")) return reply({ messages: [] });
+    return reply({});
+  });
+  await new Promise((resolveListen) => api.listen(0, "127.0.0.1", resolveListen));
+  const apiBase = `http://127.0.0.1:${api.address().port}`;
+  try {
+    writeFileSync(join(fixture.project, ".env"), "PARLE_WATCH_ENABLED=0\n");
+    writeFileSync(join(fixture.home, ".parle", "profiles"), `[local]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_local_secret\napi_base = ${apiBase}\n`, { mode: 0o600 });
+
+    // Without the opt-in the shared client's allowlist refuses the loopback base.
+    const refused = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project, PARLE_PROFILE: "local" } }, async (client) => {
+      assert.equal((await client.listTools()).tools.some((tool) => tool.name === "parle_connect"), true, "a loopback base is a configuration, not a degraded boot");
+      return client.callTool({ name: "parle_connect", arguments: {} });
+    });
+    assert.equal(refused.isError, true);
+    assert.match(refused.structuredContent.error, /Parle API base must use https/);
+
+    const accepted = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project, PARLE_PROFILE: "local", PARLE_ALLOW_INSECURE_LOCAL: "1" } }, async (client) => {
+      const connect = await client.callTool({ name: "parle_connect", arguments: {} });
+      assert.equal(connect.isError, undefined, JSON.stringify(connect.structuredContent));
+      assert.equal(connect.structuredContent.connected, true);
+      assert.equal(connect.structuredContent.identity.sessionAddress, "@p.a.local");
+      assert.equal(connect.structuredContent.identity.roomHandle, "rig");
+      const status = await inspectedStatus(client);
+      assert.equal(status.configCwdSource, "PWD");
+      assert.equal(status.config.apiBase.value, apiBase);
+      assert.equal(status.runtime.bootstrapState, "ready");
+      assert.equal(status.runtime.lastBootstrapError, undefined);
+      return { connect, status };
+    });
+    for (const sensitive of ["parle_agt_local_secret", "parle_ses_local_secret"]) assert.equal(JSON.stringify(accepted).includes(sensitive), false);
+  } finally {
+    fixture.cleanup();
+    await new Promise((resolveClose) => api.close(resolveClose));
   }
 });
