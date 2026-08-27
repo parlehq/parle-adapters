@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171 status card line `Delivery      watching (idle wake unavailable)` with `arm or verify` and `idle wake unarmed` absent. The scenario window for authoritative checks runs from container start to teardown.",
+  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171/#174 status card line `Delivery      watching (idle wake queue-only)` (a verified Codex >= 0.149 whose hook-bound and MCP thread ids agree) with `arm or verify`, `idle wake unarmed`, and `idle wake unavailable` absent. The scenario window for authoritative checks runs from container start to teardown.",
   "plugin": {
     "name": "parle-codex-plugin",
     "marketplace": "parlehq"
@@ -75,7 +75,7 @@
         { "kind": "participant-identity", "agent": "expected" }
       ],
       "diagnostic": [
-        { "kind": "status-text", "contains": ["Delivery      watching (idle wake unavailable)"], "excludes": ["arm or verify", "idle wake unarmed"] }
+        { "kind": "status-text", "contains": ["Delivery      watching (idle wake queue-only)"], "excludes": ["arm or verify", "idle wake unarmed", "idle wake unavailable"] }
       ]
     },
     {

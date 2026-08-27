@@ -275,30 +275,77 @@ test("queue wake holds one outstanding trigger until a hook take consumes it", a
   assert.equal(harness.wake.status().triggers, 2);
 });
 
-test("queue wake stops retrying on a failure Codex reports and resumes after a take", async () => {
+// Captured from codex-cli 0.150.1 with a thread id that has no rollout.
+const CODEX_0150_INVALID_THREAD_STDERR = "Error: failed to queue session message: thread/queue/add failed: failed to read thread: invalid thread-store request: no rollout found for thread id 00000000-0000-0000-0000-000000000000 (code -32603)\n";
+
+test("queue wake never retries a process that ran: reported and generic failures degrade until a take", async () => {
   for (const [stderr, reason] of [
-    ["Error: failed to queue session message: thread/queue/add failed: failed to read thread: invalid thread-store request: no rollout found for thread id x (code -32603)", "invalid-thread"],
+    [CODEX_0150_INVALID_THREAD_STDERR, "invalid-thread"],
     ["Error: queue is full", "queue-full"],
     ["Error: permission denied", "permission"],
+    ["Error: connection reset by peer", "trigger-outcome-unknown"],
+    ["", "trigger-outcome-unknown"],
   ]) {
     const harness = wakeHarness({ queue: failed(1, stderr) });
     harness.wake.requestWake(THREAD, () => true);
     await flush();
     const status = harness.wake.status();
-    assert.equal(status.state, "unavailable", reason);
+    assert.equal(status.state, "degraded", reason);
     assert.equal(status.reason, reason);
-    assert.equal(status.outstanding, false);
+    assert.equal(status.exitCode, 1);
+    assert.equal(status.outstanding, true, "the row may already exist");
     assert.match(status.lastError, /codex queue exited 1/);
-    assert.equal(harness.timers.length, 0, "a reported failure schedules no retry");
+    assert.equal(harness.timers.length, 0, "a process that ran schedules no retry");
     harness.wake.requestWake(THREAD, () => true);
     await flush();
-    assert.equal(harness.queueCalls().length, 1, "no retry while stopped");
+    assert.equal(harness.queueCalls().length, 1, "no second trigger while degraded");
+    assert.deepEqual(harness.logs.at(-1).stage, "trigger_rejected");
     harness.wake.consumeWake();
     assert.equal(harness.wake.status().state, "queue-only");
+    assert.equal(harness.wake.status().exitCode, undefined);
     harness.wake.requestWake(THREAD, () => true);
     await flush();
-    assert.equal(harness.queueCalls().length, 2, "a take resets the stop");
+    assert.equal(harness.queueCalls().length, 2, "a take resets the hold");
   }
+});
+
+test("ready() settles with host verification inside the bound and on the bound otherwise", async () => {
+  const deferred = () => {
+    let resolveIt;
+    const promise = new Promise((resolve) => { resolveIt = resolve; });
+    return { promise, resolve: resolveIt };
+  };
+  const versionProbe = deferred();
+  const harness = wakeHarness({ deps: { execFile: fakeExec([[(_file, args) => args[0] === "--version", () => versionProbe.promise]]) } });
+  let settled = false;
+  const ready = harness.wake.ready(2_000).then(() => { settled = true; });
+  await flush();
+  assert.equal(settled, false);
+  assert.equal(harness.timers.length, 1);
+  assert.equal(harness.timers[0].delayMs, 2_000);
+  assert.equal(harness.wake.status().reason, "host-verification-pending");
+  versionProbe.resolve(ok("codex-cli 0.150.1\n"));
+  await ready;
+  assert.equal(harness.wake.status().state, "queue-only");
+  assert.deepEqual(harness.cleared, [1], "a settled verification cancels the bound");
+  let immediate = false;
+  await harness.wake.ready(2_000).then(() => { immediate = true; });
+  assert.equal(immediate, true);
+  assert.equal(harness.timers.length, 1, "a verified host waits on nothing");
+
+  const slow = deferred();
+  const late = wakeHarness({ deps: { execFile: fakeExec([[(_file, args) => args[0] === "--version", () => slow.promise]]) } });
+  let boundHit = false;
+  const bounded = late.wake.ready(2_000).then(() => { boundHit = true; });
+  await flush();
+  late.timers[0].callback();
+  await bounded;
+  assert.equal(boundHit, true);
+  assert.equal(late.wake.status().state, "unavailable");
+  assert.equal(late.wake.status().reason, "host-verification-pending");
+  slow.resolve(ok("codex-cli 0.150.1\n"));
+  await flush();
+  assert.equal(late.wake.status().state, "queue-only", "a late verification still lands");
 });
 
 test("queue wake backs off with jitter after a definite pre-exec failure and gives up after the bound", async () => {
@@ -327,7 +374,7 @@ test("queue wake backs off with jitter after a definite pre-exec failure and giv
   assert.equal(harness.queueCalls().length, 5);
   const status = harness.wake.status();
   assert.equal(status.state, "unavailable");
-  assert.equal(status.reason, "queue-failed");
+  assert.equal(status.reason, "spawn-failed");
   assert.match(status.lastError, /EAGAIN/);
   assert.equal(harness.timers.length, 4, "the bound stops the schedule");
   // Work drained before a retry fires: the retry does nothing.
@@ -349,6 +396,7 @@ test("queue wake degrades on an ambiguous outcome and never retries on its own",
   assert.equal(status.state, "degraded");
   assert.equal(status.reason, "trigger-outcome-unknown");
   assert.equal(status.outstanding, true, "the trigger may have been queued");
+  assert.equal(status.exitCode, undefined);
   assert.match(status.lastError, /outcome unknown \(SIGTERM\)/);
   assert.equal(harness.timers.length, 0);
   harness.wake.requestWake(THREAD, () => true);

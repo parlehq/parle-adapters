@@ -39013,6 +39013,8 @@ var CodexQueueWake = class {
   nextRetryAt;
   attempts = 0;
   degraded = false;
+  degradedReason;
+  lastExitCode;
   stopReason;
   lastError;
   triggers = 0;
@@ -39036,9 +39038,32 @@ var CodexQueueWake = class {
     };
     if (!this.resolution) return { state: "unavailable", reason: "host-verification-pending", ...base };
     if (!this.resolution.ok) return { state: "unavailable", reason: this.resolution.reason, ...this.resolution.detail ? { detail: this.resolution.detail } : {}, ...base };
-    if (this.degraded) return { state: "degraded", reason: "trigger-outcome-unknown", ...base };
+    if (this.degraded) {
+      return {
+        state: "degraded",
+        reason: this.degradedReason ?? "trigger-outcome-unknown",
+        ...typeof this.lastExitCode === "number" ? { exitCode: this.lastExitCode } : {},
+        ...base
+      };
+    }
     if (this.stopReason) return { state: "unavailable", reason: this.stopReason, ...base };
     return { state: "queue-only", ...base };
+  }
+  // Resolves once host verification has settled or the bound elapses, so a
+  // status call issued right after connect cannot race the version probe.
+  ready(timeoutMs) {
+    if (this.stopped || this.resolution && !this.verifying) return Promise.resolve();
+    return new Promise((resolve2) => {
+      let settled = false;
+      const timer = this.setTimer(() => finish(), timeoutMs);
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.clearTimer(timer);
+        resolve2();
+      };
+      void this.verify().then(finish, finish);
+    });
   }
   requestWake(threadId, stillPending) {
     if (this.stopped || !threadId || this.outstanding || this.inflight || this.retryTimer || this.degraded || this.stopReason) return;
@@ -39047,6 +39072,8 @@ var CodexQueueWake = class {
   consumeWake() {
     this.outstanding = false;
     this.degraded = false;
+    this.degradedReason = void 0;
+    this.lastExitCode = void 0;
     this.stopReason = void 0;
     this.attempts = 0;
     this.clearRetry();
@@ -39099,30 +39126,20 @@ var CodexQueueWake = class {
       return;
     }
     const detail = redactString(outcome.stderr.trim().slice(0, STDERR_DETAIL_LIMIT));
-    if (outcome.ambiguous) {
-      this.degraded = true;
-      this.outstanding = true;
-      this.lastError = `codex queue outcome unknown (${outcome.signal ?? "no exit status"})${detail ? `: ${detail}` : ""}`;
-      this.log({ stage: "trigger_ambiguous", signal: outcome.signal });
-      return;
-    }
-    const reason = classifyQueueFailure(outcome.stderr);
-    const message = `codex queue exited ${outcome.code}${detail ? `: ${detail}` : ""}`;
-    if (reason) {
-      this.stopReason = reason;
-      this.lastError = message;
-      this.log({ stage: "trigger_rejected", reason, code: outcome.code });
-      return;
-    }
-    this.scheduleRetry(threadId, stillPending, message);
+    this.degraded = true;
+    this.outstanding = true;
+    this.degradedReason = (outcome.ambiguous ? void 0 : classifyQueueFailure(outcome.stderr)) ?? "trigger-outcome-unknown";
+    this.lastExitCode = outcome.code;
+    this.lastError = outcome.ambiguous ? `codex queue outcome unknown (${outcome.signal ?? "no exit status"})${detail ? `: ${detail}` : ""}` : `codex queue exited ${outcome.code}${detail ? `: ${detail}` : ""}`;
+    this.log({ stage: outcome.ambiguous ? "trigger_ambiguous" : "trigger_rejected", reason: this.degradedReason, code: outcome.code, signal: outcome.signal });
   }
   scheduleRetry(threadId, stillPending, error51) {
     this.attempts += 1;
     this.lastError = error51;
     if (this.stopped) return;
     if (this.attempts >= MAX_QUEUE_ATTEMPTS) {
-      this.stopReason = "queue-failed";
-      this.log({ stage: "trigger_failed", reason: "queue-failed", attempts: this.attempts });
+      this.stopReason = "spawn-failed";
+      this.log({ stage: "trigger_failed", reason: "spawn-failed", attempts: this.attempts });
       return;
     }
     const base = Math.min(BACKOFF_BASE_MS * 2 ** (this.attempts - 1), BACKOFF_CAP_MS);
@@ -39130,12 +39147,7 @@ var CodexQueueWake = class {
     const delay = Math.max(1, Math.round(base + jitter));
     this.nextRetryAt = this.now() + delay;
     this.log({ stage: "trigger_retry", attempt: this.attempts, delayMs: delay });
-    const setTimer = this.deps.setTimer ?? ((callback, delayMs) => {
-      const timer = setTimeout(callback, delayMs);
-      timer.unref?.();
-      return timer;
-    });
-    this.retryTimer = setTimer(() => {
+    this.retryTimer = this.setTimer(() => {
       this.retryTimer = void 0;
       this.nextRetryAt = void 0;
       if (this.stopped || !stillPending()) return;
@@ -39143,9 +39155,19 @@ var CodexQueueWake = class {
     }, delay);
   }
   clearRetry() {
-    if (this.retryTimer !== void 0) (this.deps.clearTimer ?? ((timer) => clearTimeout(timer)))(this.retryTimer);
+    if (this.retryTimer !== void 0) this.clearTimer(this.retryTimer);
     this.retryTimer = void 0;
     this.nextRetryAt = void 0;
+  }
+  setTimer(callback, delayMs) {
+    if (this.deps.setTimer) return this.deps.setTimer(callback, delayMs);
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return timer;
+  }
+  clearTimer(timer) {
+    if (this.deps.clearTimer) this.deps.clearTimer(timer);
+    else clearTimeout(timer);
   }
   now() {
     return (this.deps.now ?? Date.now)();
@@ -39307,7 +39329,7 @@ function cleanupHookBridgeArtifacts(stateDir, deps = {}) {
   }
 }
 var HookDeliveryBridge = class {
-  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd(), hostParentPid, readParentPid = () => process.ppid, idleWake) {
+  constructor(client, scope = process.cwd(), runtimeExecPath = process.execPath, evidenceCwd = process.cwd(), hostParentPid, readParentPid = () => process.ppid, idleWake, deps = {}) {
     this.client = client;
     this.scope = scope;
     this.runtimeExecPath = runtimeExecPath;
@@ -39315,6 +39337,7 @@ var HookDeliveryBridge = class {
     this.hostParentPid = hostParentPid;
     this.readParentPid = readParentPid;
     this.idleWake = idleWake;
+    this.deps = deps;
     if (this.hostParentPid !== void 0 && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
       throw new Error("Parle hook bridge host parent pid must be greater than 1");
     }
@@ -39346,6 +39369,7 @@ var HookDeliveryBridge = class {
   hostParentPid;
   readParentPid;
   idleWake;
+  deps;
   controller;
   pending = [];
   queuedKeys = /* @__PURE__ */ new Set();
@@ -39361,6 +39385,7 @@ var HookDeliveryBridge = class {
   hostSessionId;
   metaHostSessionId;
   idleWakeStarted = false;
+  leaseTimer;
   waiter;
   unsubscribeCommitGuard;
   evidence;
@@ -39402,9 +39427,15 @@ var HookDeliveryBridge = class {
     }
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || this.hostSessionId && !allowReplace) return false;
+    if (this.hostSessionId && this.metaHostSessionId === this.hostSessionId && this.pending.length > 0) return false;
     this.hostSessionId = sessionId;
     this.requestIdleWake();
     return true;
+  }
+  // Bounded wait for the host's idle-wake verification, so a status card
+  // rendered right after connect reflects the settled state.
+  awaitIdleWakeReady(timeoutMs) {
+    return this.idleWake?.ready?.(timeoutMs) ?? Promise.resolve();
   }
   async start() {
     if (this.startPromise) return this.startPromise;
@@ -39417,6 +39448,7 @@ var HookDeliveryBridge = class {
   }
   async stop() {
     this.stopped = true;
+    this.clearLease();
     this.idleWake?.stop?.();
     this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
@@ -39679,8 +39711,8 @@ var HookDeliveryBridge = class {
 `);
   }
   take() {
-    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
     this.idleWake?.consumeWake();
+    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
     const messages = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
@@ -39688,7 +39720,12 @@ var HookDeliveryBridge = class {
       messages.push(message);
     }
     if (messages.length === 0) return { ok: true, messages: [] };
-    this.lease = { id: randomUUID5(), messages, expiresAt: Date.now() + LEASE_MS };
+    this.lease = { id: randomUUID5(), messages, expiresAt: this.now() + LEASE_MS };
+    this.leaseTimer = this.setTimer(() => {
+      this.leaseTimer = void 0;
+      if (this.lease && this.lease.expiresAt <= this.now()) this.lease = void 0;
+      this.requestIdleWake();
+    }, LEASE_MS);
     return {
       ok: true,
       leaseId: this.lease.id,
@@ -39696,8 +39733,8 @@ var HookDeliveryBridge = class {
     };
   }
   async commit(leaseId) {
-    const lease = this.lease;
-    if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Parle hook bridge delivery lease is missing or expired");
+    const lease = this.liveLease();
+    if (!lease || lease.id !== leaseId) throw new Error("Parle hook bridge delivery lease is missing or expired");
     let committed = 0;
     for (const message of lease.messages) {
       this.assertMessageCurrent(message);
@@ -39720,13 +39757,30 @@ var HookDeliveryBridge = class {
       this.queuedKeys.delete(message.key);
       committed += 1;
     }
-    this.lease = void 0;
+    this.clearLease();
     this.requestIdleWake();
     return { ok: true, committed };
   }
   liveLease() {
-    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = void 0;
+    if (this.lease && this.lease.expiresAt <= this.now()) this.clearLease();
     return this.lease;
+  }
+  clearLease() {
+    this.lease = void 0;
+    if (this.leaseTimer !== void 0) {
+      if (this.deps.clearTimer) this.deps.clearTimer(this.leaseTimer);
+      else clearTimeout(this.leaseTimer);
+      this.leaseTimer = void 0;
+    }
+  }
+  now() {
+    return (this.deps.now ?? Date.now)();
+  }
+  setTimer(callback, delayMs) {
+    if (this.deps.setTimer) return this.deps.setTimer(callback, delayMs);
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return timer;
   }
   // Idle wake may start a turn only on the thread the trusted hook bound, and
   // only once the MCP request metadata has named the same thread.
@@ -39763,7 +39817,7 @@ var HookDeliveryBridge = class {
       this.controller.abandonDeferred(item.roomId, item);
       dropped.add(item.key);
     }
-    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.lease = void 0;
+    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.clearLease();
   }
   // In-flight responsive reads are fenced by the client itself, which tracks
   // every read it performs for the controller. The bridge guards only what the
@@ -39899,6 +39953,7 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
+var HOST_IDLE_WAKE_READY_MS = 2e3;
 var HOST_IDLE_WAKE_STATES = /* @__PURE__ */ new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
 function hostIdleWakeEvidence(host, bridgeStatus) {
   if (host.idleWake === "none") return { state: "unavailable" };
@@ -40040,6 +40095,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
@@ -40095,6 +40151,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     observeRequest(extra);
     const connected = await client.connect();
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();

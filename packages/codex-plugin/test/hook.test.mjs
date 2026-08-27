@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -385,81 +387,177 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
   });
 }
 
+// A stand-in Codex: this test's own Node binary linked (or copied) to
+// <home>/bin/codex, so the hook's ancestry walk sees an absolute executable
+// with a codex basename owned by this user, exactly as it sees a real Codex.
+// The runner records its pid, waits for the test to place bridges keyed by
+// that pid, then runs the hook command through the login shell (mode
+// "inner") or spawns a nested fake Codex first (mode "outer").
+function installFakeCodex(home) {
+  const bin = join(home, "bin");
+  mkdirSync(bin, { recursive: true, mode: 0o700 });
+  const codex = join(bin, "codex");
+  try {
+    linkSync(process.execPath, codex);
+  } catch {
+    copyFileSync(process.execPath, codex);
+    chmodSync(codex, 0o755);
+  }
+  const runner = join(home, "fake-codex.mjs");
+  writeFileSync(runner, [
+    'import { spawnSync } from "node:child_process";',
+    'import { existsSync, writeFileSync } from "node:fs";',
+    "const [mode, shell, command, home] = process.argv.slice(2);",
+    "writeFileSync(`${home}/${mode}.pid`, String(process.pid));",
+    "const gate = new Int32Array(new SharedArrayBuffer(4));",
+    "while (!existsSync(`${home}/go-${mode}`)) Atomics.wait(gate, 0, 0, 20);",
+    'const child = mode === "outer"',
+    '  ? spawnSync(process.execPath, [process.argv[1], "inner", shell, command, home], { stdio: "inherit" })',
+    '  : spawnSync(shell, ["-lc", command], { stdio: "inherit", cwd: home });',
+    "process.exit(child.status ?? 1);",
+    "",
+  ].join("\n"));
+  return { codex, runner };
+}
+
+async function waitForFile(path) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (existsSync(path)) return readFileSync(path, "utf8");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}
+
+function fakeBridge(socketPath, hostParentPid, commands) {
+  const ownerPid = hostParentPid + 1;
+  const server = createServer((socket) => {
+    socket.setEncoding("utf8");
+    let input = "";
+    socket.on("data", (chunk) => {
+      input += chunk;
+      const newline = input.indexOf("\n");
+      if (newline < 0) return;
+      const command = JSON.parse(input.slice(0, newline));
+      commands.push(command);
+      if (command.action === "status") {
+        socket.end(`${JSON.stringify({ ok: true, running: true, ownerPid, hostParentPid, currentParentPid: hostParentPid, hostSessionBound: false, waiterAttached: false, agentSessionId: "as-1" })}\n`);
+      } else if (command.action === "bind") {
+        socket.end(`${JSON.stringify({ ok: true, bound: true })}\n`);
+      } else if (command.action === "take") {
+        socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-174", messages: [{ seq: 12, event_id: "evt-12", content: "server-framed content" }] })}\n`);
+      } else if (command.action === "commit") {
+        socket.end(`${JSON.stringify({ ok: true, committed: 1 })}\n`);
+      } else {
+        socket.end(`${JSON.stringify({ ok: false })}\n`);
+      }
+    });
+  });
+  mkdirSync(resolve(socketPath, ".."), { recursive: true, mode: 0o700 });
+  return new Promise((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      chmodSync(socketPath, 0o600);
+      resolveListen(() => new Promise((resolveClose) => server.close(resolveClose)));
+    });
+  });
+}
+
+function codexChainFixture() {
+  const home = mkdtempSync("/tmp/codex-parle-chain-");
+  const pluginRoot = join(home, "plugin");
+  const hooksDir = join(pluginRoot, "hooks");
+  const distDir = join(pluginRoot, "dist");
+  const stateDir = join(home, ".local", "state", "parle", "hook-bridge", "b52cc0f7fef9d88d");
+  mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
+  mkdirSync(distDir, { recursive: true, mode: 0o700 });
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  symlinkSync(resolve("hooks/run-parle-hook.sh"), join(hooksDir, "run-parle-hook.sh"));
+  symlinkSync(resolve("hooks/parle-hook.mjs"), join(hooksDir, "parle-hook.mjs"));
+  symlinkSync(resolve("dist/parle-mcp.js"), join(distDir, "parle-mcp.js"));
+  symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
+  const { codex, runner } = installFakeCodex(home);
+  const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
+  const env = { ...withoutAmbientParle(), HOME: home, ZDOTDIR: home, PLUGIN_ROOT: pluginRoot };
+  const launch = (mode, shell, hookEventName) => runProcess(codex, [runner, mode, shell, hooks.hooks[hookEventName][0].hooks[0].command, home], { cwd: home, env }, {
+    cwd: home,
+    session_id: "codex-thread-174",
+    hook_event_name: hookEventName,
+  });
+  return { home, stateDir, launch, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
 for (const shell of ["/bin/zsh", "/bin/bash"]) {
-  test(`Codex hook correlates to the owning process through the ${shell} login-shell chain, binds the thread, and delivers (#174)`, async (context) => {
+  test(`Codex hook reaches the bridge of its nearest Codex ancestor through the ${shell} login-shell chain, binds the thread, and delivers (#174)`, async (context) => {
     if (!existsSync(shell)) {
       context.skip(`${shell} is unavailable`);
       return;
     }
-    // This test process stands in for Codex: it owns the bridge directory
-    // keyed by its pid, and the hook reaches it from three processes down
-    // (login shell -> launcher -> node) by walking ancestry.
-    const home = mkdtempSync("/tmp/codex-parle-ancestry-");
-    const pluginRoot = join(home, "plugin");
-    const hooksDir = join(pluginRoot, "hooks");
-    const stateDir = join(home, ".local", "state", "parle", "hook-bridge", "b52cc0f7fef9d88d");
-    const hostDir = join(stateDir, String(process.pid));
-    const ownerPid = process.pid + 1;
-    const socketPath = join(hostDir, `${ownerPid}.sock`);
-    mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
-    mkdirSync(hostDir, { recursive: true, mode: 0o700 });
-    symlinkSync(resolve("hooks/run-parle-hook.sh"), join(hooksDir, "run-parle-hook.sh"));
-    symlinkSync(resolve("hooks/parle-hook.mjs"), join(hooksDir, "parle-hook.mjs"));
-    symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
-    const commands = [];
-    const server = createServer((socket) => {
-      socket.setEncoding("utf8");
-      let input = "";
-      socket.on("data", (chunk) => {
-        input += chunk;
-        const newline = input.indexOf("\n");
-        if (newline < 0) return;
-        const command = JSON.parse(input.slice(0, newline));
-        commands.push(command);
-        if (command.action === "status") {
-          socket.end(`${JSON.stringify({ ok: true, running: true, ownerPid, hostParentPid: process.pid, currentParentPid: process.pid, hostSessionBound: false, waiterAttached: false, agentSessionId: "as-1" })}\n`);
-        } else if (command.action === "bind") {
-          socket.end(`${JSON.stringify({ ok: true, bound: true })}\n`);
-        } else if (command.action === "take") {
-          socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-174", messages: [{ seq: 12, event_id: "evt-12", content: "server-framed content" }] })}\n`);
-        } else if (command.action === "commit") {
-          socket.end(`${JSON.stringify({ ok: true, committed: 1 })}\n`);
-        } else {
-          socket.end(`${JSON.stringify({ ok: false })}\n`);
-        }
-      });
-    });
-    const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
+    const fixture = codexChainFixture();
     try {
-      await new Promise((resolveListen, reject) => {
-        server.once("error", reject);
-        server.listen(socketPath, resolveListen);
-      });
-      chmodSync(socketPath, 0o600);
       for (const [hookEventName, expectedBind] of [["SessionStart", { allowReplace: true }], ["UserPromptSubmit", { allowReplace: false }], ["PostToolUse", undefined]]) {
-        commands.length = 0;
-        const command = hooks.hooks[hookEventName][0].hooks[0].command;
-        const result = await runProcess(shell, ["-lc", command], {
-          cwd: home,
-          env: { ...withoutAmbientParle(), HOME: home, ZDOTDIR: home, PLUGIN_ROOT: pluginRoot },
-        }, { cwd: home, session_id: "codex-thread-174", hook_event_name: hookEventName });
-        assert.equal(result.code, 0, result.stderr);
-        const output = JSON.parse(result.stdout);
-        assert.equal(output.hookSpecificOutput.hookEventName, hookEventName, result.stderr);
-        assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/);
-        assert.deepEqual(commands.map((entry) => entry.action), expectedBind ? ["status", "bind", "take", "commit"] : ["status", "take", "commit"], hookEventName);
-        if (expectedBind) {
-          assert.equal(commands[1].sessionId, "codex-thread-174");
-          assert.equal(commands[1].allowReplace, expectedBind.allowReplace, `${hookEventName} binding`);
+        rmSync(join(fixture.home, "inner.pid"), { force: true });
+        rmSync(join(fixture.home, "go-inner"), { force: true });
+        const running = fixture.launch("inner", shell, hookEventName);
+        const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+        const commands = [];
+        const close = await fakeBridge(join(fixture.stateDir, String(innerPid), `${innerPid + 1}.sock`), innerPid, commands);
+        writeFileSync(join(fixture.home, "go-inner"), "");
+        try {
+          const result = await running;
+          assert.equal(result.code, 0, result.stderr);
+          const output = JSON.parse(result.stdout);
+          assert.equal(output.hookSpecificOutput.hookEventName, hookEventName, result.stderr);
+          assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/);
+          assert.deepEqual(commands.map((entry) => entry.action), expectedBind ? ["status", "bind", "take", "commit"] : ["status", "take", "commit"], hookEventName);
+          if (expectedBind) {
+            assert.equal(commands[1].sessionId, "codex-thread-174");
+            assert.equal(commands[1].allowReplace, expectedBind.allowReplace, `${hookEventName} binding`);
+          }
+          assert.equal(commands.at(-1).leaseId, "lease-174");
+        } finally {
+          await close();
         }
-        assert.equal(commands.at(-1).leaseId, "lease-174");
       }
     } finally {
-      await new Promise((resolveClose) => server.close(resolveClose));
-      rmSync(home, { recursive: true, force: true });
+      fixture.cleanup();
     }
   });
 }
+
+test("nested Codex: a hook under an inner Codex with no bridge never reaches the outer Codex's bridge (#174)", async (context) => {
+  const shell = "/bin/zsh";
+  if (!existsSync(shell)) {
+    context.skip(`${shell} is unavailable`);
+    return;
+  }
+  const fixture = codexChainFixture();
+  try {
+    const running = fixture.launch("outer", shell, "SessionStart");
+    const outerPid = Number(await waitForFile(join(fixture.home, "outer.pid")));
+    const outerCommands = [];
+    const close = await fakeBridge(join(fixture.stateDir, String(outerPid), `${outerPid + 1}.sock`), outerPid, outerCommands);
+    writeFileSync(join(fixture.home, "go-outer"), "");
+    const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+    assert.notEqual(innerPid, outerPid);
+    // The inner Codex has no bridge directory at all.
+    assert.equal(existsSync(join(fixture.stateDir, String(innerPid))), false);
+    writeFileSync(join(fixture.home, "go-inner"), "");
+    try {
+      const result = await running;
+      assert.equal(result.code, 0, result.stderr);
+      assert.doesNotMatch(result.stderr, /failed open/);
+      // No delivery and no binding: the outer bridge saw nothing at all, and
+      // the hook completed normally with nothing to inject.
+      assert.deepEqual(outerCommands, []);
+      assert.deepEqual(JSON.parse(result.stdout), {});
+      assert.doesNotMatch(result.stdout, /server-framed content/);
+    } finally {
+      await close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
 
 test("Codex hook without a live bridge fails soft under direct-parent so SessionStart context still renders (#174)", async () => {
   const home = mkdtempSync("/tmp/codex-parle-nobridge-");

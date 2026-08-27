@@ -99,12 +99,12 @@ test("scenario manifest is consistent with the plugin, the MCP config, and the s
   // Card label spacing is owned by packages/client/src/format.ts (padEnd 14).
   const actingAs = byId["profile-select"].diagnostic.find((check) => check.kind === "status-text").contains[0];
   assert.equal(actingAs, `${"Acting as".padEnd(14, " ")}@{{expected_agent_handle}}`);
-  // Pinned wording for #170 and #171: changing these in the runtime means
-  // changing them here in the same commit.
+  // Pinned wording for #170, #171, and #174: changing these in the runtime
+  // means changing them here in the same commit.
   const hold = byId["attended-hold"].diagnostic.find((check) => check.kind === "tool-calls");
   assert.deepEqual(hold, { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } });
   const wording = byId["status-wording"].diagnostic.find((check) => check.kind === "status-text");
-  assert.deepEqual(wording, { kind: "status-text", contains: ["Delivery      watching (idle wake unavailable)"], excludes: ["arm or verify", "idle wake unarmed"] });
+  assert.deepEqual(wording, { kind: "status-text", contains: ["Delivery      watching (idle wake queue-only)"], excludes: ["arm or verify", "idle wake unarmed", "idle wake unavailable"] });
   assert.ok(manifest._note.includes(wording.contains[0]), "the pinned card line is listed in _note");
   assert.deepEqual(byId["attended-hold-control"].diagnostic[0].argsForbid, { waitSeconds: { gt: 0 } });
   assert.deepEqual(byId["identity-mismatch"].authoritative, [{ kind: "no-authored-messages", agent: "any" }]);

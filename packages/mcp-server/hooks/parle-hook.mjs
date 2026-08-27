@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { connect } from "node:net";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const MAX_INPUT = 256 * 1024;
@@ -24,8 +24,8 @@ function parseArgs(argv) {
     if (argv[index] === "--bind") bind = true;
     else if (argv[index] === "--direct-parent") directParent = true;
     // The host runs hook commands through a shell chain, so the correlated
-    // host process is an ancestor rather than this process's parent, and a
-    // host that has not started its bridge yet is not an error.
+    // host process is the nearest Codex ancestor rather than this process's
+    // parent, and a host that has not started its bridge yet is not an error.
     else if (argv[index] === "--shell-launched") shellLaunched = true;
     else if (argv[index] === "--known-address-context") knownAddressContext = true;
     else if (argv[index] === "--stop-additional-context") stopAdditionalContext = true;
@@ -124,6 +124,7 @@ function isNonResponding(error) {
 }
 
 const MAX_HOST_ANCESTRY = 8;
+const CODEX_EXECUTABLE_NAME = /^codex(?:[-.][\w.-]*)?$/i;
 
 // Parent of a live process: /proc where it exists, otherwise the fixed ps
 // binary. Undefined ends the walk.
@@ -144,48 +145,88 @@ function parentPidOf(pid) {
   }
 }
 
-// The nearest ancestor that owns a bridge directory is the host. The direct
-// parent is checked first without any process probe; ancestors beyond it are
-// resolved only for shell-launched hooks and only while nothing matched.
-function* hostParentCandidates(shellLaunched) {
-  let pid = process.ppid;
-  yield pid;
-  if (!shellLaunched) return;
-  for (let depth = 1; depth < MAX_HOST_ANCESTRY; depth += 1) {
-    const parent = parentPidOf(pid);
-    if (!Number.isSafeInteger(parent) || parent <= 1 || parent === pid) return;
-    pid = parent;
-    yield pid;
+// Executable path of a live process without a PATH lookup: /proc where it
+// exists; otherwise ps, which on macOS reports argv[0] as typed, and the lsof
+// text mapping for the absolute path only when that bare name could be Codex.
+function executablePathOf(pid) {
+  try {
+    return readlinkSync(`/proc/${pid}/exe`);
+  } catch {
+    // Not Linux, not our process, or gone.
+  }
+  if (process.platform !== "darwin") return undefined;
+  let comm;
+  try {
+    comm = execFileSync("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 1000, windowsHide: true }).trim();
+  } catch {
+    return undefined;
+  }
+  if (isAbsolute(comm)) return comm;
+  if (!CODEX_EXECUTABLE_NAME.test(basename(comm.replace(/^-/, "")))) return undefined;
+  try {
+    const listing = execFileSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    const line = listing.split("\n").find((entry) => entry.startsWith("n/"));
+    return line ? line.slice(1) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
-async function selectBridge(scope, shellLaunched) {
-  for (const hostParentPid of hostParentCandidates(shellLaunched)) {
-    const entries = socketEntries(scope, hostParentPid);
-    if (entries.length === 0) continue;
-    const matches = [];
-    for (const entry of entries) {
-      let status;
-      try {
-        status = await request(entry.path, { action: "status" });
-      } catch (error) {
-        if (isNonResponding(error)) continue;
-        throw error;
-      }
-      if (!status?.ok
-        || status.running !== true
-        || status.ownerPid !== entry.ownerPid
-        || status.hostParentPid !== hostParentPid
-        || status.currentParentPid !== hostParentPid) {
-        throw new Error("Parle hook bridge process correlation mismatch");
-      }
-      matches.push({ ...entry, status });
-    }
-    if (matches.length !== 1) throw new Error(`Parle hook bridge correlation found ${matches.length} matching endpoints`);
-    return matches[0];
+// The rules the bridge applies to its own parent: an absolute path to a codex
+// binary owned by this user and executable. The shells and launcher between
+// Codex and this hook fail the name check.
+function isCodexProcess(pid) {
+  const path = executablePathOf(pid);
+  if (!path || !isAbsolute(path) || !CODEX_EXECUTABLE_NAME.test(basename(path))) return false;
+  try {
+    const stat = statSync(path);
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return false;
+    return stat.isFile() && (stat.mode & 0o111) !== 0;
+  } catch {
+    return false;
   }
-  if (shellLaunched) return undefined;
-  throw new Error("Parle hook bridge correlation found 0 matching endpoints");
+}
+
+// The host is the nearest Codex ancestor, and only its bridge directory is
+// consulted. A Codex that has not started its bridge yet yields no delivery;
+// the walk never continues into an outer Codex's bridge, so a nested session
+// can neither bind nor drain another session's work.
+function nearestCodexAncestor() {
+  let pid = process.ppid;
+  for (let depth = 0; depth < MAX_HOST_ANCESTRY; depth += 1) {
+    if (!Number.isSafeInteger(pid) || pid <= 1) return undefined;
+    if (isCodexProcess(pid)) return pid;
+    const parent = parentPidOf(pid);
+    if (parent === pid) return undefined;
+    pid = parent;
+  }
+  return undefined;
+}
+
+async function selectBridge(scope, shellLaunched) {
+  const hostParentPid = shellLaunched ? nearestCodexAncestor() : process.ppid;
+  if (hostParentPid === undefined) return undefined;
+  const matches = [];
+  for (const entry of socketEntries(scope, hostParentPid)) {
+    let status;
+    try {
+      status = await request(entry.path, { action: "status" });
+    } catch (error) {
+      if (isNonResponding(error)) continue;
+      throw error;
+    }
+    if (!status?.ok
+      || status.running !== true
+      || status.ownerPid !== entry.ownerPid
+      || status.hostParentPid !== hostParentPid
+      || status.currentParentPid !== hostParentPid) {
+      throw new Error("Parle hook bridge process correlation mismatch");
+    }
+    matches.push({ ...entry, status });
+  }
+  if (matches.length === 0 && shellLaunched) return undefined;
+  if (matches.length !== 1) throw new Error(`Parle hook bridge correlation found ${matches.length} matching endpoints`);
+  return matches[0];
 }
 
 async function take(scope, sessionId, allowBind, event, directParent, shellLaunched) {

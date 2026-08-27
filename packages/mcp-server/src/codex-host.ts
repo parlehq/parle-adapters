@@ -172,11 +172,12 @@ export async function resolveCodexHostExecutable(hostParentPid: number, deps: Co
   return { ok: true, executable: { path: parent.path, version, parentPid: hostParentPid } };
 }
 
-export type CodexQueueFailureReason = "queue-full" | "invalid-thread" | "permission" | "queue-failed";
+export type CodexQueueFailureReason = "queue-full" | "invalid-thread" | "permission";
 
-// Codex reports these on stderr with exit 1; the strings are heuristics over
-// the 0.150 wording (invalid thread verified: "failed to read thread ... no
-// rollout found for thread id").
+// Diagnostic classification of a failure Codex reported on stderr; the
+// strings are heuristics over the 0.150 wording (invalid thread verified:
+// "failed to read thread ... no rollout found for thread id"). It names the
+// reason but never changes the policy: a process that ran is never retried.
 export function classifyQueueFailure(stderr: string): CodexQueueFailureReason | undefined {
   if (/queue (?:is )?full|too many queued|queue limit/i.test(stderr)) return "queue-full";
   if (/no rollout found|failed to read thread|thread (?:id )?(?:was )?not found|unknown thread|invalid thread/i.test(stderr)) return "invalid-thread";
@@ -189,6 +190,7 @@ type CodexQueueWakeDetail = {
   triggers: number;
   host?: { path: string; version: string };
   detail?: string;
+  exitCode?: number;
   lastError?: string;
   lastTriggerAt?: string;
   nextRetryAt?: string;
@@ -197,9 +199,10 @@ export type CodexQueueWakeStatus = HostIdleWakeStatus & CodexQueueWakeDetail;
 
 // One trigger per thread at a time. A hook take proves a live turn and
 // consumes the outstanding trigger; the bridge asks again only while work
-// remains. Definite pre-exec failures back off; a failure Codex reports stops
-// retrying with its reason; an unknown outcome degrades without retrying,
-// because a second trigger could not be told apart from the first.
+// remains. Only a spawn failure (the process never ran) is retried, with
+// bounded backoff. Every outcome of a process that ran without exit 0, a
+// reported failure included, degrades without retrying: the row may already
+// exist and a second trigger could not be told apart from the first.
 export class CodexQueueWake implements HostIdleWake {
   private resolution?: CodexHostResolution;
   private verifying?: Promise<CodexHostResolution>;
@@ -209,7 +212,9 @@ export class CodexQueueWake implements HostIdleWake {
   private nextRetryAt?: number;
   private attempts = 0;
   private degraded = false;
-  private stopReason?: CodexQueueFailureReason;
+  private degradedReason?: string;
+  private lastExitCode?: number | null;
+  private stopReason?: "spawn-failed";
   private lastError?: string;
   private triggers = 0;
   private lastTriggerAt?: string;
@@ -239,9 +244,33 @@ export class CodexQueueWake implements HostIdleWake {
     };
     if (!this.resolution) return { state: "unavailable", reason: "host-verification-pending", ...base };
     if (!this.resolution.ok) return { state: "unavailable", reason: this.resolution.reason, ...(this.resolution.detail ? { detail: this.resolution.detail } : {}), ...base };
-    if (this.degraded) return { state: "degraded", reason: "trigger-outcome-unknown", ...base };
+    if (this.degraded) {
+      return {
+        state: "degraded",
+        reason: this.degradedReason ?? "trigger-outcome-unknown",
+        ...(typeof this.lastExitCode === "number" ? { exitCode: this.lastExitCode } : {}),
+        ...base,
+      };
+    }
     if (this.stopReason) return { state: "unavailable", reason: this.stopReason, ...base };
     return { state: "queue-only", ...base };
+  }
+
+  // Resolves once host verification has settled or the bound elapses, so a
+  // status call issued right after connect cannot race the version probe.
+  ready(timeoutMs: number): Promise<void> {
+    if (this.stopped || (this.resolution && !this.verifying)) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = this.setTimer(() => finish(), timeoutMs);
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        this.clearTimer(timer);
+        resolve();
+      };
+      void this.verify().then(finish, finish);
+    });
   }
 
   requestWake(threadId: string, stillPending: () => boolean): void {
@@ -252,6 +281,8 @@ export class CodexQueueWake implements HostIdleWake {
   consumeWake(): void {
     this.outstanding = false;
     this.degraded = false;
+    this.degradedReason = undefined;
+    this.lastExitCode = undefined;
     this.stopReason = undefined;
     this.attempts = 0;
     this.clearRetry();
@@ -308,23 +339,18 @@ export class CodexQueueWake implements HostIdleWake {
       this.log({ stage: "trigger_queued" });
       return;
     }
+    // The process ran. Whatever it reported, a row may already exist, so a
+    // retry could queue a duplicate trigger. Hold until a hook take proves a
+    // turn; the classification is diagnostic only.
     const detail = redactString(outcome.stderr.trim().slice(0, STDERR_DETAIL_LIMIT));
-    if (outcome.ambiguous) {
-      this.degraded = true;
-      this.outstanding = true;
-      this.lastError = `codex queue outcome unknown (${outcome.signal ?? "no exit status"})${detail ? `: ${detail}` : ""}`;
-      this.log({ stage: "trigger_ambiguous", signal: outcome.signal });
-      return;
-    }
-    const reason = classifyQueueFailure(outcome.stderr);
-    const message = `codex queue exited ${outcome.code}${detail ? `: ${detail}` : ""}`;
-    if (reason) {
-      this.stopReason = reason;
-      this.lastError = message;
-      this.log({ stage: "trigger_rejected", reason, code: outcome.code });
-      return;
-    }
-    this.scheduleRetry(threadId, stillPending, message);
+    this.degraded = true;
+    this.outstanding = true;
+    this.degradedReason = (outcome.ambiguous ? undefined : classifyQueueFailure(outcome.stderr)) ?? "trigger-outcome-unknown";
+    this.lastExitCode = outcome.code;
+    this.lastError = outcome.ambiguous
+      ? `codex queue outcome unknown (${outcome.signal ?? "no exit status"})${detail ? `: ${detail}` : ""}`
+      : `codex queue exited ${outcome.code}${detail ? `: ${detail}` : ""}`;
+    this.log({ stage: outcome.ambiguous ? "trigger_ambiguous" : "trigger_rejected", reason: this.degradedReason, code: outcome.code, signal: outcome.signal });
   }
 
   private scheduleRetry(threadId: string, stillPending: () => boolean, error: string): void {
@@ -332,8 +358,8 @@ export class CodexQueueWake implements HostIdleWake {
     this.lastError = error;
     if (this.stopped) return;
     if (this.attempts >= MAX_QUEUE_ATTEMPTS) {
-      this.stopReason = "queue-failed";
-      this.log({ stage: "trigger_failed", reason: "queue-failed", attempts: this.attempts });
+      this.stopReason = "spawn-failed";
+      this.log({ stage: "trigger_failed", reason: "spawn-failed", attempts: this.attempts });
       return;
     }
     const base = Math.min(BACKOFF_BASE_MS * 2 ** (this.attempts - 1), BACKOFF_CAP_MS);
@@ -341,12 +367,7 @@ export class CodexQueueWake implements HostIdleWake {
     const delay = Math.max(1, Math.round(base + jitter));
     this.nextRetryAt = this.now() + delay;
     this.log({ stage: "trigger_retry", attempt: this.attempts, delayMs: delay });
-    const setTimer = this.deps.setTimer ?? ((callback, delayMs) => {
-      const timer = setTimeout(callback, delayMs);
-      timer.unref?.();
-      return timer;
-    });
-    this.retryTimer = setTimer(() => {
+    this.retryTimer = this.setTimer(() => {
       this.retryTimer = undefined;
       this.nextRetryAt = undefined;
       if (this.stopped || !stillPending()) return;
@@ -355,9 +376,21 @@ export class CodexQueueWake implements HostIdleWake {
   }
 
   private clearRetry(): void {
-    if (this.retryTimer !== undefined) (this.deps.clearTimer ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)))(this.retryTimer);
+    if (this.retryTimer !== undefined) this.clearTimer(this.retryTimer);
     this.retryTimer = undefined;
     this.nextRetryAt = undefined;
+  }
+
+  private setTimer(callback: () => void, delayMs: number): unknown {
+    if (this.deps.setTimer) return this.deps.setTimer(callback, delayMs);
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  private clearTimer(timer: unknown): void {
+    if (this.deps.clearTimer) this.deps.clearTimer(timer);
+    else clearTimeout(timer as ReturnType<typeof setTimeout>);
   }
 
   private now(): number {

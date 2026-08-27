@@ -22500,6 +22500,7 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
+var HOST_IDLE_WAKE_READY_MS = 2e3;
 var HOST_IDLE_WAKE_STATES = /* @__PURE__ */ new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
 function hostIdleWakeEvidence(host, bridgeStatus) {
   if (host.idleWake === "none")
@@ -22655,6 +22656,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
@@ -22714,6 +22716,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     const connected = await client.connect();
     if (deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();

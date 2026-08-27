@@ -76,6 +76,7 @@ export type HostIdleWakeStatus = {
 
 export type HostIdleWake = {
   start?(): void;
+  ready?(timeoutMs: number): Promise<void>;
   requestWake(threadId: string, stillPending: () => boolean): void;
   consumeWake(): void;
   status(): HostIdleWakeStatus;
@@ -92,6 +93,12 @@ type PendingMessage = ResponsiveDeliveryMessage & {
   agentSessionId: string;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
+
+export type HookDeliveryBridgeDeps = {
+  now?: () => number;
+  setTimer?: (callback: () => void, delayMs: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+};
 
 // Keyed by room first: the shared delivery contract scopes a row to its room,
 // and seq/event identifiers must never collapse work across two rooms.
@@ -271,6 +278,7 @@ export class HookDeliveryBridge {
   private hostSessionId?: string;
   private metaHostSessionId?: string;
   private idleWakeStarted = false;
+  private leaseTimer?: unknown;
   private waiter?: Socket;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
@@ -283,6 +291,7 @@ export class HookDeliveryBridge {
     private readonly hostParentPid?: number,
     private readonly readParentPid = () => process.ppid,
     private readonly idleWake?: HostIdleWake,
+    private readonly deps: HookDeliveryBridgeDeps = {},
   ) {
     if (this.hostParentPid !== undefined && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
       throw new Error("Parle hook bridge host parent pid must be greater than 1");
@@ -353,9 +362,21 @@ export class HookDeliveryBridge {
     }
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
+    // A binding that MCP metadata confirmed and that still holds work is a
+    // live thread in this process; another thread's SessionStart must not
+    // take that work. An unconfirmed binding (a host that passes no thread
+    // metadata, or a thread that never called a tool) is replaceable so a
+    // cleared session in the same process is not stranded.
+    if (this.hostSessionId && this.metaHostSessionId === this.hostSessionId && this.pending.length > 0) return false;
     this.hostSessionId = sessionId;
     this.requestIdleWake();
     return true;
+  }
+
+  // Bounded wait for the host's idle-wake verification, so a status card
+  // rendered right after connect reflects the settled state.
+  awaitIdleWakeReady(timeoutMs: number): Promise<void> {
+    return this.idleWake?.ready?.(timeoutMs) ?? Promise.resolve();
   }
 
   async start(): Promise<void> {
@@ -370,6 +391,7 @@ export class HookDeliveryBridge {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.clearLease();
     this.idleWake?.stop?.();
     this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
@@ -646,10 +668,11 @@ export class HookDeliveryBridge {
   }
 
   private take(): unknown {
-    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
-    // A take from the bound session proves a live host turn, which is all a
-    // queued wake trigger exists to produce.
+    // Any take from the bound session, busy or not, proves a live host turn,
+    // which is all a queued wake trigger exists to produce. Work left behind
+    // is re-armed by commit or by lease expiry.
     this.idleWake?.consumeWake();
+    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
     const messages: PendingMessage[] = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
@@ -657,7 +680,14 @@ export class HookDeliveryBridge {
       messages.push(message);
     }
     if (messages.length === 0) return { ok: true, messages: [] };
-    this.lease = { id: randomUUID(), messages, expiresAt: Date.now() + LEASE_MS };
+    this.lease = { id: randomUUID(), messages, expiresAt: this.now() + LEASE_MS };
+    // An uncommitted lease expires actively: the rows become leasable again
+    // and, if the host is idle, wake is requested for them.
+    this.leaseTimer = this.setTimer(() => {
+      this.leaseTimer = undefined;
+      if (this.lease && this.lease.expiresAt <= this.now()) this.lease = undefined;
+      this.requestIdleWake();
+    }, LEASE_MS);
     return {
       ok: true,
       leaseId: this.lease.id,
@@ -666,8 +696,8 @@ export class HookDeliveryBridge {
   }
 
   private async commit(leaseId: string): Promise<unknown> {
-    const lease = this.lease;
-    if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Parle hook bridge delivery lease is missing or expired");
+    const lease = this.liveLease();
+    if (!lease || lease.id !== leaseId) throw new Error("Parle hook bridge delivery lease is missing or expired");
     let committed = 0;
     for (const message of lease.messages) {
       // This synchronous fence runs immediately before each credentialed ack.
@@ -693,14 +723,34 @@ export class HookDeliveryBridge {
       this.queuedKeys.delete(message.key);
       committed += 1;
     }
-    this.lease = undefined;
+    this.clearLease();
     this.requestIdleWake();
     return { ok: true, committed };
   }
 
   private liveLease(): Lease | undefined {
-    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = undefined;
+    if (this.lease && this.lease.expiresAt <= this.now()) this.clearLease();
     return this.lease;
+  }
+
+  private clearLease(): void {
+    this.lease = undefined;
+    if (this.leaseTimer !== undefined) {
+      if (this.deps.clearTimer) this.deps.clearTimer(this.leaseTimer);
+      else clearTimeout(this.leaseTimer as ReturnType<typeof setTimeout>);
+      this.leaseTimer = undefined;
+    }
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  private setTimer(callback: () => void, delayMs: number): unknown {
+    if (this.deps.setTimer) return this.deps.setTimer(callback, delayMs);
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return timer;
   }
 
   // Idle wake may start a turn only on the thread the trusted hook bound, and
@@ -742,7 +792,7 @@ export class HookDeliveryBridge {
       this.controller.abandonDeferred(item.roomId, item);
       dropped.add(item.key);
     }
-    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.lease = undefined;
+    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.clearLease();
   }
 
   // In-flight responsive reads are fenced by the client itself, which tracks

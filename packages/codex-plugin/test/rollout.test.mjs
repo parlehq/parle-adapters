@@ -64,7 +64,7 @@ test("rollout parser extracts code-mode tool calls from exec input", () => {
   ]);
   const rows = evaluateDiagnostics(parsed, [
     { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } },
-    { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake unavailable)"], excludes: ["idle wake unarmed"] },
+    { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake queue-only)"], excludes: ["idle wake unarmed", "idle wake unavailable"] },
     { kind: "no-shell-polling" },
   ]);
   assert.deepEqual(rows.map((row) => row.pass), [true, true, true]);
@@ -73,7 +73,7 @@ test("rollout parser extracts code-mode tool calls from exec input", () => {
 const kinds = [
   { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } },
   { kind: "no-shell-polling" },
-  { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake unavailable)"], excludes: ["arm or verify", "idle wake unarmed"] },
+  { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake queue-only)"], excludes: ["arm or verify", "idle wake unarmed", "idle wake unavailable"] },
   { kind: "agent-message", containsAny: ["mismatch", "does not match", "could not confirm"] },
   { kind: "hook-delivery-present" },
 ];

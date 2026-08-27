@@ -1954,7 +1954,7 @@ Next: a wake trigger may be queued but its delivery is unproven; check Parle or 
     for (const wake of [
       { state: "unavailable", reason: "version-too-old", detail: "0.147.0" },
       { state: "unavailable", reason: "host-session-conflict" },
-      { state: "unavailable", reason: "queue-full" },
+      { state: "unavailable", reason: "spawn-failed" },
     ]) {
       idleWake = { ...wake, outstanding: false, triggers: 0 };
       const unavailable = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
@@ -2072,4 +2072,57 @@ test("stdio server spawned with PARLE_HOST_IDLE_WAKE=codex-queue under a non-Cod
     await new Promise((resolveClose) => api.close(resolveClose));
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("parle_status and parle_connect wait for pending host verification before rendering the card (#174)", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue174-ready-test", clientInstanceId: "issue174-ready-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const run = async (settles) => {
+    let idleWake = { state: "unavailable", reason: "host-verification-pending", outstanding: false, triggers: 0 };
+    const waits = [];
+    const deliveryBridge = {
+      start: async () => {},
+      bindHostSession: () => false,
+      async awaitIdleWakeReady(timeoutMs) {
+        waits.push(timeoutMs);
+        await new Promise((resolve) => setImmediate(resolve));
+        if (settles) idleWake = { state: "queue-only", outstanding: false, triggers: 0, host: { path: "/opt/codex/bin/codex", version: "0.150.1" } };
+      },
+      status: () => ({ running: true, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true, waiterAttached: false, hostSessionId: "thread-1", metaHostSessionId: "thread-1", idleWake }),
+    };
+    const server = createParleMcpServer(fakeClient, undefined, deliveryBridge, undefined, false, { idleWake: "codex-queue" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "parle-mcp-codex-ready", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const status = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
+      const connect = (await client.callTool({ name: "parle_connect", arguments: {} })).structuredContent;
+      assert.deepEqual(waits, [2_000, 2_000], "both cards wait on the bounded verification");
+      return { status, connect };
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  };
+  const settled = await run(true);
+  assert.match(settled.status.compactText, /Delivery      watching \(idle wake queue-only\)/);
+  assert.match(settled.connect.compactText, /Delivery      watching \(idle wake queue-only\)/);
+  assert.equal(settled.status.responsiveDelivery.idleWakeReason, undefined);
+  const pending = await run(false);
+  assert.match(pending.status.compactText, /Delivery      watching \(idle wake unavailable\)/);
+  assert.equal(pending.status.responsiveDelivery.idleWakeReason, "host-verification-pending");
+  assert.equal(pending.connect.responsiveDelivery.idleWakeReason, "host-verification-pending");
+  rmSync(evidencePath, { force: true });
 });

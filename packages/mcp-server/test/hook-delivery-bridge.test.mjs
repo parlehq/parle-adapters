@@ -1009,3 +1009,108 @@ test("hook bridge arms host idle wake only for the hook-bound thread that MCP me
 function randomToken() {
   return Math.random().toString(36).slice(2, 10);
 }
+
+function idleWakeRecorder() {
+  return {
+    consumed: 0,
+    requests: [],
+    requestWake(threadId, stillPending) { this.requests.push({ threadId, pending: stillPending() }); },
+    consumeWake() { this.consumed += 1; },
+    status() { return { state: "queue-only", outstanding: false }; },
+  };
+}
+
+function idleWakeClient() {
+  return {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+}
+
+test("hook bridge refuses SessionStart replacement of a confirmed binding that still holds work (#174)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-confirmed-"));
+  const idleWake = idleWakeRecorder();
+  const bridge = new HookDeliveryBridge(idleWakeClient(), cwd, process.execPath, cwd, process.ppid, undefined, idleWake);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "thread-1" }), { ok: true, bound: true });
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "for thread-1" } });
+    // Unconfirmed with work: replaceable, as a cleared session in the same
+    // process must not strand the bridge.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "thread-2", allowReplace: true }), { ok: true, bound: true });
+    assert.equal(bridge.bindHostSession("thread-2"), false, "metadata confirms thread-2");
+    assert.equal(idleWake.requests.length, 1);
+    // Confirmed with work: another thread's SessionStart cannot take it.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "thread-3", allowReplace: true }), { ok: false, bound: true });
+    assert.equal(bridge.status().hostSessionId, "thread-2");
+    assert.deepEqual(await request(path, { action: "take", sessionId: "thread-3" }), { ok: false, error: "Host session is not bound to this Parle hook bridge" });
+    const leased = await request(path, { action: "take", sessionId: "thread-2" });
+    assert.equal(leased.messages.length, 1);
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "thread-3", allowReplace: true }), { ok: false, bound: true }, "a live lease still blocks");
+    assert.deepEqual(await request(path, { action: "commit", sessionId: "thread-2", leaseId: leased.leaseId }), { ok: true, committed: 1 });
+    // Confirmed and drained: replaceable, and unarmed until metadata agrees.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "thread-3", allowReplace: true }), { ok: true, bound: true });
+    assert.deepEqual(bridge.status().idleWake, { state: "unavailable", reason: "host-session-conflict", outstanding: false });
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge expires an uncommitted lease actively and re-arms idle wake; a busy take counts as a live turn (#174)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-lease-expiry-"));
+  let now = 1_000_000;
+  const timers = [];
+  const cleared = [];
+  const idleWake = idleWakeRecorder();
+  const bridge = new HookDeliveryBridge(idleWakeClient(), cwd, process.execPath, cwd, process.ppid, undefined, idleWake, {
+    now: () => now,
+    setTimer: (callback, delayMs) => {
+      const timer = { callback, delayMs, id: timers.length + 1 };
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimer: (timer) => cleared.push(timer),
+  });
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "thread-1" }), { ok: true, bound: true });
+    bridge.bindHostSession("thread-1");
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "first" } });
+    assert.equal(idleWake.requests.length, 1);
+
+    const leased = await request(path, { action: "take", sessionId: "thread-1" });
+    assert.equal(leased.messages.length, 1);
+    assert.equal(idleWake.consumed, 1);
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delayMs, 30_000);
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 2, event_id: "evt-2", content: "during lease" } });
+    assert.equal(idleWake.requests.length, 1, "work arriving during a lease waits for commit or expiry");
+    assert.deepEqual(await request(path, { action: "take", sessionId: "thread-1" }), { ok: true, busy: true, messages: [] });
+    assert.equal(idleWake.consumed, 2, "a busy take is still a live turn");
+
+    // The hook never commits (its host died mid-turn). The lease expires on
+    // its own and the work it held is re-armed.
+    now += 30_000;
+    timers[0].callback();
+    assert.equal(bridge.status().pending, 2);
+    assert.equal(idleWake.requests.length, 2, "expiry re-arms idle wake for the held and new work");
+    assert.deepEqual(idleWake.requests[1], { threadId: "thread-1", pending: true });
+    await assert.rejects(request(path, { action: "commit", sessionId: "thread-1", leaseId: leased.leaseId }).then((response) => { if (!response.ok) throw new Error(response.error); }), /missing or expired/);
+
+    const again = await request(path, { action: "take", sessionId: "thread-1" });
+    assert.equal(again.messages.length, 2);
+    assert.equal(timers.length, 2);
+    assert.deepEqual(await request(path, { action: "commit", sessionId: "thread-1", leaseId: again.leaseId }), { ok: true, committed: 2 });
+    assert.deepEqual(cleared, [2], "commit cancels the expiry timer");
+    assert.equal(idleWake.requests.length, 2, "nothing left to arm");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});

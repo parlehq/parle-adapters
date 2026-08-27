@@ -176,7 +176,12 @@ export type HookDeliveryBridgeLike = {
   status(): Record<string, unknown>;
   bindHostSession(sessionId: string): boolean;
   start?(): Promise<void>;
+  awaitIdleWakeReady?(timeoutMs: number): Promise<void>;
 };
+
+// A status or connect card must not race the host's idle-wake verification
+// (a version probe of the parent executable); it waits at most this long.
+const HOST_IDLE_WAKE_READY_MS = 2_000;
 
 // Static host capabilities the plugin manifest declares. `idleWake: "none"`
 // means the host has no arm action, so status must never ask for one.
@@ -423,6 +428,7 @@ export function registerParleTools(
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = (status as any).runtime?.bootstrapState === "ready" && Boolean((status as any).runtime?.sessionAddress);
@@ -485,6 +491,7 @@ export function registerParleTools(
     observeRequest(extra);
     const connected = await client.connect();
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
