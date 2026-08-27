@@ -5,6 +5,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -918,6 +919,7 @@ test("parle_status auto-connects a configured client and reports the attempt", a
     assert.deepEqual(first.structuredContent.responsiveDelivery, {
       state: "unknown",
       reason: "no_evidence_for_session",
+      idleWake: "unarmed",
       nextActionKey: "arm-or-verify-watcher",
       nextAction: "arm or verify responsive delivery",
     });
@@ -997,6 +999,7 @@ test("status and connect distinguish bridge health from local waiter attachment"
     ]) {
       assert.equal(result.structuredContent.responsiveDelivery.state, "watching");
       assert.equal(result.structuredContent.responsiveDelivery.reason, "idle_wake_unarmed");
+      assert.equal(result.structuredContent.responsiveDelivery.idleWake, "unarmed");
       assert.equal(result.structuredContent.responsiveDelivery.nextActionKey, "arm-or-verify-watcher");
       assert.equal(result.structuredContent.responsiveDeliveryBridge.waiterAttached, false);
       assert.match(result.structuredContent.compactText, /Delivery      watching \(idle wake unarmed\)/);
@@ -1005,6 +1008,7 @@ test("status and connect distinguish bridge health from local waiter attachment"
     waiterAttached = true;
     const attached = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(attached.structuredContent.responsiveDelivery.reason, undefined);
+    assert.equal(attached.structuredContent.responsiveDelivery.idleWake, "armed");
     assert.equal(attached.structuredContent.responsiveDelivery.nextActionKey, "already-connected");
     assert.equal(attached.structuredContent.responsiveDelivery.nextAction, "bridge delivery is watching and a local waiter is attached");
     assert.equal(attached.structuredContent.responsiveDeliveryBridge.waiterAttached, true);
@@ -1012,6 +1016,199 @@ test("status and connect distinguish bridge health from local waiter attachment"
     await client.close();
     await server.close();
     rmSync(evidencePath, { force: true });
+  }
+});
+
+const IDLE_WAKE_UNAVAILABLE_NEXT = "Next: Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+
+test("a host without an idle-wake arm action reports idle wake unavailable regardless of waiter attachment (#171)", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  let waiterAttached = false;
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({ running: true, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true, waiterAttached }),
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue171-test", clientInstanceId: "issue171-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge, undefined, false, { idleWake: "none" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-idle-wake-unavailable", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const status = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.equal(status.structuredContent.compactText, `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake unavailable)
+
+Session Address:
+@p.a.s1
+
+${IDLE_WAKE_UNAVAILABLE_NEXT}
+========================================`);
+    for (const attached of [false, true]) {
+      waiterAttached = attached;
+      for (const result of [
+        await client.callTool({ name: "parle_connect", arguments: {} }),
+        await client.callTool({ name: "parle_status", arguments: {} }),
+      ]) {
+        const delivery = result.structuredContent.responsiveDelivery;
+        assert.equal(delivery.state, "watching");
+        assert.equal(delivery.idleWake, "unavailable");
+        assert.equal(delivery.nextActionKey, "idle-wake-unavailable");
+        assert.equal(delivery.nextAction, "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait");
+        assert.equal(result.structuredContent.responsiveDeliveryBridge.waiterAttached, attached);
+        assert.match(result.structuredContent.compactText, /Delivery      watching \(idle wake unavailable\)/);
+        assert.ok(result.structuredContent.compactText.includes(IDLE_WAKE_UNAVAILABLE_NEXT));
+        assert.doesNotMatch(result.structuredContent.compactText, /\barm\b/i);
+        assert.doesNotMatch(result.structuredContent.compactText, /idle wake unarmed/);
+      }
+    }
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(evidencePath, { force: true });
+  }
+});
+
+test("a host without an idle-wake arm action never asks to arm an unknown or stopped watcher (#171)", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-none" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-none", cursor: 3 }),
+    ensureReadySafe: async () => false,
+  };
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-idle-wake-unknown", version: "0.0.0" }, { capabilities: {} });
+  const server = createParleMcpServer(fakeClient, undefined, undefined, undefined, false, { idleWake: "none" });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const status = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.equal(status.structuredContent.responsiveDelivery.state, "unknown");
+    assert.equal(status.structuredContent.responsiveDelivery.idleWake, "unavailable");
+    assert.equal(status.structuredContent.responsiveDelivery.nextActionKey, "idle-wake-unavailable");
+    assert.match(status.structuredContent.compactText, /Delivery      unknown \(idle wake unavailable\)/);
+    assert.doesNotMatch(status.structuredContent.compactText, /arm or verify/);
+    assert.doesNotMatch(status.structuredContent.compactText, /attach or verify/);
+    // A bridge fault still reports the fault: unavailable idle wake only
+    // replaces the arm guidance, never the recovery guidance.
+    const [faultClientTransport, faultServerTransport] = InMemoryTransport.createLinkedPair();
+    const faultClient = new Client({ name: "parle-mcp-idle-wake-fault", version: "0.0.0" }, { capabilities: {} });
+    const faultBridge = { start: async () => {}, bindHostSession: () => true, status: () => ({ running: false, lastError: "listen EADDRINUSE", lastErrorKind: "listen", hostSessionBound: false, waiterAttached: false }) };
+    const faultServer = createParleMcpServer(fakeClient, undefined, faultBridge, undefined, false, { idleWake: "none" });
+    await Promise.all([faultServer.connect(faultServerTransport), faultClient.connect(faultClientTransport)]);
+    try {
+      const fault = await faultClient.callTool({ name: "parle_status", arguments: {} });
+      assert.equal(fault.structuredContent.responsiveDelivery.state, "terminal");
+      assert.equal(fault.structuredContent.responsiveDelivery.idleWake, "unavailable");
+      assert.equal(fault.structuredContent.responsiveDelivery.nextActionKey, "repair-delivery-host");
+    } finally {
+      await faultClient.close();
+      await faultServer.close();
+    }
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("stdio server spawned with PARLE_HOST_IDLE_WAKE=none renders the idle-wake-unavailable card (#171)", async () => {
+  // The bridge socket lives under HOME; macOS tmpdir() paths push it past the
+  // Unix socket path limit, so this fixture uses a short root.
+  const root = mkdtempSync("/tmp/parle-mcp-171-");
+  const home = join(root, "home");
+  mkdirSync(home, { mode: 0o700 });
+  const project = join(root, "project");
+  mkdirSync(project);
+  const wakeStreams = new Set();
+  const api = createServer((request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const reply = (body, status = 200) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (url.pathname === "/v/agent/sessions") return reply({ agent_session_id: "as-spawn", session_credential: "parle_ses_spawn", address: "@p.a.spawn", expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    if (url.pathname.endsWith("/participants")) return reply({ participant_id: "part-1" }, 201);
+    if (url.pathname.endsWith("/projection")) return reply({ watermark: 0, messages: [] });
+    if (url.pathname === "/v/agent/wake") {
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      response.write(": open\n\n");
+      wakeStreams.add(response);
+      request.on("close", () => wakeStreams.delete(response));
+      return undefined;
+    }
+    if (url.pathname.endsWith("/responsive-delivery")) return reply({ messages: [] });
+    return reply({});
+  });
+  await new Promise((resolveListen) => api.listen(0, "127.0.0.1", resolveListen));
+  const apiBase = `http://127.0.0.1:${api.address().port}`;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
+    cwd: project,
+    env: {
+      PATH: process.env.PATH || "",
+      HOME: home,
+      PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e",
+      PARLE_ROOM_AGENT_TOKEN: "parle_agt_spawn_secret",
+      PARLE_API_BASE: apiBase,
+      PARLE_WAKE_BASE: apiBase,
+      PARLE_ALLOW_INSECURE_LOCAL: "1",
+      PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
+      PARLE_HOOK_BRIDGE_SCOPE: `issue171-${process.pid}`,
+      PARLE_HOST_IDLE_WAKE: "none",
+    },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "parle-mcp-idle-wake-spawn", version: "0.0.0" }, { capabilities: {} });
+  try {
+    await client.connect(transport);
+    const connect = await client.callTool({ name: "parle_connect", arguments: {} });
+    assert.equal(connect.isError, undefined, JSON.stringify(connect.structuredContent));
+    assert.equal(connect.structuredContent.responsiveDelivery.idleWake, "unavailable");
+    let status;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      status = await client.callTool({ name: "parle_status", arguments: {} });
+      assert.equal(status.isError, undefined, JSON.stringify(status.structuredContent));
+      if (status.structuredContent.responsiveDelivery.state === "watching") break;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    }
+    const delivery = status.structuredContent.responsiveDelivery;
+    assert.equal(delivery.state, "watching", JSON.stringify(status.structuredContent.responsiveDelivery));
+    assert.equal(delivery.idleWake, "unavailable");
+    assert.equal(delivery.nextActionKey, "idle-wake-unavailable");
+    assert.equal(status.structuredContent.compactText, `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #019f2946-aef5-77ad-a41d-747ce0fd6a1e
+Delivery      watching (idle wake unavailable)
+
+Session Address:
+@p.a.spawn
+
+${IDLE_WAKE_UNAVAILABLE_NEXT}
+========================================`);
+  } finally {
+    await client.close().catch(() => {});
+    for (const stream of wakeStreams) stream.destroy();
+    await new Promise((resolveClose) => api.close(resolveClose));
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

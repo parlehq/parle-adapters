@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.61 (2026-08-27)
+
+- Read the host's static idle-wake capability from the manifest literal `PARLE_HOST_IDLE_WAKE` (`none` is the only value; absent keeps today's behavior) and report a generic `responsiveDelivery.idleWake` state from it and the bridge waiter evidence. On a host without an arm action, `parle_status` and `parle_connect` never emit `arm-or-verify-watcher` or the attach-or-verify text; they emit `idle-wake-unavailable` instead, while bridge fault guidance is unchanged. Carries client 0.8.53 (#171).
+
 ## 0.7.60 (2026-08-27)
 
 - Reword the `waitSeconds` tool guidance on `parle_read` and `parle_inbox`: one server-side bounded wait of 0–30 seconds per call, never an unattended watcher, with the operator-authorized capped attended hold deferred to the host skill; carries the client 0.8.52 connect guidance (#170).

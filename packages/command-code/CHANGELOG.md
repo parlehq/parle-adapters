@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.38 (2026-08-27)
+
+- Carry the generic idle-wake status state of MCP server 0.7.61 and client 0.8.53 into the Command Code mod artifact; the native mod declares no host idle-wake capability, so its rendering is unchanged (#171).
+
 ## 0.7.37 (2026-08-27)
 
 - Carry the reworded `waitSeconds` tool guidance of MCP server 0.7.60 and the connect `next` guidance of client 0.8.52 into the Command Code mod artifact: no unattended watcher, with any operator-authorized attended hold deferred to the host skill (#170).

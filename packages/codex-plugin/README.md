@@ -78,7 +78,7 @@ Live `parle_switch_profile` is unavailable while the hook bridge owns delivery. 
 
 Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it. Review trust again after an update changes the installed hook command.
 
-Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields.
+Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields. The manifest declares `PARLE_HOST_IDLE_WAKE=none` because Codex hooks have no idle-wake arm action, so the card reports `idle wake unavailable` and never asks for one; messages arriving while idle are delivered at the next prompt.
 
 ## Build and test
 

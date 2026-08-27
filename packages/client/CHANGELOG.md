@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.53 (2026-08-27)
+
+- Add a generic `idleWake` state (`unavailable` | `unarmed` | `armed`) to the responsive-delivery status the compact cards consume, plus the `idle-wake-unavailable` next key. When idle wake is unavailable the delivery line reads `(idle wake unavailable)` and the next line tells the model that idle-time messages arrive at the next prompt and that only an explicitly authorized capped attended wait keeps it available now; the formatter never asks such a host to arm anything. Armed and unarmed rendering is unchanged (#171).
+
 ## 0.8.52 (2026-08-27)
 
 - Reword the connect and session-established `next` guidance: do not poll with `waitSeconds` on your own initiative, while a live operator may authorize one capped attended hold as the host skill describes (#170).

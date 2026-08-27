@@ -178,7 +178,20 @@ export type HookDeliveryBridgeLike = {
   start?(): Promise<void>;
 };
 
-function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record<string, unknown>): any {
+// Static host capabilities the plugin manifest declares. `idleWake: "none"`
+// means the host has no arm action, so status must never ask for one.
+export type McpHostCapabilities = {
+  idleWake?: "none";
+};
+
+export type IdleWakeState = "unavailable" | "unarmed" | "armed";
+
+function idleWakeState(host: McpHostCapabilities, bridgeStatus?: Record<string, unknown>): IdleWakeState {
+  if (host.idleWake === "none") return "unavailable";
+  return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
+}
+
+function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record<string, unknown>, host: McpHostCapabilities = {}): any {
   let resolved = responsiveDelivery;
   const bridgeDown = bridgeStatus?.running === false;
   const bridgeError = typeof bridgeStatus?.lastError === "string" ? bridgeStatus.lastError : undefined;
@@ -210,17 +223,24 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
     && bridgeStatus.waiterAttached === false
     && ["watching", "idle"].includes(resolved.state);
   if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
+  const idleWake = idleWakeState(host, bridgeStatus);
+  resolved = { ...resolved, idleWake };
+  // Every branch that would ask the host to arm idle wake yields to this one
+  // when the host has no arm action.
+  const idleWakeUnavailableNext = { nextActionKey: "idle-wake-unavailable" as const, nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
   const next = resolved.reason === "bridge_listen_failed"
     ? { nextActionKey: "repair-delivery-host" as const, nextAction: "restart the host after correcting the local delivery socket error" }
     : resolved.state === "unknown" || resolved.state === "stopped"
-      ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
+      ? idleWake === "unavailable" ? idleWakeUnavailableNext : { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
       : resolved.state === "starting"
         ? { nextActionKey: "wait-for-watcher" as const, nextAction: "wait for responsive delivery startup" }
         : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict"
           ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
-          : bridgeStatus && bridgeStatus.waiterAttached !== true
-            ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "attach or verify the local delivery waiter" }
-            : { nextActionKey: "already-connected" as const, nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
+          : idleWake === "unavailable"
+            ? idleWakeUnavailableNext
+            : bridgeStatus && bridgeStatus.waiterAttached !== true
+              ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "attach or verify the local delivery waiter" }
+              : { nextActionKey: "already-connected" as const, nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 
@@ -275,6 +295,7 @@ export function registerParleTools(
   deliveryBridge?: HookDeliveryBridgeLike,
   degradedBoot?: DegradedMcpBoot,
   exposeDegradedTools = false,
+  host: McpHostCapabilities = {},
 ) {
   const registeredTools = new Map<string, ParleRegisteredToolLike>();
   const register = registerTool;
@@ -315,7 +336,7 @@ export function registerParleTools(
       const agentSessionId = (status as any).runtime?.agentSessionId;
       const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId
         ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid })
-        : undefined, bridgeStatus);
+        : undefined, bridgeStatus, host);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
       return { ...status, bootstrapAttempted, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
@@ -372,7 +393,7 @@ export function registerParleTools(
       const agentSessionId = (summary as any).agentSessionId;
       const responsiveDelivery = enrichResponsiveDelivery(agentSessionId
         ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid })
-        : undefined, bridgeStatus);
+        : undefined, bridgeStatus, host);
       return {
         ...summary,
         ...(responsiveDelivery ? { responsiveDelivery } : {}),

@@ -26,6 +26,7 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
     PARLE_CONFIG_CWD_FROM_PWD: "1",
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
     PARLE_HOOK_BRIDGE_SCOPE: "codex-plugin",
+    PARLE_HOST_IDLE_WAKE: "none",
     PARLE_INTEGRATION_NAME: "@parlehq/codex-plugin",
     PARLE_INTEGRATION_VERSION: plugin.version,
   });
@@ -62,6 +63,17 @@ test("Codex MCP config forwards only non-credential selectors from the launching
   assert.equal(server.env_vars.includes("PARLE_CONFIG_CWD_FROM_PWD"), false, "the opt-in is a literal value, never forwarded from the shell");
   assert.equal(server.env_vars.includes("CODEX_HOME"), true, "a later codex subprocess must target the parent's state store");
   assert.equal(server.env_vars.includes("PARLE_ROOM_AGENT_TOKEN"), false);
+});
+
+test("Codex MCP config declares that the host has no idle-wake arm action", () => {
+  // Codex hooks never pass an idle-wake launcher, so the status card must not
+  // ask the model to arm one (#171). The capability is a manifest literal,
+  // never forwarded from the shell.
+  const mcp = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
+  const server = mcp.mcpServers.parle;
+  assert.equal(server.env.PARLE_HOST_IDLE_WAKE, "none");
+  assert.equal(server.env_vars.includes("PARLE_HOST_IDLE_WAKE"), false);
+  assert.doesNotMatch(readFileSync(resolve(root, "hooks", "hooks.json"), "utf8"), /idle-wake-launcher/);
 });
 
 test("Codex Windows launcher discovers only trusted absolute runtimes and fails open", () => {

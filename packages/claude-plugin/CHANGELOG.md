@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.66 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.61 and client 0.8.53, which carry the generic idle-wake status state for hosts without an arm action; this host has an idle-wake launcher and does not set `PARLE_HOST_IDLE_WAKE`, so its rendering is unchanged (#171).
+
 ## 0.9.65 (2026-08-27)
 
 - Refresh the bundled MCP artifact to server 0.7.60 and client 0.8.52, which reword the `waitSeconds` tool guidance and connect `next` guidance to defer any operator-authorized attended hold to the host skill; this host's skill and idle-wake watcher are unchanged (#170).

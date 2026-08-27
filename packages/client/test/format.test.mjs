@@ -148,6 +148,70 @@ test("status and connection cards make unarmed idle wake visible without changin
   assert.match(status, /Next: arm or verify responsive delivery\./);
 });
 
+test("status card renders idle wake unavailable without asking to arm anything (#171)", () => {
+  const responsiveDelivery = { state: "watching", idleWake: "unavailable", nextActionKey: "idle-wake-unavailable" };
+  const status = compactStatusCardFromStatus({
+    responsiveDelivery,
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] },
+  });
+  assert.equal(status, `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake unavailable)
+
+Session Address:
+@p.a.s1
+
+Next: Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.
+========================================`);
+  assert.doesNotMatch(status, /\barm\b/i);
+  assert.doesNotMatch(status, /idle wake unarmed/);
+
+  const connection = compactConnectionCardFromSummary({ sessionAddress: "@p.a.s1", rooms: [{ roomHandle: "room-one" }] }, { responsiveDelivery, next: responsiveDelivery.nextActionKey });
+  assert.match(connection, /Delivery      watching \(idle wake unavailable\)/);
+  assert.match(connection, /Next: Messages arriving while idle will be delivered at the next prompt\. If you need to stay available now, explicitly authorize one capped attended wait\./);
+  assert.doesNotMatch(connection, /\barm\b/i);
+});
+
+test("idle wake unavailable wins over the unarmed reason and the unknown-watcher fallback", () => {
+  // The unavailable parenthetical replaces the unarmed one whatever reason the
+  // adapter left in place, and a missing next key never falls back to arming.
+  const base = {
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] },
+  };
+  const both = compactStatusCardFromStatus({ ...base, responsiveDelivery: { state: "watching", reason: "idle_wake_unarmed", idleWake: "unavailable" } });
+  assert.match(both, /Delivery      watching \(idle wake unavailable\)/);
+  assert.doesNotMatch(both, /idle wake unarmed/);
+  const unknown = compactStatusCardFromStatus({ ...base, responsiveDelivery: { state: "unknown", idleWake: "unavailable" } });
+  assert.match(unknown, /Delivery      unknown \(idle wake unavailable\)/);
+  assert.match(unknown, /Next: Messages arriving while idle will be delivered at the next prompt\./);
+  assert.doesNotMatch(unknown, /arm or verify/);
+});
+
+test("armed and unarmed idle wake keep the existing card text", () => {
+  const base = {
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] },
+  };
+  const armed = compactStatusCardFromStatus({ ...base, responsiveDelivery: { state: "watching", idleWake: "armed", nextActionKey: "already-connected" } });
+  assert.match(armed, /Delivery      watching\n/);
+  assert.match(armed, /Next: read your inbox when you are ready\./);
+  // The unarmed parenthetical still keys on the adapter's reason, so a host
+  // that is watching but not yet session-bound renders exactly as before.
+  const unarmedUnbound = compactStatusCardFromStatus({ ...base, responsiveDelivery: { state: "watching", idleWake: "unarmed", nextActionKey: "arm-or-verify-watcher" } });
+  assert.match(unarmedUnbound, /Delivery      watching\n/);
+  assert.match(unarmedUnbound, /Next: arm or verify responsive delivery\./);
+  const unarmed = compactStatusCardFromStatus({ ...base, responsiveDelivery: { state: "watching", reason: "idle_wake_unarmed", idleWake: "unarmed", nextActionKey: "arm-or-verify-watcher" } });
+  assert.match(unarmed, /Delivery      watching \(idle wake unarmed\)/);
+  assert.match(unarmed, /Next: arm or verify responsive delivery\./);
+  assert.equal(nextTextFor("idle-wake-unavailable"), "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.");
+});
+
 test("status card surfaces degraded responsive delivery", () => {
   const card = compactStatusCardFromStatus({
     responsiveDelivery: { state: "backoff", nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" },

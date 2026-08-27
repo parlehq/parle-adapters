@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.63 (2026-08-27)
+
+- Declare `PARLE_HOST_IDLE_WAKE=none` in the MCP manifest: Codex hooks pass no idle-wake launcher, so `parle_status` now renders `Delivery      watching (idle wake unavailable)` and points at the next prompt or an explicitly authorized capped attended wait instead of asking the model to arm a watcher that does not exist. Carries MCP server 0.7.61 and client 0.8.53 (#171).
+
 ## 0.6.62 (2026-08-27)
 
 - Make the skill's polling prohibition a conditional default: the live operator may explicitly authorize one attended hold of at most 10 minutes made of successive `parle_inbox` calls with `waitSeconds: 30`, and the catalog description now says so; unattended watcher loops, cron, detached processes, and other idle-wake simulations remain forbidden. Carries MCP server 0.7.60 and client 0.8.52 guidance (#170).

@@ -4534,6 +4534,8 @@ function nextTextFor(key) {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return "arm or verify responsive delivery.";
+    case "idle-wake-unavailable":
+      return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "recover-watcher":
@@ -4558,6 +4560,17 @@ function roomLabels(rooms) {
 function line(label, value) {
   return `${label.padEnd(14, " ")}${value}`;
 }
+function deliveryLine(input) {
+  if (!input)
+    return void 0;
+  if (typeof input === "string")
+    return input;
+  if (input.idleWake === "unavailable")
+    return `${input.state} (idle wake unavailable)`;
+  if (input.reason === "idle_wake_unarmed")
+    return `${input.state} (idle wake unarmed)`;
+  return input.state;
+}
 function formatCompactConnectionCard(input) {
   const lines = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
   const parsed = parseSessionAddress(input.sessionAddress);
@@ -4570,8 +4583,7 @@ function formatCompactConnectionCard(input) {
     lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1)
     lines.push(line("In rooms", rooms.join(", ")));
-  const deliveryState = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
-  const delivery = deliveryState && typeof input.responsiveDelivery === "object" && input.responsiveDelivery.reason === "idle_wake_unarmed" ? `${deliveryState} (idle wake unarmed)` : deliveryState;
+  const delivery = deliveryLine(input.responsiveDelivery);
   if (delivery)
     lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0)
@@ -4592,6 +4604,9 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
     connectedLabel: opts.connectedLabel
   });
 }
+function unknownWatcherNext(idleWake) {
+  return idleWake === "unavailable" ? "idle-wake-unavailable" : "arm-or-verify-watcher";
+}
 function compactStatusCardFromStatus(status) {
   const runtime = status.runtime;
   if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
@@ -4602,8 +4617,8 @@ function compactStatusCardFromStatus(status) {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
       unread,
-      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason } : void 0,
-      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected")
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason, idleWake: status.responsiveDelivery.idleWake } : void 0,
+      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? unknownWatcherNext(status.responsiveDelivery.idleWake) : "already-connected")
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
@@ -22467,7 +22482,12 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
-function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
+function idleWakeState(host, bridgeStatus) {
+  if (host.idleWake === "none")
+    return "unavailable";
+  return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
+}
+function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
   let resolved = responsiveDelivery;
   const bridgeDown = bridgeStatus?.running === false;
   const bridgeError = typeof bridgeStatus?.lastError === "string" ? bridgeStatus.lastError : void 0;
@@ -22490,7 +22510,10 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
   const idleWakeUnarmed = bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
   if (idleWakeUnarmed)
     resolved = { ...resolved, reason: "idle_wake_unarmed" };
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
+  const idleWake = idleWakeState(host, bridgeStatus);
+  resolved = { ...resolved, idleWake };
+  const idleWakeUnavailableNext = { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? idleWake === "unavailable" ? idleWakeUnavailableNext : { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : idleWake === "unavailable" ? idleWakeUnavailableNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -22521,7 +22544,7 @@ function degradedConfigDiagnostic(error51) {
     } : {}
   };
 }
-function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false) {
+function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false, host = {}) {
   const registeredTools = /* @__PURE__ */ new Map();
   const register = registerTool;
   registerTool = (name, config2, handler) => {
@@ -22559,7 +22582,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = status.runtime?.agentSessionId;
-      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
+      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus, host);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
       return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
@@ -22615,7 +22638,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
-      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
+      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus, host);
       return {
         ...summary,
         ...responsiveDelivery ? { responsiveDelivery } : {},
@@ -23056,7 +23079,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.37";
+var ADAPTER_VERSION = "0.7.38";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
