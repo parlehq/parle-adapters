@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.62 (2026-08-27)
+
+- Return a credential-free `identity` checkpoint on `parle_connect` and on connected `parle_status` results: the selected profile (or `null` for direct configuration), principal handle, acting-as agent handle, session address, and the single configured room's handle and id, all values the card or redacted status already show. Unknown fields are omitted, not guessed. A degraded boot whose `PARLE_PROFILE` is not in the catalog now carries `next` guidance saying the requested profile is absent and that no host may connect or send under another profile or the default identity without operator instruction (#172).
+
 ## 0.7.61 (2026-08-27)
 
 - Read the host's static idle-wake capability from the manifest literal `PARLE_HOST_IDLE_WAKE` (`none` is the only value; absent keeps today's behavior) and report a generic `responsiveDelivery.idleWake` state from it and the bridge waiter evidence. On a host without an arm action, `parle_status` and `parle_connect` never emit `arm-or-verify-watcher` or the attach-or-verify text; they emit `idle-wake-unavailable` instead, while bridge fault guidance is unchanged. On such a host the shared client's connect `next` and session-established `next` guidance (which tell the model to arm responsive delivery) are replaced with the same next-prompt / attended-wait guidance the card renders, and the `parle_connect` description no longer says the next hint arms anything. Carries client 0.8.53 (#171).

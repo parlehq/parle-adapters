@@ -39569,6 +39569,20 @@ function withHostNextGuidance(result2, host) {
     ...session && typeof session === "object" && typeof session.next === "string" ? { session: { ...session, next: guidance } } : {}
   };
 }
+function identityCheckpoint(sessionAddress, rooms) {
+  const address = typeof sessionAddress === "string" && sessionAddress ? sessionAddress : void 0;
+  const parsed = parseSessionAddress(address);
+  const list = Array.isArray(rooms) ? rooms.filter((room2) => room2 && typeof room2 === "object") : [];
+  const profile = list.find((room2) => typeof room2.profile === "string" && room2.profile)?.profile ?? null;
+  const room = list.length === 1 ? list[0] : void 0;
+  return {
+    profile,
+    ...parsed ? { principalHandle: parsed.principal, agentHandle: `${parsed.principal}.${parsed.agent}` } : {},
+    ...address ? { sessionAddress: address } : {},
+    ...typeof room?.roomHandle === "string" && room.roomHandle ? { roomHandle: room.roomHandle } : {},
+    ...typeof room?.roomId === "string" && room.roomId ? { roomId: room.roomId } : {}
+  };
+}
 function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
   let resolved = responsiveDelivery;
   const bridgeDown = bridgeStatus?.running === false;
@@ -39616,9 +39630,13 @@ function degradedConfigDiagnostic(error51) {
     error: redactString(error51.message),
     ...error51 instanceof ProfileNotFoundError ? {
       selector: error51.selector,
-      availableProfiles: error51.availableProfiles
+      availableProfiles: error51.availableProfiles,
+      next: missingProfileGuidance(error51.selector)
     } : {}
   };
+}
+function missingProfileGuidance(selector) {
+  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the profile to the catalog or ask the operator which profile they intend, and call parle_setup to retry.`;
 }
 function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false, host = {}) {
   const registeredTools = /* @__PURE__ */ new Map();
@@ -39658,7 +39676,8 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus, host);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
-      return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
+      const identity2 = connected ? { identity: identityCheckpoint(status.runtime.sessionAddress, status.rooms?.length ? status.rooms : status.runtime.rooms) } : {};
+      return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card, ...identity2 };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -39698,7 +39717,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }, false));
   registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. The result's identity object is the credential-free identity checkpoint (profile, principal and agent handle, room) to compare with what the operator asked for before the first send. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
@@ -39712,7 +39731,8 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
         ...summary,
         ...responsiveDelivery ? { responsiveDelivery } : {},
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},
-        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery, next: responsiveDelivery?.nextActionKey })
+        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery, next: responsiveDelivery?.nextActionKey }),
+        identity: identityCheckpoint(summary.sessionAddress, summary.rooms)
       };
     }
     return summary;
@@ -40132,7 +40152,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.61";
+var MCP_CLIENT_VERSION = "0.7.62";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

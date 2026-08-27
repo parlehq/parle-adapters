@@ -463,6 +463,7 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
       error: initialError.message,
       selector: "missing",
       availableProfiles: ["other"],
+      next: "The requested profile missing is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the profile to the catalog or ask the operator which profile they intend, and call parle_setup to retry.",
       configCwd: home,
       configCwdSource: "process.cwd",
       bootstrapAttempted: false,
@@ -1716,5 +1717,108 @@ test("alias delivery tools preserve agent reduction and guarded human release pa
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("parle_connect and parle_status return a credential-free identity checkpoint (#172)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-mcp-identity-home-"));
+  const roomId = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const token = "parle_agt_identity_secret";
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(join(home, ".parle", "profiles"), `[codex]\nroom_id = ${roomId}\nagent_token = ${token}\n`, { mode: 0o600 });
+  const clientImpl = createMcpAgentClient({
+    cwd: home,
+    env: { HOME: home, PARLE_PROFILE: "codex", PARLE_WATCH_ENABLED: "0" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_identity_secret", session_handle: "s1", address: "@kyle.codex.s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", room_handle: "lobby" }, 201);
+      if (u.includes("/projection")) return json({ watermark: 0, messages: [] });
+      return json({});
+    },
+  });
+  const server = createParleMcpServer(clientImpl);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-identity", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const expected = { profile: "codex", principalHandle: "kyle", agentHandle: "kyle.codex", sessionAddress: "@kyle.codex.s1", roomHandle: "lobby", roomId };
+    const connect = await client.callTool({ name: "parle_connect", arguments: {} });
+    assert.equal(connect.isError, undefined);
+    assert.deepEqual(connect.structuredContent.identity, expected);
+    assert.equal(connect.structuredContent.compactText.match(/Acting as     @kyle\.codex\n/g).length, 1);
+    assert.equal(connect.structuredContent.compactText.match(/In room       #lobby\n/g).length, 1);
+    const status = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.equal(status.isError, undefined);
+    assert.deepEqual(status.structuredContent.identity, expected);
+    for (const serialized of [JSON.stringify(connect), JSON.stringify(status)]) {
+      assert.equal(serialized.includes(token), false);
+      assert.equal(serialized.includes("parle_ses_identity_secret"), false);
+    }
+    const inspect = await client.callTool({ name: "parle_status", arguments: { inspect: true } });
+    assert.deepEqual(inspect.structuredContent.identity, expected);
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("identity checkpoint omits unknown fields and reports null profile for direct configuration (#172)", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" }, rooms: [{ roomId: "room-1" }, { roomId: "room-2" }] }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", agentSessionId: "as-1", rooms: [{ roomId: "room-1", cursor: 3 }] }),
+    ensureReadySafe: async () => false,
+  };
+  const server = createParleMcpServer(fakeClient);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-identity-direct", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const connect = await client.callTool({ name: "parle_connect", arguments: {} });
+    assert.deepEqual(connect.structuredContent.identity, { profile: null, principalHandle: "p", agentHandle: "p.a", sessionAddress: "@p.a.s1", roomId: "room-1" });
+    // Two configured rooms: the checkpoint names neither rather than guessing.
+    const status = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.deepEqual(status.structuredContent.identity, { profile: null, principalHandle: "p", agentHandle: "p.a", sessionAddress: "@p.a.s1" });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("a degraded boot with a missing profile says the profile is not in the catalog and never routes to another identity (#172)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "parle-mcp-missing-profile-home-"));
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  writeFileSync(join(home, ".parle", "profiles"), "[default]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6a1e\nagent_token = parle_agt_default_secret\n", { mode: 0o600 });
+  const env = { HOME: home, PARLE_PROFILE: "codex", PARLE_WATCH_ENABLED: "0" };
+  let initialError;
+  try {
+    createMcpAgentClient({ cwd: home, env });
+  } catch (error) {
+    initialError = error;
+  }
+  assert.ok(initialError instanceof ProfileNotFoundError);
+  const server = createParleMcpServer({}, {}, undefined, { error: initialError, cwd: home, env, recover: () => createMcpAgentClient({ cwd: home, env }) });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-missing-profile", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    assert.equal((await client.listTools()).tools.some((tool) => tool.name === "parle_connect"), false);
+    const status = await client.callTool({ name: "parle_status", arguments: {} });
+    const setup = await client.callTool({ name: "parle_setup", arguments: {} });
+    for (const result of [status.structuredContent, setup.structuredContent]) {
+      assert.equal(result.code, "profile_not_found");
+      assert.equal(result.selector, "codex");
+      assert.deepEqual(result.availableProfiles, ["default"]);
+      assert.match(result.next, /^The requested profile codex is not in the catalog\./);
+      assert.match(result.next, /Do not connect or send under another profile or the default identity without operator instruction\./);
+      assert.doesNotMatch(result.next, /\buse\b|switch to|unset PARLE_PROFILE/i);
+      assert.equal(result.identity, undefined);
+    }
+    assert.equal(JSON.stringify([status, setup]).includes("parle_agt_default_secret"), false);
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(home, { recursive: true, force: true });
   }
 });

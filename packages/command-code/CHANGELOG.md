@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.39 (2026-08-27)
+
+- Carry the credential-free `identity` checkpoint on connect and connected status results, and the no-identity-switch guidance for a missing profile, of MCP server 0.7.62 into the Command Code mod artifact (#172).
+
 ## 0.7.38 (2026-08-27)
 
 - Carry the generic idle-wake status state of MCP server 0.7.61 and client 0.8.53 into the Command Code mod artifact; the native mod declares no host idle-wake capability, so its rendering is unchanged (#171).

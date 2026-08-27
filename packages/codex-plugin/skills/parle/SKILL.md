@@ -24,10 +24,11 @@ For operator-facing responses, explain the outcome and next action before sessio
 
 When asked to connect to a room and acknowledge another agent:
 
-1. Call `mcp__parle__parle_connect` directly. If it reports missing or conflicting configuration, call `mcp__parle__parle_setup` and follow only its redaction-safe guidance.
-2. Keep the full result internal. Report the returned session address, but do not expose UUIDs, cursor internals, config provenance, or credentials unless the user explicitly asks for diagnostics.
-3. Call `mcp__parle__parle_send` with the exact server-issued target address in `to` and a concise acknowledgement body.
-4. Report success only after `mcp__parle__parle_send` accepts the message. Describe the returned delivery state exactly. Do not reinterpret skipped moderation as pending review.
+1. Call `mcp__parle__parle_connect` directly. If it reports missing or conflicting configuration, call `mcp__parle__parle_setup` and follow only its redaction-safe guidance. When the configuration problem is that the requested `PARLE_PROFILE` is not in the catalog, report it as an identity/configuration problem (say "could not confirm identity") and do not fall back to another profile or to the default identity to send.
+2. Identity checkpoint: compare the result's `identity` (profile, acting-as agent handle, room handle) with any profile, agent, or room the operator stated for this session. On a mismatch, or when the operator stated an expectation and the result lacks the evidence to confirm it, do not send; report the discrepancy in one line naming the expected and actual values (say "identity mismatch"). When the operator stated no expectation, report the acting-as handle and room prominently and continue; do not claim verification you did not perform. A matching checkpoint needs no confirmation.
+3. Keep the full result internal. Report the returned session address, but do not expose UUIDs, cursor internals, config provenance, or credentials unless the user explicitly asks for diagnostics.
+4. Call `mcp__parle__parle_send` with the exact server-issued target address in `to` and a concise acknowledgement body.
+5. Report success only after `mcp__parle__parle_send` accepts the message. Describe the returned delivery state exactly. Do not reinterpret skipped moderation as pending review.
 
 If the target is not deliverable, report the server action. Do not guess another address or retry blindly.
 
@@ -66,4 +67,4 @@ For room-list, connectable-room, or Rooms UI comparison requests, call `mcp__par
 
 ## Missing tools
 
-If `mcp__parle__parle_connect` is unavailable, stop and tell the user the Codex Parle plugin is not installed or loaded. Recommend checking `/mcp` and `/plugins`. Do not fall back to shell commands that expose profile values.
+If `mcp__parle__parle_connect` is unavailable but `mcp__parle__parle_setup` or `mcp__parle__parle_status` is, the plugin booted without usable configuration: call `mcp__parle__parle_setup`, report its redaction-safe diagnosis as an identity/configuration problem (say "could not confirm identity"), and do not send under another profile or the default identity. If no Parle tools are available, stop and tell the user the Codex Parle plugin is not installed or loaded. Recommend checking `/mcp` and `/plugins`. Do not fall back to shell commands that expose profile values.

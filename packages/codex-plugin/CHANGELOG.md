@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.64 (2026-08-27)
+
+- Add an identity checkpoint to the skill's connect flow: before the first send, compare the `parle_connect` result's `identity` with any profile, agent, or room the operator stated; on a mismatch or unconfirmable expectation, do not send and report `identity mismatch` with the expected and actual values. When the requested `PARLE_PROFILE` is not in the catalog, or the plugin booted without usable configuration, report it as an identity/configuration problem and never fall back to another profile or the default identity. Carries MCP server 0.7.62 (#172).
+
 ## 0.6.63 (2026-08-27)
 
 - Declare `PARLE_HOST_IDLE_WAKE=none` in the MCP manifest: Codex hooks pass no idle-wake launcher, so `parle_status` now renders `Delivery      watching (idle wake unavailable)` and points at the next prompt or an explicitly authorized capped attended wait instead of asking the model to arm a watcher that does not exist; the connect and session-established `next` guidance say the same. Carries MCP server 0.7.61 and client 0.8.53 (#171).

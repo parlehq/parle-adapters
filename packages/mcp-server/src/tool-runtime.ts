@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, nextTextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, nextTextFor, parseKeyValueFile, parseSessionAddress, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -206,6 +206,37 @@ function withHostNextGuidance<T>(result: T, host: McpHostCapabilities): T {
   } as T;
 }
 
+// Credential-free identity checkpoint for the model to compare with the
+// operator's stated profile, agent, and room before its first send. Every
+// value is already on the card or the redacted status; unknown fields are
+// omitted rather than guessed, and the room is named only when exactly one is
+// configured.
+export type IdentityCheckpoint = {
+  profile: string | null;
+  principalHandle?: string;
+  agentHandle?: string;
+  sessionAddress?: string;
+  roomHandle?: string;
+  roomId?: string;
+};
+
+type IdentityRoomLike = { profile?: string; roomId?: string; roomHandle?: string };
+
+export function identityCheckpoint(sessionAddress: unknown, rooms: unknown): IdentityCheckpoint {
+  const address = typeof sessionAddress === "string" && sessionAddress ? sessionAddress : undefined;
+  const parsed = parseSessionAddress(address);
+  const list: IdentityRoomLike[] = Array.isArray(rooms) ? rooms.filter((room) => room && typeof room === "object") : [];
+  const profile = list.find((room) => typeof room.profile === "string" && room.profile)?.profile ?? null;
+  const room = list.length === 1 ? list[0] : undefined;
+  return {
+    profile,
+    ...(parsed ? { principalHandle: parsed.principal, agentHandle: `${parsed.principal}.${parsed.agent}` } : {}),
+    ...(address ? { sessionAddress: address } : {}),
+    ...(typeof room?.roomHandle === "string" && room.roomHandle ? { roomHandle: room.roomHandle } : {}),
+    ...(typeof room?.roomId === "string" && room.roomId ? { roomId: room.roomId } : {}),
+  };
+}
+
 function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record<string, unknown>, host: McpHostCapabilities = {}): any {
   let resolved = responsiveDelivery;
   const bridgeDown = bridgeStatus?.running === false;
@@ -296,8 +327,15 @@ export function degradedConfigDiagnostic(error: ProfileConfigError) {
     ...(error instanceof ProfileNotFoundError ? {
       selector: error.selector,
       availableProfiles: error.availableProfiles,
+      next: missingProfileGuidance(error.selector),
     } : {}),
   };
+}
+
+// A missing profile is an identity problem, not a routing hint: no host may
+// switch to a listed profile or the default identity on its own.
+export function missingProfileGuidance(selector: string): string {
+  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the profile to the catalog or ask the operator which profile they intend, and call parle_setup to retry.`;
 }
 
 export type ParleRegisteredToolLike = Pick<RegisteredTool, "enabled" | "enable" | "disable" | "update">;
@@ -354,7 +392,10 @@ export function registerParleTools(
         : undefined, bridgeStatus, host);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = (status as any).runtime || (status as any).config ? { compactText: compactStatusCardFromStatus(enriched as any) } : {};
-      return { ...status, bootstrapAttempted, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card };
+      const identity = connected
+        ? { identity: identityCheckpoint((status as any).runtime.sessionAddress, (status as any).rooms?.length ? (status as any).rooms : (status as any).runtime.rooms) }
+        : {};
+      return { ...status, bootstrapAttempted, ...(responsiveDelivery ? { responsiveDelivery } : {}), ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}), ...card, ...identity };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -397,7 +438,7 @@ export function registerParleTools(
 
   registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. The result's identity object is the credential-free identity checkpoint (profile, principal and agent handle, room) to compare with what the operator asked for before the first send. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
@@ -414,6 +455,7 @@ export function registerParleTools(
         ...(responsiveDelivery ? { responsiveDelivery } : {}),
         ...(bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}),
         compactText: compactConnectionCardFromSummary(summary as any, { responsiveDelivery, next: responsiveDelivery?.nextActionKey }),
+        identity: identityCheckpoint((summary as any).sessionAddress, (summary as any).rooms),
       };
     }
     return summary;

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.67 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.62, which adds the credential-free `identity` checkpoint to `parle_connect` and connected `parle_status` results and the no-identity-switch guidance for a missing profile (#172).
+
 ## 0.9.66 (2026-08-27)
 
 - Refresh the bundled MCP artifact to server 0.7.61 and client 0.8.53, which carry the generic idle-wake status state for hosts without an arm action; this host has an idle-wake launcher and does not set `PARLE_HOST_IDLE_WAKE`, so its rendering is unchanged (#171).

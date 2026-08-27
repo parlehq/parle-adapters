@@ -131,6 +131,22 @@ test("Codex skill pins the #170 conditional polling default and capped attended 
   ));
 });
 
+test("Codex skill pins the #172 identity checkpoint and forbids identity fallback", () => {
+  const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
+  assert.ok(skill.includes(
+    "1. Call `mcp__parle__parle_connect` directly. If it reports missing or conflicting configuration, call `mcp__parle__parle_setup` and follow only its redaction-safe guidance. When the configuration problem is that the requested `PARLE_PROFILE` is not in the catalog, report it as an identity/configuration problem (say \"could not confirm identity\") and do not fall back to another profile or to the default identity to send.\n",
+  ));
+  assert.ok(skill.includes(
+    "2. Identity checkpoint: compare the result's `identity` (profile, acting-as agent handle, room handle) with any profile, agent, or room the operator stated for this session. On a mismatch, or when the operator stated an expectation and the result lacks the evidence to confirm it, do not send; report the discrepancy in one line naming the expected and actual values (say \"identity mismatch\"). When the operator stated no expectation, report the acting-as handle and room prominently and continue; do not claim verification you did not perform. A matching checkpoint needs no confirmation.\n",
+  ));
+  assert.match(skill, /\n3\. Keep the full result internal\./);
+  assert.match(skill, /\n4\. Call `mcp__parle__parle_send`/);
+  assert.match(skill, /\n5\. Report success only after/);
+  assert.ok(skill.includes(
+    "If `mcp__parle__parle_connect` is unavailable but `mcp__parle__parle_setup` or `mcp__parle__parle_status` is, the plugin booted without usable configuration: call `mcp__parle__parle_setup`, report its redaction-safe diagnosis as an identity/configuration problem (say \"could not confirm identity\"), and do not send under another profile or the default identity.",
+  ));
+});
+
 test("Codex plugin includes bounded guidance and the copied MCP artifact", () => {
   const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);
