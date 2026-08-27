@@ -2,10 +2,16 @@ export type CompactResponsiveDelivery = "starting" | "watching" | "backoff" | "s
 
 // Host idle-wake capability as the adapter reports it. The shared formatter
 // renders this generic state and never asks which host it is running on.
-// Later states extend the union additively.
-export type CompactIdleWake = "unavailable" | "unarmed" | "armed";
+// `queue-only`, `daemon-attached`, and `degraded` describe a host that wakes
+// its own idle turn: proven with bounded latency, proven immediate, or with a
+// trigger whose delivery is unproven.
+export type CompactIdleWake = "unavailable" | "unarmed" | "armed" | "queue-only" | "daemon-attached" | "degraded";
 
-export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "idle-wake-unavailable" | "wait-for-watcher" | "recover-watcher" | "repair-delivery-host";
+// States the delivery line names explicitly; armed and unarmed keep their
+// reason-driven rendering.
+const HOST_IDLE_WAKE_LINE_STATES: ReadonlySet<CompactIdleWake> = new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
+
+export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "idle-wake-unavailable" | "idle-wake-queue-only" | "idle-wake-daemon-attached" | "idle-wake-degraded" | "wait-for-watcher" | "recover-watcher" | "repair-delivery-host";
 
 export type CompactResponsiveDeliveryInput = { state: CompactResponsiveDelivery; reason?: string; idleWake?: CompactIdleWake };
 
@@ -44,6 +50,12 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
       return "arm or verify responsive delivery.";
     case "idle-wake-unavailable":
       return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+    case "idle-wake-queue-only":
+      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
+    case "idle-wake-daemon-attached":
+      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
+    case "idle-wake-degraded":
+      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "recover-watcher":
@@ -76,7 +88,7 @@ function line(label: string, value: string): string {
 function deliveryLine(input: CompactConnectionCardInput["responsiveDelivery"]): string | undefined {
   if (!input) return undefined;
   if (typeof input === "string") return input;
-  if (input.idleWake === "unavailable") return `${input.state} (idle wake unavailable)`;
+  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake)) return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_unarmed") return `${input.state} (idle wake unarmed)`;
   return input.state;
 }
@@ -135,10 +147,21 @@ export type StatusLike = {
   };
 };
 
-// An unknown watcher normally asks for arming; a host with no arm action gets
-// the honest fallback instead.
+// An unknown watcher normally asks for arming; a host that reports its own
+// idle-wake state gets that state's guidance instead.
 function unknownWatcherNext(idleWake?: CompactIdleWake): CompactConnectionNextKey {
-  return idleWake === "unavailable" ? "idle-wake-unavailable" : "arm-or-verify-watcher";
+  switch (idleWake) {
+    case "unavailable":
+      return "idle-wake-unavailable";
+    case "queue-only":
+      return "idle-wake-queue-only";
+    case "daemon-attached":
+      return "idle-wake-daemon-attached";
+    case "degraded":
+      return "idle-wake-degraded";
+    default:
+      return "arm-or-verify-watcher";
+  }
 }
 
 // The status-path counterpart of the connect card: "status" is where users ask

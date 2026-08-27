@@ -252,3 +252,52 @@ Parle not configured
 Next: run parle_setup to diagnose configuration.
 ========================================`);
 });
+
+test("status and connection cards render host-owned idle wake states and their guidance (#174)", () => {
+  const card = (responsiveDelivery) => compactStatusCardFromStatus({
+    responsiveDelivery,
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] },
+  });
+  assert.equal(card({ state: "watching", idleWake: "queue-only", nextActionKey: "idle-wake-queue-only" }), `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake queue-only)
+
+Session Address:
+@p.a.s1
+
+Next: idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.
+========================================`);
+  assert.equal(card({ state: "watching", idleWake: "degraded", nextActionKey: "idle-wake-degraded" }), `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake degraded)
+
+Session Address:
+@p.a.s1
+
+Next: a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.
+========================================`);
+  const daemon = card({ state: "watching", idleWake: "daemon-attached", nextActionKey: "idle-wake-daemon-attached" });
+  assert.match(daemon, /Delivery      watching \(idle wake daemon-attached\)/);
+  assert.match(daemon, /Next: idle wake is armed through the host daemon; messages arriving while idle start a turn immediately\./);
+  // The host state wins over the waiter reason, and the unknown-watcher
+  // fallback follows the host state instead of asking to arm.
+  assert.match(card({ state: "watching", idleWake: "queue-only", reason: "idle_wake_unarmed", nextActionKey: "idle-wake-queue-only" }), /Delivery      watching \(idle wake queue-only\)/);
+  assert.match(card({ state: "unknown", idleWake: "queue-only" }), /Next: idle wake is armed through the host queue/);
+  assert.match(card({ state: "unknown", idleWake: "degraded" }), /Next: a wake trigger may be queued/);
+  for (const text of [daemon, card({ state: "watching", idleWake: "queue-only", nextActionKey: "idle-wake-queue-only" })]) {
+    assert.doesNotMatch(text, /\barm\b/i);
+    assert.doesNotMatch(text, /Codex/);
+  }
+  const connection = compactConnectionCardFromSummary({ sessionAddress: "@p.a.s1", rooms: [{ roomHandle: "room-one" }] }, { responsiveDelivery: { state: "watching", idleWake: "queue-only" }, next: "idle-wake-queue-only" });
+  assert.match(connection, /Delivery      watching \(idle wake queue-only\)/);
+  assert.match(connection, /Next: idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds\./);
+});
