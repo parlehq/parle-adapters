@@ -237,9 +237,12 @@ export function hostSessionIdFromMeta(meta: unknown): string | undefined {
   return undefined;
 }
 
+export type ConfigCwdSource = "PWD" | "process.cwd";
+
 export type DegradedMcpBoot = {
   error: ProfileConfigError;
   cwd?: string;
+  cwdSource?: ConfigCwdSource;
   env?: Record<string, string | undefined>;
   recover: () => {
     client: ParleMcpClientLike;
@@ -292,7 +295,16 @@ export function registerParleTools(
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    if (degradedBoot) return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
+    // A wrong project .env is a common cause of a degraded boot, so the
+    // directory that was consulted is reported here too.
+    if (degradedBoot) {
+      return {
+        ...degradedConfigDiagnostic(degradedBoot.error),
+        configCwd: degradedBoot.cwd || process.cwd(),
+        configCwdSource: degradedBoot.cwdSource || "process.cwd",
+        bootstrapAttempted: false,
+      };
+    }
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);

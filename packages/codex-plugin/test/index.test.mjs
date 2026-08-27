@@ -23,6 +23,7 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   assert.equal(mcp.mcpServers.parle.cwd, ".");
   assert.deepEqual(mcp.mcpServers.parle.env_vars, ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME"]);
   assert.deepEqual(mcp.mcpServers.parle.env, {
+    PARLE_CONFIG_CWD_FROM_PWD: "1",
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
     PARLE_HOOK_BRIDGE_SCOPE: "codex-plugin",
     PARLE_INTEGRATION_NAME: "@parlehq/codex-plugin",
@@ -57,6 +58,8 @@ test("Codex MCP config forwards only non-credential selectors from the launching
     assert.doesNotMatch(value, /parle_agt_|parle_hum_/);
   }
   assert.equal(server.env_vars.includes("PWD"), true, "PWD names the shell launch directory for project .env resolution");
+  assert.equal(server.env.PARLE_CONFIG_CWD_FROM_PWD, "1", "only this manifest opts the shared server into PWD-based configuration");
+  assert.equal(server.env_vars.includes("PARLE_CONFIG_CWD_FROM_PWD"), false, "the opt-in is a literal value, never forwarded from the shell");
   assert.equal(server.env_vars.includes("CODEX_HOME"), true, "a later codex subprocess must target the parent's state store");
   assert.equal(server.env_vars.includes("PARLE_ROOM_AGENT_TOKEN"), false);
 });

@@ -462,6 +462,8 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
       error: initialError.message,
       selector: "missing",
       availableProfiles: ["other"],
+      configCwd: home,
+      configCwdSource: "process.cwd",
       bootstrapAttempted: false,
     });
 
@@ -1193,7 +1195,7 @@ test("stdio server lists the full tool contract and setup works without secrets"
   }
 });
 
-test("config cwd follows PWD only when it is an absolute existing directory, resolved through realpath", () => {
+test("config cwd follows PWD only when the host opts in and PWD is an absolute existing directory, resolved through realpath", () => {
   const root = mkdtempSync(join(tmpdir(), "parle-mcp-config-cwd-"));
   try {
     const project = join(root, "project");
@@ -1203,24 +1205,30 @@ test("config cwd follows PWD only when it is an absolute existing directory, res
     const file = join(root, "file");
     writeFileSync(file, "");
     const fallback = join(root, "fallback");
-    assert.deepEqual(resolveConfigCwd({ PWD: project }, fallback), { cwd: realpathSync(project), source: "PWD" });
-    assert.deepEqual(resolveConfigCwd({ PWD: link }, fallback), { cwd: realpathSync(project), source: "PWD" });
+    const optIn = { PARLE_CONFIG_CWD_FROM_PWD: "1" };
+    assert.deepEqual(resolveConfigCwd({ ...optIn, PWD: project }, fallback), { cwd: realpathSync(project), source: "PWD" });
+    assert.deepEqual(resolveConfigCwd({ ...optIn, PWD: link }, fallback), { cwd: realpathSync(project), source: "PWD" });
     for (const pwd of [undefined, "", "project", "./project", join(root, "missing"), join(link, "missing"), file]) {
-      assert.deepEqual(resolveConfigCwd({ PWD: pwd }, fallback), { cwd: fallback, source: "process.cwd" }, `PWD=${pwd}`);
+      assert.deepEqual(resolveConfigCwd({ ...optIn, PWD: pwd }, fallback), { cwd: fallback, source: "process.cwd" }, `PWD=${pwd}`);
+    }
+    for (const gate of [undefined, "", "0", "true"]) {
+      assert.deepEqual(resolveConfigCwd({ PARLE_CONFIG_CWD_FROM_PWD: gate, PWD: project }, fallback), { cwd: fallback, source: "process.cwd" }, `gate=${gate}`);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-// Codex spawns plugin MCP servers with env_clear(): only these host defaults
-// plus the names its plugin manifest lists in env_vars reach the child. The
-// fixtures below hand the server exactly that environment; PARLE_* from the
-// test runner's own environment never leaks in.
+// Codex spawns plugin MCP servers with env_clear(): only these host defaults,
+// the names its plugin manifest lists in env_vars, and the manifest's literal
+// env map reach the child. The fixtures below hand the server exactly that
+// environment; PARLE_* from the test runner's own environment never leaks in.
 const CODEX_DEFAULT_ENV_VARS = ["HOME", "PATH", "USER", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "LOGNAME"];
 const CODEX_FORWARDED_ENV_VARS = ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME"];
+// The configuration-relevant subset of the Codex manifest's literal env map.
+const CODEX_MANIFEST_ENV = { PARLE_CONFIG_CWD_FROM_PWD: "1" };
 
-function envClearedSpawnEnv(home, forwarded) {
+function envClearedSpawnEnv(home, forwarded, manifestEnv = CODEX_MANIFEST_ENV) {
   const env = {};
   for (const name of CODEX_DEFAULT_ENV_VARS) if (process.env[name] !== undefined) env[name] = process.env[name];
   env.HOME = home;
@@ -1228,7 +1236,7 @@ function envClearedSpawnEnv(home, forwarded) {
     assert.ok(CODEX_FORWARDED_ENV_VARS.includes(name), `${name} is not forwarded through an env-cleared Codex spawn`);
     if (value !== undefined) env[name] = value;
   }
-  return env;
+  return { ...env, ...manifestEnv };
 }
 
 function writeProfileCatalog(home, sections) {
@@ -1253,12 +1261,12 @@ function envClearedLaunchFixture() {
   return { root, home, install, project, cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-async function withEnvClearedServer({ home, install, forwarded }, run) {
+async function withEnvClearedServer({ home, install, forwarded, manifestEnv }, run) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
     cwd: install,
-    env: envClearedSpawnEnv(home, forwarded),
+    env: envClearedSpawnEnv(home, forwarded, manifestEnv),
     stderr: "pipe",
   });
   const client = new Client({ name: "parle-mcp-env-cleared", version: "0.0.0" }, { capabilities: {} });
@@ -1321,6 +1329,10 @@ test("env-cleared spawn fails closed on a forwarded selector conflict", async ()
       assert.equal(setup.structuredContent.degraded, true);
       assert.equal(setup.structuredContent.code, "profile_config_error");
       assert.match(setup.structuredContent.error, /PARLE_PROFILES from env conflicts with PARLE_PROFILE from env/);
+      const status = await client.callTool({ name: "parle_status", arguments: {} });
+      assert.equal(status.structuredContent.degraded, true);
+      assert.equal(status.structuredContent.configCwd, realpathSync(fixture.project));
+      assert.equal(status.structuredContent.configCwdSource, "PWD");
     });
   } finally {
     fixture.cleanup();
@@ -1338,6 +1350,19 @@ test("env-cleared spawn ignores a relative or missing PWD and falls back to the 
       assert.equal(status.configCwd, realpathSync(fixture.install));
       assert.deepEqual(status.config.profile, { source: "profile_catalog", configured: true, value: "default" });
     }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("env-cleared spawn without the manifest opt-in ignores a valid PWD", async () => {
+  const fixture = envClearedLaunchFixture();
+  try {
+    writeFileSync(join(fixture.project, ".env"), "PARLE_PROFILE=codex\nPARLE_WATCH_ENABLED=0\n");
+    const status = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project }, manifestEnv: {} }, inspectedStatus);
+    assert.equal(status.configCwdSource, "process.cwd");
+    assert.equal(status.configCwd, realpathSync(fixture.install));
+    assert.deepEqual(status.config.profile, { source: "profile_catalog", configured: true, value: "default" });
   } finally {
     fixture.cleanup();
   }

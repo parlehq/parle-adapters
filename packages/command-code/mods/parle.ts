@@ -22541,8 +22541,14 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    if (degradedBoot)
-      return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
+    if (degradedBoot) {
+      return {
+        ...degradedConfigDiagnostic(degradedBoot.error),
+        configCwd: degradedBoot.cwd || process.cwd(),
+        configCwdSource: degradedBoot.cwdSource || "process.cwd",
+        bootstrapAttempted: false
+      };
+    }
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function")
       bootstrapAttempted = await client.ensureReadySafe();

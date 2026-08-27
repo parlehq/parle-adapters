@@ -14,6 +14,7 @@
         "CODEX_HOME"
       ],
       "env": {
+        "PARLE_CONFIG_CWD_FROM_PWD": "1",
         "PARLE_RESPONSIVE_DELIVERY": "hook-bridge",
         "PARLE_HOOK_BRIDGE_SCOPE": "codex-plugin",
         "PARLE_INTEGRATION_NAME": "@parlehq/codex-plugin",

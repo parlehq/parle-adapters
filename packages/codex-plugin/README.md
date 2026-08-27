@@ -34,7 +34,7 @@ Codex should discover the Parle skill and MCP tools, call `parle_connect`, then 
 
 ## Profile selection per project
 
-Codex starts plugin MCP servers with a cleared environment and the plugin cache directory as the working directory. The plugin manifest forwards `PARLE_PROFILE`, `PARLE_PROFILES`, `PARLE_PROFILES_PATH`, `PWD`, and `CODEX_HOME` from the launching shell; every other variable is dropped. The server resolves project configuration, including a project `.env`, from `PWD`, the directory the shell was in when `codex` started. Credential variables are never forwarded; credentials stay in `~/.parle/profiles`.
+Codex starts plugin MCP servers with a cleared environment and the plugin cache directory as the working directory. The child receives Codex's default variables (`HOME`, `PATH`, `USER`, `TMPDIR`, `LANG`, `LC_ALL`, `TERM`, `TZ`, `SHELL`, `LOGNAME`), the plugin manifest's literal values, and, forwarded from the launching shell, `PARLE_PROFILE`, `PARLE_PROFILES`, `PARLE_PROFILES_PATH`, `PWD`, and `CODEX_HOME`. Nothing else from the shell reaches the server. The manifest's literal `PARLE_CONFIG_CWD_FROM_PWD=1` opts this host into resolving project configuration, including a project `.env`, from `PWD`, the directory the shell was in when `codex` started. This recipe forwards no Parle credential variables; keep credentials in `~/.parle/profiles` and select them by name. The resolver can also read direct credentials from a project `.env`, but the recipe below does not rely on that.
 
 Pin a profile to a project with a directory-scoped environment. In `.mise.toml`:
 
@@ -52,6 +52,8 @@ export PARLE_PROFILE=codex
 Run `mise trust` or `direnv allow` once, then launch `codex` from the project directory. A project `.env` containing `PARLE_PROFILE=codex` also works because the server reads it from the launch directory; a value in the process environment wins over `.env`. `parle_status` reports `configCwd` and `configCwdSource` (`PWD` or `process.cwd`) so the directory that was used is visible.
 
 `PWD` means the shell launch directory. `codex -C elsewhere` changes the session working directory without changing `PWD`, so it does not select that directory's Parle configuration.
+
+Because the server now treats the launch directory as its configuration directory, credential-free runtime snapshots appear under `<project>/.parle/runtime/` (see [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md)), as they already do for other hosts. Add `.parle/runtime/` to the project `.gitignore`.
 
 Avoid these alternatives:
 

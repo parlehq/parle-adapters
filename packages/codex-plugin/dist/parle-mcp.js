@@ -39606,7 +39606,14 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    if (degradedBoot) return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
+    if (degradedBoot) {
+      return {
+        ...degradedConfigDiagnostic(degradedBoot.error),
+        configCwd: degradedBoot.cwd || process.cwd(),
+        configCwdSource: degradedBoot.cwdSource || "process.cwd",
+        bootstrapAttempted: false
+      };
+    }
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function") bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
@@ -40105,7 +40112,7 @@ function resolveIntegrationMetadata(env = process.env) {
 }
 function resolveConfigCwd(env = process.env, fallback = process.cwd()) {
   const pwd = env.PWD;
-  if (pwd && isAbsolute4(pwd)) {
+  if (env.PARLE_CONFIG_CWD_FROM_PWD === "1" && pwd && isAbsolute4(pwd)) {
     try {
       const resolved = realpathSync2(pwd);
       if (statSync4(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
@@ -40199,6 +40206,7 @@ async function runStdio() {
   const server = runtime ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge) : createParleMcpServer({}, new ParleAccountClient(), void 0, {
     error: configError,
     cwd: configCwd.cwd,
+    cwdSource: configCwd.source,
     env: process.env,
     recover: createRuntime,
     onRecovered(recovered) {

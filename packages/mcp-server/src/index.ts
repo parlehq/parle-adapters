@@ -8,8 +8,8 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact } from "./hook-delivery-bridge.js";
-import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
-export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
 export const MCP_CLIENT_VERSION = "0.7.59";
@@ -25,17 +25,18 @@ export function resolveIntegrationMetadata(env: Record<string, string | undefine
   };
 }
 
-export type ConfigCwdSource = "PWD" | "process.cwd";
 export type ConfigCwd = { cwd: string; source: ConfigCwdSource };
 
 // Hosts that spawn the server from an install directory (Codex sets cwd to the
-// plugin cache) still forward PWD, the shell launch directory. Configuration
-// resolution (the project .env, a relative PARLE_PROFILES_PATH) follows PWD
-// only when it is an absolute, existing, realpath-stable directory; anything
-// else falls back to the process directory.
+// plugin cache) still forward PWD, the shell launch directory. Only a host
+// manifest that opts in with PARLE_CONFIG_CWD_FROM_PWD=1 lets configuration
+// resolution (the project .env, a relative PARLE_PROFILES_PATH) follow PWD, and
+// then only when it is an absolute, existing, realpath-stable directory. Other
+// hosts (Claude Code runs the server in the project; Claude Desktop is
+// GUI-launched with an unrelated PWD) keep the process directory.
 export function resolveConfigCwd(env: Record<string, string | undefined> = process.env, fallback = process.cwd()): ConfigCwd {
   const pwd = env.PWD;
-  if (pwd && isAbsolute(pwd)) {
+  if (env.PARLE_CONFIG_CWD_FROM_PWD === "1" && pwd && isAbsolute(pwd)) {
     try {
       const resolved = realpathSync(pwd);
       if (statSync(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
@@ -149,6 +150,7 @@ export async function runStdio() {
     : createParleMcpServer({} as ParleMcpClientLike, new ParleAccountClient(), undefined, {
         error: configError!,
         cwd: configCwd.cwd,
+        cwdSource: configCwd.source,
         env: process.env,
         recover: createRuntime,
         onRecovered(recovered) {
