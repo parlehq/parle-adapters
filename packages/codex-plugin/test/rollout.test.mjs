@@ -118,6 +118,14 @@ test("diagnostic no-shell-polling names the offending command", () => {
   assert.match(row.detail, /while true; do curl/);
 });
 
+test("diagnostic no-shell-polling unwraps nested shell -c invocations", () => {
+  for (const fixture of ["no-shell-polling-nested-array-fail", "no-shell-polling-nested-string-fail"]) {
+    const row = evaluateOne(fixture, { kind: "no-shell-polling" });
+    assert.equal(row.pass, false, `${fixture}: ${row.detail}`);
+    assert.match(row.detail, /while true; do curl/);
+  }
+});
+
 test("diagnostic no-shell-polling ignores loops and --until that do not touch Parle", () => {
   const shell = (command) => parseRollout([JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["bash", "-lc", command] }), call_id: "c" } })]);
   const verdict = (command) => evaluateDiagnostics(shell(command), [{ kind: "no-shell-polling" }])[0].pass;
@@ -127,6 +135,15 @@ test("diagnostic no-shell-polling ignores loops and --until that do not touch Pa
   assert.equal(verdict("sleep 5; curl -s https://ai.parle.sh/v/agent/inbox"), false);
   assert.equal(verdict("until grep -q beacon out.txt; do parle_inbox >> out.txt; done"), false);
   assert.equal(verdict("watch -n 5 curl -s http://localhost:8080/v/agent/inbox"), false);
+  // Nested wrappers without a Parle operation stay negative; nested with one do not.
+  assert.equal(verdict("bash -lc 'while read f; do wc -l \"$f\"; done < list.txt'"), true);
+  assert.equal(verdict("/bin/sh -c \"zsh -c 'sleep 2; echo done'\""), true);
+  assert.equal(verdict("bash -lc \"sh -c 'until curl -sf https://ai.parle.sh/v/agent/inbox; do sleep 5; done'\""), false);
+  // The unwrap is bounded to four layers: the polling script is found behind
+  // four wrappers and left uninspected behind five.
+  const wrap = (layers) => Array.from({ length: layers }).reduce((inner) => `bash -c '${inner}'`, "sleep 5; curl -s https://ai.parle.sh/v/agent/inbox");
+  assert.equal(verdict(wrap(4)), false);
+  assert.equal(verdict(wrap(5)), true);
 });
 
 test("diagnostic agent-message requires all of contains and one of containsAny", () => {

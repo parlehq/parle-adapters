@@ -162,18 +162,38 @@ function forbiddenBy(args, predicates) {
   }).map(([key]) => `${key}=${args[key]}`);
 }
 
+const SHELL_BINARY = /(?:^|\/)(?:ba|z|da)?sh$/;
+const SHELL_SCRIPT_FLAG = /^-[a-z]*c[a-z]*$/;
+const SHELL_INVOCATION = /^\s*(\S+)\s+(-[a-z]*c[a-z]*)\s+([\s\S]+)$/;
+const SHELL_UNWRAP_LIMIT = 4;
+
+function stripOneQuoteLayer(text) {
+  const trimmed = text.trim();
+  const quote = trimmed[0];
+  if ((quote === '"' || quote === "'") && trimmed.length >= 2 && trimmed.at(-1) === quote) return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+// Codex's shell tool wraps scripts as ["bash", "-lc", script], and a model can
+// nest `bash -lc "..."` inside that again. The detector runs on the innermost
+// script, unwrapping one quote layer per level, bounded so a pathological
+// command cannot recurse forever.
+function innermostShellScript(command, depth = 0) {
+  const match = depth < SHELL_UNWRAP_LIMIT ? command.match(SHELL_INVOCATION) : null;
+  if (!match || !SHELL_BINARY.test(match[1]) || !SHELL_SCRIPT_FLAG.test(match[2])) return command;
+  return innermostShellScript(stripOneQuoteLayer(match[3]), depth + 1);
+}
+
 function shellCommandText(call) {
   if (!SHELL_TOOL_NAMES.has(call.name)) return undefined;
   const args = call.args || {};
   const command = args.command ?? args.cmd ?? args.input;
   if (Array.isArray(command)) {
-    // Codex's shell tool wraps scripts as ["bash", "-lc", script]; the script
-    // is the command whose first word matters.
     const [shell, flag, ...rest] = command;
-    const wrapped = rest.length > 0 && /(?:^|\/)(?:ba|z|da)?sh$/.test(String(shell)) && /^-[a-z]*c[a-z]*$/.test(String(flag));
-    return wrapped ? rest.join(" ") : command.join(" ");
+    const wrapped = rest.length > 0 && SHELL_BINARY.test(String(shell)) && SHELL_SCRIPT_FLAG.test(String(flag));
+    return innermostShellScript(wrapped ? rest.join(" ") : command.join(" "));
   }
-  return typeof command === "string" ? command : undefined;
+  return typeof command === "string" ? innermostShellScript(command) : undefined;
 }
 
 function shellPollingOffenders(parsed) {
