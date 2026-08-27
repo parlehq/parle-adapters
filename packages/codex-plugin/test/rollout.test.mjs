@@ -126,9 +126,19 @@ test("diagnostic no-shell-polling unwraps nested shell -c invocations", () => {
   }
 });
 
+test("diagnostic no-shell-polling ignores operands after the shell command string", () => {
+  for (const fixture of ["no-shell-polling-operands-array-fail", "no-shell-polling-operands-string-fail"]) {
+    const row = evaluateOne(fixture, { kind: "no-shell-polling" });
+    assert.equal(row.pass, false, `${fixture}: ${row.detail}`);
+    assert.match(row.detail, /while true; do curl/);
+    assert.doesNotMatch(row.detail, /argv0/);
+  }
+});
+
 test("diagnostic no-shell-polling ignores loops and --until that do not touch Parle", () => {
   const shell = (command) => parseRollout([JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command: ["bash", "-lc", command] }), call_id: "c" } })]);
   const verdict = (command) => evaluateDiagnostics(shell(command), [{ kind: "no-shell-polling" }])[0].pass;
+  const verdictArray = (command) => evaluateDiagnostics(parseRollout([JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command }), call_id: "c" } })]), [{ kind: "no-shell-polling" }])[0].pass;
   assert.equal(verdict("git log --until 2026-08-01 -- packages/parle"), true);
   assert.equal(verdict("for f in packages/parle/*; do wc -l \"$f\"; done"), true);
   assert.equal(verdict("curl -s https://ai.parle.sh/v/agent/inbox"), true, "a single request is not polling");
@@ -139,9 +149,16 @@ test("diagnostic no-shell-polling ignores loops and --until that do not touch Pa
   assert.equal(verdict("bash -lc 'while read f; do wc -l \"$f\"; done < list.txt'"), true);
   assert.equal(verdict("/bin/sh -c \"zsh -c 'sleep 2; echo done'\""), true);
   assert.equal(verdict("bash -lc \"sh -c 'until curl -sf https://ai.parle.sh/v/agent/inbox; do sleep 5; done'\""), false);
+  // Operands after the command string are not part of the script.
+  assert.equal(verdict("bash -c 'for f in \"$@\"; do wc -l \"$f\"; done' argv0 a b"), true);
+  assert.equal(verdict("bash -c 'while true; do curl https://ai.parle.sh/v/x; done' argv0"), false);
+  assert.equal(verdict("bash -c \"while true; do curl \\\"https://ai.parle.sh/v/x\\\"; done\" argv0 'sleep 1; curl parle'"), false);
+  assert.equal(verdict("bash -c 'echo ok' argv0 'while true; do curl https://ai.parle.sh/v/x; sleep 1; done'"), true, "a polling script passed only as an operand is not executed");
+  assert.equal(verdictArray(["bash", "-lc", "for f in \"$@\"; do wc -l \"$f\"; done", "argv0", "a"]), true);
+  assert.equal(verdictArray(["bash", "-lc", "while true; do curl https://ai.parle.sh/v/x; done", "argv0"]), false);
   // The unwrap is bounded to four layers: the polling script is found behind
   // four wrappers and left uninspected behind five.
-  const wrap = (layers) => Array.from({ length: layers }).reduce((inner) => `bash -c '${inner}'`, "sleep 5; curl -s https://ai.parle.sh/v/agent/inbox");
+  const wrap = (layers) => Array.from({ length: layers }).reduce((inner) => `bash -c '${inner.replace(/'/g, "'\\''")}'`, "sleep 5; curl -s https://ai.parle.sh/v/agent/inbox");
   assert.equal(verdict(wrap(4)), false);
   assert.equal(verdict(wrap(5)), true);
 });

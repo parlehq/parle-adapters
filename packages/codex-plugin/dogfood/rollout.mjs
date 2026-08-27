@@ -167,21 +167,40 @@ const SHELL_SCRIPT_FLAG = /^-[a-z]*c[a-z]*$/;
 const SHELL_INVOCATION = /^\s*(\S+)\s+(-[a-z]*c[a-z]*)\s+([\s\S]+)$/;
 const SHELL_UNWRAP_LIMIT = 4;
 
-function stripOneQuoteLayer(text) {
+// The command string is the first shell word after -c, parsed the way a POSIX
+// shell does: single-quoted segments (no escapes), double-quoted segments
+// (backslash escapes), backslash-escaped characters, and bare characters
+// concatenate until unquoted whitespace. Whatever follows is $0 and positional
+// operands, never part of the script.
+function commandStringToken(text) {
   const trimmed = text.trim();
-  const quote = trimmed[0];
-  if ((quote === '"' || quote === "'") && trimmed.length >= 2 && trimmed.at(-1) === quote) return trimmed.slice(1, -1);
-  return trimmed;
+  let out = "";
+  let quote = null;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const char = trimmed[index];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else out += char;
+    } else if (quote === '"') {
+      if (char === "\\" && index + 1 < trimmed.length) out += trimmed[++index];
+      else if (char === '"') quote = null;
+      else out += char;
+    } else if (char === "'" || char === '"') quote = char;
+    else if (char === "\\" && index + 1 < trimmed.length) out += trimmed[++index];
+    else if (/\s/.test(char)) break;
+    else out += char;
+  }
+  return out;
 }
 
 // Codex's shell tool wraps scripts as ["bash", "-lc", script], and a model can
 // nest `bash -lc "..."` inside that again. The detector runs on the innermost
-// script, unwrapping one quote layer per level, bounded so a pathological
-// command cannot recurse forever.
+// script, taking only the command-string token at each level, bounded so a
+// pathological command cannot recurse forever.
 function innermostShellScript(command, depth = 0) {
   const match = depth < SHELL_UNWRAP_LIMIT ? command.match(SHELL_INVOCATION) : null;
   if (!match || !SHELL_BINARY.test(match[1]) || !SHELL_SCRIPT_FLAG.test(match[2])) return command;
-  return innermostShellScript(stripOneQuoteLayer(match[3]), depth + 1);
+  return innermostShellScript(commandStringToken(match[3]), depth + 1);
 }
 
 function shellCommandText(call) {
@@ -189,9 +208,11 @@ function shellCommandText(call) {
   const args = call.args || {};
   const command = args.command ?? args.cmd ?? args.input;
   if (Array.isArray(command)) {
-    const [shell, flag, ...rest] = command;
-    const wrapped = rest.length > 0 && SHELL_BINARY.test(String(shell)) && SHELL_SCRIPT_FLAG.test(String(flag));
-    return innermostShellScript(wrapped ? rest.join(" ") : command.join(" "));
+    // Array form: the element after the flag is the script; later elements
+    // are $0 and positional operands.
+    const [shell, flag, script] = command;
+    const wrapped = script !== undefined && SHELL_BINARY.test(String(shell)) && SHELL_SCRIPT_FLAG.test(String(flag));
+    return innermostShellScript(wrapped ? String(script) : command.join(" "));
   }
   return typeof command === "string" ? innermostShellScript(command) : undefined;
 }
