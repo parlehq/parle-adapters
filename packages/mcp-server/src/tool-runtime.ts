@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, nextTextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -189,6 +189,21 @@ export type IdleWakeState = "unavailable" | "unarmed" | "armed";
 function idleWakeState(host: McpHostCapabilities, bridgeStatus?: Record<string, unknown>): IdleWakeState {
   if (host.idleWake === "none") return "unavailable";
   return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
+}
+
+// The shared client's connect and session-established `next` guidance tells
+// the model to arm responsive delivery. A host with no arm action gets the
+// same guidance the card renders instead; other hosts keep the client text.
+function withHostNextGuidance<T>(result: T, host: McpHostCapabilities): T {
+  if (host.idleWake !== "none" || !result || typeof result !== "object") return result;
+  const value = result as Record<string, unknown>;
+  const guidance = nextTextFor("idle-wake-unavailable");
+  const session = value.session;
+  return {
+    ...value,
+    ...(typeof value.next === "string" ? { next: guidance } : {}),
+    ...(session && typeof session === "object" && typeof (session as Record<string, unknown>).next === "string" ? { session: { ...session, next: guidance } } : {}),
+  } as T;
 }
 
 function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record<string, unknown>, host: McpHostCapabilities = {}): any {
@@ -382,11 +397,11 @@ export function registerParleTools(
 
   registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    const summary = await client.connect();
+    const summary = withHostNextGuidance(await client.connect(), host);
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
@@ -739,7 +754,7 @@ export function registerParleTools(
     annotations: { readOnlyHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.readProjection(params as ReadParams));
+    return safeTool(async () => withHostNextGuidance(await client.readProjection(params as ReadParams), host));
   });
 
   registerTool("parle_inbox", {
@@ -749,7 +764,7 @@ export function registerParleTools(
     annotations: { readOnlyHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.readInbox(params as ReadParams));
+    return safeTool(async () => withHostNextGuidance(await client.readInbox(params as ReadParams), host));
   });
 
   registerTool("parle_affordances", {
@@ -794,7 +809,7 @@ export function registerParleTools(
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.send(params as SendParams));
+    return safeTool(async () => withHostNextGuidance(await client.send(params as SendParams), host));
   });
 
   registerTool("parle_reply", {
@@ -804,7 +819,7 @@ export function registerParleTools(
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.submitReply(params as SubmitReplyParams));
+    return safeTool(async () => withHostNextGuidance(await client.submitReply(params as SubmitReplyParams), host));
   });
 
   if (degradedBoot && !exposeDegradedTools) {

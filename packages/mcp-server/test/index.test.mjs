@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, processStartedAtIso } from "@parlehq/agent-client";
+import { CONNECT_NEXT_GUIDANCE, ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, SESSION_ESTABLISHED_NEXT_GUIDANCE, processStartedAtIso } from "@parlehq/agent-client";
 import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
@@ -1084,6 +1084,56 @@ ${IDLE_WAKE_UNAVAILABLE_NEXT}
     await server.close();
     rmSync(evidencePath, { force: true });
   }
+});
+
+test("a host without an idle-wake arm action gets capability-neutral next guidance on connect and session-established results (#171)", async () => {
+  const unavailableNext = "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+  const session = { established: "this_call", sessionAddress: "@p.a.s1", agentSessionId: "as-1", expiresAt: "later", next: SESSION_ESTABLISHED_NEXT_GUIDANCE };
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1" } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3, next: CONNECT_NEXT_GUIDANCE }),
+    readInbox: async () => ({ messages: [], session }),
+    readProjection: async () => ({ messages: [], session }),
+    send: async () => ({ event_id: "evt-1", session }),
+    submitReply: async () => ({ event_id: "evt-reply" }),
+    ensureReadySafe: async () => false,
+  };
+  const run = async (host, check) => {
+    const server = createParleMcpServer(fakeClient, undefined, undefined, undefined, false, host);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "parle-mcp-host-next", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const tools = (await client.listTools()).tools;
+      assert.doesNotMatch(tools.find((tool) => tool.name === "parle_connect").description, /to arm/);
+      assert.match(tools.find((tool) => tool.name === "parle_connect").description, /Follow the returned next hint for responsive delivery\./);
+      await check({
+        connect: (await client.callTool({ name: "parle_connect", arguments: {} })).structuredContent,
+        inbox: (await client.callTool({ name: "parle_inbox", arguments: {} })).structuredContent,
+        read: (await client.callTool({ name: "parle_read", arguments: {} })).structuredContent,
+        send: (await client.callTool({ name: "parle_send", arguments: { body: "hi" } })).structuredContent,
+        reply: (await client.callTool({ name: "parle_reply", arguments: { replyRouteId: "route-1", body: "hi" } })).structuredContent,
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  };
+  await run({ idleWake: "none" }, (results) => {
+    assert.equal(results.connect.next, unavailableNext);
+    assert.doesNotMatch(results.connect.next, /\barm\b/i);
+    assert.equal(results.connect.responsiveDelivery.nextActionKey, "idle-wake-unavailable");
+    for (const result of [results.inbox, results.read, results.send]) {
+      assert.equal(result.session.next, unavailableNext);
+      assert.equal(result.session.established, "this_call");
+    }
+    assert.equal(results.reply.session, undefined);
+    assert.doesNotMatch(JSON.stringify(results), /arm responsive delivery/);
+  });
+  await run(undefined, (results) => {
+    assert.equal(results.connect.next, CONNECT_NEXT_GUIDANCE);
+    for (const result of [results.inbox, results.read, results.send]) assert.equal(result.session.next, SESSION_ESTABLISHED_NEXT_GUIDANCE);
+  });
 });
 
 test("a host without an idle-wake arm action never asks to arm an unknown or stopped watcher (#171)", async () => {

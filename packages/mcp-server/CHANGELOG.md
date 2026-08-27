@@ -2,7 +2,7 @@
 
 ## 0.7.61 (2026-08-27)
 
-- Read the host's static idle-wake capability from the manifest literal `PARLE_HOST_IDLE_WAKE` (`none` is the only value; absent keeps today's behavior) and report a generic `responsiveDelivery.idleWake` state from it and the bridge waiter evidence. On a host without an arm action, `parle_status` and `parle_connect` never emit `arm-or-verify-watcher` or the attach-or-verify text; they emit `idle-wake-unavailable` instead, while bridge fault guidance is unchanged. Carries client 0.8.53 (#171).
+- Read the host's static idle-wake capability from the manifest literal `PARLE_HOST_IDLE_WAKE` (`none` is the only value; absent keeps today's behavior) and report a generic `responsiveDelivery.idleWake` state from it and the bridge waiter evidence. On a host without an arm action, `parle_status` and `parle_connect` never emit `arm-or-verify-watcher` or the attach-or-verify text; they emit `idle-wake-unavailable` instead, while bridge fault guidance is unchanged. On such a host the shared client's connect `next` and session-established `next` guidance (which tell the model to arm responsive delivery) are replaced with the same next-prompt / attended-wait guidance the card renders, and the `parle_connect` description no longer says the next hint arms anything. Carries client 0.8.53 (#171).
 
 ## 0.7.60 (2026-08-27)
 

@@ -22487,6 +22487,18 @@ function idleWakeState(host, bridgeStatus) {
     return "unavailable";
   return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
 }
+function withHostNextGuidance(result2, host) {
+  if (host.idleWake !== "none" || !result2 || typeof result2 !== "object")
+    return result2;
+  const value = result2;
+  const guidance = nextTextFor("idle-wake-unavailable");
+  const session = value.session;
+  return {
+    ...value,
+    ...typeof value.next === "string" ? { next: guidance } : {},
+    ...session && typeof session === "object" && typeof session.next === "string" ? { session: { ...session, next: guidance } } : {}
+  };
+}
 function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
   let resolved = responsiveDelivery;
   const bridgeDown = bridgeStatus?.running === false;
@@ -22628,11 +22640,11 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }, false));
   registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    const summary = await client.connect();
+    const summary = withHostNextGuidance(await client.connect(), host);
     if (deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
     if (summary && typeof summary === "object") {
@@ -22972,7 +22984,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.readProjection(params));
+    return safeTool(async () => withHostNextGuidance(await client.readProjection(params), host));
   });
   registerTool("parle_inbox", {
     title: "Parle Inbox",
@@ -22981,7 +22993,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.readInbox(params));
+    return safeTool(async () => withHostNextGuidance(await client.readInbox(params), host));
   });
   registerTool("parle_affordances", {
     title: "Parle Affordances",
@@ -23028,7 +23040,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.send(params));
+    return safeTool(async () => withHostNextGuidance(await client.send(params), host));
   });
   registerTool("parle_reply", {
     title: "Parle Reply",
@@ -23037,7 +23049,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.submitReply(params));
+    return safeTool(async () => withHostNextGuidance(await client.submitReply(params), host));
   });
   if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
