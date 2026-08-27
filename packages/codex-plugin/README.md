@@ -24,13 +24,41 @@ codex plugin list
 codex mcp get parle
 ```
 
-The MCP server resolves `~/.parle/profiles` directly. The accepted rationale is recorded in [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md). If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise launch Codex with `PARLE_PROFILE` naming the intended profile.
+The MCP server resolves `~/.parle/profiles` directly. The accepted rationale is recorded in [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md). If the catalog has a `[default]` profile, no extra environment configuration is needed. Otherwise select the profile per project as described in [Profile selection per project](#profile-selection-per-project); an exported `PARLE_PROFILE` reaches the server only because the plugin manifest forwards it through Codex's cleared MCP environment.
 
 A normal prompt can then be concise:
 
 > We use ai.parle.sh. Connect to our room and acknowledge `@principal.agent.session` when complete.
 
 Codex should discover the Parle skill and MCP tools, call `parle_connect`, then send the acknowledgement with structured direct addressing. It should not inspect the profile catalog or construct HTTP requests in shell commands.
+
+## Profile selection per project
+
+Codex starts plugin MCP servers with a cleared environment and the plugin cache directory as the working directory. The plugin manifest forwards `PARLE_PROFILE`, `PARLE_PROFILES`, `PARLE_PROFILES_PATH`, `PWD`, and `CODEX_HOME` from the launching shell; every other variable is dropped. The server resolves project configuration, including a project `.env`, from `PWD`, the directory the shell was in when `codex` started. Credential variables are never forwarded; credentials stay in `~/.parle/profiles`.
+
+Pin a profile to a project with a directory-scoped environment. In `.mise.toml`:
+
+```toml
+[env]
+PARLE_PROFILE = "codex"
+```
+
+or in `.envrc`:
+
+```bash
+export PARLE_PROFILE=codex
+```
+
+Run `mise trust` or `direnv allow` once, then launch `codex` from the project directory. A project `.env` containing `PARLE_PROFILE=codex` also works because the server reads it from the launch directory; a value in the process environment wins over `.env`. `parle_status` reports `configCwd` and `configCwdSource` (`PWD` or `process.cwd`) so the directory that was used is visible.
+
+`PWD` means the shell launch directory. `codex -C elsewhere` changes the session working directory without changing `PWD`, so it does not select that directory's Parle configuration.
+
+Avoid these alternatives:
+
+- A project-specific `CODEX_HOME`: it splits Codex state, plugin installs, and trust decisions per project.
+- Editing the plugin cache: the next plugin update overwrites it.
+- A same-name `[mcp_servers.parle]` entry in the project `.codex/config.toml`: it replaces the plugin registration wholesale and pins the install path.
+- `codex --profile`: it selects a Codex configuration profile, not a Parle profile.
 
 ## Responsive delivery
 

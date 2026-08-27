@@ -22626,7 +22626,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    const path = resolveSavedStartCatalogPath(process.cwd(), process.env);
+    const path = resolveSavedStartCatalogPath(client.cwd || process.cwd(), process.env);
     if (params.action === "list") {
       return { savedStarts: [...readSavedStarts(path).values()] };
     }
@@ -23050,7 +23050,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.35";
+var ADAPTER_VERSION = "0.7.36";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

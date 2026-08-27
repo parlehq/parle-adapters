@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.59 (2026-08-27)
+
+- Resolve configuration from a valid absolute `PWD` launch directory before the process directory and report `configCwd` provenance in status (#169).
+
 ## 0.7.58 (2026-08-31)
 
 - Refresh the shared responsive-delivery controller with fallback deadline and stage evidence (#80).

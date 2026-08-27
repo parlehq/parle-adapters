@@ -30953,9 +30953,9 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4 } from "node:fs";
+import { lstatSync as lstatSync8, readFileSync as readFileSync6, readdirSync as readdirSync4, realpathSync as realpathSync2, statSync as statSync4 } from "node:fs";
 import { connect } from "node:net";
-import { join as join11 } from "node:path";
+import { isAbsolute as isAbsolute4, join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
@@ -39684,7 +39684,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    const path = resolveSavedStartCatalogPath(process.cwd(), process.env);
+    const path = resolveSavedStartCatalogPath(client.cwd || process.cwd(), process.env);
     if (params.action === "list") {
       return { savedStarts: [...readSavedStarts(path).values()] };
     }
@@ -40092,7 +40092,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.58";
+var MCP_CLIENT_VERSION = "0.7.59";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -40102,6 +40102,17 @@ function resolveIntegrationMetadata(env = process.env) {
     integrationName: rawName ? assertClientName(rawName) : void 0,
     integrationVersion: rawVersion ? assertClientVersion(rawVersion) : void 0
   };
+}
+function resolveConfigCwd(env = process.env, fallback = process.cwd()) {
+  const pwd = env.PWD;
+  if (pwd && isAbsolute4(pwd)) {
+    try {
+      const resolved = realpathSync2(pwd);
+      if (statSync4(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
+    } catch {
+    }
+  }
+  return { cwd: fallback, source: "process.cwd" };
 }
 function createMcpAgentClient(options = {}) {
   return new ParleAgentClient({
@@ -40135,11 +40146,12 @@ async function runStdio() {
     throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
   }
   const hostParentPid = hostProcessMode === "direct-parent" ? process.ppid : void 0;
+  const configCwd = resolveConfigCwd();
   let stopPreRuntimeParentCheck = hostParentPid === void 0 ? () => {
   } : scheduleHostParentCheck(hostParentPid, () => process.exit(0));
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-    const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
+    const client = createMcpAgentClient({ cwd: configCwd.cwd, env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
     if (hookBridgeEnabled) {
       client.switchProfile = async () => {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -40152,11 +40164,14 @@ async function runStdio() {
       process.cwd(),
       hostParentPid
     ) : void 0;
-    if (deliveryBridge) {
-      const baseStatus = client.status.bind(client);
-      client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
-    }
-    return { client, accountClient: new ParleAccountClient(), deliveryBridge };
+    const baseStatus = client.status.bind(client);
+    client.status = () => ({
+      ...baseStatus(),
+      configCwd: configCwd.cwd,
+      configCwdSource: configCwd.source,
+      ...deliveryBridge ? { responsiveDeliveryBridge: deliveryBridge.status() } : {}
+    });
+    return { client, accountClient: new ParleAccountClient({ cwd: configCwd.cwd }), deliveryBridge };
   };
   let activated = false;
   const activateRuntime = (runtime2) => {
@@ -40183,7 +40198,7 @@ async function runStdio() {
   }
   const server = runtime ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge) : createParleMcpServer({}, new ParleAccountClient(), void 0, {
     error: configError,
-    cwd: process.cwd(),
+    cwd: configCwd.cwd,
     env: process.env,
     recover: createRuntime,
     onRecovered(recovered) {
@@ -40441,6 +40456,7 @@ export {
   isDirectRun,
   parseWatcherArgs,
   registerParleTools,
+  resolveConfigCwd,
   resolveIntegrationMetadata,
   runStdio,
   runWatcher,

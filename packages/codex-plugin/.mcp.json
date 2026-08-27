@@ -6,11 +6,18 @@
         "./dist/parle-mcp.js"
       ],
       "cwd": ".",
+      "env_vars": [
+        "PARLE_PROFILE",
+        "PARLE_PROFILES",
+        "PARLE_PROFILES_PATH",
+        "PWD",
+        "CODEX_HOME"
+      ],
       "env": {
         "PARLE_RESPONSIVE_DELIVERY": "hook-bridge",
         "PARLE_HOOK_BRIDGE_SCOPE": "codex-plugin",
         "PARLE_INTEGRATION_NAME": "@parlehq/codex-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.6.59"
+        "PARLE_INTEGRATION_VERSION": "0.6.60"
       }
     }
   }

@@ -3,6 +3,9 @@ import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDA
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
+  // Configuration directory the client resolved (present on ParleAgentClient);
+  // local catalogs beside the profile catalog follow it.
+  cwd?: string;
   status(): unknown;
   setup(): unknown;
   connect(): Promise<unknown>;
@@ -375,7 +378,7 @@ export function registerParleTools(
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    const path = resolveSavedStartCatalogPath(process.cwd(), process.env);
+    const path = resolveSavedStartCatalogPath(client.cwd || process.cwd(), process.env);
     if (params.action === "list") {
       return { savedStarts: [...readSavedStarts(path).values()] };
     }
