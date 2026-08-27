@@ -74,13 +74,30 @@ Codex runs hook commands through the user login shell in the session working dir
 
 Output is written before the local lease is committed. If commit fails, the message can be injected again after the 30-second lease expires. This at-least-once behavior prefers recognizable duplicate coordination context over silently acknowledging a message the host may not have received.
 
-Codex does not currently expose a supported plugin API for starting a new turn in a fully idle thread. Messages received after the thread becomes idle remain queued until the next user prompt or lifecycle event. The plugin does not emulate that missing host capability with polling, cron, transcript edits, terminal automation, or another Codex process.
+### Idle wake
+
+Codex 0.149 added `codex queue --thread <uuid> --message <text>`, which writes a queued user turn into the Codex state store; every app-server process, including the one embedded in an interactive `codex` session, polls that queue about every 10 seconds and starts the turn once the thread is idle (a busy thread takes it first-in first-out after its current turn). The plugin uses it to wake an idle thread when a Parle message arrives:
+
+1. The manifest sets `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent`, so the bridge is correlated to the `codex` process that spawned the MCP server, and every hook passes `--direct-parent --shell-launched` so it finds that bridge through the login-shell hook chain. SessionStart and UserPromptSubmit pass `--bind`, binding the bridge to the thread id Codex hands the hook; the MCP request metadata's `threadId` must name the same thread before wake may arm.
+2. The bridge resolves the parent's executable itself (`/proc/<pid>/exe` on Linux; `ps` then `lsof` on macOS), accepts only an absolute, same-user executable whose `--version` reports `codex-cli` 0.149.0 or newer, and refuses a changed parent or a `--remote` topology. It never searches `PATH` and never runs a shell.
+3. When the pending queue goes from empty to non-empty, the bridge runs `<parent codex> queue --thread <bound thread> --message <trigger>` with a fixed trigger text. The trigger never carries peer content, a reply route, or a credential; it tells the model to follow only the trusted hook context of that turn and, if none is present, to call `parle_status` once and stop. The queued turn fires the plugin's UserPromptSubmit hook, which injects the real server-framed content.
+4. At most one trigger is outstanding per thread. A hook take consumes it; a commit that leaves work behind queues one more. A definite pre-exec failure backs off with jitter; a failure Codex reports (queue full, unknown thread, permission) stops retrying and is reported; a timeout or lost exit status is never retried because a second trigger could not be told apart from the first.
+
+`parle_status` reports the state on the delivery line and the reason in the JSON (`responsiveDelivery.idleWakeReason`):
+
+- `watching (idle wake queue-only)`: parent verified and thread bound; a message arriving while idle starts a turn within about 10 seconds.
+- `watching (idle wake degraded)`: a trigger may be queued but its delivery is unproven; check Parle or prompt once.
+- `watching (idle wake unavailable)`: no wake will be queued. Reasons include `version-too-old`, `parent-not-codex`, `remote-topology`, `host-session-unbound`, `host-session-unconfirmed`, `host-session-conflict`, `queue-full`, and `invalid-thread`. Messages then wait for the next prompt, and an explicitly authorized capped attended wait remains the only way to stay available now.
+
+For lower latency, start the Codex daemon first (`codex app-server daemon start`) and launch `codex` without `-c key=value` overrides (`-s` and `-a` are fine); the queued trigger is then dispatched immediately instead of on the next poll. The plugin reports `queue-only` either way because it has no proof of daemon attachment. Queue-only mode is valid with any launch flags.
+
+The plugin still does not emulate idle wake with polling, cron, transcript edits, terminal automation, or another Codex process; `codex queue` is the host's own supported entry point.
 
 Live `parle_switch_profile` is unavailable while the hook bridge owns delivery. Restart Codex with the target `PARLE_PROFILE` so the MCP session, wake stream, queue, and hook binding change together.
 
 Plugin hooks require separate trust review after installation. Use `/hooks` to review and trust the Parle hook definition. Until trusted, Parle can queue responsive delivery but Codex will not inject it. Review trust again after an update changes the installed hook command.
 
-Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields. The manifest declares `PARLE_HOST_IDLE_WAKE=none` because Codex hooks have no idle-wake arm action, so the card reports `idle wake unavailable` and never asks for one; messages arriving while idle are delivered at the next prompt.
+Codex also does not expose custom plugin footer items. Use `parle_status` for the canonical connection and watcher card. The standard `/statusline` picker remains limited to Codex-owned fields. The manifest declares `PARLE_HOST_IDLE_WAKE=codex-queue` as the capability ceiling; the card never asks the model to arm anything and reports the idle-wake state its runtime evidence supports, as described under [Idle wake](#idle-wake).
 
 ## Build and test
 

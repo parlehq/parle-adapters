@@ -26,17 +26,24 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
     PARLE_CONFIG_CWD_FROM_PWD: "1",
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
     PARLE_HOOK_BRIDGE_SCOPE: "codex-plugin",
-    PARLE_HOST_IDLE_WAKE: "none",
+    PARLE_HOOK_BRIDGE_HOST_PROCESS: "direct-parent",
+    PARLE_HOST_IDLE_WAKE: "codex-queue",
     PARLE_INTEGRATION_NAME: "@parlehq/codex-plugin",
     PARLE_INTEGRATION_VERSION: plugin.version,
   });
 
   const hooks = JSON.parse(readFileSync(resolve(root, "hooks/hooks.json"), "utf8"));
   assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
+  // Every hook correlates to the bridge through the login-shell chain
+  // (--direct-parent --shell-launched). SessionStart may replace a stale
+  // thread binding and UserPromptSubmit may establish one (--bind); tool and
+  // stop boundaries only deliver to the bound thread (#174).
   for (const [event, definitions] of Object.entries(hooks.hooks)) {
+    const bind = ["SessionStart", "UserPromptSubmit"].includes(event) ? " --bind" : "";
     const suffix = event === "SessionStart" ? " --known-address-context" : "";
-    assert.equal(definitions[0].hooks[0].command, `\"\${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" --scope codex-plugin${suffix} || printf '{}\\n'`);
-    assert.equal(definitions[0].hooks[0].commandWindows, `cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" --scope codex-plugin${suffix} || echo {}\"`);
+    const args = `--scope codex-plugin --direct-parent --shell-launched${bind}${suffix}`;
+    assert.equal(definitions[0].hooks[0].command, `\"\${PLUGIN_ROOT}/hooks/run-parle-hook.sh\" ${args} || printf '{}\\n'`);
+    assert.equal(definitions[0].hooks[0].commandWindows, `cmd /d /s /c \"\"%PLUGIN_ROOT%\\hooks\\run-parle-hook.cmd\" ${args} || echo {}\"`);
   }
 });
 
@@ -70,14 +77,18 @@ test("Codex MCP config forwards only non-credential selectors from the launching
   assert.equal(Object.hasOwn(server.env, "PARLE_ALLOW_INSECURE_LOCAL"), false, "the opt-in is forwarded from the shell, never a manifest literal");
 });
 
-test("Codex MCP config declares that the host has no idle-wake arm action", () => {
-  // Codex hooks never pass an idle-wake launcher, so the status card must not
-  // ask the model to arm one (#171). The capability is a manifest literal,
-  // never forwarded from the shell.
+test("Codex MCP config declares queue idle wake as a ceiling and correlates the bridge to the owning Codex process", () => {
+  // Codex hooks never pass an idle-wake launcher (#171); the bridge wakes an
+  // idle thread through the owning Codex's `codex queue` instead (#174). Both
+  // literals are manifest values, never forwarded from the shell, and the
+  // runtime evidence (verified parent executable, bound thread) decides the
+  // reported state.
   const mcp = JSON.parse(readFileSync(resolve(root, ".mcp.json"), "utf8"));
   const server = mcp.mcpServers.parle;
-  assert.equal(server.env.PARLE_HOST_IDLE_WAKE, "none");
+  assert.equal(server.env.PARLE_HOST_IDLE_WAKE, "codex-queue");
+  assert.equal(server.env.PARLE_HOOK_BRIDGE_HOST_PROCESS, "direct-parent");
   assert.equal(server.env_vars.includes("PARLE_HOST_IDLE_WAKE"), false);
+  assert.equal(server.env_vars.includes("PARLE_HOOK_BRIDGE_HOST_PROCESS"), false);
   assert.doesNotMatch(readFileSync(resolve(root, "hooks", "hooks.json"), "utf8"), /idle-wake-launcher/);
 });
 

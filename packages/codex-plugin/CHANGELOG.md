@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.66 (2026-08-27)
+
+- Wake an idle Codex thread when a Parle message arrives (Codex >= 0.149). The manifest now declares `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent` and `PARLE_HOST_IDLE_WAKE=codex-queue`, and every hook passes `--direct-parent --shell-launched` (with `--bind` on SessionStart and UserPromptSubmit) so the bridge is correlated to the owning `codex` process and bound to the exact thread. On a new pending message the bridge runs the parent's own `codex queue --thread <thread> --message <fixed trigger>`; the embedded app-server picks the queued turn up within about 10 seconds (immediately when `codex app-server daemon start` is running and Codex was launched without `-c` overrides), the queued turn fires the plugin's UserPromptSubmit hook, and the hook injects the real content. The trigger text is constant and never carries peer content. `parle_status` renders `Delivery      watching (idle wake queue-only)`, `(idle wake degraded)` when a trigger's outcome is unknown, or the existing `(idle wake unavailable)` line with the reason in the JSON (older Codex, unverified parent, unbound or conflicting thread, queue full). Hook trust must be reviewed again because the hook command changed. Carries MCP server 0.7.63 and client 0.8.54 (#174).
+
 ## 0.6.65 (2026-08-27)
 
 - Forward `PARLE_ALLOW_INSECURE_LOCAL` through Codex's cleared MCP environment so a project can reach a local Parle rig (`http://127.0.0.1:<port>`) under Codex. The flag is a non-secret opt-in read from the launching shell's process environment; the shared client's loopback-only rule is unchanged, so it never admits a non-local host (#175).

@@ -384,3 +384,110 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
     }
   });
 }
+
+for (const shell of ["/bin/zsh", "/bin/bash"]) {
+  test(`Codex hook correlates to the owning process through the ${shell} login-shell chain, binds the thread, and delivers (#174)`, async (context) => {
+    if (!existsSync(shell)) {
+      context.skip(`${shell} is unavailable`);
+      return;
+    }
+    // This test process stands in for Codex: it owns the bridge directory
+    // keyed by its pid, and the hook reaches it from three processes down
+    // (login shell -> launcher -> node) by walking ancestry.
+    const home = mkdtempSync("/tmp/codex-parle-ancestry-");
+    const pluginRoot = join(home, "plugin");
+    const hooksDir = join(pluginRoot, "hooks");
+    const stateDir = join(home, ".local", "state", "parle", "hook-bridge", "b52cc0f7fef9d88d");
+    const hostDir = join(stateDir, String(process.pid));
+    const ownerPid = process.pid + 1;
+    const socketPath = join(hostDir, `${ownerPid}.sock`);
+    mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
+    mkdirSync(hostDir, { recursive: true, mode: 0o700 });
+    symlinkSync(resolve("hooks/run-parle-hook.sh"), join(hooksDir, "run-parle-hook.sh"));
+    symlinkSync(resolve("hooks/parle-hook.mjs"), join(hooksDir, "parle-hook.mjs"));
+    symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
+    const commands = [];
+    const server = createServer((socket) => {
+      socket.setEncoding("utf8");
+      let input = "";
+      socket.on("data", (chunk) => {
+        input += chunk;
+        const newline = input.indexOf("\n");
+        if (newline < 0) return;
+        const command = JSON.parse(input.slice(0, newline));
+        commands.push(command);
+        if (command.action === "status") {
+          socket.end(`${JSON.stringify({ ok: true, running: true, ownerPid, hostParentPid: process.pid, currentParentPid: process.pid, hostSessionBound: false, waiterAttached: false, agentSessionId: "as-1" })}\n`);
+        } else if (command.action === "bind") {
+          socket.end(`${JSON.stringify({ ok: true, bound: true })}\n`);
+        } else if (command.action === "take") {
+          socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-174", messages: [{ seq: 12, event_id: "evt-12", content: "server-framed content" }] })}\n`);
+        } else if (command.action === "commit") {
+          socket.end(`${JSON.stringify({ ok: true, committed: 1 })}\n`);
+        } else {
+          socket.end(`${JSON.stringify({ ok: false })}\n`);
+        }
+      });
+    });
+    const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
+    try {
+      await new Promise((resolveListen, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, resolveListen);
+      });
+      chmodSync(socketPath, 0o600);
+      for (const [hookEventName, expectedBind] of [["SessionStart", { allowReplace: true }], ["UserPromptSubmit", { allowReplace: false }], ["PostToolUse", undefined]]) {
+        commands.length = 0;
+        const command = hooks.hooks[hookEventName][0].hooks[0].command;
+        const result = await runProcess(shell, ["-lc", command], {
+          cwd: home,
+          env: { ...withoutAmbientParle(), HOME: home, ZDOTDIR: home, PLUGIN_ROOT: pluginRoot },
+        }, { cwd: home, session_id: "codex-thread-174", hook_event_name: hookEventName });
+        assert.equal(result.code, 0, result.stderr);
+        const output = JSON.parse(result.stdout);
+        assert.equal(output.hookSpecificOutput.hookEventName, hookEventName, result.stderr);
+        assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/);
+        assert.deepEqual(commands.map((entry) => entry.action), expectedBind ? ["status", "bind", "take", "commit"] : ["status", "take", "commit"], hookEventName);
+        if (expectedBind) {
+          assert.equal(commands[1].sessionId, "codex-thread-174");
+          assert.equal(commands[1].allowReplace, expectedBind.allowReplace, `${hookEventName} binding`);
+        }
+        assert.equal(commands.at(-1).leaseId, "lease-174");
+      }
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose));
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+}
+
+test("Codex hook without a live bridge fails soft under direct-parent so SessionStart context still renders (#174)", async () => {
+  const home = mkdtempSync("/tmp/codex-parle-nobridge-");
+  const parleDir = join(home, ".parle");
+  mkdirSync(parleDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(parleDir, "registry"), `${JSON.stringify({
+    version: 1,
+    entries: [{ apiOrigin: "https://api.parle.sh", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", address: "@gilman.galexc.lead", continuity: "durable", expiresAt: "2099-01-01T00:00:00.000Z" }],
+  }, null, 2)}\n`, { mode: 0o600 });
+  const env = { ...withoutAmbientParle(), HOME: home, PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", PARLE_ROOM_AGENT_TOKEN: "parle_agt_test" };
+  delete env.PARLE_PROFILES_PATH;
+  try {
+    const start = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", "codex-plugin", "--direct-parent", "--shell-launched", "--bind", "--known-address-context"], env, {
+      cwd: "/tmp/codex-project",
+      session_id: "codex-thread",
+      hook_event_name: "SessionStart",
+    });
+    assert.equal(start.code, 0, start.stderr);
+    assert.doesNotMatch(start.stderr, /failed open/);
+    assert.match(JSON.parse(start.stdout).hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/);
+    const prompt = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", "codex-plugin", "--direct-parent", "--shell-launched", "--bind"], env, {
+      cwd: "/tmp/codex-project",
+      session_id: "codex-thread",
+      hook_event_name: "UserPromptSubmit",
+    });
+    assert.equal(prompt.code, 0, prompt.stderr);
+    assert.deepEqual(JSON.parse(prompt.stdout), {});
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
