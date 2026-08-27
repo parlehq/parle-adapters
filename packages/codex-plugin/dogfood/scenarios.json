@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). The expected strings under diagnostic checks for #170 (inbox wait shape) and #171 (status card wording) are pinned here on purpose: a change to that wording must update this manifest in the same commit.",
+  "plugin": {
+    "name": "parle-codex-plugin",
+    "marketplace": "parlehq"
+  },
+  "placeholders": [
+    "{{beacon}}",
+    "{{room_handle}}",
+    "{{expected_profile}}",
+    "{{expected_agent_handle}}",
+    "{{peer_agent_handle}}"
+  ],
+  "scenarios": [
+    {
+      "id": "profile-select",
+      "adaptersIssue": 169,
+      "driver": "exec",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session launched from a project directory whose environment pins PARLE_PROFILE=codex.",
+      "task": "Call parle_status, then post exactly: probe {{beacon}}",
+      "authoritative": [
+        { "kind": "participant-identity", "agent": "expected" },
+        { "kind": "authored-probe", "bodyContains": "probe {{beacon}}" }
+      ],
+      "diagnostic": [
+        { "kind": "status-text", "contains": ["Acting as     @{{expected_agent_handle}}"] }
+      ]
+    },
+    {
+      "id": "attended-hold",
+      "adaptersIssue": 170,
+      "driver": "exec",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "capMinutes": 2,
+      "persona": "A Codex session explicitly authorized to hold for a peer message using bounded inbox waits.",
+      "task": "Connect, then wait for a direct message from {{peer_agent_handle}}. You are explicitly authorized to wait up to 2 minutes for it using successive bounded inbox waits. When it arrives, reply to it directly, echoing its beacon token exactly.",
+      "authoritative": [
+        { "kind": "beacon-echo" },
+        { "kind": "cursor-advanced" }
+      ],
+      "diagnostic": [
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_inbox", "min": 2, "argsSubset": { "waitSeconds": 30 } },
+        { "kind": "no-shell-polling" }
+      ]
+    },
+    {
+      "id": "attended-hold-control",
+      "adaptersIssue": 170,
+      "driver": "exec",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session asked for a single inbox check with no authorization to hold.",
+      "task": "Connect and check Parle once for new messages; report what you found and stop.",
+      "authoritative": [
+        { "kind": "participant-identity", "agent": "expected" }
+      ],
+      "diagnostic": [
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_inbox", "min": 1, "max": 1 },
+        { "kind": "no-shell-polling" }
+      ]
+    },
+    {
+      "id": "status-wording",
+      "adaptersIssue": 171,
+      "driver": "exec",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session asked to show the canonical status card.",
+      "task": "Call parle_status and render its compact card verbatim.",
+      "authoritative": [
+        { "kind": "participant-identity", "agent": "expected" }
+      ],
+      "diagnostic": [
+        { "kind": "status-text", "contains": ["idle wake unavailable"], "excludes": ["arm or verify", "idle wake unarmed"] }
+      ]
+    },
+    {
+      "id": "identity-mismatch",
+      "adaptersIssue": 172,
+      "driver": "exec",
+      "catalog": "default-only",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session whose selected profile does not exist in the catalog, so the resolvable identity is not the requested one.",
+      "task": "Connect as @{{expected_agent_handle}} in #{{room_handle}} and post 'hello'. If you cannot confirm that identity, do not post.",
+      "authoritative": [
+        { "kind": "no-authored-messages", "agent": "expected" }
+      ],
+      "diagnostic": [
+        { "kind": "agent-message", "containsAny": ["mismatch", "does not match", "could not confirm"] }
+      ]
+    },
+    {
+      "id": "idle-wake",
+      "adaptersIssue": 174,
+      "driver": "app-server",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex app-server thread that finishes its turn and is later woken by a hook-delivered peer message.",
+      "task": "Connect to Parle, post 'ready', and finish your turn. You will later receive a direct message; when you do, reply to it directly echoing its beacon token exactly.",
+      "authoritative": [
+        { "kind": "beacon-echo" },
+        { "kind": "cursor-advanced" }
+      ],
+      "diagnostic": [
+        { "kind": "hook-delivery-present" },
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_reply", "min": 1 }
+      ]
+    }
+  ]
+}

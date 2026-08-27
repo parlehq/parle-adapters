@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://parle.sh/schemas/codex-plugin/dogfood/scenarios.schema.json",
+  "title": "Codex plugin dogfood scenario manifest",
+  "description": "Scenario definitions for the real-Codex dogfood. parle owns bring-up, credentials, driving, and the verdict; it judges `authoritative` checks from its database and wire evidence. The `diagnostic` checks are judged from the Codex rollout JSONL by packages/codex-plugin/dogfood/rollout.mjs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "plugin", "placeholders", "scenarios"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "_note": { "type": "string" },
+    "plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "marketplace"],
+      "properties": {
+        "name": { "const": "parle-codex-plugin" },
+        "marketplace": { "const": "parlehq" }
+      }
+    },
+    "placeholders": {
+      "description": "Every `{{token}}` the harness substitutes in `task` and check strings before use. Any placeholder used in the manifest must be listed here.",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^\\{\\{[a-z_]+\\}\\}$" }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "adaptersIssue", "driver", "catalog", "env", "persona", "task", "authoritative", "diagnostic"],
+      "properties": {
+        "id": {
+          "enum": ["profile-select", "attended-hold", "attended-hold-control", "status-wording", "identity-mismatch", "idle-wake"]
+        },
+        "adaptersIssue": { "type": "integer", "minimum": 1, "description": "parlehq/parle-adapters issue number this scenario verifies." },
+        "driver": {
+          "enum": ["exec", "app-server"],
+          "description": "exec: one `codex exec` turn. app-server: a persistent thread driven over the Codex app-server protocol so hooks can wake an idle turn."
+        },
+        "catalog": {
+          "enum": ["two-profile", "default-only"],
+          "description": "How the harness seeds ~/.parle/profiles. two-profile: [default] holds the peer identity and [codex] holds the expected identity. default-only: only [default] exists, so PARLE_PROFILE=codex resolves nothing."
+        },
+        "env": {
+          "type": "object",
+          "description": "Launch-shell environment the harness exports before starting Codex. Names must appear in the plugin .mcp.json env_vars list, or Codex's cleared MCP environment drops them.",
+          "additionalProperties": { "type": "string" }
+        },
+        "persona": { "type": "string", "minLength": 1 },
+        "task": { "type": "string", "minLength": 1, "description": "The prompt, after placeholder substitution." },
+        "capMinutes": { "type": "integer", "minimum": 1, "description": "Wall-clock cap for the turn; only attended-hold uses it." },
+        "authoritative": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/authoritativeCheck" }
+        },
+        "diagnostic": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/diagnosticCheck" }
+        }
+      }
+    },
+    "authoritativeCheck": {
+      "description": "Judged by parle from room state. participant-identity: the live participant belongs to the seeded identity and the room. authored-probe: the expected participant authored a message containing bodyContains. beacon-echo: an authored reply contains {{beacon}}. cursor-advanced: responsive_delivery_cursor.last_acked_seq >= the ask seq. no-authored-messages: zero authored rows for the agent.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["participant-identity", "authored-probe", "beacon-echo", "cursor-advanced", "no-authored-messages"] },
+        "agent": { "enum": ["expected", "peer"] },
+        "bodyContains": { "type": "string", "minLength": 1 }
+      }
+    },
+    "diagnosticCheck": {
+      "description": "Judged from the Codex rollout JSONL. tool-calls: count of calls to `tool` within [min, max], optionally only counting calls whose arguments contain argsSubset. no-shell-polling: no shell command that loops or sleeps around parle or curl. status-text: applied to the text returned by parle_status tool results. agent-message: applied to the final assistant message (contains = all, containsAny = at least one). hook-delivery-present: a developer or user message carries 'Parle responsive delivery seq='.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["tool-calls", "no-shell-polling", "status-text", "agent-message", "hook-delivery-present"] },
+        "tool": { "type": "string", "pattern": "^mcp__parle__parle_[a-z_]+$" },
+        "min": { "type": "integer", "minimum": 0 },
+        "max": { "type": "integer", "minimum": 0 },
+        "argsSubset": { "type": "object" },
+        "contains": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "containsAny": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "excludes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}

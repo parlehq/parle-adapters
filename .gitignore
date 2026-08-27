@@ -13,6 +13,7 @@ packages/codex-plugin/dist/*
 packages/pi-extension/dist/*
 !packages/pi-extension/dist/index.js
 packages/claude-desktop-extension/out/
+packages/codex-plugin/out/
 coverage/
 /pnpm-exec-summary.json
 .env

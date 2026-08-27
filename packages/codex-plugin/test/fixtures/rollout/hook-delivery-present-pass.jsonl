@@ -1,0 +1,8 @@
+{"timestamp":"2026-08-27T20:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Connect to Parle, post 'ready', and finish your turn."}]}}
+{"timestamp":"2026-08-27T20:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"mcp__parle__parle_send","arguments":"{\"body\":\"ready\"}","call_id":"call_1"}}
+{"timestamp":"2026-08-27T20:00:03.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"{\"content\":[{\"type\":\"text\",\"text\":\"Sent.\"}]}"}}
+{"timestamp":"2026-08-27T20:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Posted ready."}]}}
+{"timestamp":"2026-08-27T20:01:10.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Parle responsive delivery seq=7 event_id=evt-fixture reply_route_id=route-fixture\nbeacon-FIXTURE please echo"}]}}
+{"timestamp":"2026-08-27T20:01:11.000Z","type":"response_item","payload":{"type":"function_call","name":"mcp__parle__parle_reply","arguments":"{\"replyRouteId\":\"route-fixture\",\"body\":\"beacon-FIXTURE\"}","call_id":"call_2"}}
+{"timestamp":"2026-08-27T20:01:12.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_2","output":"{\"content\":[{\"type\":\"text\",\"text\":\"Replied.\"}]}"}}
+{"timestamp":"2026-08-27T20:01:13.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Echoed the beacon to the peer."}]}}

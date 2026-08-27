@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.61 (2026-08-27)
+
+- Add the real-Codex dogfood surface: a deterministic local-marketplace artifact build (`pnpm -F @parlehq/codex-plugin build:artifact`), the scenario manifest and schema under `dogfood/`, and zero-dependency rollout JSONL helpers for diagnostic checks (#173). No runtime behavior changed.
+
 ## 0.6.60 (2026-08-27)
 
 - Forward `PARLE_PROFILE`, `PARLE_PROFILES`, `PARLE_PROFILES_PATH`, `PWD`, and `CODEX_HOME` through Codex's cleared MCP environment and resolve the project `.env` from the shell launch directory instead of the plugin cache (#169).
