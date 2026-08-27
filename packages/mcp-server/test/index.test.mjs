@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CONNECT_NEXT_GUIDANCE, ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, SESSION_ESTABLISHED_NEXT_GUIDANCE, processStartedAtIso } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, resolveHostCapabilities, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -1868,5 +1868,208 @@ test("env-cleared spawn accepts a loopback api_base only when PARLE_ALLOW_INSECU
   } finally {
     fixture.cleanup();
     await new Promise((resolveClose) => api.close(resolveClose));
+  }
+});
+
+test("resolveHostCapabilities accepts the codex-queue ceiling and rejects unknown modes (#174)", () => {
+  assert.deepEqual(resolveHostCapabilities({}), {});
+  assert.deepEqual(resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "none" }), { idleWake: "none" });
+  assert.deepEqual(resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "codex-queue" }), { idleWake: "codex-queue" });
+  assert.throws(() => resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "daemon" }), /Unsupported PARLE_HOST_IDLE_WAKE mode: daemon/);
+});
+
+test("a codex-queue host renders queue-only, degraded, and unavailable idle wake from bridge evidence (#174)", async () => {
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3, next: CONNECT_NEXT_GUIDANCE }),
+    readInbox: async () => ({ messages: [], session: { established: "this_call", sessionAddress: "@p.a.s1", agentSessionId: "as-1", expiresAt: "later", next: SESSION_ESTABLISHED_NEXT_GUIDANCE } }),
+    ensureReadySafe: async () => false,
+  };
+  let idleWake = { state: "queue-only", outstanding: false, triggers: 0, host: { path: "/opt/codex/bin/codex", version: "0.150.1" } };
+  let running = true;
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => false,
+    status: () => ({ running, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true, waiterAttached: false, hostSessionId: "thread-1", metaHostSessionId: "thread-1", idleWake }),
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue174-test", clientInstanceId: "issue174-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge, undefined, false, { idleWake: "codex-queue" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-codex-queue", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    const queueOnly = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
+    assert.equal(queueOnly.compactText, `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake queue-only)
+
+Session Address:
+@p.a.s1
+
+Next: idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.
+========================================`);
+    assert.equal(queueOnly.responsiveDelivery.idleWake, "queue-only");
+    assert.equal(queueOnly.responsiveDelivery.idleWakeReason, undefined);
+    assert.equal(queueOnly.responsiveDelivery.reason, undefined, "the waiter reason never applies to a queue host");
+    assert.equal(queueOnly.responsiveDelivery.nextActionKey, "idle-wake-queue-only");
+    assert.equal(queueOnly.responsiveDeliveryBridge.idleWake.host.version, "0.150.1");
+    const connect = (await client.callTool({ name: "parle_connect", arguments: {} })).structuredContent;
+    assert.equal(connect.next, "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.");
+    assert.match(connect.compactText, /Delivery      watching \(idle wake queue-only\)/);
+    const inbox = (await client.callTool({ name: "parle_inbox", arguments: {} })).structuredContent;
+    assert.equal(inbox.session.next, connect.next);
+    assert.doesNotMatch(JSON.stringify({ queueOnly, connect, inbox }), /arm responsive delivery/);
+
+    idleWake = { state: "degraded", reason: "trigger-outcome-unknown", outstanding: true, triggers: 1, lastError: "codex queue outcome unknown (SIGTERM)" };
+    const degraded = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
+    assert.equal(degraded.compactText, `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake degraded)
+
+Session Address:
+@p.a.s1
+
+Next: a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.
+========================================`);
+    assert.equal(degraded.responsiveDelivery.idleWake, "degraded");
+    assert.equal(degraded.responsiveDelivery.idleWakeReason, "trigger-outcome-unknown");
+    assert.equal(degraded.responsiveDelivery.nextActionKey, "idle-wake-degraded");
+
+    for (const wake of [
+      { state: "unavailable", reason: "version-too-old", detail: "0.147.0" },
+      { state: "unavailable", reason: "host-session-conflict" },
+      { state: "unavailable", reason: "queue-full" },
+    ]) {
+      idleWake = { ...wake, outstanding: false, triggers: 0 };
+      const unavailable = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
+      assert.equal(unavailable.compactText, `========================================
+Connected to Parle
+
+You are       @p
+Acting as     @p.a
+In room       #room-one
+Delivery      watching (idle wake unavailable)
+
+Session Address:
+@p.a.s1
+
+${IDLE_WAKE_UNAVAILABLE_NEXT}
+========================================`, wake.reason);
+      assert.equal(unavailable.responsiveDelivery.idleWake, "unavailable");
+      assert.equal(unavailable.responsiveDelivery.idleWakeReason, wake.reason, "the reason lives in the JSON, not the card");
+      assert.equal(unavailable.responsiveDelivery.nextActionKey, "idle-wake-unavailable");
+      const connected = (await client.callTool({ name: "parle_connect", arguments: {} })).structuredContent;
+      assert.equal(connected.next, "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.");
+    }
+
+    // Queue wake needs a running bridge; a listen fault keeps its own guidance.
+    idleWake = { state: "queue-only", outstanding: false, triggers: 0 };
+    running = false;
+    const stopped = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
+    assert.equal(stopped.responsiveDelivery.idleWake, "unavailable");
+    assert.equal(stopped.responsiveDelivery.idleWakeReason, "host-bridge-not-running");
+    assert.match(stopped.compactText, /idle wake unavailable/);
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(evidencePath, { force: true });
+  }
+});
+
+test("stdio server spawned with PARLE_HOST_IDLE_WAKE=codex-queue under a non-Codex parent reports parent-not-codex (#174)", async () => {
+  const root = mkdtempSync("/tmp/parle-mcp-174-");
+  const home = join(root, "home");
+  mkdirSync(home, { mode: 0o700 });
+  const project = join(root, "project");
+  mkdirSync(project);
+  const wakeStreams = new Set();
+  const api = createServer((request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const reply = (body, status = 200) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (url.pathname === "/v/agent/sessions") return reply({ agent_session_id: "as-spawn", session_credential: "parle_ses_spawn", address: "@p.a.spawn", expires_at: new Date(Date.now() + 3_600_000).toISOString() }, 201);
+    if (url.pathname.endsWith("/participants")) return reply({ participant_id: "part-1" }, 201);
+    if (url.pathname.endsWith("/projection")) return reply({ watermark: 0, messages: [] });
+    if (url.pathname === "/v/agent/wake") {
+      response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+      response.write(": open\n\n");
+      wakeStreams.add(response);
+      request.on("close", () => wakeStreams.delete(response));
+      return undefined;
+    }
+    if (url.pathname.endsWith("/responsive-delivery")) return reply({ messages: [] });
+    return reply({});
+  });
+  await new Promise((resolveListen) => api.listen(0, "127.0.0.1", resolveListen));
+  const apiBase = `http://127.0.0.1:${api.address().port}`;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
+    cwd: project,
+    env: {
+      PATH: process.env.PATH || "",
+      HOME: home,
+      PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e",
+      PARLE_ROOM_AGENT_TOKEN: "parle_agt_spawn_secret",
+      PARLE_API_BASE: apiBase,
+      PARLE_WAKE_BASE: apiBase,
+      PARLE_ALLOW_INSECURE_LOCAL: "1",
+      PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
+      PARLE_HOOK_BRIDGE_SCOPE: `issue174-${process.pid}`,
+      PARLE_HOOK_BRIDGE_HOST_PROCESS: "direct-parent",
+      PARLE_HOST_IDLE_WAKE: "codex-queue",
+    },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "parle-mcp-codex-queue-spawn", version: "0.0.0" }, { capabilities: {} });
+  try {
+    await client.connect(transport);
+    const connect = await client.callTool({ name: "parle_connect", arguments: {} });
+    assert.equal(connect.isError, undefined, JSON.stringify(connect.structuredContent));
+    assert.equal(connect.structuredContent.responsiveDelivery.idleWake, "unavailable");
+    let status;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      status = await client.callTool({ name: "parle_status", arguments: {} });
+      assert.equal(status.isError, undefined, JSON.stringify(status.structuredContent));
+      const bridge = status.structuredContent.responsiveDeliveryBridge;
+      if (status.structuredContent.responsiveDelivery.state === "watching" && bridge.idleWake?.reason !== "host-verification-pending") break;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    }
+    const delivery = status.structuredContent.responsiveDelivery;
+    const bridge = status.structuredContent.responsiveDeliveryBridge;
+    assert.equal(delivery.state, "watching", JSON.stringify(delivery));
+    // This test process is the direct parent; it is Node, not Codex.
+    assert.equal(bridge.hostParentPid, process.pid);
+    assert.equal(bridge.idleWake.state, "unavailable", JSON.stringify(bridge.idleWake));
+    assert.equal(bridge.idleWake.reason, "parent-not-codex");
+    assert.equal(bridge.idleWake.triggers, 0);
+    assert.equal(delivery.idleWake, "unavailable");
+    assert.equal(delivery.idleWakeReason, "parent-not-codex");
+    assert.equal(delivery.nextActionKey, "idle-wake-unavailable");
+    assert.match(status.structuredContent.compactText, /Delivery      watching \(idle wake unavailable\)/);
+    assert.ok(status.structuredContent.compactText.includes(IDLE_WAKE_UNAVAILABLE_NEXT));
+  } finally {
+    await client.close().catch(() => {});
+    for (const stream of wakeStreams) stream.destroy();
+    await new Promise((resolveClose) => api.close(resolveClose));
+    rmSync(root, { recursive: true, force: true });
   }
 });

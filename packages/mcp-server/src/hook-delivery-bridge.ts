@@ -58,6 +58,28 @@ export type HookDeliveryBridgeStatus = {
   // ignored hint is diagnosable instead of looking like lost delivery.
   ignoredWakeHints?: number;
   lastIgnoredWakeRoomId?: string;
+  hostSessionId?: string;
+  // The host session the MCP request metadata named. In direct-parent mode it
+  // never binds; it must agree with the hook-bound session before idle wake arms.
+  metaHostSessionId?: string;
+  idleWake?: HostIdleWakeStatus;
+};
+
+// Host-owned idle wake. The bridge tells it when pending work appears for an
+// armed host thread and when a hook take proves a live turn; the host module
+// owns how a turn is started and what it can prove about that.
+export type HostIdleWakeStatus = {
+  state: "queue-only" | "daemon-attached" | "unavailable" | "degraded";
+  reason?: string;
+  [key: string]: unknown;
+};
+
+export type HostIdleWake = {
+  start?(): void;
+  requestWake(threadId: string, stillPending: () => boolean): void;
+  consumeWake(): void;
+  status(): HostIdleWakeStatus;
+  stop?(): void;
 };
 
 type PendingMessage = ResponsiveDeliveryMessage & {
@@ -247,6 +269,8 @@ export class HookDeliveryBridge {
   private lastError?: string;
   private lastErrorKind?: HookDeliveryBridgeStatus["lastErrorKind"];
   private hostSessionId?: string;
+  private metaHostSessionId?: string;
+  private idleWakeStarted = false;
   private waiter?: Socket;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
@@ -258,6 +282,7 @@ export class HookDeliveryBridge {
     private readonly evidenceCwd = process.cwd(),
     private readonly hostParentPid?: number,
     private readonly readParentPid = () => process.ppid,
+    private readonly idleWake?: HostIdleWake,
   ) {
     if (this.hostParentPid !== undefined && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
       throw new Error("Parle hook bridge host parent pid must be greater than 1");
@@ -304,6 +329,9 @@ export class HookDeliveryBridge {
       ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() }),
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
       ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
+      ...(this.hostSessionId ? { hostSessionId: this.hostSessionId } : {}),
+      ...(this.metaHostSessionId ? { metaHostSessionId: this.metaHostSessionId } : {}),
+      ...(this.idleWake ? { idleWake: this.idleWakeStatus() } : {}),
       ...(lastError ? { lastError } : {}),
       ...(lastErrorAt ? { lastErrorAt } : {}),
       ...(lastErrorSource ? { lastErrorSource } : {}),
@@ -313,10 +341,20 @@ export class HookDeliveryBridge {
 
   bindHostSession(sessionId: string, allowReplace = false, correlated = false): boolean {
     this.assertCurrentHostParent();
-    if (!sessionId || (this.hostParentPid !== undefined && !correlated)) return false;
+    if (!sessionId) return false;
+    if (this.hostParentPid !== undefined && !correlated) {
+      // In-band metadata never binds a correlated bridge; it is recorded as
+      // the cross-check that idle wake needs before it may start a turn.
+      if (this.metaHostSessionId !== sessionId) {
+        this.metaHostSessionId = sessionId;
+        this.requestIdleWake();
+      }
+      return false;
+    }
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
     this.hostSessionId = sessionId;
+    this.requestIdleWake();
     return true;
   }
 
@@ -332,6 +370,7 @@ export class HookDeliveryBridge {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.idleWake?.stop?.();
     this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
@@ -362,6 +401,13 @@ export class HookDeliveryBridge {
       }
       this.lastError = undefined;
       this.lastErrorKind = undefined;
+    }
+    // Host verification is independent of the thread binding, so it starts as
+    // soon as the bridge listens and is usually complete before the first
+    // status call.
+    if (!this.idleWakeStarted) {
+      this.idleWakeStarted = true;
+      this.idleWake?.start?.();
     }
     // The socket and runtime artifacts outlive a bootstrap or wake failure:
     // hooks keep a status endpoint to diagnose through, and a later start()
@@ -450,6 +496,7 @@ export class HookDeliveryBridge {
       seq: input.message.seq,
     }));
     this.finishWaiter({ ok: true, ready: true });
+    this.requestIdleWake();
   }
 
   private async listen(): Promise<void> {
@@ -600,6 +647,9 @@ export class HookDeliveryBridge {
 
   private take(): unknown {
     if (this.liveLease()) return { ok: true, busy: true, messages: [] };
+    // A take from the bound session proves a live host turn, which is all a
+    // queued wake trigger exists to produce.
+    this.idleWake?.consumeWake();
     const messages: PendingMessage[] = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
@@ -644,12 +694,37 @@ export class HookDeliveryBridge {
       committed += 1;
     }
     this.lease = undefined;
+    this.requestIdleWake();
     return { ok: true, committed };
   }
 
   private liveLease(): Lease | undefined {
     if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = undefined;
     return this.lease;
+  }
+
+  // Idle wake may start a turn only on the thread the trusted hook bound, and
+  // only once the MCP request metadata has named the same thread.
+  private idleWakeThread(): { threadId?: string; reason?: string } {
+    if (!this.hostSessionId) return { reason: "host-session-unbound" };
+    if (!this.metaHostSessionId) return { reason: "host-session-unconfirmed" };
+    if (this.metaHostSessionId !== this.hostSessionId) return { reason: "host-session-conflict" };
+    return { threadId: this.hostSessionId };
+  }
+
+  private requestIdleWake(): void {
+    if (!this.idleWake || this.stopped || this.pending.length === 0 || this.liveLease()) return;
+    const { threadId } = this.idleWakeThread();
+    if (!threadId) return;
+    this.idleWake.requestWake(threadId, () => this.pending.length > 0 && !this.liveLease());
+  }
+
+  private idleWakeStatus(): HostIdleWakeStatus | undefined {
+    if (!this.idleWake) return undefined;
+    const wake = this.idleWake.status();
+    if (wake.state !== "queue-only" && wake.state !== "daemon-attached") return wake;
+    const thread = this.idleWakeThread();
+    return thread.threadId ? wake : { ...wake, state: "unavailable", reason: thread.reason };
   }
 
   private pendingWork(): PendingMessage[] {

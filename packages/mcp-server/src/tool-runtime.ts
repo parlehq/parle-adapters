@@ -180,24 +180,61 @@ export type HookDeliveryBridgeLike = {
 
 // Static host capabilities the plugin manifest declares. `idleWake: "none"`
 // means the host has no arm action, so status must never ask for one.
+// `codex-queue` is a ceiling: the bridge's host module reports the state its
+// runtime evidence supports.
 export type McpHostCapabilities = {
-  idleWake?: "none";
+  idleWake?: "none" | "codex-queue";
 };
 
-export type IdleWakeState = "unavailable" | "unarmed" | "armed";
+export type IdleWakeState = "unavailable" | "unarmed" | "armed" | "queue-only" | "daemon-attached" | "degraded";
+
+const HOST_IDLE_WAKE_STATES: ReadonlySet<string> = new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
+
+type HostIdleWakeEvidence = { state: IdleWakeState; reason?: string };
+
+function hostIdleWakeEvidence(host: McpHostCapabilities, bridgeStatus?: Record<string, unknown>): HostIdleWakeEvidence {
+  if (host.idleWake === "none") return { state: "unavailable" };
+  if (host.idleWake === "codex-queue") {
+    const wake = bridgeStatus?.idleWake as { state?: unknown; reason?: unknown } | undefined;
+    if (!bridgeStatus) return { state: "unavailable", reason: "host-bridge-unavailable" };
+    if (!wake || typeof wake.state !== "string" || !HOST_IDLE_WAKE_STATES.has(wake.state)) return { state: "unavailable", reason: "host-correlation-unavailable" };
+    if (bridgeStatus.running !== true) return { state: "unavailable", reason: "host-bridge-not-running" };
+    return { state: wake.state as IdleWakeState, ...(typeof wake.reason === "string" ? { reason: wake.reason } : {}) };
+  }
+  return { state: bridgeStatus?.waiterAttached === true ? "armed" : "unarmed" };
+}
 
 function idleWakeState(host: McpHostCapabilities, bridgeStatus?: Record<string, unknown>): IdleWakeState {
-  if (host.idleWake === "none") return "unavailable";
-  return bridgeStatus?.waiterAttached === true ? "armed" : "unarmed";
+  return hostIdleWakeEvidence(host, bridgeStatus).state;
+}
+
+type HostIdleWakeNext = { nextActionKey: "idle-wake-unavailable" | "idle-wake-queue-only" | "idle-wake-daemon-attached" | "idle-wake-degraded"; nextAction: string };
+
+// Guidance for a host that owns idle wake itself. Undefined for waiter hosts,
+// whose guidance stays the arm/attach text.
+function hostIdleWakeNext(idleWake: IdleWakeState): HostIdleWakeNext | undefined {
+  switch (idleWake) {
+    case "unavailable":
+      return { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
+    case "queue-only":
+      return { nextActionKey: "idle-wake-queue-only", nextAction: "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds" };
+    case "daemon-attached":
+      return { nextActionKey: "idle-wake-daemon-attached", nextAction: "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately" };
+    case "degraded":
+      return { nextActionKey: "idle-wake-degraded", nextAction: "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once" };
+    default:
+      return undefined;
+  }
 }
 
 // The shared client's connect and session-established `next` guidance tells
-// the model to arm responsive delivery. A host with no arm action gets the
-// same guidance the card renders instead; other hosts keep the client text.
-function withHostNextGuidance<T>(result: T, host: McpHostCapabilities): T {
-  if (host.idleWake !== "none" || !result || typeof result !== "object") return result;
+// the model to arm responsive delivery. A host that declares its idle-wake
+// capability gets the same guidance the card renders instead; other hosts
+// keep the client text.
+function withHostNextGuidance<T>(result: T, host: McpHostCapabilities, idleWake: IdleWakeState): T {
+  if (host.idleWake === undefined || !result || typeof result !== "object") return result;
   const value = result as Record<string, unknown>;
-  const guidance = nextTextFor("idle-wake-unavailable");
+  const guidance = nextTextFor(hostIdleWakeNext(idleWake)?.nextActionKey ?? "idle-wake-unavailable");
   const session = value.session;
   return {
     ...value,
@@ -264,26 +301,29 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
     resolved = { ...resolved, state: "starting", reason: "bridge_starting" };
   }
   if (!resolved) return undefined;
-  const idleWakeUnarmed = bridgeStatus?.running === true
+  const idleWakeUnarmed = host.idleWake !== "codex-queue"
+    && bridgeStatus?.running === true
     && bridgeStatus.hostSessionBound === true
     && bridgeStatus.waiterAttached === false
     && ["watching", "idle"].includes(resolved.state);
   if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
-  const idleWake = idleWakeState(host, bridgeStatus);
-  resolved = { ...resolved, idleWake };
-  // Every branch that would ask the host to arm idle wake yields to this one
-  // when the host has no arm action.
-  const idleWakeUnavailableNext = { nextActionKey: "idle-wake-unavailable" as const, nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
+  const evidence = hostIdleWakeEvidence(host, bridgeStatus);
+  const idleWake = evidence.state;
+  // The reason stays in the JSON; the card renders only the state.
+  resolved = { ...resolved, idleWake, ...(evidence.reason ? { idleWakeReason: evidence.reason } : {}) };
+  // Every branch that would ask the host to arm idle wake yields to the host's
+  // own guidance when the host declares its idle-wake capability.
+  const hostNext = hostIdleWakeNext(idleWake);
   const next = resolved.reason === "bridge_listen_failed"
     ? { nextActionKey: "repair-delivery-host" as const, nextAction: "restart the host after correcting the local delivery socket error" }
     : resolved.state === "unknown" || resolved.state === "stopped"
-      ? idleWake === "unavailable" ? idleWakeUnavailableNext : { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
+      ? hostNext ?? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "arm or verify responsive delivery" }
       : resolved.state === "starting"
         ? { nextActionKey: "wait-for-watcher" as const, nextAction: "wait for responsive delivery startup" }
         : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict"
           ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
-          : idleWake === "unavailable"
-            ? idleWakeUnavailableNext
+          : hostNext
+            ? hostNext
             : bridgeStatus && bridgeStatus.waiterAttached !== true
               ? { nextActionKey: "arm-or-verify-watcher" as const, nextAction: "attach or verify the local delivery waiter" }
               : { nextActionKey: "already-connected" as const, nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
@@ -361,6 +401,7 @@ export function registerParleTools(
     const sessionId = hostSessionIdFromMeta(extra?._meta);
     if (sessionId) deliveryBridge?.bindHostSession(sessionId);
   };
+  const hostGuidance = <T>(result: T): T => withHostNextGuidance(result, host, idleWakeState(host, deliveryBridge?.status()));
 
   registerTool("parle_status", {
     title: "Parle Status",
@@ -442,8 +483,9 @@ export function registerParleTools(
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    const summary = withHostNextGuidance(await client.connect(), host);
+    const connected = await client.connect();
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
+    const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = (summary as any).agentSessionId;
@@ -796,7 +838,7 @@ export function registerParleTools(
     annotations: { readOnlyHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.readProjection(params as ReadParams), host));
+    return safeTool(async () => hostGuidance(await client.readProjection(params as ReadParams)));
   });
 
   registerTool("parle_inbox", {
@@ -806,7 +848,7 @@ export function registerParleTools(
     annotations: { readOnlyHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.readInbox(params as ReadParams), host));
+    return safeTool(async () => hostGuidance(await client.readInbox(params as ReadParams)));
   });
 
   registerTool("parle_affordances", {
@@ -851,7 +893,7 @@ export function registerParleTools(
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.send(params as SendParams), host));
+    return safeTool(async () => hostGuidance(await client.send(params as SendParams)));
   });
 
   registerTool("parle_reply", {
@@ -861,7 +903,7 @@ export function registerParleTools(
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(async () => withHostNextGuidance(await client.submitReply(params as SubmitReplyParams), host));
+    return safeTool(async () => hostGuidance(await client.submitReply(params as SubmitReplyParams)));
   });
 
   if (degradedBoot && !exposeDegradedTools) {
