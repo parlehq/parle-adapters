@@ -22572,7 +22572,7 @@ function degradedConfigDiagnostic(error51) {
   };
 }
 function missingProfileGuidance(selector) {
-  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the profile to the catalog or ask the operator which profile they intend, and call parle_setup to retry.`;
+  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the requested profile to the catalog and call parle_setup to retry, or restart the host with the exact PARLE_PROFILE the operator selected, and only then connect.`;
 }
 function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false, host = {}) {
   const registeredTools = /* @__PURE__ */ new Map();

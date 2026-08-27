@@ -335,7 +335,7 @@ export function degradedConfigDiagnostic(error: ProfileConfigError) {
 // A missing profile is an identity problem, not a routing hint: no host may
 // switch to a listed profile or the default identity on its own.
 export function missingProfileGuidance(selector: string): string {
-  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the profile to the catalog or ask the operator which profile they intend, and call parle_setup to retry.`;
+  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the requested profile to the catalog and call parle_setup to retry, or restart the host with the exact PARLE_PROFILE the operator selected, and only then connect.`;
 }
 
 export type ParleRegisteredToolLike = Pick<RegisteredTool, "enabled" | "enable" | "disable" | "update">;

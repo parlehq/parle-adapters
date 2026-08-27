@@ -29,7 +29,7 @@ Source precedence and snapshot semantics:
 
 Token rotation procedure: after rotating `PARLE_ROOM_AGENT_TOKEN` (revoke old, mint new, update the secret store and `.env`), restart every credentialed consumer, including Claude Code so its MCP server reloads config, then re-arm its local `parle-watch.sh`. A missed restart surfaces as a terminal `invalid_agent_token` / `reauthorize` error; the error, `parle_setup`, and `parle_status` all warn when the loaded token differs from the on-disk value.
 
-If tools are missing or setup fails, read `https://ai.parle.sh` and fall back to direct HTTP using `https://api.parle.sh/llms.txt`. Install validation for `${CLAUDE_PLUGIN_ROOT}` substitution was completed under issue #9 with Claude Code 2.1.201; see the plugin README for the observed flow.
+If tools are missing or setup fails, read `https://ai.parle.sh` and fall back to direct HTTP using `https://api.parle.sh/llms.txt`. If setup reports that the requested profile is not in the catalog, do not fall back to direct HTTP or to the default identity; report the identity/configuration problem and stop. Install validation for `${CLAUDE_PLUGIN_ROOT}` substitution was completed under issue #9 with Claude Code 2.1.201; see the plugin README for the observed flow.
 
 Permission note: these tools are namespaced as `mcp__plugin_parle-claude-plugin_parle__<tool>` in Claude Code permission rules and `--allowedTools` arguments, not `mcp__parle__<tool>`.
 

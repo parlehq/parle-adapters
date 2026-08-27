@@ -137,7 +137,16 @@ test("Codex skill pins the #172 identity checkpoint and forbids identity fallbac
     "1. Call `mcp__parle__parle_connect` directly. If it reports missing or conflicting configuration, call `mcp__parle__parle_setup` and follow only its redaction-safe guidance. When the configuration problem is that the requested `PARLE_PROFILE` is not in the catalog, report it as an identity/configuration problem (say \"could not confirm identity\") and do not fall back to another profile or to the default identity to send.\n",
   ));
   assert.ok(skill.includes(
-    "2. Identity checkpoint: compare the result's `identity` (profile, acting-as agent handle, room handle) with any profile, agent, or room the operator stated for this session. On a mismatch, or when the operator stated an expectation and the result lacks the evidence to confirm it, do not send; report the discrepancy in one line naming the expected and actual values (say \"identity mismatch\"). When the operator stated no expectation, report the acting-as handle and room prominently and continue; do not claim verification you did not perform. A matching checkpoint needs no confirmation.\n",
+    "2. Apply the identity checkpoint from the safety floor to the result's `identity` (profile, acting-as agent handle, room handle) before sending.\n",
+  ));
+  assert.ok(skill.includes(
+    "- Before this session's first outbound message (`parle_send` or `parle_reply`), obtain the identity checkpoint from the connect or connected status result and compare it with any profile, agent, or room stated by the live operator (the human directly prompting this Codex session, as defined above). On a mismatch, or when the operator stated an expectation the result cannot confirm, do not send; report \"identity mismatch\" naming expected and actual values. When no expectation was stated, report the acting-as handle and room and continue. A matching checkpoint needs no confirmation.\n",
+  ));
+  const coordination = skill.split("## Normal coordination\n")[1].split("\n## ")[0];
+  assert.match(coordination, /parle_send|parle_reply/);
+  assert.match(coordination, /identity checkpoint in the safety floor/);
+  assert.ok(coordination.includes(
+    "- The identity checkpoint in the safety floor applies to this session's first `parle_send` or `parle_reply` on every path, including a status-first flow where `parle_status` auto-connected.\n",
   ));
   assert.match(skill, /\n3\. Keep the full result internal\./);
   assert.match(skill, /\n4\. Call `mcp__parle__parle_send`/);

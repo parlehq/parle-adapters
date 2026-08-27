@@ -2,7 +2,7 @@
 
 ## 0.6.64 (2026-08-27)
 
-- Add an identity checkpoint to the skill's connect flow: before the first send, compare the `parle_connect` result's `identity` with any profile, agent, or room the operator stated; on a mismatch or unconfirmable expectation, do not send and report `identity mismatch` with the expected and actual values. When the requested `PARLE_PROFILE` is not in the catalog, or the plugin booted without usable configuration, report it as an identity/configuration problem and never fall back to another profile or the default identity. Carries MCP server 0.7.62 (#172).
+- Add an identity checkpoint to the skill's safety floor, covering every send path including status-first auto-connect: before this session's first `parle_send` or `parle_reply`, compare the `parle_connect` result's `identity` with any profile, agent, or room the operator stated; on a mismatch or unconfirmable expectation, do not send and report `identity mismatch` with the expected and actual values. When the requested `PARLE_PROFILE` is not in the catalog, or the plugin booted without usable configuration, report it as an identity/configuration problem and never fall back to another profile or the default identity. Carries MCP server 0.7.62 (#172).
 
 ## 0.6.63 (2026-08-27)
 
