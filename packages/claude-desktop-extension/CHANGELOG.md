@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.64 (2026-08-28)
+
+- Carry the hook bridge idle-wake suspension of MCP server 0.7.64 through the refreshed MCP artifact (#185).
+
 ## 0.8.63 (2026-08-27)
 
 - Refresh the bundled MCP artifact to server 0.7.63 and client 0.8.54, which add Codex queue idle wake behind a manifest literal this host does not set; its behavior is unchanged (#174).

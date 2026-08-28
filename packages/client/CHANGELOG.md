@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.55 (2026-08-28)
+
+- Render a suspended idle wake in the compact connection and status cards (`idle_wake_suspended`, next key `wait-for-prompt`) so a host whose memory-pressure reaper keeps ending the watcher is reported truthfully instead of as an unarmed wake to re-arm (parlehq/parle-adapters#185).
+
 ## 0.8.54 (2026-08-27)
 
 - Extend the generic `idleWake` state the compact cards render with `queue-only`, `daemon-attached`, and `degraded` for a host that wakes its own idle turn, plus their next keys: `queue-only` renders `(idle wake queue-only)` and "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds."; `degraded` renders `(idle wake degraded)` and "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once."; `daemon-attached` renders the immediate variant. The formatter stays host-neutral; unavailable, unarmed, and armed rendering is unchanged (#174).

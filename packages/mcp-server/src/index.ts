@@ -14,7 +14,7 @@ export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type D
 export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, resolveCodexHostExecutable } from "./codex-host.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.63";
+export const MCP_CLIENT_VERSION = "0.7.64";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
