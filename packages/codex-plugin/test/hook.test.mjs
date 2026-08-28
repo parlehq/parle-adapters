@@ -394,11 +394,23 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
 // The runner records its pid, waits for the test to place bridges keyed by
 // that pid, then runs the hook command through the login shell (mode
 // "inner") or spawns a nested fake Codex first (mode "outer").
-function installFakeCodex(home, mode) {
+function installFakeCodex(home, mode, viaSymlink = false) {
   const bin = join(home, "bin");
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   const codex = join(bin, "codex");
-  if (mode !== undefined) {
+  if (viaSymlink) {
+    // The path Codex is launched by is a symlink; the canonical target is a
+    // codex-named binary elsewhere, as with Homebrew or an npm shim's vendor tree.
+    const target = join(home, "vendor", "codex-x86_64-unknown-linux-musl");
+    mkdirSync(join(home, "vendor"), { recursive: true, mode: 0o700 });
+    try {
+      linkSync(process.execPath, target);
+    } catch {
+      copyFileSync(process.execPath, target);
+      chmodSync(target, 0o755);
+    }
+    symlinkSync(target, codex);
+  } else if (mode !== undefined) {
     // A private copy: a hard link would change the real binary's mode.
     copyFileSync(process.execPath, codex);
     chmodSync(codex, mode);
@@ -469,7 +481,7 @@ function fakeBridge(socketPath, hostParentPid, commands) {
   });
 }
 
-function codexChainFixture(codexMode) {
+function codexChainFixture(codexMode, viaSymlink = false) {
   const home = mkdtempSync("/tmp/codex-parle-chain-");
   const pluginRoot = join(home, "plugin");
   const hooksDir = join(pluginRoot, "hooks");
@@ -482,7 +494,7 @@ function codexChainFixture(codexMode) {
   symlinkSync(resolve("hooks/parle-hook.mjs"), join(hooksDir, "parle-hook.mjs"));
   symlinkSync(resolve("dist/parle-mcp.js"), join(distDir, "parle-mcp.js"));
   symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
-  const { codex, runner } = installFakeCodex(home, codexMode);
+  const { codex, runner } = installFakeCodex(home, codexMode, viaSymlink);
   const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
   const env = { ...withoutAmbientParle(), HOME: home, ZDOTDIR: home, PLUGIN_ROOT: pluginRoot };
   const launch = (mode, shell, hookEventName) => runProcess(codex, [runner, mode, shell, hooks.hooks[hookEventName][0].hooks[0].command, home], { cwd: home, env }, {
@@ -540,8 +552,36 @@ test("Codex hook executable rule accepts user- or root-owned binaries and refuse
   assert.equal(acceptableHostExecutable(stat(0, 0o777), uid), false, "world-writable root-owned");
   assert.equal(acceptableHostExecutable(stat(uid, 0o775), uid), false, "group-writable");
   assert.equal(acceptableHostExecutable(stat(0, 0o644), uid), false, "no exec bit");
+  assert.equal(acceptableHostExecutable(stat(0, 0o4755), uid), false, "setuid");
+  assert.equal(acceptableHostExecutable(stat(uid, 0o2755), uid), false, "setgid");
   assert.equal(acceptableHostExecutable(stat(uid, 0o755, false), uid), false, "not a regular file");
   assert.equal(acceptableHostExecutable(stat(4242, 0o755), undefined), true, "no uid means no ownership check");
+});
+
+test("Codex hook resolves a symlinked Codex path to its canonical binary and delivers (#174)", async (context) => {
+  const shell = "/bin/zsh";
+  if (!existsSync(shell)) {
+    context.skip(`${shell} is unavailable`);
+    return;
+  }
+  const fixture = codexChainFixture(undefined, true);
+  try {
+    const running = fixture.launch("inner", shell, "UserPromptSubmit");
+    const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+    const commands = [];
+    const close = await fakeBridge(join(fixture.stateDir, String(innerPid), `${innerPid + 1}.sock`), innerPid, commands);
+    writeFileSync(join(fixture.home, "go-inner"), "");
+    try {
+      const result = await running;
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /server-framed content/);
+      assert.deepEqual(commands.map((entry) => entry.action), ["status", "bind", "take", "commit"]);
+    } finally {
+      await close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 test("Codex hook refuses a world-writable nearest Codex ancestor and delivers nothing (#174)", async (context) => {

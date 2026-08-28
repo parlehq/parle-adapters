@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   MIN_CODEX_QUEUE_VERSION,
   acceptableHostExecutable,
   classifyQueueFailure,
+  executableDrift,
   compareSemver,
   defaultExecFile,
   hostSubprocessEnv,
@@ -25,10 +26,20 @@ const ok = (stdout = "") => ({ stdout, stderr: "", code: 0, signal: null, ambigu
 const failed = (code, stderr) => ({ stdout: "", stderr, code, signal: null, ambiguous: false });
 const versionBanner = (version) => [(_file, args) => args[0] === "--version", ok(`codex-cli ${version}\n`)];
 
-function fakeStat({ path = CODEX, uid = UID, mode = 0o755, file = true } = {}) {
+function fakeStat({ path = CODEX, uid = UID, mode = 0o755, file = true, dev = 7, ino = 4200, mtimeMs = 1_700_000_000_000 } = {}) {
   return (candidate) => {
     if (candidate !== path) throw Object.assign(new Error(`ENOENT: ${candidate}`), { code: "ENOENT" });
-    return { uid, mode, isFile: () => file };
+    return { uid, mode, dev, ino, mtimeMs, isFile: () => file };
+  };
+}
+
+// A stat whose answers change across calls: the verification sees the first
+// entry and the pre-exec re-check sees the next.
+function sequencedStat(entries) {
+  const remaining = [...entries];
+  return (candidate) => {
+    const next = remaining.length > 1 ? remaining.shift() : remaining[0];
+    return fakeStat({ ...next })(candidate);
   };
 }
 
@@ -47,6 +58,7 @@ function linuxDeps(overrides = {}) {
     platform: "linux",
     getuid: () => UID,
     readParentPid: () => PARENT,
+    realpath: (path) => path,
     readlink: (path) => {
       assert.equal(path, `/proc/${PARENT}/exe`);
       return CODEX;
@@ -119,7 +131,7 @@ test("codex host discovery verifies the direct parent on Linux and hands it a ho
   const calls = [];
   const deps = linuxDeps({ execFile: fakeExec([versionBanner("0.150.1")], calls) });
   const resolution = await resolveCodexHostExecutable(PARENT, deps);
-  assert.deepEqual(resolution, { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT } });
+  assert.deepEqual(resolution, { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT, identity: { dev: 7, ino: 4200, mode: 0o755, uid: UID, mtimeMs: 1_700_000_000_000 } } });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].file, CODEX);
   assert.deepEqual(calls[0].args, ["--version"]);
@@ -129,11 +141,13 @@ test("codex host discovery verifies the direct parent on Linux and hands it a ho
 
 test("codex host discovery on macOS accepts an absolute ps comm and falls back to lsof for a PATH-launched host", async () => {
   const absolute = await resolveCodexHostExecutable(PARENT, darwinDeps([psComm(CODEX), psArgs("codex")]));
-  assert.deepEqual(absolute, { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT } });
+  assert.equal(absolute.ok, true);
+  assert.equal(absolute.executable.path, CODEX);
 
   const calls = [];
   const viaLsof = await resolveCodexHostExecutable(PARENT, darwinDeps([psComm("codex"), lsofText(CODEX), psArgs("codex")], { execFile: fakeExec([psComm("codex"), lsofText(CODEX), psArgs("codex"), versionBanner("0.150.1")], calls) }));
-  assert.deepEqual(viaLsof, { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT } });
+  assert.equal(viaLsof.ok, true);
+  assert.equal(viaLsof.executable.path, CODEX);
   assert.deepEqual(calls.map((call) => call.file), ["/bin/ps", "/usr/sbin/lsof", "/bin/ps", CODEX]);
   assert.deepEqual(calls[1].args, ["-a", "-p", String(PARENT), "-d", "txt", "-Fn"]);
 
@@ -154,7 +168,11 @@ test("codex host discovery refuses a relative path, remote topology, wrong uid, 
 
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: UID + 1 }) })), { ok: false, reason: "wrong-uid" });
   // A system install (npm -g on Linux) is root-owned while Codex runs as a user.
-  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o755 }) })), { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT } });
+  const system = await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o755 }) }));
+  assert.equal(system.ok, true);
+  assert.equal(system.executable.identity.uid, 0);
+  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o4755 }) })), { ok: false, reason: "unsafe-executable" }, "setuid");
+  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: UID, mode: 0o2755 }) })), { ok: false, reason: "unsafe-executable" }, "setgid");
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o777 }) })), { ok: false, reason: "unsafe-executable" });
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: UID, mode: 0o775 }) })), { ok: false, reason: "unsafe-executable" });
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o644 }) })), { ok: false, reason: "not-executable" });
@@ -164,6 +182,8 @@ test("codex host discovery refuses a relative path, remote topology, wrong uid, 
   assert.equal(rule(UID + 1, 0o755), "wrong-uid");
   assert.equal(rule(0, 0o777), "unsafe-executable");
   assert.equal(rule(0, 0o757), "unsafe-executable");
+  assert.equal(rule(0, 0o4755), "unsafe-executable", "setuid");
+  assert.equal(rule(UID, 0o2755), "unsafe-executable", "setgid");
   assert.equal(rule(UID, 0o755, false), "not-executable");
   assert.equal(acceptableHostExecutable({ uid: 12345, mode: 0o755, isFile: () => true }, undefined), undefined, "no uid means no ownership check");
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ mode: 0o644 }) })), { ok: false, reason: "not-executable" });
@@ -182,6 +202,72 @@ test("codex host discovery refuses a relative path, remote topology, wrong uid, 
   assert.equal(crashed.reason, "parent-not-codex");
 });
 
+test("codex host discovery pins the canonical file and refuses drift before every exec", async () => {
+  // A symlinked absolute path on macOS resolves to the target, and the target
+  // is what gets verified and executed.
+  const link = "/usr/local/bin/codex";
+  const calls = [];
+  const viaLink = await resolveCodexHostExecutable(PARENT, darwinDeps([psComm(link), psArgs("codex")], {
+    realpath: (path) => (path === link ? CODEX : path),
+    execFile: fakeExec([psComm(link), psArgs("codex"), versionBanner("0.150.1")], calls),
+  }));
+  assert.equal(viaLink.ok, true, JSON.stringify(viaLink));
+  assert.equal(viaLink.executable.path, CODEX);
+  assert.equal(calls.at(-1).file, CODEX, "the canonical file runs, not the link");
+  // A symlink whose target is not a codex binary is refused by the stat of the target.
+  const dangling = await resolveCodexHostExecutable(PARENT, darwinDeps([psComm(link), psArgs("codex")], { realpath: () => "/elsewhere/tool" }));
+  assert.equal(dangling.reason, "not-executable");
+  // On Linux the exe link is canonical; a realpath that disagrees is a moved link.
+  const moved = await resolveCodexHostExecutable(PARENT, linuxDeps({ realpath: () => "/opt/codex/bin/codex.new" }));
+  assert.deepEqual(moved, { ok: false, reason: "parent-changed", detail: "executable link moved" });
+  const unresolvable = await resolveCodexHostExecutable(PARENT, linuxDeps({ realpath: () => { throw new Error("ENOENT"); } }));
+  assert.equal(unresolvable.reason, "not-executable");
+
+  // The inode changes between the verification stat and the version probe.
+  const replaced = await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: sequencedStat([{ ino: 4200 }, { ino: 4201 }]) }));
+  assert.deepEqual(replaced, { ok: false, reason: "parent-changed", detail: "executable changed before the version probe" });
+  const rewritten = await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: sequencedStat([{ mtimeMs: 1 }, { mtimeMs: 2 }]) }));
+  assert.deepEqual(rewritten, { ok: false, reason: "unsafe-executable", detail: "executable changed before the version probe" });
+
+  const identity = { dev: 7, ino: 4200, mode: 0o755, uid: UID, mtimeMs: 5 };
+  const current = (overrides) => ({ ...identity, isFile: () => true, ...overrides });
+  assert.equal(executableDrift(identity, current({})), undefined);
+  assert.equal(executableDrift(identity, current({ ino: 1 })), "parent-changed");
+  assert.equal(executableDrift(identity, current({ dev: 8 })), "parent-changed");
+  assert.equal(executableDrift(identity, current({ mode: 0o775 })), "unsafe-executable");
+  assert.equal(executableDrift(identity, current({ uid: 0 })), "unsafe-executable");
+  assert.equal(executableDrift(identity, current({ mtimeMs: 6 })), "unsafe-executable");
+});
+
+test("queue wake re-stats the verified file before each trigger and drops a stale cache", async () => {
+  // Verification (two stats) sees inode 4200; the trigger's pre-exec re-stat
+  // sees a replacement; the next request re-verifies from scratch.
+  const stats = [{ ino: 4200 }, { ino: 4200 }, { ino: 4201 }, { ino: 4201 }, { ino: 4201 }, { ino: 4201 }];
+  const harness = wakeHarness({ deps: { stat: sequencedStat(stats) } });
+  harness.wake.start();
+  await flush();
+  assert.equal(harness.wake.status().state, "queue-only");
+  harness.wake.requestWake(THREAD, () => true);
+  await flush();
+  assert.equal(harness.queueCalls().length, 0, "a replaced file never runs");
+  assert.deepEqual({ state: harness.wake.status().state, reason: harness.wake.status().reason }, { state: "unavailable", reason: "parent-changed" });
+  assert.equal(harness.calls.filter((call) => call.args[0] === "--version").length, 1);
+  harness.wake.requestWake(THREAD, () => true);
+  await flush();
+  assert.equal(harness.calls.filter((call) => call.args[0] === "--version").length, 2, "the stale cache is gone; the new file is verified anew");
+  assert.equal(harness.queueCalls().length, 1, "the re-verified file runs");
+  assert.equal(harness.wake.status().state, "queue-only");
+
+  // A mode change on the same inode is refused as unsafe.
+  const loosened = wakeHarness({ deps: { stat: sequencedStat([{ mode: 0o755 }, { mode: 0o755 }, { mode: 0o775 }]) } });
+  loosened.wake.start();
+  await flush();
+  loosened.wake.requestWake(THREAD, () => true);
+  await flush();
+  assert.equal(loosened.queueCalls().length, 0);
+  assert.equal(loosened.wake.status().reason, "unsafe-executable");
+});
+
 test("codex version gate rejects 0.147.0, accepts 0.149.0 and 0.150.1, and rejects a non-codex banner", async () => {
   assert.equal(MIN_CODEX_QUEUE_VERSION, "0.149.0");
   assert.equal(parseCodexVersion("codex-cli 0.150.1\n"), "0.150.1");
@@ -193,10 +279,12 @@ test("codex version gate rejects 0.147.0, accepts 0.149.0 and 0.150.1, and rejec
   for (const [version, expected] of [
     ["0.147.0", { ok: false, reason: "version-too-old", detail: "0.147.0" }],
     ["0.148.9", { ok: false, reason: "version-too-old", detail: "0.148.9" }],
-    ["0.149.0", { ok: true, executable: { path: CODEX, version: "0.149.0", parentPid: PARENT } }],
-    ["0.150.1", { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT } }],
+    ["0.149.0", { ok: true, version: "0.149.0" }],
+    ["0.150.1", { ok: true, version: "0.150.1" }],
   ]) {
-    assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ execFile: fakeExec([versionBanner(version)]) })), expected, version);
+    const resolution = await resolveCodexHostExecutable(PARENT, linuxDeps({ execFile: fakeExec([versionBanner(version)]) }));
+    if (expected.ok) assert.deepEqual({ ok: resolution.ok, version: resolution.executable.version }, expected, version);
+    else assert.deepEqual(resolution, expected, version);
   }
   const node = await resolveCodexHostExecutable(PARENT, linuxDeps({ execFile: fakeExec([[() => true, ok("v25.9.0\n")]]) }));
   assert.deepEqual(node, { ok: false, reason: "parent-not-codex", detail: "no codex-cli version banner" });
@@ -213,7 +301,7 @@ test("an installed codex binary passes the real discovery path (smoke; skipped w
   const resolution = await resolveCodexHostExecutable(PARENT, {
     platform: "linux",
     readParentPid: () => PARENT,
-    readlink: () => candidate,
+    readlink: () => realpathSync(candidate),
     readFile: () => "codex\0",
     log: () => {},
   });

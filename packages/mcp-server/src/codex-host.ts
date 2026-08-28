@@ -1,5 +1,5 @@
 import { execFile as nodeExecFile } from "node:child_process";
-import { readFileSync, readlinkSync, statSync, type Stats } from "node:fs";
+import { readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { isAbsolute } from "node:path";
 import { redactString } from "@parlehq/agent-client";
 import type { HostIdleWake, HostIdleWakeStatus } from "./hook-delivery-bridge.js";
@@ -23,13 +23,31 @@ const HOST_ENV_NAMES = ["HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC
 
 export type CodexHostUnavailableReason = "parent-changed" | "parent-not-codex" | "wrong-uid" | "not-executable" | "unsafe-executable" | "version-too-old" | "remote-topology";
 
+export type HostExecutableStats = Pick<Stats, "uid" | "mode" | "dev" | "ino" | "mtimeMs" | "isFile">;
+// What pins a verified file: the inode and the attributes a replacement or
+// tampering would change. Checked again immediately before every exec.
+export type HostExecutableIdentity = { dev: number; ino: number; mode: number; uid: number; mtimeMs: number };
+
 // An executable the bridge may run: owned by this user or by root (a system
 // install such as `npm -g` under Linux), never writable by group or world,
-// and a regular file with exec bits. Any other owner is refused.
+// never setuid or setgid, and a regular file with exec bits. Any other owner
+// is refused.
 export function acceptableHostExecutable(stats: Pick<Stats, "uid" | "mode" | "isFile">, uid: number | undefined): CodexHostUnavailableReason | undefined {
   if (uid !== undefined && stats.uid !== uid && stats.uid !== 0) return "wrong-uid";
   if (!stats.isFile() || (stats.mode & 0o111) === 0) return "not-executable";
-  if ((stats.mode & 0o022) !== 0) return "unsafe-executable";
+  if ((stats.mode & 0o6022) !== 0) return "unsafe-executable";
+  return undefined;
+}
+
+export function executableIdentity(stats: HostExecutableStats): HostExecutableIdentity {
+  return { dev: stats.dev, ino: stats.ino, mode: stats.mode, uid: stats.uid, mtimeMs: stats.mtimeMs };
+}
+
+// The file about to run must be the file that was verified: another inode is
+// a replaced path; a changed owner, mode, or mtime is a rewritten file.
+export function executableDrift(verified: HostExecutableIdentity, current: HostExecutableStats): CodexHostUnavailableReason | undefined {
+  if (verified.dev !== current.dev || verified.ino !== current.ino) return "parent-changed";
+  if (verified.mode !== current.mode || verified.uid !== current.uid || verified.mtimeMs !== current.mtimeMs) return "unsafe-executable";
   return undefined;
 }
 
@@ -51,8 +69,9 @@ export type CodexHostDeps = {
   getuid?: () => number | undefined;
   readParentPid?: () => number;
   readlink?: (path: string) => string;
+  realpath?: (path: string) => string;
   readFile?: (path: string) => string;
-  stat?: (path: string) => Stats;
+  stat?: (path: string) => HostExecutableStats;
   execFile?: ExecFileFn;
   env?: Record<string, string | undefined>;
   now?: () => number;
@@ -62,7 +81,7 @@ export type CodexHostDeps = {
   log?: (event: Record<string, unknown>) => void;
 };
 
-export type CodexHostExecutable = { path: string; version: string; parentPid: number };
+export type CodexHostExecutable = { path: string; version: string; parentPid: number; identity: HostExecutableIdentity };
 export type CodexHostResolution =
   | { ok: true; executable: CodexHostExecutable }
   | { ok: false; reason: CodexHostUnavailableReason; detail?: string };
@@ -149,6 +168,7 @@ export async function resolveCodexHostExecutable(hostParentPid: number, deps: Co
   const platform = deps.platform ?? process.platform;
   const readParentPid = deps.readParentPid ?? (() => process.ppid);
   const stat = deps.stat ?? statSync;
+  const realpath = deps.realpath ?? realpathSync;
   const getuid = deps.getuid ?? (() => (typeof process.getuid === "function" ? process.getuid() : undefined));
   const execFile = deps.execFile ?? defaultExecFile;
   if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
@@ -160,25 +180,53 @@ export async function resolveCodexHostExecutable(hostParentPid: number, deps: Co
   }
   if (!isAbsolute(parent.path)) return { ok: false, reason: "parent-not-codex", detail: "parent executable path is not absolute" };
   if (parent.args.some((arg) => arg === "--remote" || arg.startsWith("--remote="))) return { ok: false, reason: "remote-topology" };
-  let stats: Stats;
+  // The verified and executed path is the canonical file, never a symlink or
+  // a path through a replaceable directory entry.
+  let canonical: string;
   try {
-    stats = stat(parent.path);
+    canonical = realpath(parent.path);
+  } catch (error) {
+    return { ok: false, reason: "not-executable", detail: errorMessage(error) };
+  }
+  // /proc/<pid>/exe is already canonical; a different realpath means the
+  // link changed underneath us.
+  if (platform === "linux" && canonical !== parent.path) return { ok: false, reason: "parent-changed", detail: "executable link moved" };
+  let stats: HostExecutableStats;
+  try {
+    stats = stat(canonical);
   } catch (error) {
     return { ok: false, reason: "not-executable", detail: errorMessage(error) };
   }
   const refused = acceptableHostExecutable(stats, getuid());
   if (refused) return { ok: false, reason: refused };
+  const identity = executableIdentity(stats);
   if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
+  const drift = restatDrift(canonical, identity, deps);
+  if (drift) return { ok: false, reason: drift, detail: "executable changed before the version probe" };
   let outcome: ExecFileOutcome;
   try {
-    outcome = await execFile(parent.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: hostSubprocessEnv(deps.env) });
+    outcome = await execFile(canonical, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: hostSubprocessEnv(deps.env) });
   } catch (error) {
     return { ok: false, reason: "parent-not-codex", detail: errorMessage(error) };
   }
   const version = outcome.code === 0 ? parseCodexVersion(outcome.stdout) : undefined;
   if (!version) return { ok: false, reason: "parent-not-codex", detail: "no codex-cli version banner" };
   if (compareSemver(version, MIN_CODEX_QUEUE_VERSION) < 0) return { ok: false, reason: "version-too-old", detail: version };
-  return { ok: true, executable: { path: parent.path, version, parentPid: hostParentPid } };
+  return { ok: true, executable: { path: canonical, version, parentPid: hostParentPid, identity } };
+}
+
+// Immediately before an exec: the file must still be the verified one and
+// still pass the rule.
+function restatDrift(path: string, identity: HostExecutableIdentity, deps: CodexHostDeps): CodexHostUnavailableReason | undefined {
+  const stat = deps.stat ?? statSync;
+  const getuid = deps.getuid ?? (() => (typeof process.getuid === "function" ? process.getuid() : undefined));
+  let current: HostExecutableStats;
+  try {
+    current = stat(path);
+  } catch {
+    return "not-executable";
+  }
+  return executableDrift(identity, current) ?? acceptableHostExecutable(current, getuid());
 }
 
 export type CodexQueueFailureReason = "queue-full" | "invalid-thread" | "permission";
@@ -319,6 +367,15 @@ export class CodexQueueWake implements HostIdleWake {
       if (this.stopped || !resolution.ok) return;
       if ((this.deps.readParentPid ?? (() => process.ppid))() !== this.hostParentPid) {
         this.resolution = { ok: false, reason: "parent-changed" };
+        return;
+      }
+      // A cached verification never authorizes an exec by itself: the file is
+      // re-checked now, and any drift drops the cache so the next request
+      // re-verifies from scratch.
+      const drift = restatDrift(resolution.executable.path, resolution.executable.identity, this.deps);
+      if (drift) {
+        this.resolution = { ok: false, reason: drift, detail: "executable changed after verification" };
+        this.log({ stage: "host_unavailable", reason: drift });
         return;
       }
       const execFile = this.deps.execFile ?? defaultExecFile;

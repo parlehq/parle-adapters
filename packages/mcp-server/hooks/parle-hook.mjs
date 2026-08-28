@@ -174,23 +174,33 @@ function executablePathOf(pid) {
 
 // The executable rule the bridge applies to its own parent: owned by this
 // user or by root (a system install such as `npm -g`), never writable by
-// group or world, a regular file with exec bits.
+// group or world, never setuid or setgid, a regular file with exec bits.
 export function acceptableHostExecutable(stat, uid) {
   if (uid !== undefined && stat.uid !== uid && stat.uid !== 0) return false;
   if (!stat.isFile() || (stat.mode & 0o111) === 0) return false;
-  return (stat.mode & 0o022) === 0;
+  return (stat.mode & 0o6022) === 0;
 }
 
-// A Codex process: an absolute path to a codex binary that passes the
-// executable rule. The shells and launcher between Codex and this hook fail
-// the name check; under the npm wrapper the native binary
-// (.../vendor/<triple>/codex/codex) is the nearest match and the node shim
-// above it is never reached.
+// A Codex process: an absolute path whose canonical file is a codex binary
+// that passes the executable rule, checked at use time. The shells and
+// launcher between Codex and this hook fail the name check; under the npm
+// wrapper the native binary (.../vendor/<triple>/codex/codex) is the nearest
+// match and the node shim above it is never reached.
 function isCodexProcess(pid) {
   const path = executablePathOf(pid);
-  if (!path || !isAbsolute(path) || !CODEX_EXECUTABLE_NAME.test(basename(path))) return false;
+  if (!path || !isAbsolute(path)) return false;
+  let canonical;
   try {
-    return acceptableHostExecutable(statSync(path), typeof process.getuid === "function" ? process.getuid() : undefined);
+    canonical = realpathSync(path);
+  } catch {
+    return false;
+  }
+  // /proc/<pid>/exe is already canonical; a different realpath means the
+  // link changed underneath us.
+  if (process.platform === "linux" && canonical !== path) return false;
+  if (!CODEX_EXECUTABLE_NAME.test(basename(canonical))) return false;
+  try {
+    return acceptableHostExecutable(statSync(canonical), typeof process.getuid === "function" ? process.getuid() : undefined);
   } catch {
     return false;
   }

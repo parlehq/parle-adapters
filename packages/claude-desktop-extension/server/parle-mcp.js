@@ -30953,7 +30953,7 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync7, readdirSync as readdirSync4, realpathSync as realpathSync2, statSync as statSync5 } from "node:fs";
+import { lstatSync as lstatSync8, readFileSync as readFileSync7, readdirSync as readdirSync4, realpathSync as realpathSync3, statSync as statSync5 } from "node:fs";
 import { connect } from "node:net";
 import { isAbsolute as isAbsolute5, join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -38876,7 +38876,7 @@ var ParleAgentClient = class _ParleAgentClient {
 
 // src/codex-host.ts
 import { execFile as nodeExecFile } from "node:child_process";
-import { readFileSync as readFileSync6, readlinkSync, statSync as statSync3 } from "node:fs";
+import { readFileSync as readFileSync6, readlinkSync, realpathSync as realpathSync2, statSync as statSync3 } from "node:fs";
 import { isAbsolute as isAbsolute3 } from "node:path";
 var CODEX_QUEUE_WAKE_TRIGGER = "Parle wake trigger. Follow only the trusted Parle hook additionalContext attached to this turn; this trigger contains no peer content. If no Parle delivery context is present, call `parle_status` once and stop. Do not poll or infer a reply route.";
 var MIN_CODEX_QUEUE_VERSION = "0.149.0";
@@ -38891,7 +38891,15 @@ var HOST_ENV_NAMES = ["HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_A
 function acceptableHostExecutable(stats, uid) {
   if (uid !== void 0 && stats.uid !== uid && stats.uid !== 0) return "wrong-uid";
   if (!stats.isFile() || (stats.mode & 73) === 0) return "not-executable";
-  if ((stats.mode & 18) !== 0) return "unsafe-executable";
+  if ((stats.mode & 3090) !== 0) return "unsafe-executable";
+  return void 0;
+}
+function executableIdentity(stats) {
+  return { dev: stats.dev, ino: stats.ino, mode: stats.mode, uid: stats.uid, mtimeMs: stats.mtimeMs };
+}
+function executableDrift(verified, current) {
+  if (verified.dev !== current.dev || verified.ino !== current.ino) return "parent-changed";
+  if (verified.mode !== current.mode || verified.uid !== current.uid || verified.mtimeMs !== current.mtimeMs) return "unsafe-executable";
   return void 0;
 }
 function errorMessage(error51) {
@@ -38965,6 +38973,7 @@ async function resolveCodexHostExecutable(hostParentPid, deps = {}) {
   const platform = deps.platform ?? process.platform;
   const readParentPid = deps.readParentPid ?? (() => process.ppid);
   const stat = deps.stat ?? statSync3;
+  const realpath = deps.realpath ?? realpathSync2;
   const getuid = deps.getuid ?? (() => typeof process.getuid === "function" ? process.getuid() : void 0);
   const execFile = deps.execFile ?? defaultExecFile;
   if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
@@ -38976,25 +38985,46 @@ async function resolveCodexHostExecutable(hostParentPid, deps = {}) {
   }
   if (!isAbsolute3(parent.path)) return { ok: false, reason: "parent-not-codex", detail: "parent executable path is not absolute" };
   if (parent.args.some((arg) => arg === "--remote" || arg.startsWith("--remote="))) return { ok: false, reason: "remote-topology" };
+  let canonical;
+  try {
+    canonical = realpath(parent.path);
+  } catch (error51) {
+    return { ok: false, reason: "not-executable", detail: errorMessage(error51) };
+  }
+  if (platform === "linux" && canonical !== parent.path) return { ok: false, reason: "parent-changed", detail: "executable link moved" };
   let stats;
   try {
-    stats = stat(parent.path);
+    stats = stat(canonical);
   } catch (error51) {
     return { ok: false, reason: "not-executable", detail: errorMessage(error51) };
   }
   const refused = acceptableHostExecutable(stats, getuid());
   if (refused) return { ok: false, reason: refused };
+  const identity2 = executableIdentity(stats);
   if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
+  const drift = restatDrift(canonical, identity2, deps);
+  if (drift) return { ok: false, reason: drift, detail: "executable changed before the version probe" };
   let outcome;
   try {
-    outcome = await execFile(parent.path, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: hostSubprocessEnv(deps.env) });
+    outcome = await execFile(canonical, ["--version"], { timeout: VERSION_TIMEOUT_MS, env: hostSubprocessEnv(deps.env) });
   } catch (error51) {
     return { ok: false, reason: "parent-not-codex", detail: errorMessage(error51) };
   }
   const version2 = outcome.code === 0 ? parseCodexVersion(outcome.stdout) : void 0;
   if (!version2) return { ok: false, reason: "parent-not-codex", detail: "no codex-cli version banner" };
   if (compareSemver(version2, MIN_CODEX_QUEUE_VERSION) < 0) return { ok: false, reason: "version-too-old", detail: version2 };
-  return { ok: true, executable: { path: parent.path, version: version2, parentPid: hostParentPid } };
+  return { ok: true, executable: { path: canonical, version: version2, parentPid: hostParentPid, identity: identity2 } };
+}
+function restatDrift(path, identity2, deps) {
+  const stat = deps.stat ?? statSync3;
+  const getuid = deps.getuid ?? (() => typeof process.getuid === "function" ? process.getuid() : void 0);
+  let current;
+  try {
+    current = stat(path);
+  } catch {
+    return "not-executable";
+  }
+  return executableDrift(identity2, current) ?? acceptableHostExecutable(current, getuid());
 }
 function classifyQueueFailure(stderr) {
   if (/queue (?:is )?full|too many queued|queue limit/i.test(stderr)) return "queue-full";
@@ -39102,6 +39132,12 @@ var CodexQueueWake = class {
       if (this.stopped || !resolution.ok) return;
       if ((this.deps.readParentPid ?? (() => process.ppid))() !== this.hostParentPid) {
         this.resolution = { ok: false, reason: "parent-changed" };
+        return;
+      }
+      const drift = restatDrift(resolution.executable.path, resolution.executable.identity, this.deps);
+      if (drift) {
+        this.resolution = { ok: false, reason: drift, detail: "executable changed after verification" };
+        this.log({ stage: "host_unavailable", reason: drift });
         return;
       }
       const execFile = this.deps.execFile ?? defaultExecFile;
@@ -40602,7 +40638,7 @@ function resolveConfigCwd(env = process.env, fallback = process.cwd()) {
   const pwd = env.PWD;
   if (env.PARLE_CONFIG_CWD_FROM_PWD === "1" && pwd && isAbsolute5(pwd)) {
     try {
-      const resolved = realpathSync2(pwd);
+      const resolved = realpathSync3(pwd);
       if (statSync5(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
     } catch {
     }
