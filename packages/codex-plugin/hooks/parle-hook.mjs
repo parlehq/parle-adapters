@@ -254,7 +254,7 @@ async function take(scope, sessionId, allowBind, event, directParent, shellLaunc
     if (!selected) return undefined;
     let bound = selected.status.hostSessionBound === true;
     if (allowBind) {
-      const binding = await request(selected.path, { action: "bind", sessionId, allowReplace: event === "SessionStart" });
+      const binding = await request(selected.path, { action: "bind", sessionId, allowReplace: event === "SessionStart", hookEventName: event });
       if (!binding?.ok) throw new Error("Parle hook bridge rejected host session binding");
       bound = binding.bound === true;
     }
@@ -284,6 +284,27 @@ function shellLiteral(value) {
 function idleWakeInstruction(launcher, agentSessionId) {
   const command = `${shellLiteral(launcher)} ${shellLiteral(agentSessionId)}`;
   return `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${command}`;
+}
+
+const IDLE_WAKE_SUSPENDED = "Parle idle wake suspended: host memory pressure keeps ending the watcher; it resumes at the next prompt.";
+
+// The bridge latches a suspension after repeated waiter detaches (host
+// memory-pressure reaps). While suspended, Stop never asks to re-arm; the
+// bridge owns the once-per-episode announcement so this hook stays stateless.
+async function idleWakeContext(args, payload, sessionId, delivery) {
+  const eligible = args.idleWakeLauncher
+    && payload.hook_event_name === "Stop"
+    && delivery?.bound === true
+    && delivery.status?.waiterAttached === false
+    && typeof delivery.status.agentSessionId === "string"
+    && delivery.status.agentSessionId
+    && delivery.busy !== true
+    && Array.isArray(delivery.messages);
+  if (!eligible) return "";
+  if (delivery.status.idleWakeSuspended !== true) return idleWakeInstruction(args.idleWakeLauncher, delivery.status.agentSessionId);
+  if (delivery.status.idleWakeSuspensionAnnounced === true) return "";
+  const announced = await request(delivery.path, { action: "announce-suspension", sessionId });
+  return announced?.ok === true && announced.owed === true ? IDLE_WAKE_SUSPENDED : "";
 }
 
 function formatMessages(messages) {
@@ -360,16 +381,7 @@ async function main() {
     const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : undefined;
     const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent, args.shellLaunched) : undefined;
     const deliveryBatch = delivery && Array.isArray(delivery.messages) && delivery.messages.length > 0 ? delivery : undefined;
-    const rearm = args.idleWakeLauncher
-      && payload.hook_event_name === "Stop"
-      && delivery?.bound === true
-      && delivery.status?.waiterAttached === false
-      && typeof delivery.status.agentSessionId === "string"
-      && delivery.status.agentSessionId
-      && delivery.busy !== true
-      && Array.isArray(delivery.messages)
-      ? idleWakeInstruction(args.idleWakeLauncher, delivery.status.agentSessionId)
-      : "";
+    const rearm = await idleWakeContext(args, payload, sessionId, delivery);
     const registryBlock = args.knownAddressContext && payload.hook_event_name === "SessionStart"
       ? renderKnownAddressContext(cwd)
       : "";

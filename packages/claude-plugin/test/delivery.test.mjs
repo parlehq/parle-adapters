@@ -31,7 +31,7 @@ function cleanupFixture(cwd) {
 let nextOwnerPid = 900_000_000;
 
 // A stub bridge that records every action and answers with a scripted reply.
-function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false } = {}) {
+function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false, idleWakeSuspended = false, idleWakeSuspensionAnnounced = false } = {}) {
   const ownerPid = nextOwnerPid++;
   const dir = join(stateDir(scope), String(hostParentPid));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -39,6 +39,7 @@ function startBridge(scope, { messages, agentSessionId = "parle-agent-session", 
   rmSync(path, { force: true });
   const actions = [];
   let boundSessionId = initialSessionId;
+  let suspensionAnnounced = idleWakeSuspensionAnnounced;
   const server = createServer((socket) => {
     socket.setEncoding("utf8");
     let buffer = "";
@@ -50,7 +51,7 @@ function startBridge(scope, { messages, agentSessionId = "parle-agent-session", 
       buffer = buffer.slice(newline + 1);
       actions.push(command);
       if (command.action === "status") {
-        return void setTimeout(() => socket.end(`${JSON.stringify({ ok: true, running: true, waiterAttached, agentSessionId, ownerPid, hostParentPid: reportedParentPid, currentParentPid: reportedParentPid })}\n`), statusDelayMs);
+        return void setTimeout(() => socket.end(`${JSON.stringify({ ok: true, running: true, waiterAttached, idleWakeSuspended, idleWakeSuspensionAnnounced: suspensionAnnounced, agentSessionId, ownerPid, hostParentPid: reportedParentPid, currentParentPid: reportedParentPid })}\n`), statusDelayMs);
       }
       if (command.action === "bind") {
         const ok = !boundSessionId || boundSessionId === command.sessionId || command.allowReplace === true;
@@ -59,6 +60,11 @@ function startBridge(scope, { messages, agentSessionId = "parle-agent-session", 
       }
       if (command.action === "take" && command.sessionId === boundSessionId) {
         return void setTimeout(() => socket.end(`${JSON.stringify(busy ? { ok: true, busy: true, messages: [] } : { ok: true, leaseId: "lease-1", messages })}\n`), takeDelayMs);
+      }
+      if (command.action === "announce-suspension" && command.sessionId === boundSessionId) {
+        const owed = idleWakeSuspended && !suspensionAnnounced;
+        if (owed) suspensionAnnounced = true;
+        return void socket.end(`${JSON.stringify({ ok: true, owed })}\n`);
       }
       if (command.action === "commit" && command.sessionId === boundSessionId) {
         return void setTimeout(() => socket.end(`${JSON.stringify(commitOk ? { ok: true, committed: messages.length } : { ok: false })}\n`), commitDelayMs);
@@ -163,6 +169,9 @@ test("an injected delivery carries the opaque reply route into model context", a
 
     // Bind precedes the lease, and the row is acknowledged only after output.
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
+    // The bind names its hook event so the bridge can end an idle-wake
+    // suspension episode when a human prompt arrives.
+    assert.equal(bridge.actions[1].hookEventName, "UserPromptSubmit");
   });
 });
 
@@ -209,6 +218,41 @@ test("Stop requests one bounded idle-wake attachment only for an empty unarmed b
       assert.deepEqual(bridge.actions.map((action) => action.action), payload.stop_hook_active ? [] : ["status", "bind", "take"]);
     });
   }
+});
+
+test("a suspended idle wake is announced once at Stop instead of re-armed", async () => {
+  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  const suspended = "Parle idle wake suspended: host memory pressure keeps ending the watcher; it resumes at the next prompt.";
+  await withBridge({ messages: [], idleWakeSuspended: true }, async ({ cwd, bridge }) => {
+    const first = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
+    assert.equal(first.hookSpecificOutput.hookEventName, "Stop");
+    assert.equal(first.hookSpecificOutput.additionalContext, suspended);
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension"]);
+
+    // The bridge marked the episode announced: the next Stop says nothing.
+    bridge.actions.length = 0;
+    const second = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.deepEqual(JSON.parse(second.stdout), {});
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
+  });
+
+  await withBridge({ messages: [], idleWakeSuspended: true, idleWakeSuspensionAnnounced: true }, async ({ cwd, bridge }) => {
+    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.deepEqual(JSON.parse(result.stdout), {});
+    assert.doesNotMatch(result.stdout, /idle wake is not attached/);
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
+  });
+
+  // Queued delivery still injects first; the suspension adds no re-arm request.
+  await withBridge({ messages: [deliveredRow(15)], idleWakeSuspended: true }, async ({ cwd, bridge }) => {
+    const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
+    const context = output.hookSpecificOutput.additionalContext;
+    assert.match(context, /Parle responsive delivery seq=15/);
+    assert.doesNotMatch(context, /idle wake is not attached/);
+    assert.ok(context.endsWith(suspended));
+    assert.ok(context.indexOf("seq=15") < context.indexOf("idle wake suspended"));
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit"]);
+  });
 });
 
 test("an active Stop fence performs no delivery IPC or acknowledgement", async () => {
