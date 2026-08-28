@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171/#174 status card line `Delivery      watching (idle wake queue-only)` (a verified Codex >= 0.149 whose hook-bound and MCP thread ids agree) with `arm or verify`, `idle wake unarmed`, and `idle wake unavailable` absent. The scenario window for authoritative checks runs from container start to teardown.",
+  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171/#174 status card line `Delivery      watching (idle wake queue-only)` (a verified Codex >= 0.149 whose hook-bound and MCP thread ids agree) with `arm or verify`, `idle wake unarmed`, and `idle wake unavailable` absent. Scenarios whose checks need trusted hooks (a hook-bound thread for the idle-wake state, hook-delivered reply routes) run under the app-server driver: `codex exec` never trusts or runs hooks, so status-wording, attended-hold, and idle-wake are app-server scenarios. The scenario window for authoritative checks runs from container start to teardown.",
   "plugin": {
     "name": "parle-codex-plugin",
     "marketplace": "parlehq"
@@ -32,12 +32,12 @@
     {
       "id": "attended-hold",
       "adaptersIssue": 170,
-      "driver": "exec",
+      "driver": "app-server",
       "catalog": "two-profile",
       "env": { "PARLE_PROFILE": "codex" },
       "capMinutes": 2,
       "persona": "A Codex session explicitly authorized to hold for a peer message using bounded inbox waits.",
-      "task": "Connect, then wait for a direct message from {{peer_agent_handle}}. You are explicitly authorized to wait up to 2 minutes for it using successive bounded inbox waits. When it arrives, reply to it directly, echoing its beacon token exactly.",
+      "task": "Connect, then wait for a direct message from {{peer_agent_handle}}. You are explicitly authorized to wait up to 2 minutes for it using successive bounded inbox waits. When it arrives, reply so the peer receives it: use parle_reply with the delivered reply route when one is present, otherwise send directly to the address the delivery carries. Echo its beacon token exactly.",
       "authoritative": [
         { "kind": "beacon-echo" },
         { "kind": "cursor-advanced" }
@@ -66,7 +66,7 @@
     {
       "id": "status-wording",
       "adaptersIssue": 171,
-      "driver": "exec",
+      "driver": "app-server",
       "catalog": "two-profile",
       "env": { "PARLE_PROFILE": "codex" },
       "persona": "A Codex session asked to show the canonical status card.",

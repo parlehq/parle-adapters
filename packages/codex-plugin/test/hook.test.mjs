@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
+import { acceptableHostExecutable } from "../hooks/parle-hook.mjs";
 
 function withoutAmbientParle(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("PARLE_")));
@@ -393,15 +394,21 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
 // The runner records its pid, waits for the test to place bridges keyed by
 // that pid, then runs the hook command through the login shell (mode
 // "inner") or spawns a nested fake Codex first (mode "outer").
-function installFakeCodex(home) {
+function installFakeCodex(home, mode) {
   const bin = join(home, "bin");
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   const codex = join(bin, "codex");
-  try {
-    linkSync(process.execPath, codex);
-  } catch {
+  if (mode !== undefined) {
+    // A private copy: a hard link would change the real binary's mode.
     copyFileSync(process.execPath, codex);
-    chmodSync(codex, 0o755);
+    chmodSync(codex, mode);
+  } else {
+    try {
+      linkSync(process.execPath, codex);
+    } catch {
+      copyFileSync(process.execPath, codex);
+      chmodSync(codex, 0o755);
+    }
   }
   const runner = join(home, "fake-codex.mjs");
   writeFileSync(runner, [
@@ -462,7 +469,7 @@ function fakeBridge(socketPath, hostParentPid, commands) {
   });
 }
 
-function codexChainFixture() {
+function codexChainFixture(codexMode) {
   const home = mkdtempSync("/tmp/codex-parle-chain-");
   const pluginRoot = join(home, "plugin");
   const hooksDir = join(pluginRoot, "hooks");
@@ -475,7 +482,7 @@ function codexChainFixture() {
   symlinkSync(resolve("hooks/parle-hook.mjs"), join(hooksDir, "parle-hook.mjs"));
   symlinkSync(resolve("dist/parle-mcp.js"), join(distDir, "parle-mcp.js"));
   symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
-  const { codex, runner } = installFakeCodex(home);
+  const { codex, runner } = installFakeCodex(home, codexMode);
   const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
   const env = { ...withoutAmbientParle(), HOME: home, ZDOTDIR: home, PLUGIN_ROOT: pluginRoot };
   const launch = (mode, shell, hookEventName) => runProcess(codex, [runner, mode, shell, hooks.hooks[hookEventName][0].hooks[0].command, home], { cwd: home, env }, {
@@ -523,6 +530,45 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
     }
   });
 }
+
+test("Codex hook executable rule accepts user- or root-owned binaries and refuses other owners and loose modes (#174)", () => {
+  const uid = 1000;
+  const stat = (owner, mode, file = true) => ({ uid: owner, mode, isFile: () => file });
+  assert.equal(acceptableHostExecutable(stat(uid, 0o755), uid), true);
+  assert.equal(acceptableHostExecutable(stat(0, 0o755), uid), true, "npm -g on Linux installs a root-owned binary");
+  assert.equal(acceptableHostExecutable(stat(1001, 0o755), uid), false, "another user's binary");
+  assert.equal(acceptableHostExecutable(stat(0, 0o777), uid), false, "world-writable root-owned");
+  assert.equal(acceptableHostExecutable(stat(uid, 0o775), uid), false, "group-writable");
+  assert.equal(acceptableHostExecutable(stat(0, 0o644), uid), false, "no exec bit");
+  assert.equal(acceptableHostExecutable(stat(uid, 0o755, false), uid), false, "not a regular file");
+  assert.equal(acceptableHostExecutable(stat(4242, 0o755), undefined), true, "no uid means no ownership check");
+});
+
+test("Codex hook refuses a world-writable nearest Codex ancestor and delivers nothing (#174)", async (context) => {
+  const shell = "/bin/zsh";
+  if (!existsSync(shell)) {
+    context.skip(`${shell} is unavailable`);
+    return;
+  }
+  const fixture = codexChainFixture(0o777);
+  try {
+    const running = fixture.launch("inner", shell, "UserPromptSubmit");
+    const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+    const commands = [];
+    const close = await fakeBridge(join(fixture.stateDir, String(innerPid), `${innerPid + 1}.sock`), innerPid, commands);
+    writeFileSync(join(fixture.home, "go-inner"), "");
+    try {
+      const result = await running;
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {});
+      assert.deepEqual(commands, [], "a loose-mode host is not a host; its bridge is never touched");
+    } finally {
+      await close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
 
 test("nested Codex: a hook under an inner Codex with no bridge never reaches the outer Codex's bridge (#174)", async (context) => {
   const shell = "/bin/zsh";

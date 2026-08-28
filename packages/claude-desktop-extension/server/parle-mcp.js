@@ -38888,6 +38888,12 @@ var BACKOFF_CAP_MS = 6e4;
 var MAX_QUEUE_ATTEMPTS = 5;
 var STDERR_DETAIL_LIMIT = 240;
 var HOST_ENV_NAMES = ["HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "CODEX_HOME"];
+function acceptableHostExecutable(stats, uid) {
+  if (uid !== void 0 && stats.uid !== uid && stats.uid !== 0) return "wrong-uid";
+  if (!stats.isFile() || (stats.mode & 73) === 0) return "not-executable";
+  if ((stats.mode & 18) !== 0) return "unsafe-executable";
+  return void 0;
+}
 function errorMessage(error51) {
   return error51 instanceof Error ? error51.message : String(error51);
 }
@@ -38976,9 +38982,8 @@ async function resolveCodexHostExecutable(hostParentPid, deps = {}) {
   } catch (error51) {
     return { ok: false, reason: "not-executable", detail: errorMessage(error51) };
   }
-  const uid = getuid();
-  if (uid !== void 0 && stats.uid !== uid) return { ok: false, reason: "wrong-uid" };
-  if (!stats.isFile() || (stats.mode & 73) === 0) return { ok: false, reason: "not-executable" };
+  const refused = acceptableHostExecutable(stats, getuid());
+  if (refused) return { ok: false, reason: refused };
   if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
   let outcome;
   try {

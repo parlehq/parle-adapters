@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { evaluateDiagnostics, extractCodeModeCalls, parseRollout } from "../dogfood/rollout.mjs";
+import { PARLE_TOOL_NAMES, canonicalToolName, evaluateDiagnostics, extractCodeModeCalls, parseRollout } from "../dogfood/rollout.mjs";
 
 const fixtures = resolve(fileURLToPath(new URL("./fixtures/rollout/", import.meta.url)));
 
@@ -181,4 +181,23 @@ test("diagnostic rows fail closed on missing evidence and unknown kinds", () => 
   ]);
   assert.deepEqual(rows.map((row) => row.pass), [false, false, false, true, false]);
   assert.match(rows[4].detail, /unknown diagnostic kind/);
+});
+
+test("rollout parser folds every Codex spelling of a plugin tool into its manifest name (#174)", () => {
+  assert.equal(canonicalToolName("mcp__parle__parle_inbox"), "mcp__parle__parle_inbox");
+  assert.equal(canonicalToolName("parle__parle_inbox"), "mcp__parle__parle_inbox");
+  assert.equal(canonicalToolName("parle.parle_inbox"), "mcp__parle__parle_inbox");
+  assert.equal(canonicalToolName("parle_parle_inbox"), "mcp__parle__parle_inbox");
+  assert.equal(canonicalToolName("parle_inbox"), "mcp__parle__parle_inbox");
+  assert.equal(canonicalToolName("parle_status"), "mcp__parle__parle_status");
+  assert.equal(canonicalToolName("parle_unknown"), "parle_unknown", "only the plugin's tools are folded");
+  assert.equal(canonicalToolName("exec_command"), "exec_command");
+  assert.ok(PARLE_TOOL_NAMES.includes("parle_reply"));
+  const bare = parseRollout(readFileSync(resolve(fixtures, "tool-calls-bare-pass.jsonl"), "utf8").split("\n"));
+  const canonical = parseRollout(readFileSync(resolve(fixtures, "tool-calls-pass.jsonl"), "utf8").split("\n"));
+  assert.deepEqual(bare.toolCalls.map((call) => call.name), canonical.toolCalls.map((call) => call.name));
+  assert.deepEqual(bare.toolResults.map((result) => result.name), canonical.toolResults.map((result) => result.name));
+  const check = { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } };
+  assert.equal(evaluateOne("tool-calls-bare-pass", check).pass, true);
+  assert.equal(evaluateOne("tool-calls-pass", check).pass, true);
 });

@@ -8,7 +8,57 @@
 // scenarios.json. Authoritative checks are parle's job, not this file's.
 
 const HOOK_DELIVERY_MARKER = "Parle responsive delivery seq=";
-const STATUS_TOOL_NAMES = new Set(["mcp__parle__parle_status", "parle_status"]);
+// The plugin's MCP tools. Codex names a call differently by backend and tool
+// mode: `mcp__parle__parle_inbox` (function tools), `parle__parle_inbox`,
+// `parle.parle_inbox`, or the bare `parle_inbox` (namespace tools with the
+// ChatGPT backend). Every form is the same tool and counts as
+// `mcp__parle__<tool>`, the name the scenario manifest uses.
+export const PARLE_TOOL_NAMES = Object.freeze([
+  "parle_accept_room_invitation",
+  "parle_add_own_agent_seat",
+  "parle_affordances",
+  "parle_alias_delivery",
+  "parle_claim_principal_invite",
+  "parle_connect",
+  "parle_connect_own_agent",
+  "parle_create_own_agent",
+  "parle_create_room",
+  "parle_delete_own_agent",
+  "parle_delete_profile",
+  "parle_end_own_session",
+  "parle_guidance",
+  "parle_harden_account",
+  "parle_inbox",
+  "parle_login",
+  "parle_mint_principal_invite",
+  "parle_onboard",
+  "parle_owned_alias_delivery",
+  "parle_owned_alias_release",
+  "parle_read",
+  "parle_reply",
+  "parle_room_capacity_recovery",
+  "parle_room_participants",
+  "parle_rooms",
+  "parle_saved_start",
+  "parle_send",
+  "parle_session_alias",
+  "parle_setup",
+  "parle_status",
+  "parle_switch_profile",
+]);
+const PARLE_TOOL_SET = new Set(PARLE_TOOL_NAMES);
+const PARLE_TOOL_PREFIXES = ["mcp__parle__", "parle__", "parle.", "parle_"];
+
+export function canonicalToolName(name) {
+  if (typeof name !== "string") return name;
+  if (PARLE_TOOL_SET.has(name)) return `mcp__parle__${name}`;
+  for (const prefix of PARLE_TOOL_PREFIXES) {
+    if (name.startsWith(prefix) && PARLE_TOOL_SET.has(name.slice(prefix.length))) return `mcp__parle__${name.slice(prefix.length)}`;
+  }
+  return name;
+}
+
+const STATUS_TOOL_NAMES = new Set(["mcp__parle__parle_status"]);
 const SHELL_TOOL_NAMES = new Set(["shell", "exec_command", "local_shell", "container.exec", "shell_command"]);
 // A loop or sleep counts only in command position: at the start of the
 // command or after a separator / `do` / `then`. `git log --until ...` is an
@@ -68,7 +118,7 @@ export function extractCodeModeCalls(input) {
   const pattern = /\btools\.([A-Za-z_$][\w$]*)\s*\(/g;
   for (let match = pattern.exec(input); match; match = pattern.exec(input)) {
     const argumentText = balancedArgument(input, match.index + match[0].length);
-    calls.push({ name: match[1], args: parseObjectLiteral(argumentText) });
+    calls.push({ name: canonicalToolName(match[1]), args: parseObjectLiteral(argumentText) });
     pattern.lastIndex = match.index + match[0].length + argumentText.length;
   }
   return calls;
@@ -107,8 +157,9 @@ export function parseRollout(input) {
     switch (item.type) {
       case "function_call": {
         const args = parseJsonLoose(item.arguments) ?? (item.arguments && typeof item.arguments === "object" ? item.arguments : {});
-        parsed.toolCalls.push({ name: item.name, args, ts, callId: item.call_id });
-        if (item.call_id) namesByCallId.set(item.call_id, [item.name]);
+        const name = canonicalToolName(item.name);
+        parsed.toolCalls.push({ name, args, ts, callId: item.call_id });
+        if (item.call_id) namesByCallId.set(item.call_id, [name]);
         break;
       }
       case "custom_tool_call": {

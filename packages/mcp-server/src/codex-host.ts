@@ -21,7 +21,17 @@ const STDERR_DETAIL_LIMIT = 240;
 // Parle configuration reaches it.
 const HOST_ENV_NAMES = ["HOME", "PATH", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "CODEX_HOME"];
 
-export type CodexHostUnavailableReason = "parent-changed" | "parent-not-codex" | "wrong-uid" | "not-executable" | "version-too-old" | "remote-topology";
+export type CodexHostUnavailableReason = "parent-changed" | "parent-not-codex" | "wrong-uid" | "not-executable" | "unsafe-executable" | "version-too-old" | "remote-topology";
+
+// An executable the bridge may run: owned by this user or by root (a system
+// install such as `npm -g` under Linux), never writable by group or world,
+// and a regular file with exec bits. Any other owner is refused.
+export function acceptableHostExecutable(stats: Pick<Stats, "uid" | "mode" | "isFile">, uid: number | undefined): CodexHostUnavailableReason | undefined {
+  if (uid !== undefined && stats.uid !== uid && stats.uid !== 0) return "wrong-uid";
+  if (!stats.isFile() || (stats.mode & 0o111) === 0) return "not-executable";
+  if ((stats.mode & 0o022) !== 0) return "unsafe-executable";
+  return undefined;
+}
 
 export type ExecFileOutcome = {
   stdout: string;
@@ -156,9 +166,8 @@ export async function resolveCodexHostExecutable(hostParentPid: number, deps: Co
   } catch (error) {
     return { ok: false, reason: "not-executable", detail: errorMessage(error) };
   }
-  const uid = getuid();
-  if (uid !== undefined && stats.uid !== uid) return { ok: false, reason: "wrong-uid" };
-  if (!stats.isFile() || (stats.mode & 0o111) === 0) return { ok: false, reason: "not-executable" };
+  const refused = acceptableHostExecutable(stats, getuid());
+  if (refused) return { ok: false, reason: refused };
   if (readParentPid() !== hostParentPid) return { ok: false, reason: "parent-changed" };
   let outcome: ExecFileOutcome;
   try {

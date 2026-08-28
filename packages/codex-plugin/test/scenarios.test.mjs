@@ -110,5 +110,11 @@ test("scenario manifest is consistent with the plugin, the MCP config, and the s
   assert.deepEqual(byId["identity-mismatch"].authoritative, [{ kind: "no-authored-messages", agent: "any" }]);
   assert.equal(byId["identity-mismatch"].catalog, "default-only");
   assert.deepEqual(byId["identity-mismatch"].env, { PARLE_PROFILE: "codex" });
-  assert.equal(byId["idle-wake"].driver, "app-server");
+  // Hook-dependent scenarios cannot run under `codex exec`, which never
+  // trusts or runs hooks: no bound thread, no idle-wake state, no delivered
+  // reply route.
+  for (const id of ["status-wording", "attended-hold", "idle-wake"]) assert.equal(byId[id].driver, "app-server", id);
+  for (const id of ["profile-select", "attended-hold-control", "identity-mismatch"]) assert.equal(byId[id].driver, "exec", id);
+  assert.match(byId["attended-hold"].task, /parle_reply with the delivered reply route when one is present, otherwise send directly to the address the delivery carries/);
+  assert.match(manifest._note, /codex exec` never trusts or runs hooks/);
 });

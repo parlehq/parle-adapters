@@ -7,6 +7,7 @@ import {
   CODEX_QUEUE_WAKE_TRIGGER,
   CodexQueueWake,
   MIN_CODEX_QUEUE_VERSION,
+  acceptableHostExecutable,
   classifyQueueFailure,
   compareSemver,
   defaultExecFile,
@@ -152,6 +153,19 @@ test("codex host discovery refuses a relative path, remote topology, wrong uid, 
   assert.deepEqual(remoteDarwin, { ok: false, reason: "remote-topology" });
 
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: UID + 1 }) })), { ok: false, reason: "wrong-uid" });
+  // A system install (npm -g on Linux) is root-owned while Codex runs as a user.
+  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o755 }) })), { ok: true, executable: { path: CODEX, version: "0.150.1", parentPid: PARENT } });
+  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o777 }) })), { ok: false, reason: "unsafe-executable" });
+  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: UID, mode: 0o775 }) })), { ok: false, reason: "unsafe-executable" });
+  assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ uid: 0, mode: 0o644 }) })), { ok: false, reason: "not-executable" });
+  const rule = (uid, mode, file = true) => acceptableHostExecutable({ uid, mode, isFile: () => file }, UID);
+  assert.equal(rule(UID, 0o755), undefined);
+  assert.equal(rule(0, 0o755), undefined);
+  assert.equal(rule(UID + 1, 0o755), "wrong-uid");
+  assert.equal(rule(0, 0o777), "unsafe-executable");
+  assert.equal(rule(0, 0o757), "unsafe-executable");
+  assert.equal(rule(UID, 0o755, false), "not-executable");
+  assert.equal(acceptableHostExecutable({ uid: 12345, mode: 0o755, isFile: () => true }, undefined), undefined, "no uid means no ownership check");
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ mode: 0o644 }) })), { ok: false, reason: "not-executable" });
   assert.deepEqual(await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ file: false }) })), { ok: false, reason: "not-executable" });
   const missing = await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ path: "/elsewhere" }) }));

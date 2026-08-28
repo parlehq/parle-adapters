@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { connect } from "node:net";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -172,16 +172,25 @@ function executablePathOf(pid) {
   }
 }
 
-// The rules the bridge applies to its own parent: an absolute path to a codex
-// binary owned by this user and executable. The shells and launcher between
-// Codex and this hook fail the name check.
+// The executable rule the bridge applies to its own parent: owned by this
+// user or by root (a system install such as `npm -g`), never writable by
+// group or world, a regular file with exec bits.
+export function acceptableHostExecutable(stat, uid) {
+  if (uid !== undefined && stat.uid !== uid && stat.uid !== 0) return false;
+  if (!stat.isFile() || (stat.mode & 0o111) === 0) return false;
+  return (stat.mode & 0o022) === 0;
+}
+
+// A Codex process: an absolute path to a codex binary that passes the
+// executable rule. The shells and launcher between Codex and this hook fail
+// the name check; under the npm wrapper the native binary
+// (.../vendor/<triple>/codex/codex) is the nearest match and the node shim
+// above it is never reached.
 function isCodexProcess(pid) {
   const path = executablePathOf(pid);
   if (!path || !isAbsolute(path) || !CODEX_EXECUTABLE_NAME.test(basename(path))) return false;
   try {
-    const stat = statSync(path);
-    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return false;
-    return stat.isFile() && (stat.mode & 0o111) !== 0;
+    return acceptableHostExecutable(statSync(path), typeof process.getuid === "function" ? process.getuid() : undefined);
   } catch {
     return false;
   }
@@ -380,4 +389,14 @@ async function main() {
   process.exitCode = 0;
 }
 
-await main();
+// The hook is the entry under every host launcher; tests import the
+// executable rule without running it.
+function isDirectRun() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectRun()) await main();
