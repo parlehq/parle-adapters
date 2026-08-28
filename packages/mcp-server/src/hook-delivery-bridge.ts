@@ -38,6 +38,13 @@ const MAX_HOOK_BATCH = 20;
 const MAX_HOOK_BYTES = 512 * 1024;
 const MAX_SOCKET_INPUT = 16 * 1024;
 const LEASE_MS = 30_000;
+// Idle-wake suspension (parlehq/parle-adapters#185): the host's memory-pressure
+// reaper ends the waiter task without the bridge delivering anything. Repeated
+// detaches inside one window mean re-arming is churn, so the bridge latches a
+// suspension until a human prompt arrives.
+const WAITER_DETACH_RING = 16;
+const WAITER_DETACH_WINDOW_MS = 60 * 60_000;
+const WAITER_DETACH_SUSPEND_THRESHOLD = 3;
 
 export type HookDeliveryBridgeStatus = {
   running: boolean;
@@ -46,6 +53,11 @@ export type HookDeliveryBridgeStatus = {
   socketPath: string;
   hostSessionBound: boolean;
   waiterAttached: boolean;
+  // Waiter sockets that closed without a queued-delivery response in the last
+  // hour, and the latched suspension they can trigger.
+  waiterDetachesRecent: number;
+  idleWakeSuspended: boolean;
+  idleWakeSuspensionAnnounced: boolean;
   agentSessionId?: string;
   ownerPid: number;
   hostParentPid?: number;
@@ -280,6 +292,9 @@ export class HookDeliveryBridge {
   private idleWakeStarted = false;
   private leaseTimer?: unknown;
   private waiter?: Socket;
+  private readonly waiterDetaches: number[] = [];
+  private idleWakeSuspended = false;
+  private idleWakeSuspensionAnnounced = false;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
 
@@ -334,6 +349,9 @@ export class HookDeliveryBridge {
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
       waiterAttached: Boolean(this.waiter),
+      waiterDetachesRecent: this.recentWaiterDetaches(Date.now()),
+      idleWakeSuspended: this.idleWakeSuspended,
+      idleWakeSuspensionAnnounced: this.idleWakeSuspensionAnnounced,
       ownerPid: process.pid,
       ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() }),
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
@@ -633,12 +651,45 @@ export class HookDeliveryBridge {
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
       const bound = this.bindHostSession(sessionId, command?.allowReplace === true, true);
+      // A human prompt ends the suspension episode: the next eligible Stop may
+      // ask to re-arm again and a fresh episode owes a fresh announcement.
+      if (bound && command?.hookEventName === "UserPromptSubmit") this.resetIdleWakeSuspension();
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
+    if (command?.action === "announce-suspension") return this.announceSuspension();
     throw new Error("unknown Parle hook bridge action");
+  }
+
+  private recentWaiterDetaches(now: number): number {
+    return this.waiterDetaches.filter((at) => at > now - WAITER_DETACH_WINDOW_MS).length;
+  }
+
+  // Called when the attached waiter socket closes before the bridge ended it
+  // with a queued-delivery response: the host reaped or killed the task.
+  private recordWaiterDetach(at = Date.now()): void {
+    this.waiterDetaches.push(at);
+    if (this.waiterDetaches.length > WAITER_DETACH_RING) this.waiterDetaches.splice(0, this.waiterDetaches.length - WAITER_DETACH_RING);
+    if (!this.idleWakeSuspended && this.recentWaiterDetaches(at) >= WAITER_DETACH_SUSPEND_THRESHOLD) {
+      this.idleWakeSuspended = true;
+      this.idleWakeSuspensionAnnounced = false;
+      console.error(JSON.stringify({ event: "parle_responsive_delivery", stage: "idle_wake_suspended", at: new Date(at).toISOString(), detaches: this.waiterDetaches.length }));
+    }
+  }
+
+  // The announcement is owed exactly once per suspension episode.
+  private announceSuspension(): { ok: true; owed: boolean } {
+    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced;
+    if (owed) this.idleWakeSuspensionAnnounced = true;
+    return { ok: true, owed };
+  }
+
+  private resetIdleWakeSuspension(): void {
+    this.waiterDetaches.length = 0;
+    this.idleWakeSuspended = false;
+    this.idleWakeSuspensionAnnounced = false;
   }
 
   private wait(socket: Socket, agentSessionId: string): void {
@@ -657,7 +708,9 @@ export class HookDeliveryBridge {
     }
     this.waiter = socket;
     socket.once("close", () => {
-      if (this.waiter === socket) this.waiter = undefined;
+      if (this.waiter !== socket) return;
+      this.waiter = undefined;
+      this.recordWaiterDetach();
     });
   }
 
