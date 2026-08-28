@@ -84,6 +84,9 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /Never infer delivery health from MCP connectivity/);
   assert.match(skill, /`waiterAttached` means only/);
   assert.match(skill, /`idle_wake_unarmed`/);
+  assert.match(skill, /`status: killed`/);
+  assert.match(skill, /idle wake suspended/);
+  assert.match(skill, /Do not disable the host's memory-pressure safety valve/);
   assert.match(skill, /reload or restart Claude/);
   assert.match(skill, /upstream-blocked/);
   assert.match(skill, /Do not start another watcher merely because delivery completed/);
