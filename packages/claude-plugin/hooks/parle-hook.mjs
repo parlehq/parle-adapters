@@ -311,13 +311,17 @@ async function idleWakeContext(args, payload, sessionId, delivery) {
   if (delivery.status.idleWakeSuspensionAnnounced === true) return { context: "" };
   let announced;
   try {
-    announced = await request(delivery.path, { action: "announce-suspension", sessionId });
+    announced = await request(delivery.path, { action: "announce-suspension", sessionId, claim: true });
   } catch (error) {
     // A lost claim response must not cost this Stop its delivery injection.
     reportFailure(error);
     return { context: "" };
   }
-  if (announced?.ok !== true || announced.owed !== true || typeof announced.claimId !== "string") return { context: "" };
+  if (announced?.ok !== true || announced.owed !== true) return { context: "" };
+  // An older bridge (a still-running MCP process from the previous plugin
+  // version) ignores claim:true and has already marked the announcement
+  // final: emit the line and commit nothing.
+  if (typeof announced.claimId !== "string") return { context: IDLE_WAKE_SUSPENDED };
   return { context: IDLE_WAKE_SUSPENDED, claimId: announced.claimId };
 }
 
@@ -409,18 +413,32 @@ async function main() {
     await writeOutput(output || {});
     outputWritten = true;
     if (!output || (!deliveryBatch && !idleWake.claimId)) return;
-    if (deliveryBatch) {
-      const commitBudgetMs = Math.floor(deadline - Date.now());
-      if (commitBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before acknowledgement");
-      const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId }, commitBudgetMs);
-      if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
-    }
+    // Each commit is independent: a failed delivery acknowledgement must not
+    // strand the announcement claim (which would repeat the line), and a
+    // failed announcement commit must not lose the delivery acknowledgement.
+    // The local suspension commit goes first because it is cheap.
+    const failures = [];
     if (idleWake.claimId) {
-      const claimBudgetMs = Math.floor(deadline - Date.now());
-      if (claimBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before the suspension announcement was committed");
-      const committed = await request(delivery.path, { action: "commit-suspension", sessionId, claimId: idleWake.claimId }, claimBudgetMs);
-      if (!committed?.ok) throw new Error("Parle hook bridge did not commit the idle-wake suspension announcement");
+      try {
+        const claimBudgetMs = Math.floor(deadline - Date.now());
+        if (claimBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before the suspension announcement was committed");
+        const committed = await request(delivery.path, { action: "commit-suspension", sessionId, claimId: idleWake.claimId }, claimBudgetMs);
+        if (!committed?.ok) throw new Error("Parle hook bridge did not commit the idle-wake suspension announcement");
+      } catch (error) {
+        failures.push(error);
+      }
     }
+    if (deliveryBatch) {
+      try {
+        const commitBudgetMs = Math.floor(deadline - Date.now());
+        if (commitBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before acknowledgement");
+        const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId }, commitBudgetMs);
+        if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    for (const failure of failures) reportFailure(failure);
   } catch (error) {
     reportFailure(error);
     if (!outputWritten) {

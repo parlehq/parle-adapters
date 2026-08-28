@@ -665,7 +665,7 @@ export class HookDeliveryBridge {
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
-    if (command?.action === "announce-suspension") return this.announceSuspension();
+    if (command?.action === "announce-suspension") return this.announceSuspension(command?.claim === true);
     if (command?.action === "commit-suspension") return this.commitSuspension(String(command.claimId || ""));
     throw new Error("unknown Parle hook bridge action");
   }
@@ -686,12 +686,18 @@ export class HookDeliveryBridge {
     }
   }
 
-  // The announcement is owed exactly once per suspension episode. Like the
-  // delivery lease, it is claimed here and becomes final only on commit; an
-  // expired uncommitted claim makes it owed again.
-  private announceSuspension(): { ok: true; owed: boolean; claimId?: string } {
+  // The announcement is owed exactly once per suspension episode. A hook that
+  // sends claim:true gets a claim that becomes final only on commit, so an
+  // expired uncommitted claim is owed again. A hook that omits it (an older
+  // plugin hook against this bridge during a live update) cannot commit, so
+  // its announcement is marked final in this one step.
+  private announceSuspension(claim: boolean): { ok: true; owed: boolean; claimId?: string } {
     const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced && !this.liveSuspensionClaim();
     if (!owed) return { ok: true, owed: false };
+    if (!claim) {
+      this.idleWakeSuspensionAnnounced = true;
+      return { ok: true, owed: true };
+    }
     this.suspensionClaim = { id: randomUUID(), expiresAt: Date.now() + SUSPENSION_CLAIM_MS };
     return { ok: true, owed: true, claimId: this.suspensionClaim.id };
   }

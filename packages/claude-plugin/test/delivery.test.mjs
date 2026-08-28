@@ -31,7 +31,7 @@ function cleanupFixture(cwd) {
 let nextOwnerPid = 900_000_000;
 
 // A stub bridge that records every action and answers with a scripted reply.
-function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false, idleWakeSuspended = false, idleWakeSuspensionAnnounced = false, suspendOnTake = false, legacyTake = false, announceDelayMs = 0, suspensionCommitOk = true } = {}) {
+function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false, idleWakeSuspended = false, idleWakeSuspensionAnnounced = false, suspendOnTake = false, legacyTake = false, legacyAnnounce = false, announceDelayMs = 0, suspensionCommitOk = true } = {}) {
   const ownerPid = nextOwnerPid++;
   const dir = join(stateDir(scope), String(hostParentPid));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -71,6 +71,12 @@ function startBridge(scope, { messages, agentSessionId = "parle-agent-session", 
       }
       if (command.action === "announce-suspension" && command.sessionId === boundSessionId) {
         const owed = suspended && !suspensionAnnounced && !suspensionClaim;
+        // An older bridge ignores claim:true and marks the announcement final
+        // in one step, returning no claimId.
+        if (legacyAnnounce) {
+          if (owed) suspensionAnnounced = true;
+          return void setTimeout(() => socket.end(`${JSON.stringify({ ok: true, owed })}\n`), announceDelayMs);
+        }
         if (owed) suspensionClaim = "claim-1";
         return void setTimeout(() => socket.end(`${JSON.stringify({ ok: true, owed, ...(owed ? { claimId: suspensionClaim } : {}) })}\n`), announceDelayMs);
       }
@@ -247,6 +253,7 @@ test("a suspended idle wake is announced once at Stop instead of re-armed", asyn
     assert.equal(first.hookSpecificOutput.additionalContext, suspended);
     // The claim is committed only after output was written.
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension"]);
+    assert.equal(bridge.actions[3].claim, true, "the hook negotiates a claim explicitly");
     assert.equal(bridge.actions[4].claimId, "claim-1");
 
     // The bridge marked the episode announced: the next Stop says nothing.
@@ -271,7 +278,56 @@ test("a suspended idle wake is announced once at Stop instead of re-armed", asyn
     assert.doesNotMatch(context, /idle wake is not attached/);
     assert.ok(context.endsWith(suspended));
     assert.ok(context.indexOf("seq=15") < context.indexOf("idle wake suspended"));
-    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit", "commit-suspension"]);
+    // The cheap local suspension commit precedes the delivery acknowledgement.
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension", "commit"]);
+  });
+});
+
+test("a new hook against an older bridge treats an owed answer without a claimId as already announced", async () => {
+  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  await withBridge({ messages: [], idleWakeSuspended: true, legacyAnnounce: true }, async ({ cwd, bridge }) => {
+    const first = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
+    assert.equal(first.hookSpecificOutput.additionalContext, SUSPENDED_LINE);
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension"], "no commit is attempted against a bridge that already marked it final");
+
+    bridge.actions.length = 0;
+    const second = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.deepEqual(JSON.parse(second.stdout), {});
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
+  });
+});
+
+test("delivery acknowledgement and suspension commit fail independently after output", async () => {
+  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  // A rejected delivery commit still leaves the announcement committed.
+  await withBridge({ messages: [deliveredRow(17)], idleWakeSuspended: true, commitOk: false }, async ({ cwd, bridge }) => {
+    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    assert.match(context, /seq=17/);
+    assert.ok(context.endsWith(SUSPENDED_LINE));
+    assert.match(result.stderr, /did not acknowledge the injected batch/);
+    assert.doesNotMatch(result.stderr, /idle-wake suspension/);
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension", "commit"]);
+
+    bridge.actions.length = 0;
+    const next = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.doesNotMatch(JSON.parse(next.stdout).hookSpecificOutput.additionalContext, /idle wake suspended/, "the announcement does not repeat");
+  });
+
+  // A rejected suspension commit still acknowledges the delivery.
+  await withBridge({ messages: [deliveredRow(18)], idleWakeSuspended: true, suspensionCommitOk: false }, async ({ cwd, bridge }) => {
+    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /seq=18/);
+    assert.match(result.stderr, /did not commit the idle-wake suspension announcement/);
+    assert.doesNotMatch(result.stderr, /did not acknowledge/);
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension", "commit"]);
+  });
+
+  // A timed-out suspension commit still leaves budget for the delivery commit.
+  await withBridge({ messages: [deliveredRow(19)], idleWakeSuspended: true, suspensionCommitOk: false, commitDelayMs: 200 }, async ({ cwd, bridge }) => {
+    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.match(result.stderr, /did not commit the idle-wake suspension announcement/);
+    assert.equal(bridge.actions.filter((action) => action.action === "commit").length, 1);
   });
 });
 

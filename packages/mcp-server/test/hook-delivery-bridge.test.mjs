@@ -1208,11 +1208,12 @@ test("hook bridge announces a suspension once through a committed claim and rese
     assert.equal(taken.status.idleWakeSuspended, true);
     assert.equal(taken.status.waiterDetachesRecent, 3);
 
-    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1" });
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
     assert.equal(claimed.owed, true);
     assert.match(claimed.claimId, /^[0-9a-f-]{36}$/);
     assert.equal(bridge.status().idleWakeSuspensionAnnounced, false, "a claim is not yet an announcement");
-    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: false }, "a live claim blocks a second claim");
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true }), { ok: true, owed: false }, "a live claim blocks a second claim");
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: false }, "a legacy hook cannot pre-empt a live claim either");
     const wrong = await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: "not-the-claim" });
     assert.equal(wrong.ok, false);
     assert.match(wrong.error, /missing or expired/);
@@ -1229,9 +1230,14 @@ test("hook bridge announces a suspension once through a committed claim and rese
     assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
     assert.equal(bridge.status().waiterDetachesRecent, 0);
 
-    // A fresh episode after the reset owes a fresh announcement.
+    // A fresh episode after the reset owes a fresh announcement. An older
+    // plugin hook omits claim:true and cannot commit, so its announcement is
+    // final in one step and returns no claimId.
     for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
-    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-1" })).owed, true);
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: true });
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, true, "a legacy announcement is marked final immediately");
+    assert.equal(bridge.suspensionClaim, undefined, "a legacy announcement leaves no claim to expire");
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true }), { ok: true, owed: false });
   } finally {
     await bridge.stop();
     cleanupFixture(cwd);
@@ -1254,13 +1260,13 @@ test("hook bridge makes an uncommitted suspension claim owed again after expiry,
     // writing output: nothing is acknowledged and nothing is announced.
     const leased = await request(path, { action: "take", sessionId: "host-1" });
     assert.equal(leased.messages.length, 1);
-    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1" });
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
     assert.equal(claimed.owed, true);
     assert.equal(bridge.status().pending, 1);
     assert.deepEqual(acknowledgements, []);
     assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
     assert.deepEqual(await request(path, { action: "take", sessionId: "host-1" }), { ok: true, busy: true, messages: [], status: bridge.status() });
-    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-1" })).owed, false, "a live claim is not re-issued");
+    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true })).owed, false, "a live claim is not re-issued");
 
     // Both expire uncommitted; the next Stop gets the row and the announcement again.
     bridge.lease.expiresAt = Date.now() - 1;
@@ -1271,7 +1277,7 @@ test("hook bridge makes an uncommitted suspension claim owed again after expiry,
     assert.equal(bridge.status().idleWakeSuspensionAnnounced, false, "an expired claim never announces");
     const retaken = await request(path, { action: "take", sessionId: "host-1" });
     assert.deepEqual(retaken.messages.map((message) => message.event_id), ["evt-1"]);
-    const reclaimed = await request(path, { action: "announce-suspension", sessionId: "host-1" });
+    const reclaimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
     assert.equal(reclaimed.owed, true);
     assert.notEqual(reclaimed.claimId, claimed.claimId);
     assert.deepEqual(await request(path, { action: "commit", sessionId: "host-1", leaseId: retaken.leaseId }), { ok: true, committed: 1 });
@@ -1307,7 +1313,7 @@ test("hook bridge replays 21 reaps over 38 hours as one announcement and no re-a
       if (status.idleWakeSuspended) {
         suspendedAt ??= index;
         if (!status.idleWakeSuspensionAnnounced) {
-          const announced = await request(path, { action: "announce-suspension", sessionId: "host-1" });
+          const announced = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
           if (announced.owed) {
             announcements += 1;
             await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: announced.claimId });
