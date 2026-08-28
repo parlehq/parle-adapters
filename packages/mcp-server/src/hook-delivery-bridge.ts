@@ -38,13 +38,17 @@ const MAX_HOOK_BATCH = 20;
 const MAX_HOOK_BYTES = 512 * 1024;
 const MAX_SOCKET_INPUT = 16 * 1024;
 const LEASE_MS = 30_000;
-// Idle-wake suspension (parlehq/parle-adapters#185): the host's memory-pressure
-// reaper ends the waiter task without the bridge delivering anything. Repeated
+// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps ending the
+// waiter task without the bridge delivering anything (on Claude Code usually
+// the memory-pressure reaper, but the bridge sees only the detach). Repeated
 // detaches inside one window mean re-arming is churn, so the bridge latches a
-// suspension until a human prompt arrives.
+// suspension until a human prompt arrives. The one announcement per episode is
+// claimed and then committed only after the hook wrote its output, so a hook
+// that dies in between does not consume it.
 const WAITER_DETACH_RING = 16;
 const WAITER_DETACH_WINDOW_MS = 60 * 60_000;
 const WAITER_DETACH_SUSPEND_THRESHOLD = 3;
+const SUSPENSION_CLAIM_MS = 10_000;
 
 export type HookDeliveryBridgeStatus = {
   running: boolean;
@@ -105,6 +109,7 @@ type PendingMessage = ResponsiveDeliveryMessage & {
   agentSessionId: string;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
+type SuspensionClaim = { id: string; expiresAt: number };
 
 export type HookDeliveryBridgeDeps = {
   now?: () => number;
@@ -295,6 +300,7 @@ export class HookDeliveryBridge {
   private readonly waiterDetaches: number[] = [];
   private idleWakeSuspended = false;
   private idleWakeSuspensionAnnounced = false;
+  private suspensionClaim?: SuspensionClaim;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
 
@@ -660,6 +666,7 @@ export class HookDeliveryBridge {
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
     if (command?.action === "announce-suspension") return this.announceSuspension();
+    if (command?.action === "commit-suspension") return this.commitSuspension(String(command.claimId || ""));
     throw new Error("unknown Parle hook bridge action");
   }
 
@@ -679,17 +686,34 @@ export class HookDeliveryBridge {
     }
   }
 
-  // The announcement is owed exactly once per suspension episode.
-  private announceSuspension(): { ok: true; owed: boolean } {
-    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced;
-    if (owed) this.idleWakeSuspensionAnnounced = true;
-    return { ok: true, owed };
+  // The announcement is owed exactly once per suspension episode. Like the
+  // delivery lease, it is claimed here and becomes final only on commit; an
+  // expired uncommitted claim makes it owed again.
+  private announceSuspension(): { ok: true; owed: boolean; claimId?: string } {
+    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced && !this.liveSuspensionClaim();
+    if (!owed) return { ok: true, owed: false };
+    this.suspensionClaim = { id: randomUUID(), expiresAt: Date.now() + SUSPENSION_CLAIM_MS };
+    return { ok: true, owed: true, claimId: this.suspensionClaim.id };
+  }
+
+  private commitSuspension(claimId: string): { ok: true; announced: true } {
+    const claim = this.liveSuspensionClaim();
+    if (!claim || claim.id !== claimId) throw new Error("Parle hook bridge suspension claim is missing or expired");
+    this.suspensionClaim = undefined;
+    this.idleWakeSuspensionAnnounced = true;
+    return { ok: true, announced: true };
+  }
+
+  private liveSuspensionClaim(): SuspensionClaim | undefined {
+    if (this.suspensionClaim && this.suspensionClaim.expiresAt <= Date.now()) this.suspensionClaim = undefined;
+    return this.suspensionClaim;
   }
 
   private resetIdleWakeSuspension(): void {
     this.waiterDetaches.length = 0;
     this.idleWakeSuspended = false;
     this.idleWakeSuspensionAnnounced = false;
+    this.suspensionClaim = undefined;
   }
 
   private wait(socket: Socket, agentSessionId: string): void {
@@ -720,19 +744,23 @@ export class HookDeliveryBridge {
     if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}\n`);
   }
 
+  // The response carries a status snapshot taken now, not at the hook's
+  // earlier discovery probe, so a suspension latched in between is seen.
   private take(): unknown {
     // Any take from the bound session, busy or not, proves a live host turn,
     // which is all a queued wake trigger exists to produce. Work left behind
     // is re-armed by commit or by lease expiry.
     this.idleWake?.consumeWake();
-    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
+    // The response carries a status snapshot taken now, not at the hook's
+    // earlier discovery probe, so a suspension latched in between is seen.
+    if (this.liveLease()) return { ok: true, busy: true, messages: [], status: this.status() };
     const messages: PendingMessage[] = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
       if (messages.length > 0 && Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_HOOK_BYTES) break;
       messages.push(message);
     }
-    if (messages.length === 0) return { ok: true, messages: [] };
+    if (messages.length === 0) return { ok: true, messages: [], status: this.status() };
     this.lease = { id: randomUUID(), messages, expiresAt: this.now() + LEASE_MS };
     // An uncommitted lease expires actively: the rows become leasable again
     // and, if the host is idle, wake is requested for them.
@@ -745,6 +773,7 @@ export class HookDeliveryBridge {
       ok: true,
       leaseId: this.lease.id,
       messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
+      status: this.status(),
     };
   }
 

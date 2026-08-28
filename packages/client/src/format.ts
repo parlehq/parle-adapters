@@ -93,7 +93,7 @@ function deliveryLine(input: CompactConnectionCardInput["responsiveDelivery"]): 
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake)) return `${input.state} (idle wake ${input.idleWake})`;
   // A latched suspension renders truthfully instead of inviting a re-arm
   // (host memory-pressure reaps, #185).
-  if (input.reason === "idle_wake_suspended") return `${input.state} (idle wake suspended: host memory pressure)`;
+  if (input.reason === "idle_wake_suspended") return `${input.state} (idle wake suspended: watcher keeps detaching)`;
   if (input.reason === "idle_wake_unarmed") return `${input.state} (idle wake unarmed)`;
   return input.state;
 }

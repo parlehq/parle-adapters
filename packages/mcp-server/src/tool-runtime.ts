@@ -312,7 +312,7 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
     && bridgeStatus.waiterAttached === false
     && ["watching", "idle"].includes(resolved.state);
   // A suspended idle wake is still unarmed, but re-arming is deliberately
-  // withheld until the next prompt (host memory-pressure reaps, #185).
+  // withheld until the next prompt because the watcher keeps detaching (#185).
   if (idleWakeUnarmed) resolved = { ...resolved, reason: bridgeStatus.idleWakeSuspended === true ? "idle_wake_suspended" : "idle_wake_unarmed" };
   const evidence = hostIdleWakeEvidence(host, bridgeStatus);
   const idleWake = evidence.state;

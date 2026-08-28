@@ -2,7 +2,7 @@
 
 ## 0.9.69 (2026-08-28)
 
-- Quiet the memory-pressure reap loop: after three watcher detaches within an hour the Stop hook announces once that idle wake is suspended instead of asking to re-arm, `parle_status` renders `idle wake suspended: host memory pressure`, and the suspension ends at the next prompt. The skill treats a `status: killed` watcher notification as a silent same-turn re-arm, and the README documents the operator-side `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` opt-out that the plugin never sets (#185).
+- Quiet the watcher re-arm loop: after three watcher detaches within an hour the Stop hook announces once that idle wake is suspended (the watcher keeps detaching, usually host memory pressure) instead of asking to re-arm, `parle_status` renders `idle wake suspended: watcher keeps detaching`, and the suspension ends at the next prompt. The announcement is committed only after the hook wrote its output, and the hook decides on the bridge's take-time status rather than its earlier discovery probe. The skill treats a `status: killed`, empty-output watcher notification as a silent same-turn re-arm under this recovery policy, and the README documents the operator-side `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` opt-out that the plugin never sets (#185).
 
 ## 0.9.68 (2026-08-27)
 

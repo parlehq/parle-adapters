@@ -1012,7 +1012,10 @@ test("status and connect distinguish bridge health from local waiter attachment"
     assert.equal(suspended.structuredContent.responsiveDelivery.state, "watching");
     assert.equal(suspended.structuredContent.responsiveDelivery.reason, "idle_wake_suspended");
     assert.equal(suspended.structuredContent.responsiveDelivery.nextActionKey, "wait-for-prompt");
-    assert.match(suspended.structuredContent.compactText, /Delivery      watching \(idle wake suspended: host memory pressure\)/);
+    assert.match(suspended.structuredContent.compactText, /Delivery      watching \(idle wake suspended: watcher keeps detaching\)/);
+    // The bridge observes detaches, not their cause; the shared card (also
+    // served to Codex) must not diagnose memory pressure.
+    assert.doesNotMatch(suspended.structuredContent.compactText, /memory pressure/);
     assert.match(suspended.structuredContent.compactText, /Next: idle wake resumes at the next prompt/);
     idleWakeSuspended = false;
     waiterAttached = true;

@@ -344,6 +344,15 @@ test("missing ModApi capabilities refuse registration visibly", async () => {
   assert.match(notices[0], /cmd\.addTool/);
 });
 
+test("the mod artifact renders a suspended idle wake with the neutral shared text only", () => {
+  // Command Code has no hook-bridge idle wake of its own; the bundled card
+  // must state the observation and never a Claude-host diagnosis.
+  const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
+  assert.match(artifact, /idle wake suspended: watcher keeps detaching/);
+  assert.match(artifact, /case "wait-for-prompt":/);
+  assert.doesNotMatch(artifact, /memory pressure/);
+});
+
 test("footer reports an honest pending count and never claims idle wake", () => {
   const text = source.renderStatus({
     runtime: {

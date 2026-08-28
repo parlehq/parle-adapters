@@ -260,7 +260,12 @@ async function take(scope, sessionId, allowBind, event, directParent, shellLaunc
     }
     const result = await request(selected.path, { action: "take", sessionId });
     if (!result?.ok) throw new Error(result?.error || "Parle hook bridge take failed");
-    return { path: selected.path, status: selected.status, bound, ...result };
+    // A current bridge snapshots its status inside the take response; prefer
+    // it over the discovery probe so a suspension latched between the two is
+    // honored. An older bridge omits it, so the probe remains the fallback.
+    const { status: takeStatus, ...taken } = result;
+    const status = takeStatus && typeof takeStatus === "object" ? takeStatus : selected.status;
+    return { path: selected.path, status, bound, ...taken };
   }
   for (const path of legacySocketPaths(scope)) {
     try {
@@ -286,11 +291,12 @@ function idleWakeInstruction(launcher, agentSessionId) {
   return `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${command}`;
 }
 
-const IDLE_WAKE_SUSPENDED = "Parle idle wake suspended: host memory pressure keeps ending the watcher; it resumes at the next prompt.";
+const IDLE_WAKE_SUSPENDED = "Parle idle wake suspended: the watcher keeps detaching (usually host memory pressure); it resumes at the next prompt.";
 
-// The bridge latches a suspension after repeated waiter detaches (host
-// memory-pressure reaps). While suspended, Stop never asks to re-arm; the
-// bridge owns the once-per-episode announcement so this hook stays stateless.
+// The bridge latches a suspension after repeated waiter detaches. While
+// suspended, Stop never asks to re-arm; the bridge owns the once-per-episode
+// announcement so this hook stays stateless. The announcement is claimed here
+// and committed only after output is written, like a delivery lease.
 async function idleWakeContext(args, payload, sessionId, delivery) {
   const eligible = args.idleWakeLauncher
     && payload.hook_event_name === "Stop"
@@ -300,11 +306,19 @@ async function idleWakeContext(args, payload, sessionId, delivery) {
     && delivery.status.agentSessionId
     && delivery.busy !== true
     && Array.isArray(delivery.messages);
-  if (!eligible) return "";
-  if (delivery.status.idleWakeSuspended !== true) return idleWakeInstruction(args.idleWakeLauncher, delivery.status.agentSessionId);
-  if (delivery.status.idleWakeSuspensionAnnounced === true) return "";
-  const announced = await request(delivery.path, { action: "announce-suspension", sessionId });
-  return announced?.ok === true && announced.owed === true ? IDLE_WAKE_SUSPENDED : "";
+  if (!eligible) return { context: "" };
+  if (delivery.status.idleWakeSuspended !== true) return { context: idleWakeInstruction(args.idleWakeLauncher, delivery.status.agentSessionId) };
+  if (delivery.status.idleWakeSuspensionAnnounced === true) return { context: "" };
+  let announced;
+  try {
+    announced = await request(delivery.path, { action: "announce-suspension", sessionId });
+  } catch (error) {
+    // A lost claim response must not cost this Stop its delivery injection.
+    reportFailure(error);
+    return { context: "" };
+  }
+  if (announced?.ok !== true || announced.owed !== true || typeof announced.claimId !== "string") return { context: "" };
+  return { context: IDLE_WAKE_SUSPENDED, claimId: announced.claimId };
 }
 
 function formatMessages(messages) {
@@ -381,7 +395,8 @@ async function main() {
     const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : undefined;
     const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent, args.shellLaunched) : undefined;
     const deliveryBatch = delivery && Array.isArray(delivery.messages) && delivery.messages.length > 0 ? delivery : undefined;
-    const rearm = await idleWakeContext(args, payload, sessionId, delivery);
+    const idleWake = await idleWakeContext(args, payload, sessionId, delivery);
+    const rearm = idleWake.context;
     const registryBlock = args.knownAddressContext && payload.hook_event_name === "SessionStart"
       ? renderKnownAddressContext(cwd)
       : "";
@@ -393,11 +408,19 @@ async function main() {
     const output = contextParts.length ? hookOutput(payload.hook_event_name, contextParts.join("\n\n"), args.stopAdditionalContext) : undefined;
     await writeOutput(output || {});
     outputWritten = true;
-    if (!deliveryBatch || !output) return;
-    const commitBudgetMs = Math.floor(deadline - Date.now());
-    if (commitBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before acknowledgement");
-    const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId }, commitBudgetMs);
-    if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+    if (!output || (!deliveryBatch && !idleWake.claimId)) return;
+    if (deliveryBatch) {
+      const commitBudgetMs = Math.floor(deadline - Date.now());
+      if (commitBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before acknowledgement");
+      const committed = await request(deliveryBatch.path, { action: "commit", sessionId, leaseId: deliveryBatch.leaseId }, commitBudgetMs);
+      if (!committed?.ok) throw new Error("Parle hook bridge did not acknowledge the injected batch");
+    }
+    if (idleWake.claimId) {
+      const claimBudgetMs = Math.floor(deadline - Date.now());
+      if (claimBudgetMs <= 0) throw new Error("Parle hook commit budget was exhausted before the suspension announcement was committed");
+      const committed = await request(delivery.path, { action: "commit-suspension", sessionId, claimId: idleWake.claimId }, claimBudgetMs);
+      if (!committed?.ok) throw new Error("Parle hook bridge did not commit the idle-wake suspension announcement");
+    }
   } catch (error) {
     reportFailure(error);
     if (!outputWritten) {

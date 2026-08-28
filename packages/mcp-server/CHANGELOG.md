@@ -2,7 +2,7 @@
 
 ## 0.7.64 (2026-08-28)
 
-- Quiet the memory-pressure reap loop: the hook bridge counts waiter detaches it did not end (bounded ring, 60-minute window), latches `idleWakeSuspended` at three, owes one `announce-suspension` per episode, and resets on a `UserPromptSubmit` bind; the bundled Stop hook stops re-arming while suspended and status reports `idle_wake_suspended` (#185).
+- Quiet the watcher re-arm loop: the hook bridge counts waiter detaches it did not end (bounded ring, 60-minute window), latches `idleWakeSuspended` at three, and resets on a `UserPromptSubmit` bind. The one announcement per episode is claimed through `announce-suspension` and becomes final only on `commit-suspension` after the hook wrote its output; an expired claim is owed again. `take` now returns a fresh `status` snapshot so the hook decides on current state, the bundled Stop hook stops re-arming while suspended, and status reports `idle_wake_suspended` as the observation (the watcher keeps detaching), not a diagnosis (#185).
 
 ## 0.7.63 (2026-08-27)
 

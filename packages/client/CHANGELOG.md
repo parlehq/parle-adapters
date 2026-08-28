@@ -2,7 +2,7 @@
 
 ## 0.8.55 (2026-08-28)
 
-- Render a suspended idle wake in the compact connection and status cards (`idle_wake_suspended`, next key `wait-for-prompt`) so a host whose memory-pressure reaper keeps ending the watcher is reported truthfully instead of as an unarmed wake to re-arm (parlehq/parle-adapters#185).
+- Render a suspended idle wake in the compact connection and status cards (`idle_wake_suspended` as `watcher keeps detaching`, next key `wait-for-prompt`) so a host whose watcher keeps detaching is reported as that observation instead of as an unarmed wake to re-arm (parlehq/parle-adapters#185).
 
 ## 0.8.54 (2026-08-27)
 
