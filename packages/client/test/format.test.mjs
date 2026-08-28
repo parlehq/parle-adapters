@@ -148,6 +148,21 @@ test("status and connection cards make unarmed idle wake visible without changin
   assert.match(status, /Next: arm or verify responsive delivery\./);
 });
 
+test("status and connection cards render a suspended idle wake truthfully with prompt-bound guidance", () => {
+  const responsiveDelivery = { state: "watching", reason: "idle_wake_suspended", nextActionKey: "wait-for-prompt" };
+  const connection = compactConnectionCardFromSummary({ sessionAddress: "@p.a.s1", rooms: [{ roomHandle: "room-one" }] }, { responsiveDelivery, next: responsiveDelivery.nextActionKey });
+  assert.match(connection, /Delivery      watching \(idle wake suspended: host memory pressure\)/);
+  assert.match(connection, /Next: idle wake resumes at the next prompt; do not re-arm the watcher until then\./);
+
+  const status = compactStatusCardFromStatus({
+    responsiveDelivery,
+    config: { roomHandle: { value: "room-one" }, roomId: { configured: true }, agentToken: { configured: true } },
+    runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] },
+  });
+  assert.match(status, /Delivery      watching \(idle wake suspended: host memory pressure\)/);
+  assert.match(status, /Next: idle wake resumes at the next prompt/);
+});
+
 test("status card renders idle wake unavailable without asking to arm anything (#171)", () => {
   const responsiveDelivery = { state: "watching", idleWake: "unavailable", nextActionKey: "idle-wake-unavailable" };
   const status = compactStatusCardFromStatus({

@@ -311,7 +311,9 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
     && bridgeStatus.hostSessionBound === true
     && bridgeStatus.waiterAttached === false
     && ["watching", "idle"].includes(resolved.state);
-  if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
+  // A suspended idle wake is still unarmed, but re-arming is deliberately
+  // withheld until the next prompt (host memory-pressure reaps, #185).
+  if (idleWakeUnarmed) resolved = { ...resolved, reason: bridgeStatus.idleWakeSuspended === true ? "idle_wake_suspended" : "idle_wake_unarmed" };
   const evidence = hostIdleWakeEvidence(host, bridgeStatus);
   const idleWake = evidence.state;
   // The reason stays in the JSON; the card renders only the state.
@@ -327,6 +329,8 @@ function enrichResponsiveDelivery(responsiveDelivery: any, bridgeStatus?: Record
         ? { nextActionKey: "wait-for-watcher" as const, nextAction: "wait for responsive delivery startup" }
         : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict"
           ? { nextActionKey: "recover-watcher" as const, nextAction: "inspect the responsive delivery error" }
+          : resolved.reason === "idle_wake_suspended"
+            ? { nextActionKey: "wait-for-prompt" as const, nextAction: "idle wake resumes at the next prompt" }
           : hostNext
             ? hostNext
             : bridgeStatus && bridgeStatus.waiterAttached !== true
