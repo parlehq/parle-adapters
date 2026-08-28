@@ -35570,7 +35570,7 @@ function deliveryLine(input) {
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
     return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_suspended")
-    return `${input.state} (idle wake suspended: host memory pressure)`;
+    return `${input.state} (idle wake suspended: watcher keeps detaching)`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
@@ -39253,6 +39253,7 @@ var LEASE_MS = 3e4;
 var WAITER_DETACH_RING = 16;
 var WAITER_DETACH_WINDOW_MS = 60 * 6e4;
 var WAITER_DETACH_SUSPEND_THRESHOLD = 3;
+var SUSPENSION_CLAIM_MS = 1e4;
 function deliveryKey2(roomId, message) {
   return `${roomId}:${message.seq}:${message.event_id}`;
 }
@@ -39440,6 +39441,7 @@ var HookDeliveryBridge = class {
   waiterDetaches = [];
   idleWakeSuspended = false;
   idleWakeSuspensionAnnounced = false;
+  suspensionClaim;
   unsubscribeCommitGuard;
   evidence;
   status() {
@@ -39738,6 +39740,7 @@ var HookDeliveryBridge = class {
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
     if (command?.action === "announce-suspension") return this.announceSuspension();
+    if (command?.action === "commit-suspension") return this.commitSuspension(String(command.claimId || ""));
     throw new Error("unknown Parle hook bridge action");
   }
   recentWaiterDetaches(now) {
@@ -39754,16 +39757,31 @@ var HookDeliveryBridge = class {
       console.error(JSON.stringify({ event: "parle_responsive_delivery", stage: "idle_wake_suspended", at: new Date(at).toISOString(), detaches: this.waiterDetaches.length }));
     }
   }
-  // The announcement is owed exactly once per suspension episode.
+  // The announcement is owed exactly once per suspension episode. Like the
+  // delivery lease, it is claimed here and becomes final only on commit; an
+  // expired uncommitted claim makes it owed again.
   announceSuspension() {
-    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced;
-    if (owed) this.idleWakeSuspensionAnnounced = true;
-    return { ok: true, owed };
+    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced && !this.liveSuspensionClaim();
+    if (!owed) return { ok: true, owed: false };
+    this.suspensionClaim = { id: randomUUID5(), expiresAt: Date.now() + SUSPENSION_CLAIM_MS };
+    return { ok: true, owed: true, claimId: this.suspensionClaim.id };
+  }
+  commitSuspension(claimId) {
+    const claim = this.liveSuspensionClaim();
+    if (!claim || claim.id !== claimId) throw new Error("Parle hook bridge suspension claim is missing or expired");
+    this.suspensionClaim = void 0;
+    this.idleWakeSuspensionAnnounced = true;
+    return { ok: true, announced: true };
+  }
+  liveSuspensionClaim() {
+    if (this.suspensionClaim && this.suspensionClaim.expiresAt <= Date.now()) this.suspensionClaim = void 0;
+    return this.suspensionClaim;
   }
   resetIdleWakeSuspension() {
     this.waiterDetaches.length = 0;
     this.idleWakeSuspended = false;
     this.idleWakeSuspensionAnnounced = false;
+    this.suspensionClaim = void 0;
   }
   wait(socket, agentSessionId) {
     const current = String(this.client.runtime?.agentSessionId || "");
@@ -39795,16 +39813,18 @@ var HookDeliveryBridge = class {
     if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}
 `);
   }
+  // The response carries a status snapshot taken now, not at the hook's
+  // earlier discovery probe, so a suspension latched in between is seen.
   take() {
     this.idleWake?.consumeWake();
-    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
+    if (this.liveLease()) return { ok: true, busy: true, messages: [], status: this.status() };
     const messages = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
       if (messages.length > 0 && Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_HOOK_BYTES) break;
       messages.push(message);
     }
-    if (messages.length === 0) return { ok: true, messages: [] };
+    if (messages.length === 0) return { ok: true, messages: [], status: this.status() };
     this.lease = { id: randomUUID5(), messages, expiresAt: this.now() + LEASE_MS };
     this.leaseTimer = this.setTimer(() => {
       this.leaseTimer = void 0;
@@ -39814,7 +39834,8 @@ var HookDeliveryBridge = class {
     return {
       ok: true,
       leaseId: this.lease.id,
-      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message)
+      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
+      status: this.status()
     };
   }
   async commit(leaseId) {

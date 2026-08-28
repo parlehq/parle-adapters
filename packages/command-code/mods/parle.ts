@@ -4577,7 +4577,7 @@ function deliveryLine(input) {
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
     return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_suspended")
-    return `${input.state} (idle wake suspended: host memory pressure)`;
+    return `${input.state} (idle wake suspended: watcher keeps detaching)`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
