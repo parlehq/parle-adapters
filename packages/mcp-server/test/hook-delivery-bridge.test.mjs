@@ -1290,6 +1290,40 @@ test("hook bridge makes an uncommitted suspension claim owed again after expiry,
   }
 });
 
+test("hook bridge fences SessionStart replacement behind a live suspension claim until it commits or expires", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-claim-fence-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" });
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+    assert.equal(claimed.owed, true);
+
+    // Another same-cwd session starts while host-1's line is written but not
+    // yet committed: replacement is refused so host-1 can still commit.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true, hookEventName: "SessionStart" }), { ok: false, bound: true });
+    assert.deepEqual(await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: claimed.claimId }), { ok: true, announced: true });
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true, hookEventName: "SessionStart" }), { ok: true, bound: true });
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-2", claim: true }), { ok: true, owed: false }, "the replacement cannot repeat the committed announcement");
+
+    // An expired uncommitted claim no longer fences replacement.
+    await request(path, { action: "bind", sessionId: "host-2", hookEventName: "UserPromptSubmit" });
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    const stale = await request(path, { action: "announce-suspension", sessionId: "host-2", claim: true });
+    assert.equal(stale.owed, true);
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-3", allowReplace: true, hookEventName: "SessionStart" }), { ok: false, bound: true });
+    bridge.suspensionClaim.expiresAt = Date.now() - 1;
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-3", allowReplace: true, hookEventName: "SessionStart" }), { ok: true, bound: true });
+    assert.equal((await request(path, { action: "commit-suspension", sessionId: "host-2", claimId: stale.claimId })).ok, false, "the replaced session is no longer bound");
+    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-3", claim: true })).owed, true, "the expired claim is owed to the replacement");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
 test("hook bridge replays 21 reaps over 38 hours as one announcement and no re-arm eligibility until reset", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-replay-"));
   const bridge = new HookDeliveryBridge(suspensionClient(), cwd);

@@ -385,7 +385,10 @@ export class HookDeliveryBridge {
       return false;
     }
     if (this.hostSessionId === sessionId) return true;
-    if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
+    // A live suspension claim fences replacement like a live delivery lease:
+    // the claiming session must be able to commit the line it already wrote,
+    // or the replacement could repeat the same episode's announcement.
+    if (this.liveLease() || this.liveSuspensionClaim() || (this.hostSessionId && !allowReplace)) return false;
     // A binding that MCP metadata confirmed and that still holds work is a
     // live thread in this process; another thread's SessionStart must not
     // take that work. An unconfirmed binding (a host that passes no thread

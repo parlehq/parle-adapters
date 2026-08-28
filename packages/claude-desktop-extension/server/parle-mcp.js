@@ -39484,7 +39484,7 @@ var HookDeliveryBridge = class {
       return false;
     }
     if (this.hostSessionId === sessionId) return true;
-    if (this.liveLease() || this.hostSessionId && !allowReplace) return false;
+    if (this.liveLease() || this.liveSuspensionClaim() || this.hostSessionId && !allowReplace) return false;
     if (this.hostSessionId && this.metaHostSessionId === this.hostSessionId && this.pending.length > 0) return false;
     this.hostSessionId = sessionId;
     this.requestIdleWake();
