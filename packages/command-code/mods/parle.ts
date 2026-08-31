@@ -4628,6 +4628,7 @@ var DEFAULT_FALLBACK_JITTER_MS = 3e4;
 var DEFAULT_RECONNECT_JITTER_MS = 3e4;
 var MAX_TIMER_MS = 2147483647;
 var MAX_REMEMBERED_KEYS = 5e3;
+var MAX_PROGRESS_EVENTS = 64;
 function deliveryKey(roomId, message) {
   return `${roomId}:${message.event_id}`;
 }
@@ -4666,6 +4667,10 @@ var ResponsiveDeliveryController = class {
   poisonedKeys = /* @__PURE__ */ new Set();
   rerunRequested = /* @__PURE__ */ new Map();
   stats = /* @__PURE__ */ new Map();
+  recentProgress = [];
+  heartbeatAt;
+  nextFallbackAt;
+  lastFallbackFiredAt;
   // Rows a host accepted for later effective handling. They are never
   // re-offered to the handler and never acknowledged until the host reports
   // completion, so a crash before injection leaves the row redeliverable.
@@ -4696,8 +4701,13 @@ var ResponsiveDeliveryController = class {
     this.now = options.now ?? (() => /* @__PURE__ */ new Date());
   }
   status() {
+    const running = Boolean(this.loop) && !this.abort.signal.aborted;
+    const fallbackOverdue = running && Boolean(this.nextFallbackAt) && this.now().getTime() > Date.parse(this.nextFallbackAt);
+    const roomError = [...this.stats.values()].find((stat) => stat.lastError)?.lastError;
+    const health = !running ? "stopped" : fallbackOverdue ? "stale" : this.lastError || roomError ? "degraded" : "healthy";
     return {
-      running: Boolean(this.loop) && !this.abort.signal.aborted,
+      running,
+      health,
       rooms: this.configuredRooms().map((room) => {
         const stat = this.stats.get(room.roomId) || { delivered: 0, skipped: 0, poisoned: 0 };
         return {
@@ -4708,9 +4718,20 @@ var ResponsiveDeliveryController = class {
           skipped: stat.skipped,
           poisoned: stat.poisoned,
           deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
+          ...stat.lastFetchAttemptAt ? { lastFetchAttemptAt: stat.lastFetchAttemptAt } : {},
+          ...stat.lastFetchSuccessAt ? { lastFetchSuccessAt: stat.lastFetchSuccessAt } : {},
+          ...stat.lastFetchTrigger ? { lastFetchTrigger: stat.lastFetchTrigger } : {},
+          ...stat.lastFetchRowCount !== void 0 ? { lastFetchRowCount: stat.lastFetchRowCount } : {},
+          ...stat.lastFetchedSeq !== void 0 ? { lastFetchedSeq: stat.lastFetchedSeq } : {},
           ...stat.lastError ? { lastError: stat.lastError.message, lastErrorAt: stat.lastError.at, lastErrorDomain: stat.lastError.domain } : {}
         };
       }),
+      ...this.heartbeatAt ? { heartbeatAt: this.heartbeatAt } : {},
+      ...this.nextFallbackAt ? { nextFallbackAt: this.nextFallbackAt } : {},
+      ...this.lastFallbackFiredAt ? { lastFallbackFiredAt: this.lastFallbackFiredAt } : {},
+      ...fallbackOverdue ? { staleReason: "fallback_overdue" } : {},
+      ...this.lastError ? { currentErrorDomain: "wake" } : roomError ? { currentErrorDomain: roomError.domain } : {},
+      recentProgress: this.recentProgress.map((event) => ({ ...event, ...event.detail ? { detail: { ...event.detail } } : {} })),
       ignoredWakeHints: this.ignoredWakeHints,
       ...this.lastIgnoredWakeRoomId ? { lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {},
       ...this.lastError ? { lastError: this.lastError.message, lastErrorAt: this.lastError.at } : {}
@@ -4757,6 +4778,7 @@ var ResponsiveDeliveryController = class {
       this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
+      this.reportProgress("ack_started", { roomId, eventId: message.event_id, seq: message.seq });
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence);
     } catch (error51) {
       this.setRoomError(roomId, "ack", error51);
@@ -4866,13 +4888,18 @@ var ResponsiveDeliveryController = class {
   async fallbackLoop(signal) {
     while (!signal.aborted) {
       const timing = this.wakeTiming;
+      const delayMs = this.withJitter(timing.fallbackMs, timing.fallbackJitterMs);
+      const dueAt = new Date(this.now().getTime() + delayMs).toISOString();
+      this.reportProgress("fallback_armed", { dueAt });
       try {
-        await this.sleep(this.withJitter(timing.fallbackMs, timing.fallbackJitterMs), signal);
+        await this.sleep(delayMs, signal);
       } catch {
         return;
       }
       if (signal.aborted)
         return;
+      const firedAt = this.now();
+      this.reportProgress("fallback_fired", { dueAt, latenessMs: Math.max(0, firedAt.getTime() - Date.parse(dueAt)) });
       await this.drainAll("fallback");
     }
   }
@@ -4984,8 +5011,20 @@ var ResponsiveDeliveryController = class {
       stat.lastError = void 0;
   }
   reportProgress(kind, detail) {
+    const at = this.now().toISOString();
+    const stamped = { ...detail, at };
+    this.heartbeatAt = at;
+    if (kind === "fallback_armed")
+      this.nextFallbackAt = detail?.dueAt;
+    if (kind === "fallback_fired") {
+      this.nextFallbackAt = void 0;
+      this.lastFallbackFiredAt = at;
+    }
+    this.recentProgress.push({ kind, at, detail: stamped });
+    if (this.recentProgress.length > MAX_PROGRESS_EVENTS)
+      this.recentProgress.splice(0, this.recentProgress.length - MAX_PROGRESS_EVENTS);
     try {
-      this.onProgress?.(kind, detail);
+      this.onProgress?.(kind, stamped);
     } catch {
     }
   }
@@ -4999,6 +5038,9 @@ var ResponsiveDeliveryController = class {
       };
       try {
         this.reportProgress("fetch_started", { roomId: room.roomId, trigger });
+        const stat = this.stat(room.roomId);
+        stat.lastFetchAttemptAt = this.heartbeatAt;
+        stat.lastFetchTrigger = trigger;
         if (typeof this.client.drainResponsiveDeliveryWithFence === "function") {
           const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId);
           delivery = read.delivery;
@@ -5015,10 +5057,15 @@ var ResponsiveDeliveryController = class {
         }
         this.clearRoomError(room.roomId, "drain");
         const held = delivery?.held_backlog;
+        const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
+        stat.lastFetchSuccessAt = this.now().toISOString();
+        stat.lastFetchTrigger = trigger;
+        stat.lastFetchRowCount = messages.length;
+        stat.lastFetchedSeq = messages.reduce((max, message) => Number.isSafeInteger(message.seq) ? Math.max(max ?? message.seq, message.seq) : max, stat.lastFetchedSeq);
         this.reportProgress("fetch_success", {
           roomId: room.roomId,
           trigger,
-          rowCount: Array.isArray(delivery?.messages) ? delivery.messages.length : 0,
+          rowCount: messages.length,
           scannedMax: Number.isSafeInteger(delivery?.scanned_max) ? delivery.scanned_max : 0,
           firstHeldSeq: Number.isSafeInteger(held?.first_held_seq) ? held.first_held_seq : 0,
           heldCount: Number.isSafeInteger(held?.held_count) ? held.held_count : 0
@@ -5038,6 +5085,7 @@ var ResponsiveDeliveryController = class {
         for (const message of messages) {
           if (this.abort.signal.aborted)
             return;
+          this.reportProgress("row_fetched", { roomId: room.roomId, trigger, eventId: message.event_id, seq: message.seq });
           const key = deliveryKey(room.roomId, message);
           if (this.seen.has(key))
             continue;
@@ -5102,6 +5150,7 @@ var ResponsiveDeliveryController = class {
       }
     }
     try {
+      this.reportProgress("ack_started", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
       await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId, ackCursorScope === "alias" || !ackSourceFence ? void 0 : {
         sessionRevision: ackSourceFence.sessionRevision,
         agentSessionId: ackSourceFence.agentSessionId
@@ -23001,7 +23050,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.34";
+var ADAPTER_VERSION = "0.7.35";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

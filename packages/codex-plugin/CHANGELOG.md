@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.59 (2026-08-31)
+
+- Refresh the bundled MCP runtime with fallback deadline and stage evidence from the shared responsive-delivery controller (#80).
+
 ## 0.6.58 (2026-08-23)
 
 - Carry the bounded room reads of client 0.8.50 through the refreshed MCP artifact (parlehq/parle#927).

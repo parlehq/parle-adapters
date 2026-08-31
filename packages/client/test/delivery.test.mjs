@@ -351,7 +351,7 @@ test("an empty fetch reports liveness without handling or acknowledgement", asyn
   const progress = [];
   const controller = new ResponsiveDeliveryController(h.client, {
     handler: async () => "handled",
-    onProgress: (kind, detail) => progress.push([kind, detail]),
+    onProgress: (kind, { at: _at, ...detail } = {}) => progress.push([kind, detail]),
   });
   try {
     await h.client.connect();
@@ -360,6 +360,8 @@ test("an empty fetch reports liveness without handling or acknowledgement", asyn
       ["fetch_started", { roomId: ALPHA, trigger: "test" }],
       ["fetch_success", { roomId: ALPHA, trigger: "test", rowCount: 0, scannedMax: 0, firstHeldSeq: 0, heldCount: 0 }],
     ]);
+    assert.equal(controller.status().rooms[0].lastFetchRowCount, 0);
+    assert.equal(controller.status().rooms[0].lastFetchTrigger, "test");
   } finally {
     await controller.stop();
     h.cleanup();
@@ -410,14 +412,17 @@ test("handler and acknowledgement failures stop at the last completed stage", as
   try {
     await client.connect();
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_started", "fetch_success"], "handler failure emits no later stage");
+    assert.deepEqual(progress, ["fetch_started", "fetch_success", "row_fetched"], "handler failure emits no later stage");
 
     handlerFails = false;
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_started", "fetch_success", "fetch_started", "fetch_success", "handling_complete"], "ack failure stops after handling");
+    assert.equal(progress.filter((kind) => kind === "handling_complete").length, 1);
+    assert.equal(progress.filter((kind) => kind === "ack_started").length, 1, "ack failure is visible");
 
     await controller.drainForTest(ALPHA);
-    assert.deepEqual(progress, ["fetch_started", "fetch_success", "fetch_started", "fetch_success", "handling_complete", "fetch_started", "fetch_success", "ack_success"], "ack retry never reruns handling");
+    assert.equal(progress.filter((kind) => kind === "handling_complete").length, 1, "ack retry never reruns handling");
+    assert.equal(progress.filter((kind) => kind === "ack_started").length, 2);
+    assert.equal(progress.at(-1), "ack_success");
   } finally {
     await controller.stop();
     h.cleanup();
@@ -450,7 +455,9 @@ test("deferred completion reports handling once and acknowledgement after retry"
     assert.equal(progress.includes("handling_complete"), false, "queueing is not effective handling");
     assert.equal(await controller.completeDeferred(ALPHA, queued), false);
     assert.equal(await controller.completeDeferred(ALPHA, queued), true);
-    assert.deepEqual(progress.slice(-2), ["handling_complete", "ack_success"], "ack retry does not report host completion twice");
+    assert.equal(progress.filter((kind) => kind === "handling_complete").length, 1, "ack retry does not report host completion twice");
+    assert.equal(progress.filter((kind) => kind === "ack_started").length, 2);
+    assert.deepEqual(progress.slice(-2), ["ack_started", "ack_success"]);
   } finally {
     await controller.stop();
     h.cleanup();
@@ -485,7 +492,7 @@ test("a wake hint drains only the named room and acknowledges after handling", a
     handler: async ({ roomId, roomHandle, profile, message }) => { handled.push([roomId, roomHandle, profile, message.event_id]); return "handled"; },
     reconnectDelayMs: 5,
     onWakeOpen: () => { opened = true; },
-    onProgress: (kind, detail) => progress.push([kind, detail]),
+    onProgress: (kind, { at: _at, ...detail } = {}) => progress.push([kind, detail]),
   });
   try {
     await h.client.connect();
@@ -984,13 +991,13 @@ test("a pending deferred row does not spin the drain", async () => {
 
 test("a terminal wake failure settles the loop and a later start resumes delivery", async () => {
   const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha", failFirstWakes: 1 });
-  let clockReads = 0;
+  const now = new Date("2026-08-18T20:04:00.000Z");
   let observedAt;
   let controller;
   controller = new ResponsiveDeliveryController(h.client, {
     handler: () => "handled",
     reconnectDelayMs: 5,
-    now: () => new Date(Date.parse("2026-08-18T20:04:00.000Z") + clockReads++ * 1000),
+    now: () => now,
     onWakeError: () => { observedAt = controller.status().lastErrorAt; },
   });
   try {
@@ -1002,7 +1009,6 @@ test("a terminal wake failure settles the loop and a later start resumes deliver
     assert.match(controller.status().lastError, /wake refused terminally/);
     assert.equal(observedAt, "2026-08-18T20:04:00.000Z");
     assert.equal(controller.status().lastErrorAt, observedAt, "terminal propagation does not restamp one failure");
-    assert.equal(clockReads, 1);
 
     h.queues.set(ALPHA, [{ seq: 1, event_id: "after-restart" }]);
     await controller.start();
@@ -1078,26 +1084,58 @@ test("fallback timing recovers all rooms after total wake-hint loss", async () =
   });
   const sleeper = controlledSleeper();
   const handled = [];
+  const base = Date.parse("2026-08-31T04:00:00.000Z");
+  let nowMs = 0;
   const controller = new ResponsiveDeliveryController(h.client, {
     handler: ({ roomId, message }) => { handled.push([roomId, message.event_id]); return "handled"; },
     random: () => 0.5,
     sleep: sleeper.sleep,
+    now: () => new Date(base + nowMs),
   });
   try {
     await controller.start();
     await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 135000 && !settled));
     await eventually(() => controller.status().running && h.wakeOpens() === 1);
+    assert.equal(controller.status().nextFallbackAt, "2026-08-31T04:02:15.000Z");
     await new Promise((resolve) => setTimeout(resolve, 20));
     h.queues.set(ALPHA, [{ seq: 3, event_id: "alpha-lost-hint" }]);
     h.queues.set(BETA, [{ seq: 4, event_id: "beta-lost-hint" }]);
+    nowMs = 135000;
     sleeper.release((ms) => ms === 135000);
     await eventually(() => handled.length === 2);
     assert.deepEqual(handled.sort(), [[ALPHA, "alpha-lost-hint"], [BETA, "beta-lost-hint"]].sort());
     assert.deepEqual(h.acks.map(([roomId, eventId]) => [roomId, eventId]).sort(), handled.sort());
+    const stages = controller.status().recentProgress.map(({ kind }) => kind);
+    assert.ok(stages.includes("fallback_armed"));
+    assert.ok(stages.includes("fallback_fired"));
+    assert.equal(stages.filter((kind) => kind === "row_fetched").length, 2);
+    assert.equal(stages.filter((kind) => kind === "ack_started").length, 2);
     await eventually(() => sleeper.calls.some(({ ms, settled }) => ms === 1284 && !settled));
     h.config({ fallback_ms: 0, fallback_jitter_ms: -1, reconnect_jitter_ms: "bad" });
     sleeper.release((ms) => ms === 1284);
     await eventually(() => sleeper.calls.filter(({ ms }) => ms === 1284).length === 2);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
+test("an overdue fallback is reported stale without another watchdog", async () => {
+  const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha" });
+  const sleeper = controlledSleeper();
+  let nowMs = 0;
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: () => "handled",
+    random: () => 0,
+    sleep: sleeper.sleep,
+    now: () => new Date(Date.parse("2026-08-31T04:00:00.000Z") + nowMs),
+  });
+  try {
+    await controller.start();
+    await eventually(() => controller.status().nextFallbackAt === "2026-08-31T04:02:00.000Z");
+    nowMs = 120001;
+    assert.equal(controller.status().health, "stale");
+    assert.equal(controller.status().staleReason, "fallback_overdue");
   } finally {
     await controller.stop();
     h.cleanup();

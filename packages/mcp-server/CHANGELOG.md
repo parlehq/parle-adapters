@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.58 (2026-08-31)
+
+- Refresh the shared responsive-delivery controller with fallback deadline and stage evidence (#80).
+
 ## 0.7.57 (2026-08-23)
 
 - Carry the bounded room reads of client 0.8.50 into the MCP artifact and read guidance (parlehq/parle#927).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.51 (2026-08-31)
+
+- Expose body-free fallback deadlines, fetch results, row positions, acknowledgement attempts, and bounded recent progress in shared responsive-delivery status. An overdue fallback is now explicitly stale instead of appearing healthy (#80).
+
 ## 0.8.50 (2026-08-23)
 
 - Adopt bounded room reads (parlehq/parle#927, ADR-0106). A fresh room cursor is the entry `baseline_seq` instead of a discarded cursor-zero history read; an established cursor survives rebootstrap and recovery; the cursor follows `next_since_seq` while `has_more`, never the participant-wide `watermark`; an envelope without `next_since_seq` is a complete delta ending at the last returned row; and `drainProjection`/`drainInbox` are the explicit catch-up, bounded by aggregate row and byte caps across pages and a hard page cap that errors rather than reporting a prefix as complete. A stream generation change — at room entry, on the bootstrap page, or mid-read — retires the cursor for a position in the new stream instead of preserving a number that names a stream that no longer exists; the generation is never adopted without that comparison. Each room fences the generations it has retired, so a delayed response from an overlapping read cannot masquerade as another reset and drag the cursor back to coordinates that are gone. A page the local caps cut is reported as incomplete, and a cursor-preserving rollover carries the held-backlog warning instead of silently clearing it. Unread state stays coherent across both paths: an inbox read or drain never publishes zero while rows remain past the page, a completed drain clears a count an earlier read left standing, and the floor is inbound-only so a projection continuation of self-authored rows cannot raise a standing attention count.

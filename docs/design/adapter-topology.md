@@ -159,12 +159,13 @@ The runtime files and bridge artifacts are credential-free, bounded operational 
     ResponsiveDeliveryController
       → (Pi pending queue)
       → pi.sendUserMessage while idle
+      → pi.sendUserMessage with steer while busy
       → deferred completion
       → server acknowledgement
   ⇢ footer and parle_status
 ```
 
-Pi is native and in-process. It owns host injection policy, pending batching, idle checks, footer state, and failure parking. The shared client and controller own sessions, cursors, wake, drains, deduplication, and acknowledgement. Pi can schedule an idle flush from the delivery edge without a second process.
+Pi is native and in-process. It owns host injection policy, pending batching, footer state, and failure parking. The shared client and controller own sessions, cursors, wake, drains, deduplication, and acknowledgement. Pi schedules a flush from the delivery edge without a second process, injecting immediately while idle or admitting the batch through the supported steering queue while busy.
 
 ### Command Code
 
