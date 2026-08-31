@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, recoveryInvokerState, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type RoomCapacityRecoveryParams, type RoomParticipantsParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, recoveryInvokerState, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type RoomCapacityRecoveryParams, type RoomParticipantsParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type DeliveryProgressDetail, type DeliveryProgressKind, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.58";
+const PI_EXTENSION_VERSION = "0.7.59";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -27,6 +27,7 @@ const FOOTER_FAILURE_AGE_MS = 60_000;
 const RATE_LIMIT_FAILURE_THRESHOLD = 5;
 const RATE_LIMIT_MAX_ELAPSED_MS = 15 * 60 * 1000;
 const INJECTED_KEY_LIMIT = 4096;
+const DELIVERY_PROGRESS_LIMIT = 64;
 
 type SourceKind = "env" | "project_env" | "runtime_profile" | "session_file" | "profile_catalog" | `profile:${string}` | "default";
 
@@ -64,6 +65,8 @@ type ParleConfig = {
 };
 
 type WatcherState = "off" | "starting" | "watching" | "waiting" | "injecting" | "backoff" | "rate_limited" | "disconnected" | "auth_expired" | "session_expired" | "held" | "idle";
+type HostDeliveryProgressKind = "host_queue_admitted" | "host_injection_started" | "host_injection_succeeded" | "host_injection_failed";
+type HostDeliveryProgressEvent = { kind: HostDeliveryProgressKind; at: string; roomId?: string; eventId?: string; seq?: number; error?: string };
 type WatcherErrorClass = "network" | "timeout" | "http_4xx" | "http_5xx" | "http_other" | "client";
 type RateLimitParkedCause = {
   reason: "count" | "elapsed";
@@ -116,6 +119,11 @@ type PiWatchRuntime = {
   lastWakeHintAt?: string;
   lastDeliveryFetchAt?: string;
   lastSuccessAt?: string;
+  lastHostQueueAt?: string;
+  lastInjectionAttemptAt?: string;
+  lastInjectionSuccessAt?: string;
+  hostHandoffError?: string;
+  recentHostDeliveryProgress?: HostDeliveryProgressEvent[];
   lastHttpStatus?: number;
   lastErrorClass?: WatcherErrorClass;
   consecutiveWatcherFailures?: number;
@@ -798,6 +806,7 @@ function ensureDeliveryController(pi: any, ctx: any, cfg: ParleConfig): Responsi
     reconnectDelayMs: WATCH_ERROR_BACKOFF_MS,
     onWakeError: (error) => watcherWakeErrorPolicy(ctx, cfg, error, controllerRunId),
     onWakeOpen: () => watcherWakeOpenPolicy(ctx, cfg, controllerRunId),
+    onProgress: (kind, detail) => recordControllerProgress(ctx, cfg, kind, detail),
   });
   deliveryControllerClient = live;
   return deliveryController;
@@ -808,6 +817,31 @@ function discardDeliveryController() {
   deliveryController = undefined;
   deliveryControllerClient = undefined;
   if (controller) void controller.stop().catch(() => undefined);
+}
+
+function recordControllerProgress(ctx: any, cfg: ParleConfig, kind: DeliveryProgressKind, detail?: DeliveryProgressDetail) {
+  const at = detail?.at || new Date(wallNowMs()).toISOString();
+  if (kind === "wake_open") runtime.lastWakeStreamOpenedAt = at;
+  if (kind === "wake_hint") runtime.lastWakeHintAt = at;
+  if (kind === "fetch_started") runtime.lastDeliveryFetchAt = at;
+  if (kind === "fetch_success" || kind === "ack_success") runtime.lastSuccessAt = at;
+  if (kind === "ack_success" && Number.isSafeInteger(detail?.seq)) runtime.lastAckedSeq = Math.max(runtime.lastAckedSeq || 0, detail!.seq!);
+  setStatus(ctx, cfg);
+}
+
+function recordHostDeliveryProgress(kind: HostDeliveryProgressKind, detail: Omit<HostDeliveryProgressEvent, "kind" | "at"> = {}) {
+  const at = new Date(wallNowMs()).toISOString();
+  const event = { kind, at, ...detail };
+  const recent = runtime.recentHostDeliveryProgress ||= [];
+  recent.push(event);
+  if (recent.length > DELIVERY_PROGRESS_LIMIT) recent.splice(0, recent.length - DELIVERY_PROGRESS_LIMIT);
+  if (kind === "host_queue_admitted") runtime.lastHostQueueAt = at;
+  if (kind === "host_injection_started") runtime.lastInjectionAttemptAt = at;
+  if (kind === "host_injection_succeeded") {
+    runtime.lastInjectionSuccessAt = at;
+    runtime.hostHandoffError = undefined;
+  }
+  if (kind === "host_injection_failed") runtime.hostHandoffError = detail.error;
 }
 
 // The host handler: baseline and duplicate policy decide between an
@@ -881,6 +915,7 @@ function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: 
     },
     ...(skip ? { skip: true } : {}),
   });
+  recordHostDeliveryProgress("host_queue_admitted", { roomId: input.roomId, eventId: input.message.event_id, seq: input.message.seq });
   updatePendingResponsiveState();
 }
 
@@ -1365,13 +1400,14 @@ async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any
 }
 
 async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
-  if (responsiveFlushRunning || pendingResponsiveMessages.length === 0 || !isPiIdle(ctx)) return;
+  if (responsiveFlushRunning || pendingResponsiveMessages.length === 0) return;
   responsiveFlushRunning = true;
   try {
-    // Batches drain in queue order until the queue is empty or Pi goes busy.
+    // Batches drain in queue order. A busy Pi admits the prompt through its
+    // documented steer queue instead of waiting indefinitely for agent_settled.
     // A batch is one room and one preamble: injected prompts and their
     // acknowledgements never mix rooms.
-    while (pendingResponsiveMessages.length > 0 && isPiIdle(ctx) && !signal?.aborted) {
+    while (pendingResponsiveMessages.length > 0 && !signal?.aborted) {
       const first = pendingResponsiveMessages[0];
       const batch: PendingResponsiveMessage[] = [];
       for (const item of pendingResponsiveMessages) {
@@ -1385,7 +1421,17 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
       setStatus(ctx, cfg);
       const notYetInjected = batch.filter((item) => !item.injected && !item.skip);
       if (notYetInjected.length > 0) {
-        await pi.sendUserMessage(inboundBatchPrompt(notYetInjected.map((item) => item.message), first.responsePreamble));
+        const progress = { roomId: first.fence.roomId, eventId: notYetInjected[0].message.event_id, seq: notYetInjected[0].message.seq };
+        recordHostDeliveryProgress("host_injection_started", progress);
+        try {
+          const prompt = inboundBatchPrompt(notYetInjected.map((item) => item.message), first.responsePreamble);
+          if (isPiIdle(ctx)) await pi.sendUserMessage(prompt);
+          else await pi.sendUserMessage(prompt, { deliverAs: "steer" });
+          recordHostDeliveryProgress("host_injection_succeeded", progress);
+        } catch (error) {
+          recordHostDeliveryProgress("host_injection_failed", { ...progress, error: redactString(error instanceof Error ? error.message : String(error)) });
+          throw error;
+        }
         for (const item of notYetInjected) {
           item.injected = true;
           rememberInjectedKey(item.key);
@@ -1400,6 +1446,7 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
     }
   } finally {
     responsiveFlushRunning = false;
+    if (runtime.watcherState === "injecting" && deliveryController?.status().running) runtime.watcherState = "watching";
     setStatus(ctx, cfg);
   }
 }
@@ -1571,6 +1618,12 @@ function formatResult(details: any) {
 }
 
 function normalizedResponsiveDelivery() {
+  const controller = deliveryController?.status();
+  if (controller?.health === "stale") return {
+    state: "stale",
+    reason: controller.staleReason,
+    note: "No responsive row has been observed through a healthy current delivery path; this does not prove that no message exists. Use a non-advancing inbox audit for verification.",
+  };
   const state = runtime.watcherState;
   if (state === "starting") return { state: "starting" };
   if (["watching", "waiting", "injecting", "held", "idle"].includes(state || "")) return { state: "watching", updatedAt: runtime.lastSuccessAt };
@@ -1663,6 +1716,12 @@ function statusDetails(ctx: any) {
       lastWakeHintAt: runtime.lastWakeHintAt,
       lastDeliveryFetchAt: runtime.lastDeliveryFetchAt,
       lastSuccessAt: runtime.lastSuccessAt,
+      responsiveController: deliveryController?.status(),
+      lastHostQueueAt: runtime.lastHostQueueAt,
+      lastInjectionAttemptAt: runtime.lastInjectionAttemptAt,
+      lastInjectionSuccessAt: runtime.lastInjectionSuccessAt,
+      hostHandoffError: runtime.hostHandoffError,
+      recentHostDeliveryProgress: runtime.recentHostDeliveryProgress,
       lastHttpStatus: view.lastHttpStatus,
       lastErrorClass: runtime.lastErrorClass,
       consecutiveWatcherFailures: runtime.consecutiveWatcherFailures,

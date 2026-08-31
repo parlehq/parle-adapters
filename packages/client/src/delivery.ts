@@ -56,9 +56,12 @@ export type DeliveryControllerOptions = {
   onProgress?: (kind: DeliveryProgressKind, detail?: DeliveryProgressDetail) => void;
 };
 
-export type DeliveryProgressKind = "wake_open" | "wake_hint" | "fetch_started" | "fetch_success" | "handling_complete" | "ack_success";
+export type DeliveryProgressKind = "wake_open" | "wake_hint" | "fallback_armed" | "fallback_fired" | "fetch_started" | "fetch_success" | "row_fetched" | "handling_complete" | "ack_started" | "ack_success";
 export type DeliveryFetchTrigger = "startup" | "wake_open" | "wake_hint" | "fallback" | "test";
 export type DeliveryProgressDetail = {
+  at?: string;
+  dueAt?: string;
+  latenessMs?: number;
   roomId?: string;
   trigger?: DeliveryFetchTrigger;
   rowCount?: number;
@@ -68,6 +71,7 @@ export type DeliveryProgressDetail = {
   eventId?: string;
   seq?: number;
 };
+export type DeliveryProgressEvent = { kind: DeliveryProgressKind; at: string; detail?: DeliveryProgressDetail };
 
 export type DeliveryErrorDomain = "recover" | "drain" | "handler" | "ack";
 
@@ -79,14 +83,27 @@ export type DeliveryRoomStatus = {
   skipped: number;
   poisoned: number;
   deferred: number;
+  lastFetchAttemptAt?: string;
+  lastFetchSuccessAt?: string;
+  lastFetchTrigger?: DeliveryFetchTrigger;
+  lastFetchRowCount?: number;
+  lastFetchedSeq?: number;
   lastError?: string;
   lastErrorAt?: string;
   lastErrorDomain?: DeliveryErrorDomain;
 };
 
+export type DeliveryControllerHealth = "healthy" | "degraded" | "stale" | "stopped";
 export type DeliveryControllerStatus = {
   running: boolean;
+  health: DeliveryControllerHealth;
   rooms: DeliveryRoomStatus[];
+  heartbeatAt?: string;
+  nextFallbackAt?: string;
+  lastFallbackFiredAt?: string;
+  staleReason?: "fallback_overdue";
+  currentErrorDomain?: "wake" | DeliveryErrorDomain;
+  recentProgress: DeliveryProgressEvent[];
   // Wake hints naming rooms this session does not configure. Recorded rather
   // than fetched: an untrusted hint must never widen the room set.
   ignoredWakeHints: number;
@@ -105,6 +122,7 @@ const DEFAULT_FALLBACK_JITTER_MS = 30_000;
 const DEFAULT_RECONNECT_JITTER_MS = 30_000;
 const MAX_TIMER_MS = 2_147_483_647;
 const MAX_REMEMBERED_KEYS = 5000;
+const MAX_PROGRESS_EVENTS = 64;
 
 type WakeTiming = {
   fallbackMs: number;
@@ -146,7 +164,11 @@ export class ResponsiveDeliveryController {
   private readonly handled = new Map<string, { outcome: DeliveryHandlerResult; cursorScope?: ResponsiveCursorScope; sourceFence?: ResponsiveDeliveryReadFence }>();
   private readonly poisonedKeys = new Set<string>();
   private readonly rerunRequested = new Map<string, DeliveryFetchTrigger>();
-  private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastError?: { message: string; at: string; domain: DeliveryErrorDomain } }>();
+  private readonly stats = new Map<string, { delivered: number; skipped: number; poisoned: number; lastFetchAttemptAt?: string; lastFetchSuccessAt?: string; lastFetchTrigger?: DeliveryFetchTrigger; lastFetchRowCount?: number; lastFetchedSeq?: number; lastError?: { message: string; at: string; domain: DeliveryErrorDomain } }>();
+  private readonly recentProgress: DeliveryProgressEvent[] = [];
+  private heartbeatAt?: string;
+  private nextFallbackAt?: string;
+  private lastFallbackFiredAt?: string;
   // Rows a host accepted for later effective handling. They are never
   // re-offered to the handler and never acknowledged until the host reports
   // completion, so a crash before injection leaves the row redeliverable.
@@ -178,8 +200,13 @@ export class ResponsiveDeliveryController {
   }
 
   status(): DeliveryControllerStatus {
+    const running = Boolean(this.loop) && !this.abort.signal.aborted;
+    const fallbackOverdue = running && Boolean(this.nextFallbackAt) && this.now().getTime() > Date.parse(this.nextFallbackAt!);
+    const roomError = [...this.stats.values()].find((stat) => stat.lastError)?.lastError;
+    const health: DeliveryControllerHealth = !running ? "stopped" : fallbackOverdue ? "stale" : this.lastError || roomError ? "degraded" : "healthy";
     return {
-      running: Boolean(this.loop) && !this.abort.signal.aborted,
+      running,
+      health,
       rooms: this.configuredRooms().map((room) => {
         const stat = this.stats.get(room.roomId) || { delivered: 0, skipped: 0, poisoned: 0 };
         return {
@@ -190,9 +217,20 @@ export class ResponsiveDeliveryController {
           skipped: stat.skipped,
           poisoned: stat.poisoned,
           deferred: [...this.deferred.values()].filter((entry) => entry.roomId === room.roomId).length,
+          ...(stat.lastFetchAttemptAt ? { lastFetchAttemptAt: stat.lastFetchAttemptAt } : {}),
+          ...(stat.lastFetchSuccessAt ? { lastFetchSuccessAt: stat.lastFetchSuccessAt } : {}),
+          ...(stat.lastFetchTrigger ? { lastFetchTrigger: stat.lastFetchTrigger } : {}),
+          ...(stat.lastFetchRowCount !== undefined ? { lastFetchRowCount: stat.lastFetchRowCount } : {}),
+          ...(stat.lastFetchedSeq !== undefined ? { lastFetchedSeq: stat.lastFetchedSeq } : {}),
           ...(stat.lastError ? { lastError: stat.lastError.message, lastErrorAt: stat.lastError.at, lastErrorDomain: stat.lastError.domain } : {}),
         };
       }),
+      ...(this.heartbeatAt ? { heartbeatAt: this.heartbeatAt } : {}),
+      ...(this.nextFallbackAt ? { nextFallbackAt: this.nextFallbackAt } : {}),
+      ...(this.lastFallbackFiredAt ? { lastFallbackFiredAt: this.lastFallbackFiredAt } : {}),
+      ...(fallbackOverdue ? { staleReason: "fallback_overdue" as const } : {}),
+      ...(this.lastError ? { currentErrorDomain: "wake" as const } : roomError ? { currentErrorDomain: roomError.domain } : {}),
+      recentProgress: this.recentProgress.map((event) => ({ ...event, ...(event.detail ? { detail: { ...event.detail } } : {}) })),
       ignoredWakeHints: this.ignoredWakeHints,
       ...(this.lastIgnoredWakeRoomId ? { lastIgnoredWakeRoomId: this.lastIgnoredWakeRoomId } : {}),
       ...(this.lastError ? { lastError: this.lastError.message, lastErrorAt: this.lastError.at } : {}),
@@ -247,6 +285,7 @@ export class ResponsiveDeliveryController {
       this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
+      this.reportProgress("ack_started", { roomId, eventId: message.event_id, seq: message.seq });
       await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence);
     } catch (error) {
       this.setRoomError(roomId, "ack", error);
@@ -355,12 +394,17 @@ export class ResponsiveDeliveryController {
   private async fallbackLoop(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       const timing = this.wakeTiming;
+      const delayMs = this.withJitter(timing.fallbackMs, timing.fallbackJitterMs);
+      const dueAt = new Date(this.now().getTime() + delayMs).toISOString();
+      this.reportProgress("fallback_armed", { dueAt });
       try {
-        await this.sleep(this.withJitter(timing.fallbackMs, timing.fallbackJitterMs), signal);
+        await this.sleep(delayMs, signal);
       } catch {
         return;
       }
       if (signal.aborted) return;
+      const firedAt = this.now();
+      this.reportProgress("fallback_fired", { dueAt, latenessMs: Math.max(0, firedAt.getTime() - Date.parse(dueAt)) });
       await this.drainAll("fallback");
     }
   }
@@ -484,7 +528,17 @@ export class ResponsiveDeliveryController {
   }
 
   private reportProgress(kind: DeliveryProgressKind, detail?: DeliveryProgressDetail): void {
-    try { this.onProgress?.(kind, detail); } catch { /* diagnostics never interrupt delivery */ }
+    const at = this.now().toISOString();
+    const stamped = { ...detail, at };
+    this.heartbeatAt = at;
+    if (kind === "fallback_armed") this.nextFallbackAt = detail?.dueAt;
+    if (kind === "fallback_fired") {
+      this.nextFallbackAt = undefined;
+      this.lastFallbackFiredAt = at;
+    }
+    this.recentProgress.push({ kind, at, detail: stamped });
+    if (this.recentProgress.length > MAX_PROGRESS_EVENTS) this.recentProgress.splice(0, this.recentProgress.length - MAX_PROGRESS_EVENTS);
+    try { this.onProgress?.(kind, stamped); } catch { /* diagnostics never interrupt delivery */ }
   }
 
   private async doDrainRoom(room: RoomRuntime, trigger: DeliveryFetchTrigger): Promise<void> {
@@ -495,6 +549,9 @@ export class ResponsiveDeliveryController {
       let release = () => {};
       try {
         this.reportProgress("fetch_started", { roomId: room.roomId, trigger });
+        const stat = this.stat(room.roomId);
+        stat.lastFetchAttemptAt = this.heartbeatAt;
+        stat.lastFetchTrigger = trigger;
         if (typeof (this.client as any).drainResponsiveDeliveryWithFence === "function") {
           const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId);
           delivery = read.delivery;
@@ -511,10 +568,15 @@ export class ResponsiveDeliveryController {
         }
         this.clearRoomError(room.roomId, "drain");
         const held = delivery?.held_backlog;
+        const messages: ResponsiveDeliveryMessage[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
+        stat.lastFetchSuccessAt = this.now().toISOString();
+        stat.lastFetchTrigger = trigger;
+        stat.lastFetchRowCount = messages.length;
+        stat.lastFetchedSeq = messages.reduce<number | undefined>((max, message) => Number.isSafeInteger(message.seq) ? Math.max(max ?? message.seq, message.seq) : max, stat.lastFetchedSeq);
         this.reportProgress("fetch_success", {
           roomId: room.roomId,
           trigger,
-          rowCount: Array.isArray(delivery?.messages) ? delivery.messages.length : 0,
+          rowCount: messages.length,
           scannedMax: Number.isSafeInteger(delivery?.scanned_max) ? delivery.scanned_max : 0,
           firstHeldSeq: Number.isSafeInteger(held?.first_held_seq) ? held.first_held_seq : 0,
           heldCount: Number.isSafeInteger(held?.held_count) ? held.held_count : 0,
@@ -534,6 +596,7 @@ export class ResponsiveDeliveryController {
         let progressed = 0;
         for (const message of messages) {
           if (this.abort.signal.aborted) return;
+          this.reportProgress("row_fetched", { roomId: room.roomId, trigger, eventId: message.event_id, seq: message.seq });
           const key = deliveryKey(room.roomId, message);
           if (this.seen.has(key)) continue;
           const current = cursorScope === "alias"
@@ -605,6 +668,7 @@ export class ResponsiveDeliveryController {
       }
     }
     try {
+      this.reportProgress("ack_started", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
       await this.client.ackResponsiveDelivery(
         message,
         this.abort.signal,

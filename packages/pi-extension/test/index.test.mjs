@@ -970,7 +970,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.58" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.59" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1656,7 +1656,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.58");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.59");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2667,7 +2667,7 @@ test("wake hint coalesces responsive delivery backlog into one follow-up", async
   assert.equal(__testing.runtimeState().lastInjectedSeq, 8);
 });
 
-test("busy Pi buffers responsive rows until settled, then injects one batch", async () => {
+test("busy Pi admits responsive rows through steer without waiting for settled", async () => {
   const injected = [];
   const acked = [];
   const harness = installSendHarness(async (url, init = {}) => {
@@ -2684,9 +2684,8 @@ test("busy Pi buffers responsive rows until settled, then injects one batch", as
   });
   await harness.call("parle_status");
   const cfg = __testing.resolveConfig(harness.cwd);
-  let idle = false;
-  harness.ctx.isIdle = () => idle;
-  const pi = { sendUserMessage: async (message) => injected.push(message) };
+  harness.ctx.isIdle = () => false;
+  const pi = { sendUserMessage: async (message, options) => injected.push({ message, options }) };
   const messages = [
     { seq: 7, event_id: "evt-settled-7", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "first" },
     { seq: 8, event_id: "evt-settled-8", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "second" },
@@ -2694,16 +2693,19 @@ test("busy Pi buffers responsive rows until settled, then injects one batch", as
 
   await __testing.queueResponsiveMessages(harness.ctx, cfg, messages);
   await __testing.flushPendingResponsiveMessages(pi, harness.ctx, cfg);
-  assert.equal(injected.length, 0);
-  assert.deepEqual(acked, []);
-  assert.equal(__testing.runtimeState().pendingResponsiveCount, 2);
-
-  idle = true;
-  await __testing.flushPendingResponsiveMessages(pi, harness.ctx, cfg);
   assert.equal(injected.length, 1);
-  assert.match(injected[0], /received 2 server-authenticated peer messages/);
+  assert.match(injected[0].message, /received 2 server-authenticated peer messages/);
+  assert.deepEqual(injected[0].options, { deliverAs: "steer" });
   assert.deepEqual(acked, [{ seq: 7, event_id: "evt-settled-7" }, { seq: 8, event_id: "evt-settled-8" }]);
   assert.equal(__testing.runtimeState().pendingResponsiveCount, 0);
+  assert.equal(__testing.runtimeState().lastHostQueueAt !== undefined, true);
+  assert.equal(__testing.runtimeState().lastInjectionSuccessAt !== undefined, true);
+  assert.deepEqual(__testing.runtimeState().recentHostDeliveryProgress.map(({ kind }) => kind), [
+    "host_queue_admitted",
+    "host_queue_admitted",
+    "host_injection_started",
+    "host_injection_succeeded",
+  ]);
 });
 
 test("wake hint silently acks rows already surfaced by manual inbox reads", async () => {

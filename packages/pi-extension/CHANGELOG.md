@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.59 (2026-08-31)
+
+- Recover responsive work while Pi is busy through the supported steering queue, expose shared fallback and fetch evidence plus host handoff stages, and restore `watching` after successful injection (#80).
+
 ## 0.7.58 (2026-08-23)
 
 - Carry the bounded room reads of client 0.8.50 into the Pi bundle and read guidance (parlehq/parle#927). Cursors come from the room entry baseline and follow page progress; the response watermark is never a cursor.

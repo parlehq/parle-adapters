@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.35 (2026-08-31)
+
+- Refresh the native mod with fallback deadline and stage evidence from the shared responsive-delivery controller (#80).
+
 ## 0.7.34 (2026-08-23)
 
 - Carry the bounded room reads of client 0.8.50 into the Command Code mod artifact (parlehq/parle#927). Cursors come from the room entry baseline and follow page progress; the response watermark is never a cursor.
