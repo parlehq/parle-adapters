@@ -90,7 +90,7 @@
         { "kind": "no-authored-messages", "agent": "any" }
       ],
       "diagnostic": [
-        { "kind": "agent-message", "containsAny": ["mismatch", "does not match", "could not confirm"] }
+        { "kind": "agent-message", "containsAny": ["mismatch", "does not match", "could not confirm", "profile_not_found", "not the requested"] }
       ]
     },
     {

@@ -74,7 +74,7 @@ const kinds = [
   { kind: "tool-calls", tool: "mcp__parle__parle_inbox", min: 2, argsSubset: { waitSeconds: 30 } },
   { kind: "no-shell-polling" },
   { kind: "status-text", contains: ["Acting as     @fixture.codex", "Delivery      watching (idle wake queue-only)"], excludes: ["arm or verify", "idle wake unarmed", "idle wake unavailable"] },
-  { kind: "agent-message", containsAny: ["mismatch", "does not match", "could not confirm"] },
+  { kind: "agent-message", containsAny: ["mismatch", "does not match", "could not confirm", "profile_not_found", "not the requested"] },
   { kind: "hook-delivery-present" },
 ];
 
@@ -169,6 +169,19 @@ test("diagnostic agent-message requires all of contains and one of containsAny",
   const partial = evaluateOne("agent-message-pass", { kind: "agent-message", contains: ["Identity mismatch", "posted hello"] });
   assert.equal(partial.pass, false);
   assert.match(partial.detail, /missing \["posted hello"\]/);
+});
+
+test("identity-mismatch phrases accept the plugin's own error vocabulary and still reject unrelated refusals (#184)", () => {
+  const check = { kind: "agent-message", containsAny: ["mismatch", "does not match", "could not confirm", "profile_not_found", "not the requested"] };
+  // The observed live-smoke refusal: the agent authored nothing and reported
+  // the plugin's own profile_not_found diagnosis without any generic
+  // mismatch phrasing.
+  const observed = evaluateOne("agent-message-profile-not-found-pass", check);
+  assert.equal(observed.pass, true, observed.detail);
+  // A refusal with no identity language at all still fails the check.
+  const unrelated = evaluateOne("agent-message-unrelated-refusal-fail", check);
+  assert.equal(unrelated.pass, false);
+  assert.match(unrelated.detail, /none of/);
 });
 
 test("diagnostic rows fail closed on missing evidence and unknown kinds", () => {
