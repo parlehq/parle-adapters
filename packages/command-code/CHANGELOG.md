@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.36 (2026-08-27)
+
+- Resolve the saved-start catalog from the client's configuration directory instead of the process directory, carrying the shared tool-runtime change of MCP server 0.7.59 (#169).
+
 ## 0.7.35 (2026-08-31)
 
 - Refresh the native mod with fallback deadline and stage evidence from the shared responsive-delivery controller (#80).

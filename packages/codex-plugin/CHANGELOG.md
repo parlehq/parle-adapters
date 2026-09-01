@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.60 (2026-08-27)
+
+- Forward `PARLE_PROFILE`, `PARLE_PROFILES`, `PARLE_PROFILES_PATH`, `PWD`, and `CODEX_HOME` through Codex's cleared MCP environment and resolve the project `.env` from the shell launch directory instead of the plugin cache (#169).
+
 ## 0.6.59 (2026-08-31)
 
 - Refresh the bundled MCP runtime with fallback deadline and stage evidence from the shared responsive-delivery controller (#80).

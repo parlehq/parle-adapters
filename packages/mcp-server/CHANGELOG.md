@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.59 (2026-08-27)
+
+- Add opt-in launch-directory configuration: when a host manifest sets `PARLE_CONFIG_CWD_FROM_PWD=1` (the Codex plugin does), resolve configuration from a valid absolute `PWD` before the process directory; report `configCwd` provenance in healthy and degraded status (#169).
+
 ## 0.7.58 (2026-08-31)
 
 - Refresh the shared responsive-delivery controller with fallback deadline and stage evidence (#80).

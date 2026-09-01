@@ -4,12 +4,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, processStartedAtIso } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
+import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -462,6 +462,8 @@ test("MCP degraded boot exposes diagnostics and promotes after profile repair", 
       error: initialError.message,
       selector: "missing",
       availableProfiles: ["other"],
+      configCwd: home,
+      configCwdSource: "process.cwd",
       bootstrapAttempted: false,
     });
 
@@ -1190,6 +1192,179 @@ test("stdio server lists the full tool contract and setup works without secrets"
     assert.equal(send.annotations.openWorldHint, true);
   } finally {
     await client.close();
+  }
+});
+
+test("config cwd follows PWD only when the host opts in and PWD is an absolute existing directory, resolved through realpath", () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-mcp-config-cwd-"));
+  try {
+    const project = join(root, "project");
+    mkdirSync(project);
+    const link = join(root, "link");
+    symlinkSync(project, link);
+    const file = join(root, "file");
+    writeFileSync(file, "");
+    const fallback = join(root, "fallback");
+    const optIn = { PARLE_CONFIG_CWD_FROM_PWD: "1" };
+    assert.deepEqual(resolveConfigCwd({ ...optIn, PWD: project }, fallback), { cwd: realpathSync(project), source: "PWD" });
+    assert.deepEqual(resolveConfigCwd({ ...optIn, PWD: link }, fallback), { cwd: realpathSync(project), source: "PWD" });
+    for (const pwd of [undefined, "", "project", "./project", join(root, "missing"), join(link, "missing"), file]) {
+      assert.deepEqual(resolveConfigCwd({ ...optIn, PWD: pwd }, fallback), { cwd: fallback, source: "process.cwd" }, `PWD=${pwd}`);
+    }
+    for (const gate of [undefined, "", "0", "true"]) {
+      assert.deepEqual(resolveConfigCwd({ PARLE_CONFIG_CWD_FROM_PWD: gate, PWD: project }, fallback), { cwd: fallback, source: "process.cwd" }, `gate=${gate}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Codex spawns plugin MCP servers with env_clear(): only these host defaults,
+// the names its plugin manifest lists in env_vars, and the manifest's literal
+// env map reach the child. The fixtures below hand the server exactly that
+// environment; PARLE_* from the test runner's own environment never leaks in.
+const CODEX_DEFAULT_ENV_VARS = ["HOME", "PATH", "USER", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SHELL", "LOGNAME"];
+const CODEX_FORWARDED_ENV_VARS = ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME"];
+// The configuration-relevant subset of the Codex manifest's literal env map.
+const CODEX_MANIFEST_ENV = { PARLE_CONFIG_CWD_FROM_PWD: "1" };
+
+function envClearedSpawnEnv(home, forwarded, manifestEnv = CODEX_MANIFEST_ENV) {
+  const env = {};
+  for (const name of CODEX_DEFAULT_ENV_VARS) if (process.env[name] !== undefined) env[name] = process.env[name];
+  env.HOME = home;
+  for (const [name, value] of Object.entries(forwarded)) {
+    assert.ok(CODEX_FORWARDED_ENV_VARS.includes(name), `${name} is not forwarded through an env-cleared Codex spawn`);
+    if (value !== undefined) env[name] = value;
+  }
+  return { ...env, ...manifestEnv };
+}
+
+function writeProfileCatalog(home, sections) {
+  mkdirSync(join(home, ".parle"), { mode: 0o700 });
+  const catalog = join(home, ".parle", "profiles");
+  writeFileSync(catalog, sections.map(([name, suffix]) => `[${name}]\nroom_id = 019f2946-aef5-77ad-a41d-747ce0fd6${suffix}\nagent_token = parle_agt_${name}_secret\napi_base = http://127.0.0.1:9\n`).join("\n"), { mode: 0o600 });
+  return catalog;
+}
+
+// The launch fixture mirrors Codex: the process directory is the plugin
+// install, the project is somewhere else, and PWD is the shell launch
+// directory (deliberately not realpath-resolved, tmpdir is a symlink on macOS).
+function envClearedLaunchFixture() {
+  const root = mkdtempSync(join(tmpdir(), "parle-mcp-env-cleared-"));
+  const home = join(root, "home");
+  mkdirSync(home, { mode: 0o700 });
+  const install = join(root, "plugin-cache");
+  mkdirSync(install);
+  const project = join(root, "project");
+  mkdirSync(project);
+  writeProfileCatalog(home, [["default", "a1e"], ["codex", "a1f"], ["other", "a20"]]);
+  return { root, home, install, project, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+async function withEnvClearedServer({ home, install, forwarded, manifestEnv }, run) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [new URL("../dist/parle-mcp.js", import.meta.url).pathname],
+    cwd: install,
+    env: envClearedSpawnEnv(home, forwarded, manifestEnv),
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "parle-mcp-env-cleared", version: "0.0.0" }, { capabilities: {} });
+  await client.connect(transport);
+  try {
+    return await run(client);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+async function inspectedStatus(client) {
+  const status = await client.callTool({ name: "parle_status", arguments: { inspect: true } });
+  assert.equal(status.isError, undefined, JSON.stringify(status.structuredContent));
+  return status.structuredContent;
+}
+
+test("env-cleared spawn resolves the project .env from PWD and lets PARLE_PROFILE from env win", async () => {
+  const fixture = envClearedLaunchFixture();
+  try {
+    writeFileSync(join(fixture.project, ".env"), "PARLE_PROFILE=codex\nPARLE_WATCH_ENABLED=0\n");
+    const fromDotEnv = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project } }, inspectedStatus);
+    assert.equal(fromDotEnv.configCwdSource, "PWD");
+    assert.equal(fromDotEnv.configCwd, realpathSync(fixture.project));
+    assert.deepEqual(fromDotEnv.config.profile, { source: ".env", configured: true, value: "codex" });
+    assert.deepEqual(fromDotEnv.rooms.map((room) => room.profile), ["codex"]);
+
+    const fromEnv = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project, PARLE_PROFILE: "other" } }, inspectedStatus);
+    assert.deepEqual(fromEnv.config.profile, { source: "env", configured: true, value: "other" });
+    assert.equal(fromEnv.configCwdSource, "PWD");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("env-cleared spawn forwards PARLE_PROFILES_PATH and multi-room PARLE_PROFILES", async () => {
+  const fixture = envClearedLaunchFixture();
+  try {
+    writeFileSync(join(fixture.project, ".env"), "PARLE_WATCH_ENABLED=0\n");
+    const altHome = join(fixture.root, "alt-home");
+    mkdirSync(altHome, { mode: 0o700 });
+    const altCatalog = writeProfileCatalog(altHome, [["alt", "a21"]]);
+    const relocated = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project, PARLE_PROFILES_PATH: altCatalog, PARLE_PROFILE: "alt" } }, inspectedStatus);
+    assert.deepEqual(relocated.config.profile, { source: "env", configured: true, value: "alt" });
+
+    const multi = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project, PARLE_PROFILES: "codex,other" } }, inspectedStatus);
+    assert.deepEqual(multi.rooms.map((room) => room.profile), ["codex", "other"]);
+    assert.equal(multi.configCwdSource, "PWD");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("env-cleared spawn fails closed on a forwarded selector conflict", async () => {
+  const fixture = envClearedLaunchFixture();
+  try {
+    await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project, PARLE_PROFILES: "codex,other", PARLE_PROFILE: "codex" } }, async (client) => {
+      assert.deepEqual((await client.listTools()).tools.map((tool) => tool.name).sort(), ["parle_delete_profile", "parle_setup", "parle_status"]);
+      const setup = await client.callTool({ name: "parle_setup", arguments: {} });
+      assert.equal(setup.structuredContent.degraded, true);
+      assert.equal(setup.structuredContent.code, "profile_config_error");
+      assert.match(setup.structuredContent.error, /PARLE_PROFILES from env conflicts with PARLE_PROFILE from env/);
+      const status = await client.callTool({ name: "parle_status", arguments: {} });
+      assert.equal(status.structuredContent.degraded, true);
+      assert.equal(status.structuredContent.configCwd, realpathSync(fixture.project));
+      assert.equal(status.structuredContent.configCwdSource, "PWD");
+    });
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("env-cleared spawn ignores a relative or missing PWD and falls back to the process directory", async () => {
+  const fixture = envClearedLaunchFixture();
+  try {
+    // The project .env names [codex]; a fallback to the plugin cache must not see it.
+    writeFileSync(join(fixture.project, ".env"), "PARLE_PROFILE=codex\nPARLE_WATCH_ENABLED=0\n");
+    for (const pwd of ["project", join(fixture.root, "missing")]) {
+      const status = await withEnvClearedServer({ ...fixture, forwarded: { PWD: pwd } }, inspectedStatus);
+      assert.equal(status.configCwdSource, "process.cwd", `PWD=${pwd}`);
+      assert.equal(status.configCwd, realpathSync(fixture.install));
+      assert.deepEqual(status.config.profile, { source: "profile_catalog", configured: true, value: "default" });
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("env-cleared spawn without the manifest opt-in ignores a valid PWD", async () => {
+  const fixture = envClearedLaunchFixture();
+  try {
+    writeFileSync(join(fixture.project, ".env"), "PARLE_PROFILE=codex\nPARLE_WATCH_ENABLED=0\n");
+    const status = await withEnvClearedServer({ ...fixture, forwarded: { PWD: fixture.project }, manifestEnv: {} }, inspectedStatus);
+    assert.equal(status.configCwdSource, "process.cwd");
+    assert.equal(status.configCwd, realpathSync(fixture.install));
+    assert.deepEqual(status.config.profile, { source: "profile_catalog", configured: true, value: "default" });
+  } finally {
+    fixture.cleanup();
   }
 });
 

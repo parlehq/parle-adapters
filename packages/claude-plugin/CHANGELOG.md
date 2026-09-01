@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.64 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.59, which carries opt-in launch-directory configuration; this host does not enable it, so configuration resolution is unchanged (#169).
+
 ## 0.9.63 (2026-08-31)
 
 - Refresh the bundled MCP runtime with fallback deadline and stage evidence from the shared responsive-delivery controller (#80).

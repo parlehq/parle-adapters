@@ -22541,8 +22541,14 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    if (degradedBoot)
-      return { ...degradedConfigDiagnostic(degradedBoot.error), bootstrapAttempted: false };
+    if (degradedBoot) {
+      return {
+        ...degradedConfigDiagnostic(degradedBoot.error),
+        configCwd: degradedBoot.cwd || process.cwd(),
+        configCwdSource: degradedBoot.cwdSource || "process.cwd",
+        bootstrapAttempted: false
+      };
+    }
     let bootstrapAttempted = false;
     if (!params.inspect && typeof client.ensureReadySafe === "function")
       bootstrapAttempted = await client.ensureReadySafe();
@@ -22626,7 +22632,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false }
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
-    const path = resolveSavedStartCatalogPath(process.cwd(), process.env);
+    const path = resolveSavedStartCatalogPath(client.cwd || process.cwd(), process.env);
     if (params.action === "list") {
       return { savedStarts: [...readSavedStarts(path).values()] };
     }
@@ -23050,7 +23056,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.35";
+var ADAPTER_VERSION = "0.7.36";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

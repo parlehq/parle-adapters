@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { connect } from "node:net";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact } from "./hook-delivery-bridge.js";
-import { registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
-export { hostSessionIdFromMeta, registerParleTools, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.58";
+export const MCP_CLIENT_VERSION = "0.7.59";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -23,6 +23,28 @@ export function resolveIntegrationMetadata(env: Record<string, string | undefine
     integrationName: rawName ? assertClientName(rawName) : undefined,
     integrationVersion: rawVersion ? assertClientVersion(rawVersion) : undefined,
   };
+}
+
+export type ConfigCwd = { cwd: string; source: ConfigCwdSource };
+
+// Hosts that spawn the server from an install directory (Codex sets cwd to the
+// plugin cache) still forward PWD, the shell launch directory. Only a host
+// manifest that opts in with PARLE_CONFIG_CWD_FROM_PWD=1 lets configuration
+// resolution (the project .env, a relative PARLE_PROFILES_PATH) follow PWD, and
+// then only when it is an absolute, existing, realpath-stable directory. Other
+// hosts (Claude Code runs the server in the project; Claude Desktop is
+// GUI-launched with an unrelated PWD) keep the process directory.
+export function resolveConfigCwd(env: Record<string, string | undefined> = process.env, fallback = process.cwd()): ConfigCwd {
+  const pwd = env.PWD;
+  if (env.PARLE_CONFIG_CWD_FROM_PWD === "1" && pwd && isAbsolute(pwd)) {
+    try {
+      const resolved = realpathSync(pwd);
+      if (statSync(resolved).isDirectory()) return { cwd: resolved, source: "PWD" };
+    } catch {
+      // An unresolvable PWD is not a configuration directory.
+    }
+  }
+  return { cwd: fallback, source: "process.cwd" };
 }
 
 export function createMcpAgentClient(options: ClientOptions = {}): ParleAgentClient {
@@ -65,12 +87,13 @@ export async function runStdio() {
     throw new Error(`Unsupported PARLE_HOOK_BRIDGE_HOST_PROCESS mode: ${hostProcessMode}`);
   }
   const hostParentPid = hostProcessMode === "direct-parent" ? process.ppid : undefined;
+  const configCwd = resolveConfigCwd();
   let stopPreRuntimeParentCheck = hostParentPid === undefined
     ? () => {}
     : scheduleHostParentCheck(hostParentPid, () => process.exit(0));
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-    const client = createMcpAgentClient({ env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
+    const client = createMcpAgentClient({ cwd: configCwd.cwd, env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
     if (hookBridgeEnabled) {
       client.switchProfile = async () => {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -85,11 +108,14 @@ export async function runStdio() {
         hostParentPid,
       )
       : undefined;
-    if (deliveryBridge) {
-      const baseStatus = client.status.bind(client);
-      client.status = () => ({ ...baseStatus(), responsiveDeliveryBridge: deliveryBridge.status() });
-    }
-    return { client, accountClient: new ParleAccountClient(), deliveryBridge };
+    const baseStatus = client.status.bind(client);
+    client.status = () => ({
+      ...baseStatus(),
+      configCwd: configCwd.cwd,
+      configCwdSource: configCwd.source,
+      ...(deliveryBridge ? { responsiveDeliveryBridge: deliveryBridge.status() } : {}),
+    });
+    return { client, accountClient: new ParleAccountClient({ cwd: configCwd.cwd }), deliveryBridge };
   };
   let activated = false;
   const activateRuntime = (runtime: ReturnType<typeof createRuntime>) => {
@@ -123,7 +149,8 @@ export async function runStdio() {
     ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge)
     : createParleMcpServer({} as ParleMcpClientLike, new ParleAccountClient(), undefined, {
         error: configError!,
-        cwd: process.cwd(),
+        cwd: configCwd.cwd,
+        cwdSource: configCwd.source,
         env: process.env,
         recover: createRuntime,
         onRecovered(recovered) {
