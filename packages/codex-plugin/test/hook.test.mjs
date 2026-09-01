@@ -5,7 +5,6 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
-  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -403,24 +402,19 @@ function installFakeCodex(home, mode, viaSymlink = false) {
     // codex-named binary elsewhere, as with Homebrew or an npm shim's vendor tree.
     const target = join(home, "vendor", "codex-x86_64-unknown-linux-musl");
     mkdirSync(join(home, "vendor"), { recursive: true, mode: 0o700 });
-    try {
-      linkSync(process.execPath, target);
-    } catch {
-      copyFileSync(process.execPath, target);
-      chmodSync(target, 0o755);
-    }
+    copyFileSync(process.execPath, target);
+    chmodSync(target, 0o755);
     symlinkSync(target, codex);
   } else if (mode !== undefined) {
     // A private copy: a hard link would change the real binary's mode.
     copyFileSync(process.execPath, codex);
     chmodSync(codex, mode);
   } else {
-    try {
-      linkSync(process.execPath, codex);
-    } catch {
-      copyFileSync(process.execPath, codex);
-      chmodSync(codex, 0o755);
-    }
+    // A private copy with an explicit mode: a hard link would share the
+    // real Node binary's inode and mode, leaking runner permissions into
+    // the executable rule under test.
+    copyFileSync(process.execPath, codex);
+    chmodSync(codex, 0o755);
   }
   const runner = join(home, "fake-codex.mjs");
   writeFileSync(runner, [
@@ -523,16 +517,21 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
         writeFileSync(join(fixture.home, "go-inner"), "");
         try {
           const result = await running;
-          assert.equal(result.code, 0, result.stderr);
-          const output = JSON.parse(result.stdout);
-          assert.equal(output.hookSpecificOutput.hookEventName, hookEventName, result.stderr);
-          assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/);
-          assert.deepEqual(commands.map((entry) => entry.action), expectedBind ? ["status", "bind", "take", "commit"] : ["status", "take", "commit"], hookEventName);
+          const evidence = `${hookEventName} stdout: ${result.stdout} stderr: ${result.stderr}`;
+          assert.equal(result.code, 0, evidence);
+          // The captured bridge command sequence is the precondition for any
+          // output-shape assertion: {} is a valid no-context output, so a
+          // missing delivery must fail here, not on a property dereference.
+          assert.deepEqual(commands.map((entry) => entry.action), expectedBind ? ["status", "bind", "take", "commit"] : ["status", "take", "commit"], evidence);
           if (expectedBind) {
-            assert.equal(commands[1].sessionId, "codex-thread-174");
-            assert.equal(commands[1].allowReplace, expectedBind.allowReplace, `${hookEventName} binding`);
+            assert.equal(commands[1].sessionId, "codex-thread-174", evidence);
+            assert.equal(commands[1].allowReplace, expectedBind.allowReplace, `binding; ${evidence}`);
           }
-          assert.equal(commands.at(-1).leaseId, "lease-174");
+          assert.equal(commands.at(-1).leaseId, "lease-174", evidence);
+          const output = JSON.parse(result.stdout);
+          assert.ok(output.hookSpecificOutput, evidence);
+          assert.equal(output.hookSpecificOutput.hookEventName, hookEventName, evidence);
+          assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/, evidence);
         } finally {
           await close();
         }
@@ -573,9 +572,12 @@ test("Codex hook resolves a symlinked Codex path to its canonical binary and del
     writeFileSync(join(fixture.home, "go-inner"), "");
     try {
       const result = await running;
-      assert.equal(result.code, 0, result.stderr);
-      assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /server-framed content/);
-      assert.deepEqual(commands.map((entry) => entry.action), ["status", "bind", "take", "commit"]);
+      const evidence = `stdout: ${result.stdout} stderr: ${result.stderr}`;
+      assert.equal(result.code, 0, evidence);
+      assert.deepEqual(commands.map((entry) => entry.action), ["status", "bind", "take", "commit"], evidence);
+      const output = JSON.parse(result.stdout);
+      assert.ok(output.hookSpecificOutput, evidence);
+      assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/, evidence);
     } finally {
       await close();
     }
@@ -599,9 +601,10 @@ test("Codex hook refuses a world-writable nearest Codex ancestor and delivers no
     writeFileSync(join(fixture.home, "go-inner"), "");
     try {
       const result = await running;
-      assert.equal(result.code, 0, result.stderr);
-      assert.deepEqual(JSON.parse(result.stdout), {});
-      assert.deepEqual(commands, [], "a loose-mode host is not a host; its bridge is never touched");
+      const evidence = `stdout: ${result.stdout} stderr: ${result.stderr}`;
+      assert.equal(result.code, 0, evidence);
+      assert.deepEqual(commands, [], `a loose-mode host is not a host; its bridge is never touched; ${evidence}`);
+      assert.deepEqual(JSON.parse(result.stdout), {}, evidence);
     } finally {
       await close();
     }
@@ -630,13 +633,14 @@ test("nested Codex: a hook under an inner Codex with no bridge never reaches the
     writeFileSync(join(fixture.home, "go-inner"), "");
     try {
       const result = await running;
-      assert.equal(result.code, 0, result.stderr);
-      assert.doesNotMatch(result.stderr, /failed open/);
+      const evidence = `stdout: ${result.stdout} stderr: ${result.stderr}`;
+      assert.equal(result.code, 0, evidence);
+      assert.doesNotMatch(result.stderr, /failed open/, evidence);
       // No delivery and no binding: the outer bridge saw nothing at all, and
       // the hook completed normally with nothing to inject.
-      assert.deepEqual(outerCommands, []);
-      assert.deepEqual(JSON.parse(result.stdout), {});
-      assert.doesNotMatch(result.stdout, /server-framed content/);
+      assert.deepEqual(outerCommands, [], evidence);
+      assert.deepEqual(JSON.parse(result.stdout), {}, evidence);
+      assert.doesNotMatch(result.stdout, /server-framed content/, evidence);
     } finally {
       await close();
     }
@@ -661,9 +665,12 @@ test("Codex hook without a live bridge fails soft under direct-parent so Session
       session_id: "codex-thread",
       hook_event_name: "SessionStart",
     });
-    assert.equal(start.code, 0, start.stderr);
-    assert.doesNotMatch(start.stderr, /failed open/);
-    assert.match(JSON.parse(start.stdout).hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/);
+    const startEvidence = `stdout: ${start.stdout} stderr: ${start.stderr}`;
+    assert.equal(start.code, 0, startEvidence);
+    assert.doesNotMatch(start.stderr, /failed open/, startEvidence);
+    const startOutput = JSON.parse(start.stdout);
+    assert.ok(startOutput.hookSpecificOutput, startEvidence);
+    assert.match(startOutput.hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/, startEvidence);
     const prompt = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", "codex-plugin", "--direct-parent", "--shell-launched", "--bind"], env, {
       cwd: "/tmp/codex-project",
       session_id: "codex-thread",

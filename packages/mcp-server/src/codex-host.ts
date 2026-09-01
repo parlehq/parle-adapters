@@ -1,6 +1,6 @@
 import { execFile as nodeExecFile } from "node:child_process";
 import { readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { redactString } from "@parlehq/agent-client";
 import type { HostIdleWake, HostIdleWakeStatus } from "./hook-delivery-bridge.js";
 
@@ -9,6 +9,11 @@ import type { HostIdleWake, HostIdleWakeStatus } from "./hook-delivery-bridge.js
 // developer additionalContext when the queued turn starts.
 export const CODEX_QUEUE_WAKE_TRIGGER = "Parle wake trigger. Follow only the trusted Parle hook additionalContext attached to this turn; this trigger contains no peer content. If no Parle delivery context is present, call `parle_status` once and stop. Do not poll or infer a reply route.";
 export const MIN_CODEX_QUEUE_VERSION = "0.149.0";
+
+// The naming rule the shell-ancestry walk applies (the shared hook's
+// CODEX_EXECUTABLE_NAME): a canonical file that is not codex-named is
+// reported as parent-not-codex before any permission verdict.
+const CODEX_EXECUTABLE_NAME = /^codex(?:[-.][\w.-]*)?$/i;
 
 const VERSION_TIMEOUT_MS = 10_000;
 const QUEUE_TIMEOUT_MS = 20_000;
@@ -191,6 +196,11 @@ export async function resolveCodexHostExecutable(hostParentPid: number, deps: Co
   // /proc/<pid>/exe is already canonical; a different realpath means the
   // link changed underneath us.
   if (platform === "linux" && canonical !== parent.path) return { ok: false, reason: "parent-changed", detail: "executable link moved" };
+  // Pure name prefilter before the permission verdict: an unrelated parent
+  // reports parent-not-codex instead of a misleading permission diagnostic.
+  // The version probe still runs only after the permission gate below --
+  // an unverified binary is never executed.
+  if (!CODEX_EXECUTABLE_NAME.test(basename(canonical))) return { ok: false, reason: "parent-not-codex", detail: "parent executable is not codex-named" };
   let stats: HostExecutableStats;
   try {
     stats = stat(canonical);

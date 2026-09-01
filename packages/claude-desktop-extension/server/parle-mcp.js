@@ -38877,9 +38877,10 @@ var ParleAgentClient = class _ParleAgentClient {
 // src/codex-host.ts
 import { execFile as nodeExecFile } from "node:child_process";
 import { readFileSync as readFileSync6, readlinkSync, realpathSync as realpathSync2, statSync as statSync3 } from "node:fs";
-import { isAbsolute as isAbsolute3 } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute3 } from "node:path";
 var CODEX_QUEUE_WAKE_TRIGGER = "Parle wake trigger. Follow only the trusted Parle hook additionalContext attached to this turn; this trigger contains no peer content. If no Parle delivery context is present, call `parle_status` once and stop. Do not poll or infer a reply route.";
 var MIN_CODEX_QUEUE_VERSION = "0.149.0";
+var CODEX_EXECUTABLE_NAME = /^codex(?:[-.][\w.-]*)?$/i;
 var VERSION_TIMEOUT_MS = 1e4;
 var QUEUE_TIMEOUT_MS = 2e4;
 var PROBE_TIMEOUT_MS = 3e3;
@@ -38992,6 +38993,7 @@ async function resolveCodexHostExecutable(hostParentPid, deps = {}) {
     return { ok: false, reason: "not-executable", detail: errorMessage(error51) };
   }
   if (platform === "linux" && canonical !== parent.path) return { ok: false, reason: "parent-changed", detail: "executable link moved" };
+  if (!CODEX_EXECUTABLE_NAME.test(basename3(canonical))) return { ok: false, reason: "parent-not-codex", detail: "parent executable is not codex-named" };
   let stats;
   try {
     stats = stat(canonical);

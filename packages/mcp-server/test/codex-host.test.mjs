@@ -202,6 +202,20 @@ test("codex host discovery refuses a relative path, remote topology, wrong uid, 
   assert.equal(crashed.reason, "parent-not-codex");
 });
 
+test("codex host discovery names a non-codex parent before any permission verdict (#184)", async () => {
+  // A group-writable unrelated parent is parent-not-codex, never a
+  // misleading permission verdict about a binary that was not Codex anyway.
+  const tool = "/usr/bin/tool";
+  const nonCodex = await resolveCodexHostExecutable(PARENT, linuxDeps({
+    readlink: () => tool,
+    stat: fakeStat({ path: tool, mode: 0o775 }),
+  }));
+  assert.deepEqual(nonCodex, { ok: false, reason: "parent-not-codex", detail: "parent executable is not codex-named" });
+  // The same loose mode on a codex-named parent is still the permission verdict.
+  const looseCodex = await resolveCodexHostExecutable(PARENT, linuxDeps({ stat: fakeStat({ mode: 0o775 }) }));
+  assert.deepEqual(looseCodex, { ok: false, reason: "unsafe-executable" });
+});
+
 test("codex host discovery pins the canonical file and refuses drift before every exec", async () => {
   // A symlinked absolute path on macOS resolves to the target, and the target
   // is what gets verified and executed.
@@ -214,9 +228,10 @@ test("codex host discovery pins the canonical file and refuses drift before ever
   assert.equal(viaLink.ok, true, JSON.stringify(viaLink));
   assert.equal(viaLink.executable.path, CODEX);
   assert.equal(calls.at(-1).file, CODEX, "the canonical file runs, not the link");
-  // A symlink whose target is not a codex binary is refused by the stat of the target.
+  // A symlink whose target is not a codex-named binary fails the name
+  // prefilter before any stat or permission verdict.
   const dangling = await resolveCodexHostExecutable(PARENT, darwinDeps([psComm(link), psArgs("codex")], { realpath: () => "/elsewhere/tool" }));
-  assert.equal(dangling.reason, "not-executable");
+  assert.equal(dangling.reason, "parent-not-codex");
   // On Linux the exe link is canonical; a realpath that disagrees is a moved link.
   const moved = await resolveCodexHostExecutable(PARENT, linuxDeps({ realpath: () => "/opt/codex/bin/codex.new" }));
   assert.deepEqual(moved, { ok: false, reason: "parent-changed", detail: "executable link moved" });
