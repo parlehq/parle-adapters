@@ -42,7 +42,9 @@ const LEASE_MS = 30_000;
 // waiter task without the bridge delivering anything (on Claude Code usually
 // the memory-pressure reaper, but the bridge sees only the detach). Repeated
 // detaches inside one window mean re-arming is churn, so the bridge latches a
-// suspension until a human prompt arrives. The one announcement per episode is
+// suspension until a human prompt arrives, deliberately trading repeated
+// re-arm noise for no idle wake at all until that prompt. The one
+// announcement per episode is
 // claimed and then committed only after the hook wrote its output, so a hook
 // that dies in between does not consume it.
 const WAITER_DETACH_RING = 16;
