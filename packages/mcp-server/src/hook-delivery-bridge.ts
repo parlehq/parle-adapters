@@ -38,6 +38,19 @@ const MAX_HOOK_BATCH = 20;
 const MAX_HOOK_BYTES = 512 * 1024;
 const MAX_SOCKET_INPUT = 16 * 1024;
 const LEASE_MS = 30_000;
+// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps ending the
+// waiter task without the bridge delivering anything (on Claude Code usually
+// the memory-pressure reaper, but the bridge sees only the detach). Repeated
+// detaches inside one window mean re-arming is churn, so the bridge latches a
+// suspension until a human prompt arrives, deliberately trading repeated
+// re-arm noise for no idle wake at all until that prompt. The one
+// announcement per episode is
+// claimed and then committed only after the hook wrote its output, so a hook
+// that dies in between does not consume it.
+const WAITER_DETACH_RING = 16;
+const WAITER_DETACH_WINDOW_MS = 60 * 60_000;
+const WAITER_DETACH_SUSPEND_THRESHOLD = 3;
+const SUSPENSION_CLAIM_MS = 10_000;
 
 export type HookDeliveryBridgeStatus = {
   running: boolean;
@@ -46,6 +59,11 @@ export type HookDeliveryBridgeStatus = {
   socketPath: string;
   hostSessionBound: boolean;
   waiterAttached: boolean;
+  // Waiter sockets that closed without a queued-delivery response in the last
+  // hour, and the latched suspension they can trigger.
+  waiterDetachesRecent: number;
+  idleWakeSuspended: boolean;
+  idleWakeSuspensionAnnounced: boolean;
   agentSessionId?: string;
   ownerPid: number;
   hostParentPid?: number;
@@ -93,6 +111,7 @@ type PendingMessage = ResponsiveDeliveryMessage & {
   agentSessionId: string;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
+type SuspensionClaim = { id: string; expiresAt: number };
 
 export type HookDeliveryBridgeDeps = {
   now?: () => number;
@@ -280,6 +299,10 @@ export class HookDeliveryBridge {
   private idleWakeStarted = false;
   private leaseTimer?: unknown;
   private waiter?: Socket;
+  private readonly waiterDetaches: number[] = [];
+  private idleWakeSuspended = false;
+  private idleWakeSuspensionAnnounced = false;
+  private suspensionClaim?: SuspensionClaim;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
 
@@ -334,6 +357,9 @@ export class HookDeliveryBridge {
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
       waiterAttached: Boolean(this.waiter),
+      waiterDetachesRecent: this.recentWaiterDetaches(Date.now()),
+      idleWakeSuspended: this.idleWakeSuspended,
+      idleWakeSuspensionAnnounced: this.idleWakeSuspensionAnnounced,
       ownerPid: process.pid,
       ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() }),
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
@@ -361,7 +387,10 @@ export class HookDeliveryBridge {
       return false;
     }
     if (this.hostSessionId === sessionId) return true;
-    if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
+    // A live suspension claim fences replacement like a live delivery lease:
+    // the claiming session must be able to commit the line it already wrote,
+    // or the replacement could repeat the same episode's announcement.
+    if (this.liveLease() || this.liveSuspensionClaim() || (this.hostSessionId && !allowReplace)) return false;
     // A binding that MCP metadata confirmed and that still holds work is a
     // live thread in this process; another thread's SessionStart must not
     // take that work. An unconfirmed binding (a host that passes no thread
@@ -633,12 +662,69 @@ export class HookDeliveryBridge {
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
       const bound = this.bindHostSession(sessionId, command?.allowReplace === true, true);
+      // A human prompt ends the suspension episode: the next eligible Stop may
+      // ask to re-arm again and a fresh episode owes a fresh announcement.
+      if (bound && command?.hookEventName === "UserPromptSubmit") this.resetIdleWakeSuspension();
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
+    if (command?.action === "announce-suspension") return this.announceSuspension(command?.claim === true);
+    if (command?.action === "commit-suspension") return this.commitSuspension(String(command.claimId || ""));
     throw new Error("unknown Parle hook bridge action");
+  }
+
+  private recentWaiterDetaches(now: number): number {
+    return this.waiterDetaches.filter((at) => at > now - WAITER_DETACH_WINDOW_MS).length;
+  }
+
+  // Called when the attached waiter socket closes before the bridge ended it
+  // with a queued-delivery response: the host reaped or killed the task.
+  private recordWaiterDetach(at = Date.now()): void {
+    this.waiterDetaches.push(at);
+    if (this.waiterDetaches.length > WAITER_DETACH_RING) this.waiterDetaches.splice(0, this.waiterDetaches.length - WAITER_DETACH_RING);
+    if (!this.idleWakeSuspended && this.recentWaiterDetaches(at) >= WAITER_DETACH_SUSPEND_THRESHOLD) {
+      this.idleWakeSuspended = true;
+      this.idleWakeSuspensionAnnounced = false;
+      console.error(JSON.stringify({ event: "parle_responsive_delivery", stage: "idle_wake_suspended", at: new Date(at).toISOString(), detaches: this.waiterDetaches.length }));
+    }
+  }
+
+  // The announcement is owed exactly once per suspension episode. A hook that
+  // sends claim:true gets a claim that becomes final only on commit, so an
+  // expired uncommitted claim is owed again. A hook that omits it (an older
+  // plugin hook against this bridge during a live update) cannot commit, so
+  // its announcement is marked final in this one step.
+  private announceSuspension(claim: boolean): { ok: true; owed: boolean; claimId?: string } {
+    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced && !this.liveSuspensionClaim();
+    if (!owed) return { ok: true, owed: false };
+    if (!claim) {
+      this.idleWakeSuspensionAnnounced = true;
+      return { ok: true, owed: true };
+    }
+    this.suspensionClaim = { id: randomUUID(), expiresAt: Date.now() + SUSPENSION_CLAIM_MS };
+    return { ok: true, owed: true, claimId: this.suspensionClaim.id };
+  }
+
+  private commitSuspension(claimId: string): { ok: true; announced: true } {
+    const claim = this.liveSuspensionClaim();
+    if (!claim || claim.id !== claimId) throw new Error("Parle hook bridge suspension claim is missing or expired");
+    this.suspensionClaim = undefined;
+    this.idleWakeSuspensionAnnounced = true;
+    return { ok: true, announced: true };
+  }
+
+  private liveSuspensionClaim(): SuspensionClaim | undefined {
+    if (this.suspensionClaim && this.suspensionClaim.expiresAt <= Date.now()) this.suspensionClaim = undefined;
+    return this.suspensionClaim;
+  }
+
+  private resetIdleWakeSuspension(): void {
+    this.waiterDetaches.length = 0;
+    this.idleWakeSuspended = false;
+    this.idleWakeSuspensionAnnounced = false;
+    this.suspensionClaim = undefined;
   }
 
   private wait(socket: Socket, agentSessionId: string): void {
@@ -657,7 +743,9 @@ export class HookDeliveryBridge {
     }
     this.waiter = socket;
     socket.once("close", () => {
-      if (this.waiter === socket) this.waiter = undefined;
+      if (this.waiter !== socket) return;
+      this.waiter = undefined;
+      this.recordWaiterDetach();
     });
   }
 
@@ -667,19 +755,23 @@ export class HookDeliveryBridge {
     if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}\n`);
   }
 
+  // The response carries a status snapshot taken now, not at the hook's
+  // earlier discovery probe, so a suspension latched in between is seen.
   private take(): unknown {
     // Any take from the bound session, busy or not, proves a live host turn,
     // which is all a queued wake trigger exists to produce. Work left behind
     // is re-armed by commit or by lease expiry.
     this.idleWake?.consumeWake();
-    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
+    // The response carries a status snapshot taken now, not at the hook's
+    // earlier discovery probe, so a suspension latched in between is seen.
+    if (this.liveLease()) return { ok: true, busy: true, messages: [], status: this.status() };
     const messages: PendingMessage[] = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
       if (messages.length > 0 && Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_HOOK_BYTES) break;
       messages.push(message);
     }
-    if (messages.length === 0) return { ok: true, messages: [] };
+    if (messages.length === 0) return { ok: true, messages: [], status: this.status() };
     this.lease = { id: randomUUID(), messages, expiresAt: this.now() + LEASE_MS };
     // An uncommitted lease expires actively: the rows become leasable again
     // and, if the host is idle, wake is requested for them.
@@ -692,6 +784,7 @@ export class HookDeliveryBridge {
       ok: true,
       leaseId: this.lease.id,
       messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
+      status: this.status(),
     };
   }
 

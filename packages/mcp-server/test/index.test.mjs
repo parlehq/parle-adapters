@@ -975,10 +975,11 @@ test("status and connect distinguish bridge health from local waiter attachment"
     ensureReadySafe: async () => false,
   };
   let waiterAttached = false;
+  let idleWakeSuspended = false;
   const deliveryBridge = {
     start: async () => {},
     bindHostSession: () => true,
-    status: () => ({ running: true, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true, waiterAttached }),
+    status: () => ({ running: true, pending: 0, baselineSkipped: 0, socketPath: "/tmp/parle-test.sock", hostSessionBound: true, waiterAttached, idleWakeSuspended }),
   };
   const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
   new ResponsiveDeliveryRecorder({
@@ -1006,6 +1007,17 @@ test("status and connect distinguish bridge health from local waiter attachment"
       assert.match(result.structuredContent.compactText, /Delivery      watching \(idle wake unarmed\)/);
       assert.doesNotMatch(result.structuredContent.compactText, /responsive delivery is armed/);
     }
+    idleWakeSuspended = true;
+    const suspended = await client.callTool({ name: "parle_status", arguments: {} });
+    assert.equal(suspended.structuredContent.responsiveDelivery.state, "watching");
+    assert.equal(suspended.structuredContent.responsiveDelivery.reason, "idle_wake_suspended");
+    assert.equal(suspended.structuredContent.responsiveDelivery.nextActionKey, "wait-for-prompt");
+    assert.match(suspended.structuredContent.compactText, /Delivery      watching \(idle wake suspended: watcher keeps detaching\)/);
+    // The bridge observes detaches, not their cause; the shared card (also
+    // served to Codex) must not diagnose memory pressure.
+    assert.doesNotMatch(suspended.structuredContent.compactText, /memory pressure/);
+    assert.match(suspended.structuredContent.compactText, /Next: idle wake resumes at the next prompt/);
+    idleWakeSuspended = false;
     waiterAttached = true;
     const attached = await client.callTool({ name: "parle_status", arguments: {} });
     assert.equal(attached.structuredContent.responsiveDelivery.reason, undefined);

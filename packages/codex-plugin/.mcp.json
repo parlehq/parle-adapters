@@ -21,7 +21,7 @@
         "PARLE_HOOK_BRIDGE_HOST_PROCESS": "direct-parent",
         "PARLE_HOST_IDLE_WAKE": "codex-queue",
         "PARLE_INTEGRATION_NAME": "@parlehq/codex-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.6.66"
+        "PARLE_INTEGRATION_VERSION": "0.6.67"
       }
     }
   }

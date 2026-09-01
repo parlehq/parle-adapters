@@ -61,7 +61,7 @@ test("root and package manifests expose only the native mod", () => {
   const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8"));
   assert.deepEqual(root.commandcode.mods, ["./packages/command-code/mods/parle.ts"]);
   assert.deepEqual(pkg.commandcode.mods, ["./mods/parle.ts"]);
-  assert.equal(pkg.version, "0.7.40");
+  assert.equal(pkg.version, "0.7.41");
   assert.match(readFileSync(resolve("src/index.ts"), "utf8"), new RegExp(`ADAPTER_VERSION = "${pkg.version}"`));
 
   const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
@@ -342,6 +342,15 @@ test("missing ModApi capabilities refuse registration visibly", async () => {
   await source.registerCommandCodeMod({ ui: { notify(message) { notices.push(message); } } }, isolatedEnv());
   assert.equal(notices.length, 1);
   assert.match(notices[0], /cmd\.addTool/);
+});
+
+test("the mod artifact renders a suspended idle wake with the neutral shared text only", () => {
+  // Command Code has no hook-bridge idle wake of its own; the bundled card
+  // must state the observation and never a Claude-host diagnosis.
+  const artifact = readFileSync(resolve("mods/parle.ts"), "utf8");
+  assert.match(artifact, /idle wake suspended: watcher keeps detaching/);
+  assert.match(artifact, /case "wait-for-prompt":/);
+  assert.doesNotMatch(artifact, /memory pressure/);
 });
 
 test("footer reports an honest pending count and never claims idle wake", () => {

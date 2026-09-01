@@ -11,7 +11,7 @@ export type CompactIdleWake = "unavailable" | "unarmed" | "armed" | "queue-only"
 // reason-driven rendering.
 const HOST_IDLE_WAKE_LINE_STATES: ReadonlySet<CompactIdleWake> = new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
 
-export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "idle-wake-unavailable" | "idle-wake-queue-only" | "idle-wake-daemon-attached" | "idle-wake-degraded" | "wait-for-watcher" | "recover-watcher" | "repair-delivery-host";
+export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "idle-wake-unavailable" | "idle-wake-queue-only" | "idle-wake-daemon-attached" | "idle-wake-degraded" | "wait-for-watcher" | "wait-for-prompt" | "recover-watcher" | "repair-delivery-host";
 
 export type CompactResponsiveDeliveryInput = { state: CompactResponsiveDelivery; reason?: string; idleWake?: CompactIdleWake };
 
@@ -58,6 +58,8 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
       return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
+    case "wait-for-prompt":
+      return "idle wake resumes at the next prompt; do not re-arm the watcher until then.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     case "repair-delivery-host":
@@ -89,6 +91,9 @@ function deliveryLine(input: CompactConnectionCardInput["responsiveDelivery"]): 
   if (!input) return undefined;
   if (typeof input === "string") return input;
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake)) return `${input.state} (idle wake ${input.idleWake})`;
+  // A latched suspension renders truthfully instead of inviting a re-arm
+  // (host memory-pressure reaps, #185).
+  if (input.reason === "idle_wake_suspended") return `${input.state} (idle wake suspended: watcher keeps detaching)`;
   if (input.reason === "idle_wake_unarmed") return `${input.state} (idle wake unarmed)`;
   return input.state;
 }

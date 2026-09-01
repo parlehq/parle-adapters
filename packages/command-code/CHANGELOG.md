@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.41 (2026-08-28)
+
+- Carry the shared card rendering of client 0.8.55 (`Delivery watching (idle wake suspended: watcher keeps detaching)`, next key `wait-for-prompt`) and the `idle_wake_suspended` status reason of MCP server 0.7.64 into the Command Code mod artifact. Command Code runs no hook-bridge idle wake, so this rendering is reachable only through a bridge status that reports suspension; the mod's own delivery behavior is unchanged (parlehq/parle-adapters#185).
 ## 0.7.40 (2026-08-27)
 
 - Carry the host-owned idle-wake status states of MCP server 0.7.63 and client 0.8.54 into the Command Code mod artifact; the native mod declares no host idle-wake capability, so its rendering is unchanged (#174).

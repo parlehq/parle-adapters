@@ -1091,7 +1091,10 @@ test("hook bridge expires an uncommitted lease actively and re-arms idle wake; a
     assert.equal(timers[0].delayMs, 30_000);
     bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 2, event_id: "evt-2", content: "during lease" } });
     assert.equal(idleWake.requests.length, 1, "work arriving during a lease waits for commit or expiry");
-    assert.deepEqual(await request(path, { action: "take", sessionId: "thread-1" }), { ok: true, busy: true, messages: [] });
+    const busyTake = await request(path, { action: "take", sessionId: "thread-1" });
+    assert.equal(busyTake.busy, true);
+    assert.deepEqual(busyTake.messages, []);
+    assert.equal(busyTake.status.hostSessionBound, true, "the merged busy path carries a status snapshot");
     assert.equal(idleWake.consumed, 2, "a busy take is still a live turn");
 
     // The hook never commits (its host died mid-turn). The lease expires on
@@ -1109,6 +1112,349 @@ test("hook bridge expires an uncommitted lease actively and re-arms idle wake; a
     assert.deepEqual(await request(path, { action: "commit", sessionId: "thread-1", leaseId: again.leaseId }), { ok: true, committed: 2 });
     assert.deepEqual(cleared, [2], "commit cancels the expiry timer");
     assert.equal(idleWake.requests.length, 2, "nothing left to arm");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps ending the
+// waiter task without any delivery. The bridge counts those detaches, latches
+// a suspension, announces it once (claim, then commit), and resets on a prompt.
+function suspensionClient() {
+  return {
+    runtime: bridgeRuntime(),
+    ensureBootstrapped: async () => {},
+    drainResponsiveDelivery: async () => ({ messages: [] }),
+    ackResponsiveDelivery: async () => {},
+    openWakeStream: async (signal) => heldWakeStream({}, signal),
+  };
+}
+
+const MINUTE = 60_000;
+
+test("hook bridge counts a waiter that detaches without delivery and not one it ended", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-detach-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    assert.equal(bridge.status().waiterDetachesRecent, 0);
+    assert.equal(bridge.status().idleWakeSuspended, false);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
+
+    const reaped = connect(bridge.status().socketPath);
+    reaped.once("connect", () => reaped.write(`${JSON.stringify({ action: "wait", agentSessionId: "session-1" })}\n`));
+    await eventually(() => bridge.status().waiterAttached);
+    reaped.destroy();
+    await eventually(() => bridge.status().waiterDetachesRecent === 1);
+    assert.equal(bridge.status().idleWakeSuspended, false);
+
+    const delivered = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
+    await eventually(() => bridge.status().waiterAttached);
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "queued" } });
+    assert.deepEqual(await delivered, { ok: true, ready: true });
+    await settle(20);
+    assert.equal(bridge.status().waiterDetachesRecent, 1, "a waiter the bridge ended with delivery is not a detach");
+
+    const status = await request(bridge.status().socketPath, { action: "status" });
+    assert.equal(status.waiterDetachesRecent, 1);
+    assert.equal(status.idleWakeSuspended, false);
+    assert.equal(status.idleWakeSuspensionAnnounced, false);
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge suspends idle wake at three detaches inside one hour and expires older detaches", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-suspend-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const now = Date.now();
+    // The window is measured from each detach, so the old pair must be more
+    // than an hour before the first recent one, not merely before now.
+    bridge.recordWaiterDetach(now - 130 * MINUTE);
+    bridge.recordWaiterDetach(now - 130 * MINUTE);
+    bridge.recordWaiterDetach(now - 30 * MINUTE);
+    assert.equal(bridge.status().waiterDetachesRecent, 1, "detaches older than the hour do not count");
+    assert.equal(bridge.status().idleWakeSuspended, false);
+    bridge.recordWaiterDetach(now - 20 * MINUTE);
+    assert.equal(bridge.status().idleWakeSuspended, false, "two recent detaches are below threshold");
+    bridge.recordWaiterDetach(now);
+    assert.equal(bridge.status().waiterDetachesRecent, 3);
+    assert.equal(bridge.status().idleWakeSuspended, true);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
+    for (let index = 0; index < 40; index += 1) bridge.recordWaiterDetach(now);
+    assert.equal(bridge.status().waiterDetachesRecent, 16, "the detach ring is bounded");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge announces a suspension once through a committed claim and resets it on a UserPromptSubmit bind", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-announce-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" }), { ok: true, bound: true });
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: false }, "nothing is owed before a suspension");
+    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-2" })).ok, false, "an unbound host session cannot claim the announcement");
+
+    const now = Date.now();
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(now);
+    assert.equal(bridge.status().idleWakeSuspended, true);
+    // take snapshots current status so the hook never decides on a stale probe.
+    const taken = await request(path, { action: "take", sessionId: "host-1" });
+    assert.equal(taken.status.idleWakeSuspended, true);
+    assert.equal(taken.status.waiterDetachesRecent, 3);
+
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+    assert.equal(claimed.owed, true);
+    assert.match(claimed.claimId, /^[0-9a-f-]{36}$/);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false, "a claim is not yet an announcement");
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true }), { ok: true, owed: false }, "a live claim blocks a second claim");
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: false }, "a legacy hook cannot pre-empt a live claim either");
+    const wrong = await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: "not-the-claim" });
+    assert.equal(wrong.ok, false);
+    assert.match(wrong.error, /missing or expired/);
+    assert.deepEqual(await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: claimed.claimId }), { ok: true, announced: true });
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, true);
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: false }, "one announcement per episode");
+    bridge.recordWaiterDetach(now);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, true, "further detaches inside the episode owe nothing new");
+
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-1", hookEventName: "PreToolUse" }), { ok: true, bound: true });
+    assert.equal(bridge.status().idleWakeSuspended, true, "only a human prompt ends the episode");
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-1", hookEventName: "UserPromptSubmit" }), { ok: true, bound: true });
+    assert.equal(bridge.status().idleWakeSuspended, false);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
+    assert.equal(bridge.status().waiterDetachesRecent, 0);
+
+    // A fresh episode after the reset owes a fresh announcement. An older
+    // plugin hook omits claim:true and cannot commit, so its announcement is
+    // final in one step and returns no claimId.
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1" }), { ok: true, owed: true });
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, true, "a legacy announcement is marked final immediately");
+    assert.equal(bridge.suspensionClaim, undefined, "a legacy announcement leaves no claim to expire");
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true }), { ok: true, owed: false });
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge makes an uncommitted suspension claim owed again after expiry, alongside an uncommitted lease", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-claim-expiry-"));
+  const acknowledgements = [];
+  const client = { ...suspensionClient(), ackResponsiveDelivery: async (message) => acknowledgements.push(message.event_id) };
+  const bridge = new HookDeliveryBridge(client, cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" });
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "queued" } });
+
+    // One Stop leases the row and claims the announcement, then dies before
+    // writing output: nothing is acknowledged and nothing is announced.
+    const leased = await request(path, { action: "take", sessionId: "host-1" });
+    assert.equal(leased.messages.length, 1);
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+    assert.equal(claimed.owed, true);
+    assert.equal(bridge.status().pending, 1);
+    assert.deepEqual(acknowledgements, []);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
+    assert.deepEqual(await request(path, { action: "take", sessionId: "host-1" }), { ok: true, busy: true, messages: [], status: bridge.status() });
+    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true })).owed, false, "a live claim is not re-issued");
+
+    // Both expire uncommitted; the next Stop gets the row and the announcement again.
+    bridge.lease.expiresAt = Date.now() - 1;
+    bridge.suspensionClaim.expiresAt = Date.now() - 1;
+    const expired = await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: claimed.claimId });
+    assert.equal(expired.ok, false);
+    assert.match(expired.error, /missing or expired/);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false, "an expired claim never announces");
+    const retaken = await request(path, { action: "take", sessionId: "host-1" });
+    assert.deepEqual(retaken.messages.map((message) => message.event_id), ["evt-1"]);
+    const reclaimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+    assert.equal(reclaimed.owed, true);
+    assert.notEqual(reclaimed.claimId, claimed.claimId);
+    assert.deepEqual(await request(path, { action: "commit", sessionId: "host-1", leaseId: retaken.leaseId }), { ok: true, committed: 1 });
+    assert.deepEqual(await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: reclaimed.claimId }), { ok: true, announced: true });
+    assert.deepEqual(acknowledgements, ["evt-1"]);
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, true);
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge fences SessionStart replacement behind a live suspension claim until it commits or expires", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-claim-fence-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" });
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+    assert.equal(claimed.owed, true);
+
+    // Another same-cwd session starts while host-1's line is written but not
+    // yet committed: replacement is refused so host-1 can still commit.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true, hookEventName: "SessionStart" }), { ok: false, bound: true });
+    assert.deepEqual(await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: claimed.claimId }), { ok: true, announced: true });
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true, hookEventName: "SessionStart" }), { ok: true, bound: true });
+    assert.deepEqual(await request(path, { action: "announce-suspension", sessionId: "host-2", claim: true }), { ok: true, owed: false }, "the replacement cannot repeat the committed announcement");
+
+    // An expired uncommitted claim no longer fences replacement.
+    await request(path, { action: "bind", sessionId: "host-2", hookEventName: "UserPromptSubmit" });
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    const stale = await request(path, { action: "announce-suspension", sessionId: "host-2", claim: true });
+    assert.equal(stale.owed, true);
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-3", allowReplace: true, hookEventName: "SessionStart" }), { ok: false, bound: true });
+    bridge.suspensionClaim.expiresAt = Date.now() - 1;
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-3", allowReplace: true, hookEventName: "SessionStart" }), { ok: true, bound: true });
+    assert.equal((await request(path, { action: "commit-suspension", sessionId: "host-2", claimId: stale.claimId })).ok, false, "the replaced session is no longer bound");
+    assert.equal((await request(path, { action: "announce-suspension", sessionId: "host-3", claim: true })).owed, true, "the expired claim is owed to the replacement");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge replays the recorded 2026-08-27/28 reap sequence as one announcement and no re-arm eligibility until reset", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-replay-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" });
+    // The 21 recorded watcher reaps (UTC) of the observed 38-hour session.
+    const recorded = [
+      "2026-08-27T14:27:32Z", "2026-08-27T22:21:04Z", "2026-08-27T22:40:49Z", "2026-08-27T22:56:25Z",
+      "2026-08-27T22:56:52Z", "2026-08-27T23:10:07Z", "2026-08-27T23:14:48Z", "2026-08-27T23:46:47Z",
+      "2026-08-27T23:54:34Z", "2026-08-28T00:02:17Z", "2026-08-28T01:13:29Z", "2026-08-28T02:22:15Z",
+      "2026-08-28T02:52:14Z", "2026-08-28T07:36:04Z", "2026-08-28T07:43:55Z", "2026-08-28T07:54:17Z",
+      "2026-08-28T08:01:14Z", "2026-08-28T08:26:30Z", "2026-08-28T08:35:42Z", "2026-08-28T08:37:42Z",
+      "2026-08-28T10:31:15Z",
+    ];
+    assert.equal(recorded.length, 21);
+    let announcements = 0;
+    let rearmEligibleAfterSuspension = 0;
+    let latchedAt;
+    for (const at of recorded) {
+      bridge.recordWaiterDetach(Date.parse(at));
+      if (latchedAt === undefined && bridge.status().idleWakeSuspended) latchedAt = at;
+      // What the stateless Stop hook does at each following turn: decide on
+      // the take snapshot, claim, write output, commit.
+      const { status } = await request(path, { action: "take", sessionId: "host-1" });
+      if (status.idleWakeSuspended) {
+        if (!status.idleWakeSuspensionAnnounced) {
+          const announced = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+          if (announced.owed) {
+            announcements += 1;
+            await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: announced.claimId });
+          }
+        }
+      } else if (latchedAt !== undefined) {
+        rearmEligibleAfterSuspension += 1;
+      }
+    }
+    // Discovered from the data, then pinned: the rolling 60-minute window
+    // first holds three detaches (22:21:04, 22:40:49, 22:56:25) at the fourth
+    // recorded reap, so that is where the suspension latches.
+    assert.equal(latchedAt, "2026-08-27T22:56:25Z");
+    assert.equal(announcements, 1, "one announcement for the whole episode");
+    assert.equal(rearmEligibleAfterSuspension, 0, "quiet stretches never silently re-enable re-arming");
+    assert.equal(bridge.status().idleWakeSuspended, true);
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "UserPromptSubmit" });
+    assert.equal(bridge.status().idleWakeSuspended, false);
+
+    // Companion: a sparse cadence from the same workload's tail -- one detach
+    // every two hours -- stays below the threshold and never suspends, so the
+    // threshold is validated against the observed workload in both directions.
+    let tick = Date.parse("2026-08-28T10:31:15Z");
+    for (let index = 0; index < 21; index += 1) {
+      bridge.recordWaiterDetach(tick);
+      tick += 120 * MINUTE;
+    }
+    assert.equal(bridge.status().idleWakeSuspended, false, "a two-hour cadence never suspends");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("take returns a fresh status snapshot on every merged return path: empty, leased, and busy (#185/#174)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-take-status-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" });
+
+    // Empty path: no pending work.
+    const empty = await request(path, { action: "take", sessionId: "host-1" });
+    assert.deepEqual(empty.messages, []);
+    assert.equal(empty.status.idleWakeSuspended, false);
+
+    // A suspension latched between the hook's discovery probe and its take is
+    // visible on the leased path.
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "queued" } });
+    const leased = await request(path, { action: "take", sessionId: "host-1" });
+    assert.equal(leased.messages.length, 1);
+    assert.equal(leased.status.idleWakeSuspended, true, "the leased path snapshots current state");
+    assert.equal(leased.status.waiterDetachesRecent, 3);
+
+    // Busy path: the live lease blocks a second take, and its snapshot is
+    // taken now, not replayed -- the bound session's own prompt reset that
+    // landed in between is visible.
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "UserPromptSubmit" });
+    const busy = await request(path, { action: "take", sessionId: "host-1" });
+    assert.equal(busy.busy, true);
+    assert.deepEqual(busy.messages, []);
+    assert.equal(busy.status.idleWakeSuspended, false, "the busy path snapshots the state after the reset");
+  } finally {
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("UserPromptSubmit reset cannot bypass the live lease and suspension-claim fences of the merged bridge (#185/#174)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-reset-fence-"));
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
+  try {
+    await bridge.start();
+    const path = bridge.status().socketPath;
+    await request(path, { action: "bind", sessionId: "host-1", hookEventName: "SessionStart" });
+    for (let index = 0; index < 3; index += 1) bridge.recordWaiterDetach(Date.now());
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "host-1", claim: true });
+    assert.equal(claimed.owed, true);
+
+    // Another session's UserPromptSubmit cannot replace the binding while the
+    // claim is live, so it cannot reset the episode either.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true, hookEventName: "UserPromptSubmit" }), { ok: false, bound: true });
+    assert.equal(bridge.status().idleWakeSuspended, true, "a fenced bind never resets the suspension");
+    assert.notEqual(bridge.suspensionClaim, undefined, "the live claim survives the refused bind");
+
+    // Same fence for a live delivery lease after the claim commits.
+    await request(path, { action: "commit-suspension", sessionId: "host-1", claimId: claimed.claimId });
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "queued" } });
+    const leased = await request(path, { action: "take", sessionId: "host-1" });
+    assert.equal(leased.messages.length, 1);
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-2", allowReplace: true, hookEventName: "UserPromptSubmit" }), { ok: false, bound: true });
+    assert.equal(bridge.status().idleWakeSuspended, true, "a lease-fenced bind never resets the suspension");
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, true, "the committed announcement survives the refused bind");
+
+    // The bound session's own human prompt still ends the episode.
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "host-1", hookEventName: "UserPromptSubmit" }), { ok: true, bound: true });
+    assert.equal(bridge.status().idleWakeSuspended, false);
   } finally {
     await bridge.stop();
     cleanupFixture(cwd);

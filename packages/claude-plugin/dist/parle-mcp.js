@@ -35538,6 +35538,8 @@ function nextTextFor(key) {
       return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
+    case "wait-for-prompt":
+      return "idle wake resumes at the next prompt; do not re-arm the watcher until then.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     case "repair-delivery-host":
@@ -35567,6 +35569,8 @@ function deliveryLine(input) {
     return input;
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
     return `${input.state} (idle wake ${input.idleWake})`;
+  if (input.reason === "idle_wake_suspended")
+    return `${input.state} (idle wake suspended: watcher keeps detaching)`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
@@ -39246,6 +39250,10 @@ var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
 var MAX_SOCKET_INPUT = 16 * 1024;
 var LEASE_MS = 3e4;
+var WAITER_DETACH_RING = 16;
+var WAITER_DETACH_WINDOW_MS = 60 * 6e4;
+var WAITER_DETACH_SUSPEND_THRESHOLD = 3;
+var SUSPENSION_CLAIM_MS = 1e4;
 function deliveryKey2(roomId, message) {
   return `${roomId}:${message.seq}:${message.event_id}`;
 }
@@ -39430,6 +39438,10 @@ var HookDeliveryBridge = class {
   idleWakeStarted = false;
   leaseTimer;
   waiter;
+  waiterDetaches = [];
+  idleWakeSuspended = false;
+  idleWakeSuspensionAnnounced = false;
+  suspensionClaim;
   unsubscribeCommitGuard;
   evidence;
   status() {
@@ -39445,6 +39457,9 @@ var HookDeliveryBridge = class {
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
       waiterAttached: Boolean(this.waiter),
+      waiterDetachesRecent: this.recentWaiterDetaches(Date.now()),
+      idleWakeSuspended: this.idleWakeSuspended,
+      idleWakeSuspensionAnnounced: this.idleWakeSuspensionAnnounced,
       ownerPid: process.pid,
       ...this.hostParentPid === void 0 ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() },
       ...this.client.runtime?.agentSessionId ? { agentSessionId: String(this.client.runtime.agentSessionId) } : {},
@@ -39469,7 +39484,7 @@ var HookDeliveryBridge = class {
       return false;
     }
     if (this.hostSessionId === sessionId) return true;
-    if (this.liveLease() || this.hostSessionId && !allowReplace) return false;
+    if (this.liveLease() || this.liveSuspensionClaim() || this.hostSessionId && !allowReplace) return false;
     if (this.hostSessionId && this.metaHostSessionId === this.hostSessionId && this.pending.length > 0) return false;
     this.hostSessionId = sessionId;
     this.requestIdleWake();
@@ -39718,12 +39733,61 @@ var HookDeliveryBridge = class {
     if (!sessionId) throw new Error("Host session id is required");
     if (command?.action === "bind") {
       const bound = this.bindHostSession(sessionId, command?.allowReplace === true, true);
+      if (bound && command?.hookEventName === "UserPromptSubmit") this.resetIdleWakeSuspension();
       return { ok: bound, bound: Boolean(this.hostSessionId) };
     }
     if (this.hostSessionId !== sessionId) return { ok: false, error: "Host session is not bound to this Parle hook bridge" };
     if (command?.action === "take") return this.take();
     if (command?.action === "commit") return this.commit(String(command.leaseId || ""));
+    if (command?.action === "announce-suspension") return this.announceSuspension(command?.claim === true);
+    if (command?.action === "commit-suspension") return this.commitSuspension(String(command.claimId || ""));
     throw new Error("unknown Parle hook bridge action");
+  }
+  recentWaiterDetaches(now) {
+    return this.waiterDetaches.filter((at) => at > now - WAITER_DETACH_WINDOW_MS).length;
+  }
+  // Called when the attached waiter socket closes before the bridge ended it
+  // with a queued-delivery response: the host reaped or killed the task.
+  recordWaiterDetach(at = Date.now()) {
+    this.waiterDetaches.push(at);
+    if (this.waiterDetaches.length > WAITER_DETACH_RING) this.waiterDetaches.splice(0, this.waiterDetaches.length - WAITER_DETACH_RING);
+    if (!this.idleWakeSuspended && this.recentWaiterDetaches(at) >= WAITER_DETACH_SUSPEND_THRESHOLD) {
+      this.idleWakeSuspended = true;
+      this.idleWakeSuspensionAnnounced = false;
+      console.error(JSON.stringify({ event: "parle_responsive_delivery", stage: "idle_wake_suspended", at: new Date(at).toISOString(), detaches: this.waiterDetaches.length }));
+    }
+  }
+  // The announcement is owed exactly once per suspension episode. A hook that
+  // sends claim:true gets a claim that becomes final only on commit, so an
+  // expired uncommitted claim is owed again. A hook that omits it (an older
+  // plugin hook against this bridge during a live update) cannot commit, so
+  // its announcement is marked final in this one step.
+  announceSuspension(claim) {
+    const owed = this.idleWakeSuspended && !this.idleWakeSuspensionAnnounced && !this.liveSuspensionClaim();
+    if (!owed) return { ok: true, owed: false };
+    if (!claim) {
+      this.idleWakeSuspensionAnnounced = true;
+      return { ok: true, owed: true };
+    }
+    this.suspensionClaim = { id: randomUUID5(), expiresAt: Date.now() + SUSPENSION_CLAIM_MS };
+    return { ok: true, owed: true, claimId: this.suspensionClaim.id };
+  }
+  commitSuspension(claimId) {
+    const claim = this.liveSuspensionClaim();
+    if (!claim || claim.id !== claimId) throw new Error("Parle hook bridge suspension claim is missing or expired");
+    this.suspensionClaim = void 0;
+    this.idleWakeSuspensionAnnounced = true;
+    return { ok: true, announced: true };
+  }
+  liveSuspensionClaim() {
+    if (this.suspensionClaim && this.suspensionClaim.expiresAt <= Date.now()) this.suspensionClaim = void 0;
+    return this.suspensionClaim;
+  }
+  resetIdleWakeSuspension() {
+    this.waiterDetaches.length = 0;
+    this.idleWakeSuspended = false;
+    this.idleWakeSuspensionAnnounced = false;
+    this.suspensionClaim = void 0;
   }
   wait(socket, agentSessionId) {
     const current = String(this.client.runtime?.agentSessionId || "");
@@ -39744,7 +39808,9 @@ var HookDeliveryBridge = class {
     }
     this.waiter = socket;
     socket.once("close", () => {
-      if (this.waiter === socket) this.waiter = void 0;
+      if (this.waiter !== socket) return;
+      this.waiter = void 0;
+      this.recordWaiterDetach();
     });
   }
   finishWaiter(response) {
@@ -39753,16 +39819,18 @@ var HookDeliveryBridge = class {
     if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}
 `);
   }
+  // The response carries a status snapshot taken now, not at the hook's
+  // earlier discovery probe, so a suspension latched in between is seen.
   take() {
     this.idleWake?.consumeWake();
-    if (this.liveLease()) return { ok: true, busy: true, messages: [] };
+    if (this.liveLease()) return { ok: true, busy: true, messages: [], status: this.status() };
     const messages = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
       const candidate = [...messages, message];
       if (messages.length > 0 && Buffer.byteLength(JSON.stringify(candidate), "utf8") > MAX_HOOK_BYTES) break;
       messages.push(message);
     }
-    if (messages.length === 0) return { ok: true, messages: [] };
+    if (messages.length === 0) return { ok: true, messages: [], status: this.status() };
     this.lease = { id: randomUUID5(), messages, expiresAt: this.now() + LEASE_MS };
     this.leaseTimer = this.setTimer(() => {
       this.leaseTimer = void 0;
@@ -39772,7 +39840,8 @@ var HookDeliveryBridge = class {
     return {
       ok: true,
       leaseId: this.lease.id,
-      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message)
+      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
+      status: this.status()
     };
   }
   async commit(leaseId) {
@@ -40071,12 +40140,12 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
   }
   if (!resolved) return void 0;
   const idleWakeUnarmed = host.idleWake !== "codex-queue" && bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
-  if (idleWakeUnarmed) resolved = { ...resolved, reason: "idle_wake_unarmed" };
+  if (idleWakeUnarmed) resolved = { ...resolved, reason: bridgeStatus.idleWakeSuspended === true ? "idle_wake_suspended" : "idle_wake_unarmed" };
   const evidence = hostIdleWakeEvidence(host, bridgeStatus);
   const idleWake = evidence.state;
   resolved = { ...resolved, idleWake, ...evidence.reason ? { idleWakeReason: evidence.reason } : {} };
   const hostNext = hostIdleWakeNext(idleWake);
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? hostNext ?? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : hostNext ? hostNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? hostNext ?? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : resolved.reason === "idle_wake_suspended" ? { nextActionKey: "wait-for-prompt", nextAction: "idle wake resumes at the next prompt" } : hostNext ? hostNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -40625,7 +40694,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.63";
+var MCP_CLIENT_VERSION = "0.7.64";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
