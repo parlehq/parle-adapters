@@ -1,0 +1,5 @@
+{"timestamp":"2026-08-27T20:00:01.000Z","type":"response_item","payload":{"type":"function_call","name":"mcp__parle__parle_connect","arguments":"{}","call_id":"call_1"}}
+{"timestamp":"2026-08-27T20:00:02.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"{\"content\":[{\"type\":\"text\",\"text\":\"Connected to Parle\"}]}"}}
+{"timestamp":"2026-08-27T20:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"mcp__parle__parle_inbox","arguments":"{\"waitSeconds\":30}","call_id":"call_2"}}
+{"timestamp":"2026-08-27T20:00:33.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_2","output":"{\"content\":[{\"type\":\"text\",\"text\":\"No new messages.\"}]}"}}
+{"timestamp":"2026-08-27T20:00:34.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Waited once: nothing new. Stopping."}]}}

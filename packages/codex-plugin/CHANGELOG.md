@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.66 (2026-08-27)
+
+- Wake an idle Codex thread when a Parle message arrives (Codex >= 0.149). The manifest now declares `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent` and `PARLE_HOST_IDLE_WAKE=codex-queue`, and every hook passes `--direct-parent --shell-launched` (with `--bind` on SessionStart and UserPromptSubmit) so the bridge is correlated to the owning `codex` process and bound to the exact thread. On a new pending message the bridge runs the parent's own `codex queue --thread <thread> --message <fixed trigger>`; the embedded app-server picks the queued turn up within about 10 seconds (immediately when `codex app-server daemon start` is running and Codex was launched without `-c` overrides), the queued turn fires the plugin's UserPromptSubmit hook, and the hook injects the real content. The trigger text is constant and never carries peer content. `parle_status` renders `Delivery      watching (idle wake queue-only)`, `(idle wake degraded)` when a trigger's outcome is unknown, or the existing `(idle wake unavailable)` line with the reason in the JSON (older Codex, unverified parent, unbound or conflicting thread, queue full). The hook finds its bridge at the nearest Codex ancestor only, so a nested Codex can never bind or drain an outer session's bridge. A root-owned system install of Codex (`npm -g` on Linux) is accepted by both the bridge and the hook as long as the binary is writable by neither group nor world; any other owner is `wrong-uid`, and a group/world-writable, setuid, or setgid file is `unsafe-executable`. The executable is canonicalized before verification, and the bridge re-checks the verified file's inode, owner, mode, and mtime immediately before every exec, failing closed and dropping its cache on any change. The dogfood manifest runs status-wording and attended-hold under the app-server driver (`codex exec` never runs hooks), the attended-hold task allows a direct send to the delivered address when no reply route exists, and the rollout helpers fold every Codex spelling of a plugin tool name into `mcp__parle__<tool>`; the identity-mismatch check also accepts the plugin's own error vocabulary (`profile_not_found`, `not the requested`) alongside the generic mismatch phrases, so a correct refusal in the plugin's words is not scored as a failure. Only a spawn failure is retried; any outcome of a `codex queue` process that ran without success degrades without retrying. The hook command string changed in this version: operators must re-review trust with `/hooks` after upgrading. `codex queue` never spawns plugin MCP servers or hooks, so the wake subprocess creates no second Parle session. Carries MCP server 0.7.63 and client 0.8.54 (#174).
+
+## 0.6.65 (2026-08-27)
+
+- Forward `PARLE_ALLOW_INSECURE_LOCAL` through Codex's cleared MCP environment so a project can reach a local Parle rig (`http://127.0.0.1:<port>`) under Codex. The flag is a non-secret opt-in read from the launching shell's process environment; the shared client's loopback-only rule is unchanged, so it never admits a non-local host (#175).
+
+## 0.6.64 (2026-08-27)
+
+- Add an identity checkpoint to the skill's safety floor, covering every send path including status-first auto-connect: before this session's first `parle_send` or `parle_reply`, compare the connect or connected-status result's `identity` with any profile, agent, or room the operator stated; on a mismatch or unconfirmable expectation, do not send and report `identity mismatch` with the expected and actual values. When the requested `PARLE_PROFILE` is not in the catalog, or the plugin booted without usable configuration, report it as an identity/configuration problem and never fall back to another profile or the default identity. Carries MCP server 0.7.62 (#172).
+
+## 0.6.63 (2026-08-27)
+
+- Declare `PARLE_HOST_IDLE_WAKE=none` in the MCP manifest: Codex hooks pass no idle-wake launcher, so `parle_status` now renders `Delivery      watching (idle wake unavailable)` and points at the next prompt or an explicitly authorized capped attended wait instead of asking the model to arm a watcher that does not exist; the connect and session-established `next` guidance say the same. Carries MCP server 0.7.61 and client 0.8.53 (#171).
+
+## 0.6.62 (2026-08-27)
+
+- Make the skill's polling prohibition a conditional default: the live operator may explicitly authorize one attended hold of at most 10 minutes made of successive `parle_inbox` calls with `waitSeconds: 30`, and the catalog description now says so; unattended watcher loops, cron, detached processes, and other idle-wake simulations remain forbidden. Carries MCP server 0.7.60 and client 0.8.52 guidance (#170).
+
+## 0.6.61 (2026-08-27)
+
+- Add the real-Codex dogfood surface: a deterministic local-marketplace artifact build (`pnpm -F @parlehq/codex-plugin build:artifact`), the scenario manifest and schema under `dogfood/`, and zero-dependency rollout JSONL helpers for diagnostic checks (#173). No runtime behavior changed.
+
 ## 0.6.60 (2026-08-27)
 
 - Forward `PARLE_PROFILE`, `PARLE_PROFILES`, `PARLE_PROFILES_PATH`, `PWD`, and `CODEX_HOME` through Codex's cleared MCP environment and resolve the project `.env` from the shell launch directory instead of the plugin cache (#169).

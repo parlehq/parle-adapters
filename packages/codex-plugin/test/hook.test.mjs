@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -15,6 +16,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
+import { acceptableHostExecutable } from "../hooks/parle-hook.mjs";
 
 function withoutAmbientParle(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("PARLE_")));
@@ -384,3 +386,299 @@ for (const hookEventName of ["UserPromptSubmit", "PreToolUse", "PostToolUse", "S
     }
   });
 }
+
+// A stand-in Codex: this test's own Node binary linked (or copied) to
+// <home>/bin/codex, so the hook's ancestry walk sees an absolute executable
+// with a codex basename owned by this user, exactly as it sees a real Codex.
+// The runner records its pid, waits for the test to place bridges keyed by
+// that pid, then runs the hook command through the login shell (mode
+// "inner") or spawns a nested fake Codex first (mode "outer").
+function installFakeCodex(home, mode, viaSymlink = false) {
+  const bin = join(home, "bin");
+  mkdirSync(bin, { recursive: true, mode: 0o700 });
+  const codex = join(bin, "codex");
+  if (viaSymlink) {
+    // The path Codex is launched by is a symlink; the canonical target is a
+    // codex-named binary elsewhere, as with Homebrew or an npm shim's vendor tree.
+    const target = join(home, "vendor", "codex-x86_64-unknown-linux-musl");
+    mkdirSync(join(home, "vendor"), { recursive: true, mode: 0o700 });
+    copyFileSync(process.execPath, target);
+    chmodSync(target, 0o755);
+    symlinkSync(target, codex);
+  } else if (mode !== undefined) {
+    // A private copy: a hard link would change the real binary's mode.
+    copyFileSync(process.execPath, codex);
+    chmodSync(codex, mode);
+  } else {
+    // A private copy with an explicit mode: a hard link would share the
+    // real Node binary's inode and mode, leaking runner permissions into
+    // the executable rule under test.
+    copyFileSync(process.execPath, codex);
+    chmodSync(codex, 0o755);
+  }
+  const runner = join(home, "fake-codex.mjs");
+  writeFileSync(runner, [
+    'import { spawnSync } from "node:child_process";',
+    'import { existsSync, writeFileSync } from "node:fs";',
+    "const [mode, shell, command, home] = process.argv.slice(2);",
+    "writeFileSync(`${home}/${mode}.pid`, String(process.pid));",
+    "const gate = new Int32Array(new SharedArrayBuffer(4));",
+    "while (!existsSync(`${home}/go-${mode}`)) Atomics.wait(gate, 0, 0, 20);",
+    'const child = mode === "outer"',
+    '  ? spawnSync(process.execPath, [process.argv[1], "inner", shell, command, home], { stdio: "inherit" })',
+    '  : spawnSync(shell, ["-lc", command], { stdio: "inherit", cwd: home });',
+    "process.exit(child.status ?? 1);",
+    "",
+  ].join("\n"));
+  return { codex, runner };
+}
+
+async function waitForFile(path) {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    if (existsSync(path)) return readFileSync(path, "utf8");
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}
+
+function fakeBridge(socketPath, hostParentPid, commands) {
+  const ownerPid = hostParentPid + 1;
+  const server = createServer((socket) => {
+    socket.setEncoding("utf8");
+    let input = "";
+    socket.on("data", (chunk) => {
+      input += chunk;
+      const newline = input.indexOf("\n");
+      if (newline < 0) return;
+      const command = JSON.parse(input.slice(0, newline));
+      commands.push(command);
+      if (command.action === "status") {
+        socket.end(`${JSON.stringify({ ok: true, running: true, ownerPid, hostParentPid, currentParentPid: hostParentPid, hostSessionBound: false, waiterAttached: false, agentSessionId: "as-1" })}\n`);
+      } else if (command.action === "bind") {
+        socket.end(`${JSON.stringify({ ok: true, bound: true })}\n`);
+      } else if (command.action === "take") {
+        socket.end(`${JSON.stringify({ ok: true, leaseId: "lease-174", messages: [{ seq: 12, event_id: "evt-12", content: "server-framed content" }] })}\n`);
+      } else if (command.action === "commit") {
+        socket.end(`${JSON.stringify({ ok: true, committed: 1 })}\n`);
+      } else {
+        socket.end(`${JSON.stringify({ ok: false })}\n`);
+      }
+    });
+  });
+  mkdirSync(resolve(socketPath, ".."), { recursive: true, mode: 0o700 });
+  return new Promise((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      chmodSync(socketPath, 0o600);
+      resolveListen(() => new Promise((resolveClose) => server.close(resolveClose)));
+    });
+  });
+}
+
+function codexChainFixture(codexMode, viaSymlink = false) {
+  const home = mkdtempSync("/tmp/codex-parle-chain-");
+  const pluginRoot = join(home, "plugin");
+  const hooksDir = join(pluginRoot, "hooks");
+  const distDir = join(pluginRoot, "dist");
+  const stateDir = join(home, ".local", "state", "parle", "hook-bridge", "b52cc0f7fef9d88d");
+  mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
+  mkdirSync(distDir, { recursive: true, mode: 0o700 });
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  symlinkSync(resolve("hooks/run-parle-hook.sh"), join(hooksDir, "run-parle-hook.sh"));
+  symlinkSync(resolve("hooks/parle-hook.mjs"), join(hooksDir, "parle-hook.mjs"));
+  symlinkSync(resolve("dist/parle-mcp.js"), join(distDir, "parle-mcp.js"));
+  symlinkSync(process.execPath, join(stateDir, `${process.pid}.node`));
+  const { codex, runner } = installFakeCodex(home, codexMode, viaSymlink);
+  const hooks = JSON.parse(readFileSync(resolve("hooks/hooks.json"), "utf8"));
+  const env = { ...withoutAmbientParle(), HOME: home, ZDOTDIR: home, PLUGIN_ROOT: pluginRoot };
+  const launch = (mode, shell, hookEventName) => runProcess(codex, [runner, mode, shell, hooks.hooks[hookEventName][0].hooks[0].command, home], { cwd: home, env }, {
+    cwd: home,
+    session_id: "codex-thread-174",
+    hook_event_name: hookEventName,
+  });
+  return { home, stateDir, launch, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+for (const shell of ["/bin/zsh", "/bin/bash"]) {
+  test(`Codex hook reaches the bridge of its nearest Codex ancestor through the ${shell} login-shell chain, binds the thread, and delivers (#174)`, async (context) => {
+    if (!existsSync(shell)) {
+      context.skip(`${shell} is unavailable`);
+      return;
+    }
+    const fixture = codexChainFixture();
+    try {
+      for (const [hookEventName, expectedBind] of [["SessionStart", { allowReplace: true }], ["UserPromptSubmit", { allowReplace: false }], ["PostToolUse", undefined]]) {
+        rmSync(join(fixture.home, "inner.pid"), { force: true });
+        rmSync(join(fixture.home, "go-inner"), { force: true });
+        const running = fixture.launch("inner", shell, hookEventName);
+        const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+        const commands = [];
+        const close = await fakeBridge(join(fixture.stateDir, String(innerPid), `${innerPid + 1}.sock`), innerPid, commands);
+        writeFileSync(join(fixture.home, "go-inner"), "");
+        try {
+          const result = await running;
+          const evidence = `${hookEventName} stdout: ${result.stdout} stderr: ${result.stderr}`;
+          assert.equal(result.code, 0, evidence);
+          // The captured bridge command sequence is the precondition for any
+          // output-shape assertion: {} is a valid no-context output, so a
+          // missing delivery must fail here, not on a property dereference.
+          assert.deepEqual(commands.map((entry) => entry.action), expectedBind ? ["status", "bind", "take", "commit"] : ["status", "take", "commit"], evidence);
+          if (expectedBind) {
+            assert.equal(commands[1].sessionId, "codex-thread-174", evidence);
+            assert.equal(commands[1].allowReplace, expectedBind.allowReplace, `binding; ${evidence}`);
+          }
+          assert.equal(commands.at(-1).leaseId, "lease-174", evidence);
+          const output = JSON.parse(result.stdout);
+          assert.ok(output.hookSpecificOutput, evidence);
+          assert.equal(output.hookSpecificOutput.hookEventName, hookEventName, evidence);
+          assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/, evidence);
+        } finally {
+          await close();
+        }
+      }
+    } finally {
+      fixture.cleanup();
+    }
+  });
+}
+
+test("Codex hook executable rule accepts user- or root-owned binaries and refuses other owners and loose modes (#174)", () => {
+  const uid = 1000;
+  const stat = (owner, mode, file = true) => ({ uid: owner, mode, isFile: () => file });
+  assert.equal(acceptableHostExecutable(stat(uid, 0o755), uid), true);
+  assert.equal(acceptableHostExecutable(stat(0, 0o755), uid), true, "npm -g on Linux installs a root-owned binary");
+  assert.equal(acceptableHostExecutable(stat(1001, 0o755), uid), false, "another user's binary");
+  assert.equal(acceptableHostExecutable(stat(0, 0o777), uid), false, "world-writable root-owned");
+  assert.equal(acceptableHostExecutable(stat(uid, 0o775), uid), false, "group-writable");
+  assert.equal(acceptableHostExecutable(stat(0, 0o644), uid), false, "no exec bit");
+  assert.equal(acceptableHostExecutable(stat(0, 0o4755), uid), false, "setuid");
+  assert.equal(acceptableHostExecutable(stat(uid, 0o2755), uid), false, "setgid");
+  assert.equal(acceptableHostExecutable(stat(uid, 0o755, false), uid), false, "not a regular file");
+  assert.equal(acceptableHostExecutable(stat(4242, 0o755), undefined), true, "no uid means no ownership check");
+});
+
+test("Codex hook resolves a symlinked Codex path to its canonical binary and delivers (#174)", async (context) => {
+  const shell = "/bin/zsh";
+  if (!existsSync(shell)) {
+    context.skip(`${shell} is unavailable`);
+    return;
+  }
+  const fixture = codexChainFixture(undefined, true);
+  try {
+    const running = fixture.launch("inner", shell, "UserPromptSubmit");
+    const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+    const commands = [];
+    const close = await fakeBridge(join(fixture.stateDir, String(innerPid), `${innerPid + 1}.sock`), innerPid, commands);
+    writeFileSync(join(fixture.home, "go-inner"), "");
+    try {
+      const result = await running;
+      const evidence = `stdout: ${result.stdout} stderr: ${result.stderr}`;
+      assert.equal(result.code, 0, evidence);
+      assert.deepEqual(commands.map((entry) => entry.action), ["status", "bind", "take", "commit"], evidence);
+      const output = JSON.parse(result.stdout);
+      assert.ok(output.hookSpecificOutput, evidence);
+      assert.match(output.hookSpecificOutput.additionalContext, /server-framed content/, evidence);
+    } finally {
+      await close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("Codex hook refuses a world-writable nearest Codex ancestor and delivers nothing (#174)", async (context) => {
+  const shell = "/bin/zsh";
+  if (!existsSync(shell)) {
+    context.skip(`${shell} is unavailable`);
+    return;
+  }
+  const fixture = codexChainFixture(0o777);
+  try {
+    const running = fixture.launch("inner", shell, "UserPromptSubmit");
+    const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+    const commands = [];
+    const close = await fakeBridge(join(fixture.stateDir, String(innerPid), `${innerPid + 1}.sock`), innerPid, commands);
+    writeFileSync(join(fixture.home, "go-inner"), "");
+    try {
+      const result = await running;
+      const evidence = `stdout: ${result.stdout} stderr: ${result.stderr}`;
+      assert.equal(result.code, 0, evidence);
+      assert.deepEqual(commands, [], `a loose-mode host is not a host; its bridge is never touched; ${evidence}`);
+      assert.deepEqual(JSON.parse(result.stdout), {}, evidence);
+    } finally {
+      await close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("nested Codex: a hook under an inner Codex with no bridge never reaches the outer Codex's bridge (#174)", async (context) => {
+  const shell = "/bin/zsh";
+  if (!existsSync(shell)) {
+    context.skip(`${shell} is unavailable`);
+    return;
+  }
+  const fixture = codexChainFixture();
+  try {
+    const running = fixture.launch("outer", shell, "SessionStart");
+    const outerPid = Number(await waitForFile(join(fixture.home, "outer.pid")));
+    const outerCommands = [];
+    const close = await fakeBridge(join(fixture.stateDir, String(outerPid), `${outerPid + 1}.sock`), outerPid, outerCommands);
+    writeFileSync(join(fixture.home, "go-outer"), "");
+    const innerPid = Number(await waitForFile(join(fixture.home, "inner.pid")));
+    assert.notEqual(innerPid, outerPid);
+    // The inner Codex has no bridge directory at all.
+    assert.equal(existsSync(join(fixture.stateDir, String(innerPid))), false);
+    writeFileSync(join(fixture.home, "go-inner"), "");
+    try {
+      const result = await running;
+      const evidence = `stdout: ${result.stdout} stderr: ${result.stderr}`;
+      assert.equal(result.code, 0, evidence);
+      assert.doesNotMatch(result.stderr, /failed open/, evidence);
+      // No delivery and no binding: the outer bridge saw nothing at all, and
+      // the hook completed normally with nothing to inject.
+      assert.deepEqual(outerCommands, [], evidence);
+      assert.deepEqual(JSON.parse(result.stdout), {}, evidence);
+      assert.doesNotMatch(result.stdout, /server-framed content/, evidence);
+    } finally {
+      await close();
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("Codex hook without a live bridge fails soft under direct-parent so SessionStart context still renders (#174)", async () => {
+  const home = mkdtempSync("/tmp/codex-parle-nobridge-");
+  const parleDir = join(home, ".parle");
+  mkdirSync(parleDir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(parleDir, "registry"), `${JSON.stringify({
+    version: 1,
+    entries: [{ apiOrigin: "https://api.parle.sh", roomId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", address: "@gilman.galexc.lead", continuity: "durable", expiresAt: "2099-01-01T00:00:00.000Z" }],
+  }, null, 2)}\n`, { mode: 0o600 });
+  const env = { ...withoutAmbientParle(), HOME: home, PARLE_ROOM_ID: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", PARLE_ROOM_AGENT_TOKEN: "parle_agt_test" };
+  delete env.PARLE_PROFILES_PATH;
+  try {
+    const start = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", "codex-plugin", "--direct-parent", "--shell-launched", "--bind", "--known-address-context"], env, {
+      cwd: "/tmp/codex-project",
+      session_id: "codex-thread",
+      hook_event_name: "SessionStart",
+    });
+    const startEvidence = `stdout: ${start.stdout} stderr: ${start.stderr}`;
+    assert.equal(start.code, 0, startEvidence);
+    assert.doesNotMatch(start.stderr, /failed open/, startEvidence);
+    const startOutput = JSON.parse(start.stdout);
+    assert.ok(startOutput.hookSpecificOutput, startEvidence);
+    assert.match(startOutput.hookSpecificOutput.additionalContext, /@gilman\.galexc\.lead/, startEvidence);
+    const prompt = await runHook(resolve("hooks/parle-hook.mjs"), ["--scope", "codex-plugin", "--direct-parent", "--shell-launched", "--bind"], env, {
+      cwd: "/tmp/codex-project",
+      session_id: "codex-thread",
+      hook_event_name: "UserPromptSubmit",
+    });
+    assert.equal(prompt.code, 0, prompt.stderr);
+    assert.deepEqual(JSON.parse(prompt.stdout), {});
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

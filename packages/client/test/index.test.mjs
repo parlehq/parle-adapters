@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { findForbiddenImports } from "../scripts/check-boundaries.mjs";
 import {
+  CONNECT_NEXT_GUIDANCE,
   DEFAULT_API_BASE,
   DEFAULT_VERSION,
   DEFAULT_WAKE_BASE,
@@ -13,6 +14,7 @@ import {
   ParleApiError,
   ProfileDeletionError,
   ProfileNotFoundError,
+  SESSION_ESTABLISHED_NEXT_GUIDANCE,
   processClientInstanceId,
   formatVersionErrorHint,
   assertSafeBase,
@@ -646,11 +648,13 @@ test("client bootstraps, reads inbox, and sends with direct addressing", async (
   });
   const inbox = await client.readInbox({ waitSeconds: 2 });
   assert.equal(inbox.cursorAfter, 4);
+  assert.ok(inbox.note.startsWith("waitSeconds is one bounded wait per call. Do not loop on it as a watcher on your own initiative; only a live operator's explicit authorization, under the host skill's capped attended-hold rule, permits successive calls. "), "waited reads carry the #170 conditional wait note");
   assert.match(inbox.note, /parle_send with to set exactly to that message's author\.address/);
   assert.match(inbox.note, /Omitting to creates an unaddressed durable room row but no target-responsive work for that peer/);
   assert.match(inbox.note, /do not guess from participant_id or provenance fields/);
   const projection = await client.readProjection();
   assert.doesNotMatch(projection.note, /author\.address/);
+  assert.doesNotMatch(projection.note, /waitSeconds/);
   const sent = await client.send({ body: "hello", to: "@p.a.s1" });
   assert.equal(sent.idempotencyKey, "idem-1");
   assert.deepEqual(sent.routing, { mode: "direct", target_level: "session", continuity: "ephemeral" });
@@ -1181,6 +1185,18 @@ test("non-retryable send failures still return the reusable idempotency key", as
   assert.equal(result.ok, false);
   assert.equal(result.retryable, false);
   assert.equal(result.idempotencyKey, "idem-nonretryable");
+});
+
+test("connect guidance pins the #170 operator-authorized attended hold wording", () => {
+  const suffix = " Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+  assert.equal(
+    CONNECT_NEXT_GUIDANCE,
+    "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card." + suffix,
+  );
+  assert.equal(
+    SESSION_ESTABLISHED_NEXT_GUIDANCE,
+    "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token." + suffix,
+  );
 });
 
 test("connect bootstraps once, returns factual summary, and reuses live sessions", async () => {

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.63 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.63 and client 0.8.54, which add Codex queue idle wake behind a manifest literal this host does not set; its behavior is unchanged (#174).
+
+## 0.8.62 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.62, which adds the credential-free `identity` checkpoint to `parle_connect` and connected `parle_status` results and the no-identity-switch guidance for a missing profile (#172).
+
+## 0.8.61 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.61 and client 0.8.53, which carry the generic idle-wake status state for hosts without an arm action; this host does not set `PARLE_HOST_IDLE_WAKE`, so its rendering is unchanged (#171).
+
+## 0.8.60 (2026-08-27)
+
+- Refresh the bundled MCP artifact to server 0.7.60 and client 0.8.52, which reword the `waitSeconds` tool guidance and connect `next` guidance to defer any operator-authorized attended hold to the host skill (#170).
+
 ## 0.8.59 (2026-08-27)
 
 - Refresh the bundled MCP artifact to server 0.7.59, which carries opt-in launch-directory configuration; this host does not enable it, so configuration resolution is unchanged (#169).

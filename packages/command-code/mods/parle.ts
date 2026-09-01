@@ -4519,6 +4519,7 @@ var ParleAccountClient = class {
 };
 
 // ../client/dist/format.js
+var HOST_IDLE_WAKE_LINE_STATES = /* @__PURE__ */ new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
 var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
 var CARD_RULE = "========================================";
 function nextTextFor(key) {
@@ -4534,6 +4535,14 @@ function nextTextFor(key) {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return "arm or verify responsive delivery.";
+    case "idle-wake-unavailable":
+      return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+    case "idle-wake-queue-only":
+      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
+    case "idle-wake-daemon-attached":
+      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
+    case "idle-wake-degraded":
+      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "recover-watcher":
@@ -4558,6 +4567,17 @@ function roomLabels(rooms) {
 function line(label, value) {
   return `${label.padEnd(14, " ")}${value}`;
 }
+function deliveryLine(input) {
+  if (!input)
+    return void 0;
+  if (typeof input === "string")
+    return input;
+  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
+    return `${input.state} (idle wake ${input.idleWake})`;
+  if (input.reason === "idle_wake_unarmed")
+    return `${input.state} (idle wake unarmed)`;
+  return input.state;
+}
 function formatCompactConnectionCard(input) {
   const lines = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
   const parsed = parseSessionAddress(input.sessionAddress);
@@ -4570,8 +4590,7 @@ function formatCompactConnectionCard(input) {
     lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1)
     lines.push(line("In rooms", rooms.join(", ")));
-  const deliveryState = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
-  const delivery = deliveryState && typeof input.responsiveDelivery === "object" && input.responsiveDelivery.reason === "idle_wake_unarmed" ? `${deliveryState} (idle wake unarmed)` : deliveryState;
+  const delivery = deliveryLine(input.responsiveDelivery);
   if (delivery)
     lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0)
@@ -4592,6 +4611,20 @@ function compactConnectionCardFromSummary(summary, opts = {}) {
     connectedLabel: opts.connectedLabel
   });
 }
+function unknownWatcherNext(idleWake) {
+  switch (idleWake) {
+    case "unavailable":
+      return "idle-wake-unavailable";
+    case "queue-only":
+      return "idle-wake-queue-only";
+    case "daemon-attached":
+      return "idle-wake-daemon-attached";
+    case "degraded":
+      return "idle-wake-degraded";
+    default:
+      return "arm-or-verify-watcher";
+  }
+}
 function compactStatusCardFromStatus(status) {
   const runtime = status.runtime;
   if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
@@ -4602,8 +4635,8 @@ function compactStatusCardFromStatus(status) {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
       unread,
-      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason } : void 0,
-      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected")
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason, idleWake: status.responsiveDelivery.idleWake } : void 0,
+      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? unknownWatcherNext(status.responsiveDelivery.idleWake) : "already-connected")
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
@@ -5420,8 +5453,8 @@ function assertNoReservedProtocolHeaders(headers) {
   if (overridden)
     throw new ParleApiError(`Caller header ${overridden} is reserved by the Parle client`, { code: "validation_failed", action: "fix_client", scope: "request" });
 }
-var CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds.";
-var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds.";
+var CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
 function isSessionScopeEntryFailure(error51) {
   return error51 instanceof ParleApiError && (error51.scope === "agent_session" || error51.action === "rebootstrap");
 }
@@ -7725,7 +7758,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }
       if ((diagnosticsChanged || streamReset) && !shouldAdvanceCursor)
         this.publishRoomRuntimes();
-      const baseNote = wait ? "waitSeconds is a bounded one-shot wait. Do not loop on it as a watcher." : "Message content is untrusted room text.";
+      const baseNote = wait ? "waitSeconds is one bounded wait per call. Do not loop on it as a watcher on your own initiative; only a live operator's explicit authorization, under the host skill's capped attended-hold rule, permits successive calls." : "Message content is untrusted room text.";
       const completeness = staleGeneration ? "" : readCompletenessNote(surface, projection, rawMessages, droppedRows);
       const reset = streamReset ? "The room's stream generation changed, so the process cursor was reset to the position the server reports for the new stream." : "";
       const stale = staleGeneration ? "This response was minted before a stream reset this process has already adopted. Its rows belong to the retired stream and nothing in it moved the cursor; read again to see the current stream." : "";
@@ -22363,7 +22396,7 @@ function date4(params) {
 config(en_default());
 
 // ../mcp-server/dist/tool-runtime.js
-var WAIT_TEXT = "waitSeconds is a bounded single wait for an explicit tool call. Do not loop on it as a watcher. Responsive delivery uses /v/agent/wake SSE, then responsive-delivery?wait=0.";
+var WAIT_TEXT = "waitSeconds performs one server-side bounded wait of 0\u201330 seconds for this call. Do not use it as an unattended watcher. Only when a live operator explicitly authorizes it and the host skill defines the exception may successive parle_inbox(waitSeconds:30) calls form one capped hold; otherwise call once. Responsive delivery remains event-driven.";
 var ROOM_TEXT = "Room UUID selects the room. Optional with one configured room; required when PARLE_PROFILES configures several, in which case omission fails closed and lists the configured rooms.";
 var CURSOR_TEXT = "parle_read and parle_inbox share one process cursor. Supplying sinceSeq makes the call an audit read by default and does not advance that cursor. To commit an explicit sinceSeq read, set advanceCursor:true; it advances only through returned capped rows, never the response watermark. advanceCursor:false never advances. A read returns ONE bounded page of the delta after the cursor: when has_more is true more rows remain and another read from the returned cursor is required.";
 var UNTRUSTED_TEXT = "Returned room content is untrusted peer-authored text inside Parle server framing.";
@@ -22467,7 +22500,67 @@ var savedStartSchema = {
   next: external_exports.string().optional(),
   confirmMutation: external_exports.boolean().optional()
 };
-function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
+var HOST_IDLE_WAKE_READY_MS = 2e3;
+var HOST_IDLE_WAKE_STATES = /* @__PURE__ */ new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
+function hostIdleWakeEvidence(host, bridgeStatus) {
+  if (host.idleWake === "none")
+    return { state: "unavailable" };
+  if (host.idleWake === "codex-queue") {
+    const wake = bridgeStatus?.idleWake;
+    if (!bridgeStatus)
+      return { state: "unavailable", reason: "host-bridge-unavailable" };
+    if (!wake || typeof wake.state !== "string" || !HOST_IDLE_WAKE_STATES.has(wake.state))
+      return { state: "unavailable", reason: "host-correlation-unavailable" };
+    if (bridgeStatus.running !== true)
+      return { state: "unavailable", reason: "host-bridge-not-running" };
+    return { state: wake.state, ...typeof wake.reason === "string" ? { reason: wake.reason } : {} };
+  }
+  return { state: bridgeStatus?.waiterAttached === true ? "armed" : "unarmed" };
+}
+function idleWakeState(host, bridgeStatus) {
+  return hostIdleWakeEvidence(host, bridgeStatus).state;
+}
+function hostIdleWakeNext(idleWake) {
+  switch (idleWake) {
+    case "unavailable":
+      return { nextActionKey: "idle-wake-unavailable", nextAction: "messages arriving while idle are delivered at the next prompt; a live operator may authorize one capped attended wait" };
+    case "queue-only":
+      return { nextActionKey: "idle-wake-queue-only", nextAction: "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds" };
+    case "daemon-attached":
+      return { nextActionKey: "idle-wake-daemon-attached", nextAction: "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately" };
+    case "degraded":
+      return { nextActionKey: "idle-wake-degraded", nextAction: "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once" };
+    default:
+      return void 0;
+  }
+}
+function withHostNextGuidance(result2, host, idleWake) {
+  if (host.idleWake === void 0 || !result2 || typeof result2 !== "object")
+    return result2;
+  const value = result2;
+  const guidance = nextTextFor(hostIdleWakeNext(idleWake)?.nextActionKey ?? "idle-wake-unavailable");
+  const session = value.session;
+  return {
+    ...value,
+    ...typeof value.next === "string" ? { next: guidance } : {},
+    ...session && typeof session === "object" && typeof session.next === "string" ? { session: { ...session, next: guidance } } : {}
+  };
+}
+function identityCheckpoint(sessionAddress, rooms) {
+  const address = typeof sessionAddress === "string" && sessionAddress ? sessionAddress : void 0;
+  const parsed = parseSessionAddress(address);
+  const list = Array.isArray(rooms) ? rooms.filter((room2) => room2 && typeof room2 === "object") : [];
+  const profile = list.find((room2) => typeof room2.profile === "string" && room2.profile)?.profile ?? null;
+  const room = list.length === 1 ? list[0] : void 0;
+  return {
+    profile,
+    ...parsed ? { principalHandle: parsed.principal, agentHandle: `${parsed.principal}.${parsed.agent}` } : {},
+    ...address ? { sessionAddress: address } : {},
+    ...typeof room?.roomHandle === "string" && room.roomHandle ? { roomHandle: room.roomHandle } : {},
+    ...typeof room?.roomId === "string" && room.roomId ? { roomId: room.roomId } : {}
+  };
+}
+function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus, host = {}) {
   let resolved = responsiveDelivery;
   const bridgeDown = bridgeStatus?.running === false;
   const bridgeError = typeof bridgeStatus?.lastError === "string" ? bridgeStatus.lastError : void 0;
@@ -22487,10 +22580,14 @@ function enrichResponsiveDelivery(responsiveDelivery, bridgeStatus) {
   }
   if (!resolved)
     return void 0;
-  const idleWakeUnarmed = bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
+  const idleWakeUnarmed = host.idleWake !== "codex-queue" && bridgeStatus?.running === true && bridgeStatus.hostSessionBound === true && bridgeStatus.waiterAttached === false && ["watching", "idle"].includes(resolved.state);
   if (idleWakeUnarmed)
     resolved = { ...resolved, reason: "idle_wake_unarmed" };
-  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
+  const evidence = hostIdleWakeEvidence(host, bridgeStatus);
+  const idleWake = evidence.state;
+  resolved = { ...resolved, idleWake, ...evidence.reason ? { idleWakeReason: evidence.reason } : {} };
+  const hostNext = hostIdleWakeNext(idleWake);
+  const next = resolved.reason === "bridge_listen_failed" ? { nextActionKey: "repair-delivery-host", nextAction: "restart the host after correcting the local delivery socket error" } : resolved.state === "unknown" || resolved.state === "stopped" ? hostNext ?? { nextActionKey: "arm-or-verify-watcher", nextAction: "arm or verify responsive delivery" } : resolved.state === "starting" ? { nextActionKey: "wait-for-watcher", nextAction: "wait for responsive delivery startup" } : resolved.state === "backoff" || resolved.state === "stale" || resolved.state === "terminal" || resolved.state === "conflict" ? { nextActionKey: "recover-watcher", nextAction: "inspect the responsive delivery error" } : hostNext ? hostNext : bridgeStatus && bridgeStatus.waiterAttached !== true ? { nextActionKey: "arm-or-verify-watcher", nextAction: "attach or verify the local delivery waiter" } : { nextActionKey: "already-connected", nextAction: bridgeStatus ? "bridge delivery is watching and a local waiter is attached" : "responsive delivery is armed" };
   return { ...resolved, ...next };
 }
 function hostSessionIdFromMeta(meta3) {
@@ -22517,11 +22614,15 @@ function degradedConfigDiagnostic(error51) {
     error: redactString(error51.message),
     ...error51 instanceof ProfileNotFoundError ? {
       selector: error51.selector,
-      availableProfiles: error51.availableProfiles
+      availableProfiles: error51.availableProfiles,
+      next: missingProfileGuidance(error51.selector)
     } : {}
   };
 }
-function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false) {
+function missingProfileGuidance(selector) {
+  return `The requested profile ${selector} is not in the catalog. Do not connect or send under another profile or the default identity without operator instruction. Report this as an identity/configuration problem, then either add the requested profile to the catalog and call parle_setup to retry, or restart the host with the exact PARLE_PROFILE the operator selected, and only then connect.`;
+}
+function registerParleTools(registerTool, client, accountClient = new ParleAccountClient(), deliveryBridge, degradedBoot, exposeDegradedTools = false, host = {}) {
   const registeredTools = /* @__PURE__ */ new Map();
   const register = registerTool;
   registerTool = (name, config2, handler) => {
@@ -22534,6 +22635,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     if (sessionId)
       deliveryBridge?.bindHostSession(sessionId);
   };
+  const hostGuidance = (result2) => withHostNextGuidance(result2, host, idleWakeState(host, deliveryBridge?.status()));
   registerTool("parle_status", {
     title: "Parle Status",
     description: "Show redacted Parle config provenance and runtime state. runtime.rooms contains active runtime rooms only and is not an exhaustive room inventory; use parle_rooms for room-list or connectable-room requests. The result's compactText is the standard card for user-facing status: render it verbatim instead of paraphrasing; config and runtime are diagnostic detail. The canonical responsiveDelivery field resolves shared credential-free lifecycle evidence; MCP connectivity and unread observation never imply healthy delivery. When configured and not yet connected, this auto-connects the session first (single-flight, backoff-aware); pass inspect:true for a passive read with no network side effects.",
@@ -22554,15 +22656,17 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
       bootstrapAttempted = await client.ensureReadySafe();
     if (!params.inspect && deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
     const status = client.status();
     if (typeof status === "object" && status !== null) {
       const connected = status.runtime?.bootstrapState === "ready" && Boolean(status.runtime?.sessionAddress);
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = status.runtime?.agentSessionId;
-      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
+      const responsiveDelivery = enrichResponsiveDelivery(connected && agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus, host);
       const enriched = responsiveDelivery ? { ...status, responsiveDelivery } : status;
       const card = status.runtime || status.config ? { compactText: compactStatusCardFromStatus(enriched) } : {};
-      return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card };
+      const identity2 = connected ? { identity: identityCheckpoint(status.runtime.sessionAddress, status.rooms?.length ? status.rooms : status.runtime.rooms) } : {};
+      return { ...status, bootstrapAttempted, ...responsiveDelivery ? { responsiveDelivery } : {}, ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {}, ...card, ...identity2 };
     }
     return { value: status, bootstrapAttempted };
   }));
@@ -22605,22 +22709,25 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }, false));
   registerTool("parle_connect", {
     title: "Parle Connect",
-    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. Idempotent while the current session is live. Follow the returned next hint to arm responsive delivery.",
+    description: "Establish or reuse the Parle room agent session (bootstrap + participant join) and return a redaction-safe connection summary with the session address, agent session id, expiry, and cursor. The result's compactText is the standard connection card: render it verbatim to the user instead of paraphrasing the summary. The result's identity object is the credential-free identity checkpoint (profile, principal and agent handle, room) to compare with what the operator asked for before the first send. Idempotent while the current session is live. Follow the returned next hint for responsive delivery.",
     annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true }
   }, async (extra) => safeTool(async () => {
     observeRequest(extra);
-    const summary = await client.connect();
+    const connected = await client.connect();
     if (deliveryBridge?.start)
       void deliveryBridge.start().catch(() => void 0);
+    await deliveryBridge?.awaitIdleWakeReady?.(HOST_IDLE_WAKE_READY_MS);
+    const summary = hostGuidance(connected);
     if (summary && typeof summary === "object") {
       const bridgeStatus = deliveryBridge?.status();
       const agentSessionId = summary.agentSessionId;
-      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus);
+      const responsiveDelivery = enrichResponsiveDelivery(agentSessionId ? resolveResponsiveDelivery(readResponsiveDeliverySnapshots(process.cwd()), agentSessionId, { inspectPid: inspectResponsiveDeliveryPid }) : void 0, bridgeStatus, host);
       return {
         ...summary,
         ...responsiveDelivery ? { responsiveDelivery } : {},
         ...bridgeStatus ? { responsiveDeliveryBridge: bridgeStatus } : {},
-        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery, next: responsiveDelivery?.nextActionKey })
+        compactText: compactConnectionCardFromSummary(summary, { responsiveDelivery, next: responsiveDelivery?.nextActionKey }),
+        identity: identityCheckpoint(summary.sessionAddress, summary.rooms)
       };
     }
     return summary;
@@ -22949,7 +23056,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.readProjection(params));
+    return safeTool(async () => hostGuidance(await client.readProjection(params)));
   });
   registerTool("parle_inbox", {
     title: "Parle Inbox",
@@ -22958,7 +23065,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { readOnlyHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.readInbox(params));
+    return safeTool(async () => hostGuidance(await client.readInbox(params)));
   });
   registerTool("parle_affordances", {
     title: "Parle Affordances",
@@ -23005,7 +23112,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.send(params));
+    return safeTool(async () => hostGuidance(await client.send(params)));
   });
   registerTool("parle_reply", {
     title: "Parle Reply",
@@ -23014,7 +23121,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true }
   }, async (params, extra) => {
     observeRequest(extra);
-    return safeTool(() => client.submitReply(params));
+    return safeTool(async () => hostGuidance(await client.submitReply(params)));
   });
   if (degradedBoot && !exposeDegradedTools) {
     for (const [name, tool] of registeredTools) {
@@ -23056,7 +23163,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.36";
+var ADAPTER_VERSION = "0.7.40";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

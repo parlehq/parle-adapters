@@ -131,7 +131,7 @@ Two sessions started from the same directory may share installed bytes, plugin c
 Bridge discovery differs by host:
 
 - Claude leaves `PARLE_HOOK_BRIDGE_SCOPE` unset, so the MCP cwd selects the hashed scope. `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent` then nests artifacts under the top-level Claude parent PID. Separate top-level Claude processes sharing a cwd use different parent directories. Sessions sharing one top-level host share that parent boundary and are not isolated by directory alone.
-- Codex sets `PARLE_HOOK_BRIDGE_SCOPE=codex-plugin` and does not use direct-parent nesting. Codex sessions share one flat scope directory containing PID-keyed sockets, and hooks use host-session binding rather than Claude's parent namespace.
+- Codex sets `PARLE_HOOK_BRIDGE_SCOPE=codex-plugin` and, since plugin 0.6.65, `PARLE_HOOK_BRIDGE_HOST_PROCESS=direct-parent`, nesting artifacts under the owning `codex` PID. Codex runs hook commands through the login shell, so its hooks pass `--shell-launched` and walk a bounded process ancestry to reach that parent directory; host-session binding to the exact thread still gates every take.
 
 A cwd-scoped statusline may aggregate several runtime snapshots. It cannot select the authoritative bridge or waiter for one host session.
 
@@ -144,7 +144,7 @@ Credential custody and operational rendezvous state have separate roots:
 - `~/.parle/` holds the default profile catalog and related account state. `PARLE_PROFILES_PATH` can relocate that credential-bearing root.
 - `<cwd>/.parle/runtime/<pid>.json` is the display-safe client runtime snapshot.
 - `<cwd>/.parle/runtime/responsive/<pid>.json` is responsive-delivery lifecycle evidence.
-- `~/.local/state/parle/hook-bridge/<scope-hash>/` holds owner-only bridge sockets, descriptors, and executable handles. Claude adds a direct-parent PID directory; Codex does not.
+- `~/.local/state/parle/hook-bridge/<scope-hash>/` holds owner-only bridge sockets, descriptors, and executable handles. Claude and Codex both nest sockets and descriptors under a direct-parent PID directory; the executable handle stays at the scope root for the Codex launcher.
 
 The runtime files and bridge artifacts are credential-free, bounded operational state. Sharing their parent directory does not merge their process-owned contents.
 
@@ -227,11 +227,12 @@ The durable design remains blocked in [issue #99](https://github.com/parlehq/par
     take → write host output → commit
               ↓
   model turn at a supported lifecycle boundary
-  ✕ start a new turn in a fully idle thread
+  idle thread: bridge runs the parent's `codex queue` (fixed trigger, no peer content)
+    → queued turn → UserPromptSubmit hook → take → inject → commit
   ✕ live profile switching while hook-bridge delivery is active
 ```
 
-Codex uses the same MCP-child controller and bridge, bound to the exact Codex thread id. It sets the constant bridge scope `codex-plugin` and uses a flat scope directory without Claude's direct-parent nesting. It has no Claude waiter. Rows received after the thread becomes idle stay queued until the next user prompt or lifecycle event. Hook trust and Unix-socket support are prerequisites for injection.
+Codex uses the same MCP-child controller and bridge, bound to the exact Codex thread id, with the constant bridge scope `codex-plugin` and direct-parent nesting under the owning `codex` process. It has no Claude waiter. On Codex 0.149 or newer the bridge wakes an idle thread through the parent's own `codex queue` (see the Codex plugin README, Idle wake); the queued item is a fixed trigger and the hook still carries the content. Where that is unavailable (older Codex, unverified parent, unbound or conflicting thread), rows received after the thread becomes idle stay queued until the next user prompt or lifecycle event. Hook trust and Unix-socket support are prerequisites for injection.
 
 ### Claude Desktop
 

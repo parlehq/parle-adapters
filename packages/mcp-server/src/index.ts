@@ -7,12 +7,14 @@ import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { CodexQueueWake } from "./codex-host.js";
 import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact } from "./hook-delivery-bridge.js";
-import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
-export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type IdleWakeState, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, resolveCodexHostExecutable } from "./codex-host.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.59";
+export const MCP_CLIENT_VERSION = "0.7.63";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -63,6 +65,7 @@ export function createParleMcpServer(
   deliveryBridge?: HookDeliveryBridgeLike,
   degradedBoot?: DegradedMcpBoot,
   exposeDegradedTools = false,
+  host: McpHostCapabilities = {},
 ) {
   const server = new McpServer({ name: "parle-mcp-server", version: MCP_CLIENT_VERSION });
   registerParleTools(
@@ -72,8 +75,20 @@ export function createParleMcpServer(
     deliveryBridge,
     degradedBoot,
     exposeDegradedTools,
+    host,
   );
   return server;
+}
+
+// A host manifest declares `PARLE_HOST_IDLE_WAKE=none` when it has no idle-wake
+// arm action, or `codex-queue` when the bridge may start an idle turn through
+// the owning Codex process's queue; absent means the host may arm one through
+// its own hooks.
+export function resolveHostCapabilities(env: Record<string, string | undefined> = process.env): McpHostCapabilities {
+  const idleWake = env.PARLE_HOST_IDLE_WAKE;
+  if (!idleWake) return {};
+  if (idleWake !== "none" && idleWake !== "codex-queue") throw new Error(`Unsupported PARLE_HOST_IDLE_WAKE mode: ${idleWake}`);
+  return { idleWake };
 }
 
 export async function runStdio() {
@@ -81,6 +96,7 @@ export async function runStdio() {
   if (responsiveDelivery && responsiveDelivery !== "hook-bridge") {
     throw new Error(`Unsupported PARLE_RESPONSIVE_DELIVERY mode: ${responsiveDelivery}`);
   }
+  const host = resolveHostCapabilities();
   const hookBridgeEnabled = responsiveDelivery === "hook-bridge";
   const hostProcessMode = process.env.PARLE_HOOK_BRIDGE_HOST_PROCESS;
   if (hostProcessMode && hostProcessMode !== "direct-parent") {
@@ -99,6 +115,12 @@ export async function runStdio() {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
       };
     }
+    // Queue wake needs the owning host process: without direct-parent
+    // correlation there is no verified executable to call, so the bridge
+    // reports the capability as unavailable rather than guessing.
+    const idleWake = host.idleWake === "codex-queue" && hookBridgeEnabled && hostParentPid !== undefined
+      ? new CodexQueueWake(hostParentPid)
+      : undefined;
     const deliveryBridge = hookBridgeEnabled
       ? new HookDeliveryBridge(
         client,
@@ -106,6 +128,8 @@ export async function runStdio() {
         process.execPath,
         process.cwd(),
         hostParentPid,
+        undefined,
+        idleWake,
       )
       : undefined;
     const baseStatus = client.status.bind(client);
@@ -146,7 +170,7 @@ export async function runStdio() {
   }
 
   const server = runtime
-    ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge)
+    ? createParleMcpServer(runtime.client, runtime.accountClient, runtime.deliveryBridge, undefined, false, host)
     : createParleMcpServer({} as ParleMcpClientLike, new ParleAccountClient(), undefined, {
         error: configError!,
         cwd: configCwd.cwd,
@@ -156,7 +180,7 @@ export async function runStdio() {
         onRecovered(recovered) {
           activateRuntime(recovered as ReturnType<typeof createRuntime>);
         },
-      }, process.env.PARLE_EXPOSE_DEGRADED_TOOLS === "1");
+      }, process.env.PARLE_EXPOSE_DEGRADED_TOOLS === "1", host);
   await server.connect(new StdioServerTransport());
   if (runtime) activateRuntime(runtime);
 }

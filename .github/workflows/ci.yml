@@ -57,7 +57,7 @@ jobs:
         run: pnpm check:manifests
 
       - name: Check native adapter release claims
-        run: pnpm check:release-claims -- HEAD^
+        run: pnpm check:release-claims HEAD^
 
       - name: Check clean MCP artifact reproducibility
         run: pnpm check:mcp-artifacts

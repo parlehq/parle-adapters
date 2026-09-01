@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/codex-plugin",
-  "version": "0.6.60",
+  "version": "0.6.66",
   "private": true,
   "type": "module",
   "dependencies": {
@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "node scripts/copy-mcp-artifact.mjs",
+    "build:artifact": "node scripts/build-artifact.mjs",
     "typecheck": "node scripts/check-mcp-artifact.mjs",
     "test": "node scripts/check-mcp-artifact.mjs && node --test test/*.test.mjs"
   }

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.40 (2026-08-27)
+
+- Carry the host-owned idle-wake status states of MCP server 0.7.63 and client 0.8.54 into the Command Code mod artifact; the native mod declares no host idle-wake capability, so its rendering is unchanged (#174).
+
+## 0.7.39 (2026-08-27)
+
+- Carry the credential-free `identity` checkpoint on connect and connected status results, and the no-identity-switch guidance for a missing profile, of MCP server 0.7.62 into the Command Code mod artifact (#172).
+
+## 0.7.38 (2026-08-27)
+
+- Carry the generic idle-wake status state of MCP server 0.7.61 and client 0.8.53 into the Command Code mod artifact; the native mod declares no host idle-wake capability, so its rendering is unchanged (#171).
+
+## 0.7.37 (2026-08-27)
+
+- Carry the reworded `waitSeconds` tool guidance of MCP server 0.7.60 and the connect `next` guidance of client 0.8.52 into the Command Code mod artifact: no unattended watcher, with any operator-authorized attended hold deferred to the host skill (#170).
+
 ## 0.7.36 (2026-08-27)
 
 - Resolve the saved-start catalog from the client's configuration directory instead of the process directory, carrying the shared tool-runtime change of MCP server 0.7.59 (#169).

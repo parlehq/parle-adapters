@@ -76,6 +76,7 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /opens no Parle session or network connection/);
   assert.match(skill, /@principal\.agent\.session/);
   assert.match(skill, /parle_connect/);
+  assert.ok(skill.includes("If setup reports that the requested profile is not in the catalog, do not fall back to direct HTTP or to the default identity; report the identity/configuration problem and stop."));
   assert.match(skill, /Arming is part of connecting by default/);
   assert.match(skill, /Session Address:/);
   assert.match(skill, /Delivery      watching/);

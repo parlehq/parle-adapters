@@ -58,6 +58,29 @@ export type HookDeliveryBridgeStatus = {
   // ignored hint is diagnosable instead of looking like lost delivery.
   ignoredWakeHints?: number;
   lastIgnoredWakeRoomId?: string;
+  hostSessionId?: string;
+  // The host session the MCP request metadata named. In direct-parent mode it
+  // never binds; it must agree with the hook-bound session before idle wake arms.
+  metaHostSessionId?: string;
+  idleWake?: HostIdleWakeStatus;
+};
+
+// Host-owned idle wake. The bridge tells it when pending work appears for an
+// armed host thread and when a hook take proves a live turn; the host module
+// owns how a turn is started and what it can prove about that.
+export type HostIdleWakeStatus = {
+  state: "queue-only" | "daemon-attached" | "unavailable" | "degraded";
+  reason?: string;
+  [key: string]: unknown;
+};
+
+export type HostIdleWake = {
+  start?(): void;
+  ready?(timeoutMs: number): Promise<void>;
+  requestWake(threadId: string, stillPending: () => boolean): void;
+  consumeWake(): void;
+  status(): HostIdleWakeStatus;
+  stop?(): void;
 };
 
 type PendingMessage = ResponsiveDeliveryMessage & {
@@ -70,6 +93,12 @@ type PendingMessage = ResponsiveDeliveryMessage & {
   agentSessionId: string;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
+
+export type HookDeliveryBridgeDeps = {
+  now?: () => number;
+  setTimer?: (callback: () => void, delayMs: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+};
 
 // Keyed by room first: the shared delivery contract scopes a row to its room,
 // and seq/event identifiers must never collapse work across two rooms.
@@ -247,6 +276,9 @@ export class HookDeliveryBridge {
   private lastError?: string;
   private lastErrorKind?: HookDeliveryBridgeStatus["lastErrorKind"];
   private hostSessionId?: string;
+  private metaHostSessionId?: string;
+  private idleWakeStarted = false;
+  private leaseTimer?: unknown;
   private waiter?: Socket;
   private unsubscribeCommitGuard?: () => void;
   private evidence?: ResponsiveDeliveryRecorder;
@@ -258,6 +290,8 @@ export class HookDeliveryBridge {
     private readonly evidenceCwd = process.cwd(),
     private readonly hostParentPid?: number,
     private readonly readParentPid = () => process.ppid,
+    private readonly idleWake?: HostIdleWake,
+    private readonly deps: HookDeliveryBridgeDeps = {},
   ) {
     if (this.hostParentPid !== undefined && (!Number.isSafeInteger(this.hostParentPid) || this.hostParentPid <= 1)) {
       throw new Error("Parle hook bridge host parent pid must be greater than 1");
@@ -304,6 +338,9 @@ export class HookDeliveryBridge {
       ...(this.hostParentPid === undefined ? {} : { hostParentPid: this.hostParentPid, currentParentPid: this.readParentPid() }),
       ...((this.client as any).runtime?.agentSessionId ? { agentSessionId: String((this.client as any).runtime.agentSessionId) } : {}),
       ...(controller.ignoredWakeHints ? { ignoredWakeHints: controller.ignoredWakeHints, lastIgnoredWakeRoomId: controller.lastIgnoredWakeRoomId } : {}),
+      ...(this.hostSessionId ? { hostSessionId: this.hostSessionId } : {}),
+      ...(this.metaHostSessionId ? { metaHostSessionId: this.metaHostSessionId } : {}),
+      ...(this.idleWake ? { idleWake: this.idleWakeStatus() } : {}),
       ...(lastError ? { lastError } : {}),
       ...(lastErrorAt ? { lastErrorAt } : {}),
       ...(lastErrorSource ? { lastErrorSource } : {}),
@@ -313,11 +350,33 @@ export class HookDeliveryBridge {
 
   bindHostSession(sessionId: string, allowReplace = false, correlated = false): boolean {
     this.assertCurrentHostParent();
-    if (!sessionId || (this.hostParentPid !== undefined && !correlated)) return false;
+    if (!sessionId) return false;
+    if (this.hostParentPid !== undefined && !correlated) {
+      // In-band metadata never binds a correlated bridge; it is recorded as
+      // the cross-check that idle wake needs before it may start a turn.
+      if (this.metaHostSessionId !== sessionId) {
+        this.metaHostSessionId = sessionId;
+        this.requestIdleWake();
+      }
+      return false;
+    }
     if (this.hostSessionId === sessionId) return true;
     if (this.liveLease() || (this.hostSessionId && !allowReplace)) return false;
+    // A binding that MCP metadata confirmed and that still holds work is a
+    // live thread in this process; another thread's SessionStart must not
+    // take that work. An unconfirmed binding (a host that passes no thread
+    // metadata, or a thread that never called a tool) is replaceable so a
+    // cleared session in the same process is not stranded.
+    if (this.hostSessionId && this.metaHostSessionId === this.hostSessionId && this.pending.length > 0) return false;
     this.hostSessionId = sessionId;
+    this.requestIdleWake();
     return true;
+  }
+
+  // Bounded wait for the host's idle-wake verification, so a status card
+  // rendered right after connect reflects the settled state.
+  awaitIdleWakeReady(timeoutMs: number): Promise<void> {
+    return this.idleWake?.ready?.(timeoutMs) ?? Promise.resolve();
   }
 
   async start(): Promise<void> {
@@ -332,6 +391,8 @@ export class HookDeliveryBridge {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.clearLease();
+    this.idleWake?.stop?.();
     this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
@@ -362,6 +423,13 @@ export class HookDeliveryBridge {
       }
       this.lastError = undefined;
       this.lastErrorKind = undefined;
+    }
+    // Host verification is independent of the thread binding, so it starts as
+    // soon as the bridge listens and is usually complete before the first
+    // status call.
+    if (!this.idleWakeStarted) {
+      this.idleWakeStarted = true;
+      this.idleWake?.start?.();
     }
     // The socket and runtime artifacts outlive a bootstrap or wake failure:
     // hooks keep a status endpoint to diagnose through, and a later start()
@@ -450,6 +518,7 @@ export class HookDeliveryBridge {
       seq: input.message.seq,
     }));
     this.finishWaiter({ ok: true, ready: true });
+    this.requestIdleWake();
   }
 
   private async listen(): Promise<void> {
@@ -599,6 +668,10 @@ export class HookDeliveryBridge {
   }
 
   private take(): unknown {
+    // Any take from the bound session, busy or not, proves a live host turn,
+    // which is all a queued wake trigger exists to produce. Work left behind
+    // is re-armed by commit or by lease expiry.
+    this.idleWake?.consumeWake();
     if (this.liveLease()) return { ok: true, busy: true, messages: [] };
     const messages: PendingMessage[] = [];
     for (const message of this.pending.slice(0, MAX_HOOK_BATCH)) {
@@ -607,7 +680,14 @@ export class HookDeliveryBridge {
       messages.push(message);
     }
     if (messages.length === 0) return { ok: true, messages: [] };
-    this.lease = { id: randomUUID(), messages, expiresAt: Date.now() + LEASE_MS };
+    this.lease = { id: randomUUID(), messages, expiresAt: this.now() + LEASE_MS };
+    // An uncommitted lease expires actively: the rows become leasable again
+    // and, if the host is idle, wake is requested for them.
+    this.leaseTimer = this.setTimer(() => {
+      this.leaseTimer = undefined;
+      if (this.lease && this.lease.expiresAt <= this.now()) this.lease = undefined;
+      this.requestIdleWake();
+    }, LEASE_MS);
     return {
       ok: true,
       leaseId: this.lease.id,
@@ -616,8 +696,8 @@ export class HookDeliveryBridge {
   }
 
   private async commit(leaseId: string): Promise<unknown> {
-    const lease = this.lease;
-    if (!lease || lease.id !== leaseId || lease.expiresAt <= Date.now()) throw new Error("Parle hook bridge delivery lease is missing or expired");
+    const lease = this.liveLease();
+    if (!lease || lease.id !== leaseId) throw new Error("Parle hook bridge delivery lease is missing or expired");
     let committed = 0;
     for (const message of lease.messages) {
       // This synchronous fence runs immediately before each credentialed ack.
@@ -643,13 +723,58 @@ export class HookDeliveryBridge {
       this.queuedKeys.delete(message.key);
       committed += 1;
     }
-    this.lease = undefined;
+    this.clearLease();
+    this.requestIdleWake();
     return { ok: true, committed };
   }
 
   private liveLease(): Lease | undefined {
-    if (this.lease && this.lease.expiresAt <= Date.now()) this.lease = undefined;
+    if (this.lease && this.lease.expiresAt <= this.now()) this.clearLease();
     return this.lease;
+  }
+
+  private clearLease(): void {
+    this.lease = undefined;
+    if (this.leaseTimer !== undefined) {
+      if (this.deps.clearTimer) this.deps.clearTimer(this.leaseTimer);
+      else clearTimeout(this.leaseTimer as ReturnType<typeof setTimeout>);
+      this.leaseTimer = undefined;
+    }
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  private setTimer(callback: () => void, delayMs: number): unknown {
+    if (this.deps.setTimer) return this.deps.setTimer(callback, delayMs);
+    const timer = setTimeout(callback, delayMs);
+    timer.unref?.();
+    return timer;
+  }
+
+  // Idle wake may start a turn only on the thread the trusted hook bound, and
+  // only once the MCP request metadata has named the same thread.
+  private idleWakeThread(): { threadId?: string; reason?: string } {
+    if (!this.hostSessionId) return { reason: "host-session-unbound" };
+    if (!this.metaHostSessionId) return { reason: "host-session-unconfirmed" };
+    if (this.metaHostSessionId !== this.hostSessionId) return { reason: "host-session-conflict" };
+    return { threadId: this.hostSessionId };
+  }
+
+  private requestIdleWake(): void {
+    if (!this.idleWake || this.stopped || this.pending.length === 0 || this.liveLease()) return;
+    const { threadId } = this.idleWakeThread();
+    if (!threadId) return;
+    this.idleWake.requestWake(threadId, () => this.pending.length > 0 && !this.liveLease());
+  }
+
+  private idleWakeStatus(): HostIdleWakeStatus | undefined {
+    if (!this.idleWake) return undefined;
+    const wake = this.idleWake.status();
+    if (wake.state !== "queue-only" && wake.state !== "daemon-attached") return wake;
+    const thread = this.idleWakeThread();
+    return thread.threadId ? wake : { ...wake, state: "unavailable", reason: thread.reason };
   }
 
   private pendingWork(): PendingMessage[] {
@@ -667,7 +792,7 @@ export class HookDeliveryBridge {
       this.controller.abandonDeferred(item.roomId, item);
       dropped.add(item.key);
     }
-    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.lease = undefined;
+    if (this.lease?.messages.some((item) => dropped.has(item.key))) this.clearLease();
   }
 
   // In-flight responsive reads are fenced by the client itself, which tracks

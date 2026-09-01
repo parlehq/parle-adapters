@@ -1,6 +1,19 @@
 export type CompactResponsiveDelivery = "starting" | "watching" | "backoff" | "stopped" | "terminal" | "stale" | "unknown" | "conflict";
 
-export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "wait-for-watcher" | "recover-watcher" | "repair-delivery-host";
+// Host idle-wake capability as the adapter reports it. The shared formatter
+// renders this generic state and never asks which host it is running on.
+// `queue-only`, `daemon-attached`, and `degraded` describe a host that wakes
+// its own idle turn: proven with bounded latency, proven immediate, or with a
+// trigger whose delivery is unproven.
+export type CompactIdleWake = "unavailable" | "unarmed" | "armed" | "queue-only" | "daemon-attached" | "degraded";
+
+// States the delivery line names explicitly; armed and unarmed keep their
+// reason-driven rendering.
+const HOST_IDLE_WAKE_LINE_STATES: ReadonlySet<CompactIdleWake> = new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
+
+export type CompactConnectionNextKey = "open-another-session" | "already-connected" | "read-inbox" | "arm-watcher" | "arm-or-verify-watcher" | "idle-wake-unavailable" | "idle-wake-queue-only" | "idle-wake-daemon-attached" | "idle-wake-degraded" | "wait-for-watcher" | "recover-watcher" | "repair-delivery-host";
+
+export type CompactResponsiveDeliveryInput = { state: CompactResponsiveDelivery; reason?: string; idleWake?: CompactIdleWake };
 
 export type CompactCardRoom = { roomId?: string; roomHandle?: string; unreadCount?: number };
 
@@ -9,7 +22,7 @@ export type CompactConnectionCardInput = {
   sessionAddress?: string | null;
   // One entry per configured room. A single-room session simply has one.
   rooms?: CompactCardRoom[];
-  responsiveDelivery?: { state: CompactResponsiveDelivery; reason?: string } | CompactResponsiveDelivery;
+  responsiveDelivery?: CompactResponsiveDeliveryInput | CompactResponsiveDelivery;
   unread?: number;
   next?: CompactConnectionNextKey | string;
 };
@@ -35,6 +48,14 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
     case "arm-watcher":
     case "arm-or-verify-watcher":
       return "arm or verify responsive delivery.";
+    case "idle-wake-unavailable":
+      return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+    case "idle-wake-queue-only":
+      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
+    case "idle-wake-daemon-attached":
+      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
+    case "idle-wake-degraded":
+      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "recover-watcher":
@@ -64,6 +85,14 @@ function line(label: string, value: string): string {
   return `${label.padEnd(14, " ")}${value}`;
 }
 
+function deliveryLine(input: CompactConnectionCardInput["responsiveDelivery"]): string | undefined {
+  if (!input) return undefined;
+  if (typeof input === "string") return input;
+  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake)) return `${input.state} (idle wake ${input.idleWake})`;
+  if (input.reason === "idle_wake_unarmed") return `${input.state} (idle wake unarmed)`;
+  return input.state;
+}
+
 export function formatCompactConnectionCard(input: CompactConnectionCardInput): string {
   const lines: string[] = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
   const parsed = parseSessionAddress(input.sessionAddress);
@@ -74,10 +103,7 @@ export function formatCompactConnectionCard(input: CompactConnectionCardInput): 
   const rooms = roomLabels(input.rooms);
   if (rooms.length === 1) lines.push(line("In room", rooms[0]));
   else if (rooms.length > 1) lines.push(line("In rooms", rooms.join(", ")));
-  const deliveryState = typeof input.responsiveDelivery === "string" ? input.responsiveDelivery : input.responsiveDelivery?.state;
-  const delivery = deliveryState && typeof input.responsiveDelivery === "object" && input.responsiveDelivery.reason === "idle_wake_unarmed"
-    ? `${deliveryState} (idle wake unarmed)`
-    : deliveryState;
+  const delivery = deliveryLine(input.responsiveDelivery);
   if (delivery) lines.push(line("Delivery", delivery));
   if (typeof input.unread === "number" && input.unread > 0) lines.push(line("Unread", String(input.unread)));
   if (input.sessionAddress) {
@@ -106,6 +132,7 @@ export type StatusLike = {
     nextActionKey?: CompactConnectionNextKey;
     nextAction?: string;
     reason?: string;
+    idleWake?: CompactIdleWake;
   };
   config?: {
     roomHandle?: { value?: string };
@@ -119,6 +146,23 @@ export type StatusLike = {
     rooms?: CompactCardRoom[];
   };
 };
+
+// An unknown watcher normally asks for arming; a host that reports its own
+// idle-wake state gets that state's guidance instead.
+function unknownWatcherNext(idleWake?: CompactIdleWake): CompactConnectionNextKey {
+  switch (idleWake) {
+    case "unavailable":
+      return "idle-wake-unavailable";
+    case "queue-only":
+      return "idle-wake-queue-only";
+    case "daemon-attached":
+      return "idle-wake-daemon-attached";
+    case "degraded":
+      return "idle-wake-degraded";
+    default:
+      return "arm-or-verify-watcher";
+  }
+}
 
 // The status-path counterpart of the connect card: "status" is where users ask
 // for the standard card most (connect output has usually scrolled away), and a
@@ -137,8 +181,8 @@ export function compactStatusCardFromStatus(status: StatusLike): string {
       sessionAddress: runtime.sessionAddress,
       rooms: rooms?.length ? rooms : (status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : undefined),
       unread,
-      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason } : undefined,
-      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? "arm-or-verify-watcher" : "already-connected"),
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason, idleWake: status.responsiveDelivery.idleWake } : undefined,
+      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? unknownWatcherNext(status.responsiveDelivery.idleWake) : "already-connected"),
     });
   }
   const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
