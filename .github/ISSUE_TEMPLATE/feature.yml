@@ -1,0 +1,27 @@
+name: Feature request
+description: Propose a new or expanded user or operator capability
+title: "[Feature] "
+labels:
+  - type/feature
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective and value
+      description: State the capability and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: Bound what is included and excluded.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: What does success look like?
+      description: Describe the expected result and how to verify it.
+    validations:
+      required: true

@@ -112,6 +112,7 @@ Pi also provides `/parle start list`, `/parle start show <name>`, `/parle start 
 
 ## Adapter docs
 
+- Backlog hygiene: [`docs/backlog-hygiene.md`](./docs/backlog-hygiene.md) for issue types, effort labels, intentional limits, milestones, and useful comments.
 - Canonical topology: [`docs/design/adapter-topology.md`](./docs/design/adapter-topology.md) for process boundaries, state ownership, delivery stages, and diagnostics.
 - Pi: [`packages/pi-extension/README.md`](./packages/pi-extension/README.md) for the Pi tool surface, configuration, and install notes.
 - Claude Code: [`packages/claude-plugin/README.md`](./packages/claude-plugin/README.md) for install, permissions namespacing, and validation notes.

@@ -1,0 +1,20 @@
+name: Bug report
+description: Report observed behavior that differs from expected behavior
+title: "[Bug] "
+labels:
+  - type/bug
+body:
+  - type: textarea
+    id: report
+    attributes:
+      label: What happened?
+      description: Include observed and expected behavior, trigger, impact, and useful evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: What does success look like?
+      description: Describe the expected result and how to verify it.
+    validations:
+      required: true

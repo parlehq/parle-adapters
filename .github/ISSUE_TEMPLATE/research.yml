@@ -1,0 +1,27 @@
+name: Research
+description: Explore a focused question and produce a useful result
+title: "[Research] "
+labels:
+  - type/research
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: What are we trying to learn?
+      description: Describe the question and the information needed to answer it.
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: What should this research produce?
+      description: Describe the decision, recommendation, or document expected when the work is complete.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: How will we check the result?
+      description: Explain how we will confirm the result is supported and useful.
+    validations:
+      required: true
