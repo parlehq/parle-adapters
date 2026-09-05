@@ -7,14 +7,16 @@ import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { ClaudeMonitorWake } from "./claude-monitor-wake.js";
 import { CodexQueueWake } from "./codex-host.js";
-import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact } from "./hook-delivery-bridge.js";
+import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact, type HostIdleWake } from "./hook-delivery-bridge.js";
 import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type IdleWakeState, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, resolveCodexHostExecutable } from "./codex-host.js";
+export { CLAUDE_MONITOR_WAKE_FRAME, ClaudeMonitorWake } from "./claude-monitor-wake.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.64";
+export const MCP_CLIENT_VERSION = "0.7.65";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -81,14 +83,26 @@ export function createParleMcpServer(
 }
 
 // A host manifest declares `PARLE_HOST_IDLE_WAKE=none` when it has no idle-wake
-// arm action, or `codex-queue` when the bridge may start an idle turn through
-// the owning Codex process's queue; absent means the host may arm one through
-// its own hooks.
+// arm action, `codex-queue` when the bridge may start an idle turn through
+// the owning Codex process's queue, or `claude-monitor` when the host attaches
+// its Monitor tool to the bridge's loopback wake socket; absent means the host
+// may arm one through its own hooks.
 export function resolveHostCapabilities(env: Record<string, string | undefined> = process.env): McpHostCapabilities {
   const idleWake = env.PARLE_HOST_IDLE_WAKE;
   if (!idleWake) return {};
-  if (idleWake !== "none" && idleWake !== "codex-queue") throw new Error(`Unsupported PARLE_HOST_IDLE_WAKE mode: ${idleWake}`);
+  if (idleWake !== "none" && idleWake !== "codex-queue" && idleWake !== "claude-monitor") throw new Error(`Unsupported PARLE_HOST_IDLE_WAKE mode: ${idleWake}`);
   return { idleWake };
+}
+
+// Queue wake needs the owning host process: without direct-parent correlation
+// there is no verified executable to call, so the bridge reports the
+// capability as unavailable rather than guessing. The monitor wake needs only
+// the bridge, whose owner-only socket hands the host the address.
+export function createHostIdleWake(host: McpHostCapabilities, hookBridgeEnabled: boolean, hostParentPid?: number): HostIdleWake | undefined {
+  if (!hookBridgeEnabled) return undefined;
+  if (host.idleWake === "codex-queue") return hostParentPid === undefined ? undefined : new CodexQueueWake(hostParentPid);
+  if (host.idleWake === "claude-monitor") return new ClaudeMonitorWake();
+  return undefined;
 }
 
 export async function runStdio() {
@@ -115,12 +129,7 @@ export async function runStdio() {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
       };
     }
-    // Queue wake needs the owning host process: without direct-parent
-    // correlation there is no verified executable to call, so the bridge
-    // reports the capability as unavailable rather than guessing.
-    const idleWake = host.idleWake === "codex-queue" && hookBridgeEnabled && hostParentPid !== undefined
-      ? new CodexQueueWake(hostParentPid)
-      : undefined;
+    const idleWake = createHostIdleWake(host, hookBridgeEnabled, hostParentPid);
     const deliveryBridge = hookBridgeEnabled
       ? new HookDeliveryBridge(
         client,

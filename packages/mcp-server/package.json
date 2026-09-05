@@ -1,6 +1,6 @@
 {
   "name": "@parlehq/mcp-server",
-  "version": "0.7.64",
+  "version": "0.7.65",
   "private": true,
   "type": "module",
   "bin": {
@@ -17,16 +17,18 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/parle-mcp.js",
+    "build": "tsc -p tsconfig.json && esbuild src/index.ts --bundle --platform=node --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=dist/parle-mcp.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "pnpm build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@parlehq/agent-client": "workspace:*",
+    "ws": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.28.1"
   }
 }
