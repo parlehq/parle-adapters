@@ -320,82 +320,6 @@ test("hook bridge rejects invalid or changed direct-parent correlation", async (
   }
 });
 
-test("hook bridge wait is race-free, single-waiter, and survives session revision", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-wait-"));
-  const sink = {};
-  const fakeClient = {
-    runtime: bridgeRuntime(),
-    ensureBootstrapped: async () => {},
-    drainResponsiveDelivery: async () => ({ messages: [] }),
-    ackResponsiveDelivery: async () => {},
-    openWakeStream: async (signal) => heldWakeStream(sink, signal),
-  };
-  const bridge = new HookDeliveryBridge(fakeClient, cwd);
-  try {
-    await bridge.start();
-    assert.equal(bridge.status().waiterAttached, false);
-    const waiting = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
-    await settle(20);
-    assert.equal(bridge.status().waiterAttached, true);
-    assert.deepEqual(
-      await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" }),
-      { ok: true, ready: true, alreadyAttached: true },
-    );
-
-    fakeClient.runtime.agentSessionId = "session-2";
-    bridge.enqueue({
-      roomId: ROOM,
-      cursorScope: "session",
-      message: { seq: 1, event_id: "evt-wait", content: "queued" },
-    });
-    assert.deepEqual(await waiting, { ok: true, ready: true });
-    assert.equal(bridge.status().waiterAttached, false);
-    assert.deepEqual(
-      await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" }),
-      { ok: false, error: "Parle agent session does not own this hook bridge" },
-    );
-    assert.deepEqual(
-      await request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-2" }),
-      { ok: true, ready: true },
-    );
-  } finally {
-    await bridge.stop();
-    cleanupFixture(cwd);
-  }
-});
-
-test("hook bridge wait cleans up disconnected clients and reports shutdown", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-wait-cleanup-"));
-  const fakeClient = {
-    runtime: bridgeRuntime(),
-    ensureBootstrapped: async () => {},
-    drainResponsiveDelivery: async () => ({ messages: [] }),
-    ackResponsiveDelivery: async () => {},
-    openWakeStream: async (signal) => heldWakeStream({}, signal),
-  };
-  const bridge = new HookDeliveryBridge(fakeClient, cwd);
-  let stopped = false;
-  try {
-    await bridge.start();
-    const abandoned = connect(bridge.status().socketPath);
-    abandoned.once("connect", () => abandoned.write(`${JSON.stringify({ action: "wait", agentSessionId: "session-1" })}\n`));
-    await settle(20);
-    abandoned.destroy();
-    await settle(20);
-
-    const waiting = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
-    await settle(20);
-    assert.equal(bridge.status().waiterAttached, true);
-    await bridge.stop();
-    stopped = true;
-    assert.deepEqual(await waiting, { ok: false, error: "Parle hook bridge stopped" });
-    assert.equal(bridge.status().waiterAttached, false);
-  } finally {
-    if (!stopped) await bridge.stop();
-    cleanupFixture(cwd);
-  }
-});
-
 test("hook delivery bridge restarts its owned wake stream on a client session revision", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-revision-"));
   let revisionListener;
@@ -1119,9 +1043,10 @@ test("hook bridge expires an uncommitted lease actively and re-arms idle wake; a
   }
 });
 
-// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps ending the
-// waiter task without any delivery. The bridge counts those detaches, latches
-// a suspension, announces it once (claim, then commit), and resets on a prompt.
+// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps closing its
+// wake attachment without any delivery. The bridge counts those detaches,
+// latches a suspension, announces it once (claim, then commit), and resets on
+// a prompt. The Claude monitor tests below drive real peer detaches.
 function suspensionClient() {
   return {
     runtime: bridgeRuntime(),
@@ -1133,39 +1058,6 @@ function suspensionClient() {
 }
 
 const MINUTE = 60_000;
-
-test("hook bridge counts a waiter that detaches without delivery and not one it ended", async () => {
-  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-detach-"));
-  const bridge = new HookDeliveryBridge(suspensionClient(), cwd);
-  try {
-    await bridge.start();
-    assert.equal(bridge.status().waiterDetachesRecent, 0);
-    assert.equal(bridge.status().idleWakeSuspended, false);
-    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
-
-    const reaped = connect(bridge.status().socketPath);
-    reaped.once("connect", () => reaped.write(`${JSON.stringify({ action: "wait", agentSessionId: "session-1" })}\n`));
-    await eventually(() => bridge.status().waiterAttached);
-    reaped.destroy();
-    await eventually(() => bridge.status().waiterDetachesRecent === 1);
-    assert.equal(bridge.status().idleWakeSuspended, false);
-
-    const delivered = request(bridge.status().socketPath, { action: "wait", agentSessionId: "session-1" });
-    await eventually(() => bridge.status().waiterAttached);
-    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "queued" } });
-    assert.deepEqual(await delivered, { ok: true, ready: true });
-    await settle(20);
-    assert.equal(bridge.status().waiterDetachesRecent, 1, "a waiter the bridge ended with delivery is not a detach");
-
-    const status = await request(bridge.status().socketPath, { action: "status" });
-    assert.equal(status.waiterDetachesRecent, 1);
-    assert.equal(status.idleWakeSuspended, false);
-    assert.equal(status.idleWakeSuspensionAnnounced, false);
-  } finally {
-    await bridge.stop();
-    cleanupFixture(cwd);
-  }
-});
 
 test("hook bridge suspends idle wake at three detaches inside one hour and expires older detaches", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-suspend-"));

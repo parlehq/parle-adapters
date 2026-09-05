@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.56 (2026-09-05)
+
+- Reword the suspended idle wake in the compact connection and status cards from `watcher keeps detaching` to `the wake attachment keeps closing`, and its next-action line to `do not re-attach until then`, now that the Claude host attaches through the Monitor tool instead of a watcher task. The card still states only the bridge's observation, never a cause (parlehq/parle-adapters#196).
+
 ## 0.8.55 (2026-08-28)
 
 - Render a suspended idle wake in the compact connection and status cards (`idle_wake_suspended` as `watcher keeps detaching`, next key `wait-for-prompt`) so a host whose watcher keeps detaching is reported as that observation instead of as an unarmed wake to re-arm (parlehq/parle-adapters#185).

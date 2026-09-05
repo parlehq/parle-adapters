@@ -17,6 +17,10 @@ const HOOK = resolve(root, "hooks/parle-hook.mjs");
 const MCP_BRIDGE_MODULE = pathToFileURL(resolve(root, "../mcp-server/dist/hook-delivery-bridge.js")).href;
 const CLAUDE_ARGS = ["--bind", "--direct-parent", "--stop-additional-context"];
 const ROUTE_ID = "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61";
+// The bridge's loopback Monitor wake address, handed out only inside take: a
+// 32-byte base64url token (43 characters) on an ephemeral loopback port.
+const WAKE_TOKEN = "fN7NzVhw45f6V_zvNyEF3To2sY3-DNXXmEk92a-D2k0";
+const WAKE_URL = `ws://127.0.0.1:41873/${WAKE_TOKEN}`;
 
 function stateDir(scope) {
   const key = createHash("sha256").update(scope).digest("hex").slice(0, 16);
@@ -31,7 +35,7 @@ function cleanupFixture(cwd) {
 let nextOwnerPid = 900_000_000;
 
 // A stub bridge that records every action and answers with a scripted reply.
-function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false, idleWakeSuspended = false, idleWakeSuspensionAnnounced = false, suspendOnTake = false, legacyTake = false, legacyAnnounce = false, announceDelayMs = 0, suspensionCommitOk = true } = {}) {
+function startBridge(scope, { messages, agentSessionId = "parle-agent-session", bindDelayMs = 0, busy = false, commitDelayMs = 0, commitOk = true, hostParentPid = process.pid, reportedParentPid = hostParentPid, initialSessionId, statusDelayMs = 0, takeDelayMs = 0, waiterAttached = false, idleWakeSuspended = false, idleWakeSuspensionAnnounced = false, suspendOnTake = false, legacyTake = false, legacyAnnounce = false, announceDelayMs = 0, suspensionCommitOk = true, idleWakeUrl } = {}) {
   const ownerPid = nextOwnerPid++;
   const dir = join(stateDir(scope), String(hostParentPid));
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -67,6 +71,8 @@ function startBridge(scope, { messages, agentSessionId = "parle-agent-session", 
         const taken = busy ? { ok: true, busy: true, messages: [] } : { ok: true, leaseId: "lease-1", messages };
         // An older bridge omits the take-time status snapshot.
         if (!legacyTake) taken.status = snapshot();
+        // A bridge with a Monitor wake hands the bound session its address.
+        if (idleWakeUrl) taken.idleWakeUrl = idleWakeUrl;
         return void setTimeout(() => socket.end(`${JSON.stringify(taken)}\n`), takeDelayMs);
       }
       if (command.action === "announce-suspension" && command.sessionId === boundSessionId) {
@@ -215,42 +221,103 @@ test("an empty queue neither blocks Stop nor acknowledges anything", async () =>
   });
 });
 
-test("Stop requests one bounded idle-wake attachment only for an empty unarmed bridge", async () => {
-  const launcher = join(tmpdir(), "Parle plugin's $cache", "parle-watch.sh");
-  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", launcher];
-  const quotedLauncher = `'${launcher.replaceAll("'", `'"'"'`)}'`;
-  await withBridge({ messages: [] }, async ({ cwd, bridge }) => {
-    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+const MONITOR_LINE = `Parle idle wake is not attached. Call the Monitor tool once with ws: { url: "${WAKE_URL}" }, persistent: true, description: "Parle responsive delivery". Do not use Bash, do not run a watcher script, and do not call it again while that Monitor task is running.`;
+
+test("Stop asks once for the Monitor attachment only for an empty unarmed bridge that hands out its wake url", async () => {
+  await withBridge({ messages: [], idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
+    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     const output = JSON.parse(result.stdout);
     assert.equal(output.hookSpecificOutput.hookEventName, "Stop");
     assert.equal(Object.hasOwn(output, "decision"), false);
-    assert.equal(output.hookSpecificOutput.additionalContext, `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${quotedLauncher} 'parle-agent-session'`);
+    assert.equal(output.hookSpecificOutput.additionalContext, MONITOR_LINE);
+    // The quoted url in the instruction is exactly the canonical address and
+    // nothing else; no launcher, shell command, or plugin path rides along.
+    const quoted = output.hookSpecificOutput.additionalContext.match(/ws: \{ url: "([^"]*)" \}/)[1];
+    assert.equal(quoted, WAKE_URL);
+    assert.match(quoted, /^ws:\/\/127\.0\.0\.1:\d{1,5}\/[A-Za-z0-9_-]{43}$/);
+    assert.doesNotMatch(result.stdout, /run_in_background|parle-watch|CLAUDE_PLUGIN_ROOT|shell &/);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
   });
 
+  // A bridge without a Monitor wake hands out no url: the hook asks for
+  // nothing and parle_status keeps reporting idle_wake_unarmed.
+  await withBridge({ messages: [] }, async ({ cwd, bridge }) => {
+    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+    assert.deepEqual(JSON.parse(result.stdout), {});
+    assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
+  });
+
+  // Only the bridge's own loopback address, strictly parsed, is ever repeated
+  // to the model; a crafted address cannot smuggle another host, userinfo, or
+  // stray characters into the instruction.
+  for (const rejected of [
+    `ws://127.0.0.1:80@example.com/${WAKE_TOKEN}`,
+    `wss://127.0.0.1:41873/${WAKE_TOKEN}`,
+    `ws://example.invalid:41873/${WAKE_TOKEN}`,
+    `ws://127.0.0.2:41873/${WAKE_TOKEN}`,
+    `ws://127.0.0.1/${WAKE_TOKEN}`,
+    `ws://127.0.0.1:80/${WAKE_TOKEN}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}?x=1`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}?`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}#frag`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}#`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}/`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(1)}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}A`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(0, 20)}"${WAKE_TOKEN.slice(21)}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(0, 20)} ${WAKE_TOKEN.slice(21)}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(0, 42)}+`,
+    "ws://127.0.0.1:41873/",
+    "not a url",
+  ]) {
+    await withBridge({ messages: [], idleWakeUrl: rejected }, async ({ cwd, bridge }) => {
+      const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+      assert.deepEqual(JSON.parse(result.stdout), {}, `rejected wake url must produce no instruction: ${rejected}`);
+      assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
+    });
+  }
+
   for (const [options, payload] of [
-    [{ messages: [], busy: true }, { hook_event_name: "Stop", session_id: "claude-session" }],
-    [{ messages: [], waiterAttached: true }, { hook_event_name: "Stop", session_id: "claude-session" }],
-    [{ messages: [], agentSessionId: "" }, { hook_event_name: "Stop", session_id: "claude-session" }],
-    [{ messages: [] }, { hook_event_name: "Stop", session_id: "claude-session", stop_hook_active: true }],
+    [{ messages: [], idleWakeUrl: WAKE_URL, busy: true }, { hook_event_name: "Stop", session_id: "claude-session" }],
+    [{ messages: [], idleWakeUrl: WAKE_URL, waiterAttached: true }, { hook_event_name: "Stop", session_id: "claude-session" }],
+    [{ messages: [], idleWakeUrl: WAKE_URL, agentSessionId: "" }, { hook_event_name: "Stop", session_id: "claude-session" }],
+    [{ messages: [], idleWakeUrl: WAKE_URL }, { hook_event_name: "Stop", session_id: "claude-session", stop_hook_active: true }],
   ]) {
     await withBridge(options, async ({ cwd, bridge }) => {
-      const result = await runHook(args, { ...payload, cwd });
+      const result = await runHook(CLAUDE_ARGS, { ...payload, cwd });
       assert.deepEqual(JSON.parse(result.stdout), {});
+      assert.equal(result.stdout.includes(WAKE_URL), false);
       assert.deepEqual(bridge.actions.map((action) => action.action), payload.stop_hook_active ? [] : ["status", "bind", "take"]);
     });
   }
 });
 
-const SUSPENDED_LINE = "Parle idle wake suspended: the watcher keeps detaching (usually host memory pressure); it resumes at the next prompt.";
+test("the wake url appears only inside the Stop attachment instruction", async () => {
+  // Other boundaries drain delivery but never carry the address.
+  await withBridge({ messages: [deliveredRow(8)], idleWakeUrl: WAKE_URL }, async ({ cwd }) => {
+    for (const event of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"]) {
+      const { stdout } = await runHook(CLAUDE_ARGS, { hook_event_name: event, session_id: "claude-session", cwd });
+      assert.match(JSON.parse(stdout).hookSpecificOutput.additionalContext, /seq=8/);
+      assert.equal(stdout.includes(WAKE_URL), false, `${event} must not carry the wake url`);
+    }
+  });
+  await withBridge({ messages: [], idleWakeUrl: WAKE_URL }, async ({ cwd }) => {
+    const { stdout } = await runHook(CLAUDE_ARGS, { hook_event_name: "PreToolUse", session_id: "claude-session", cwd });
+    assert.deepEqual(JSON.parse(stdout), {});
+  });
+});
 
-test("a suspended idle wake is announced once at Stop instead of re-armed", async () => {
-  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+const SUSPENDED_LINE = "Parle idle wake suspended: the Monitor attachment keeps closing; it resumes at the next prompt.";
+
+test("a suspended idle wake is announced once at Stop instead of re-attached", async () => {
+  const args = CLAUDE_ARGS;
   const suspended = SUSPENDED_LINE;
-  await withBridge({ messages: [], idleWakeSuspended: true }, async ({ cwd, bridge }) => {
-    const first = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
+  await withBridge({ messages: [], idleWakeSuspended: true, idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
+    const raw = (await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout;
+    const first = JSON.parse(raw);
     assert.equal(first.hookSpecificOutput.hookEventName, "Stop");
     assert.equal(first.hookSpecificOutput.additionalContext, suspended);
+    assert.equal(raw.includes(WAKE_URL), false, "a suspended Stop withholds the address");
     // The claim is committed only after output was written.
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension"]);
     assert.equal(bridge.actions[3].claim, true, "the hook negotiates a claim explicitly");
@@ -263,7 +330,7 @@ test("a suspended idle wake is announced once at Stop instead of re-armed", asyn
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
   });
 
-  await withBridge({ messages: [], idleWakeSuspended: true, idleWakeSuspensionAnnounced: true }, async ({ cwd, bridge }) => {
+  await withBridge({ messages: [], idleWakeSuspended: true, idleWakeSuspensionAnnounced: true, idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
     const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     assert.deepEqual(JSON.parse(result.stdout), {});
     assert.doesNotMatch(result.stdout, /idle wake is not attached/);
@@ -271,7 +338,7 @@ test("a suspended idle wake is announced once at Stop instead of re-armed", asyn
   });
 
   // Queued delivery still injects first; the suspension adds no re-arm request.
-  await withBridge({ messages: [deliveredRow(15)], idleWakeSuspended: true }, async ({ cwd, bridge }) => {
+  await withBridge({ messages: [deliveredRow(15)], idleWakeSuspended: true, idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
     const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
     const context = output.hookSpecificOutput.additionalContext;
     assert.match(context, /Parle responsive delivery seq=15/);
@@ -284,7 +351,7 @@ test("a suspended idle wake is announced once at Stop instead of re-armed", asyn
 });
 
 test("a new hook against an older bridge treats an owed answer without a claimId as already announced", async () => {
-  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  const args = CLAUDE_ARGS;
   await withBridge({ messages: [], idleWakeSuspended: true, legacyAnnounce: true }, async ({ cwd, bridge }) => {
     const first = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
     assert.equal(first.hookSpecificOutput.additionalContext, SUSPENDED_LINE);
@@ -298,7 +365,7 @@ test("a new hook against an older bridge treats an owed answer without a claimId
 });
 
 test("delivery acknowledgement and suspension commit fail independently after output", async () => {
-  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  const args = CLAUDE_ARGS;
   // A rejected delivery commit still leaves the announcement committed.
   await withBridge({ messages: [deliveredRow(17)], idleWakeSuspended: true, commitOk: false }, async ({ cwd, bridge }) => {
     const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
@@ -332,10 +399,10 @@ test("delivery acknowledgement and suspension commit fail independently after ou
 });
 
 test("Stop decides suspension from the take-time status, falling back to the discovery probe for an older bridge", async () => {
-  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  const args = CLAUDE_ARGS;
   // The third detach lands between the discovery probe and take: the probe
   // said unsuspended, the take snapshot says suspended, and no re-arm is asked.
-  await withBridge({ messages: [], suspendOnTake: true }, async ({ cwd, bridge }) => {
+  await withBridge({ messages: [], suspendOnTake: true, idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
     const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
     assert.equal(output.hookSpecificOutput.additionalContext, SUSPENDED_LINE);
     assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /idle wake is not attached/);
@@ -348,14 +415,14 @@ test("Stop decides suspension from the take-time status, falling back to the dis
     assert.equal(output.hookSpecificOutput.additionalContext, SUSPENDED_LINE);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension"]);
   });
-  await withBridge({ messages: [], legacyTake: true }, async ({ cwd }) => {
+  await withBridge({ messages: [], legacyTake: true, idleWakeUrl: WAKE_URL }, async ({ cwd }) => {
     const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
     assert.match(output.hookSpecificOutput.additionalContext, /idle wake is not attached/);
   });
 });
 
 test("a lost announcement claim is never committed and does not cost the Stop its delivery", async () => {
-  const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
+  const args = CLAUDE_ARGS;
   // The bridge records the claim but its response is lost (socket timeout);
   // the hook fails open on the announcement only, injects the batch, and
   // commits nothing for the suspension, so the bridge's claim expires owed.
@@ -380,33 +447,31 @@ test("a lost announcement claim is never committed and does not cost the Stop it
 
 test("an active Stop fence performs no delivery IPC or acknowledgement", async () => {
   await withBridge({ messages: [deliveredRow(10)] }, async ({ cwd, bridge }) => {
-    const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
-    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", stop_hook_active: true, cwd });
+    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", stop_hook_active: true, cwd });
     assert.deepEqual(JSON.parse(result.stdout), {});
     assert.deepEqual(bridge.actions, []);
   });
 });
 
 test("a Stop-delivered batch stays first and carries re-attachment through the same bounded continuation", async () => {
-  await withBridge({ messages: [deliveredRow(10)] }, async ({ cwd, bridge }) => {
-    const args = [...CLAUDE_ARGS, "--idle-wake-launcher", "/current plugin/parle-watch.sh"];
-    const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+  await withBridge({ messages: [deliveredRow(10)], idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
+    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     const output = JSON.parse(result.stdout);
     const context = output.hookSpecificOutput.additionalContext;
     assert.equal(output.hookSpecificOutput.hookEventName, "Stop");
     assert.equal(Object.hasOwn(output, "decision"), false);
     assert.match(context, /Parle responsive delivery seq=10/);
-    assert.match(context, /idle wake is not attached/);
+    assert.ok(context.endsWith(`\n\n${MONITOR_LINE}`));
     assert.ok(context.indexOf("Parle responsive delivery seq=10") < context.indexOf("Parle idle wake is not attached"));
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
   });
 });
 
-test("an invalid idle-wake launcher fails open before bridge IPC", async () => {
-  await withBridge({ messages: [] }, async ({ cwd, bridge }) => {
-    const result = await runHook([...CLAUDE_ARGS, "--idle-wake-launcher", "relative/watch.sh"], { hook_event_name: "Stop", session_id: "claude-session", cwd });
+test("the retired launcher argument is unknown and fails open before bridge IPC", async () => {
+  await withBridge({ messages: [], idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
+    const result = await runHook([...CLAUDE_ARGS, "--idle-wake-launcher", "/plugin/parle-watch.sh"], { hook_event_name: "Stop", session_id: "claude-session", cwd });
     assert.deepEqual(JSON.parse(result.stdout), {});
-    assert.match(result.stderr, /idle-wake launcher must be an absolute path/);
+    assert.match(result.stderr, /Unknown Parle hook argument: --idle-wake-launcher/);
     assert.deepEqual(bridge.actions, []);
   });
 });

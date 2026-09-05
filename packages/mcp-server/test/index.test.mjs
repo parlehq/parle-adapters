@@ -4,13 +4,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CONNECT_NEXT_GUIDANCE, ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, SESSION_ESTABLISHED_NEXT_GUIDANCE, processStartedAtIso } from "@parlehq/agent-client";
-import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, resolveHostCapabilities, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
+import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, resolveConfigCwd, resolveHostCapabilities, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -184,145 +184,6 @@ test("Codex request metadata resolves an exact host session binding", () => {
   assert.equal(hostSessionIdFromMeta({ "x-codex-turn-metadata": { session_id: "thread-session", thread_id: "thread-fallback" } }), "thread-session");
   assert.equal(hostSessionIdFromMeta({ "x-codex-turn-metadata": { thread_id: "thread-fallback" } }), "thread-fallback");
   assert.equal(hostSessionIdFromMeta({}), undefined);
-});
-
-test("watcher arguments require exactly one agent session id", () => {
-  assert.equal(parseWatcherArgs(["session-1"]), "session-1");
-  for (const args of [[], ["session-1", "extra"], ["--profile"], ["--profile", "target", "session-1"], [""]]) {
-    assert.throws(() => parseWatcherArgs(args), (error) => error instanceof WatcherUsageError && error.message === WATCHER_USAGE);
-  }
-});
-
-function watcherFixture() {
-  const stateDir = mkdtempSync(join(tmpdir(), "parle-watcher-"));
-  const currentDir = join(stateDir, "9000");
-  mkdirSync(currentDir, { mode: 0o700 });
-  return { stateDir, currentDir, cleanup: () => rmSync(stateDir, { recursive: true, force: true }) };
-}
-
-test("watcher skips an EPERM candidate and attaches to the next matching bridge", async () => {
-  const fixture = watcherFixture();
-  const first = join(fixture.currentDir, "100.sock");
-  const second = join(fixture.currentDir, "200.sock");
-  writeFileSync(first, "");
-  writeFileSync(second, "");
-  const requests = [];
-  try {
-    const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
-      stateDir: fixture.stateDir,
-      request: async (path, payload) => {
-        requests.push([path, payload.action]);
-        if (path === first) throw Object.assign(new Error("denied"), { code: "EPERM" });
-        if (payload.action === "status") return { ok: true, running: true, hostSessionBound: true, agentSessionId: "session-1" };
-        return { ok: true, ready: true };
-      },
-    });
-    assert.equal(result, 0);
-    assert.deepEqual(requests, [[first, "status"], [second, "status"], [second, "wait"]]);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test("watcher treats an attached or raced waiter as a successful no-op", async () => {
-  for (const race of ["observed", "after-status", "legacy-error"]) {
-    const fixture = watcherFixture();
-    const path = join(fixture.currentDir, "100.sock");
-    writeFileSync(path, "");
-    const requests = [];
-    try {
-      const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
-        stateDir: fixture.stateDir,
-        request: async (_path, payload) => {
-          requests.push(payload.action);
-          if (payload.action === "status") return { ok: true, running: true, hostSessionBound: true, waiterAttached: race === "observed", agentSessionId: "session-1" };
-          return race === "legacy-error"
-            ? { ok: false, error: "Parle hook bridge already has a waiter" }
-            : { ok: true, ready: true, alreadyAttached: true };
-        },
-      });
-      assert.equal(result, 0);
-      assert.deepEqual(requests, race === "observed" ? ["status"] : ["status", "wait"]);
-    } finally {
-      fixture.cleanup();
-    }
-  }
-});
-
-test("watcher aggregates candidate probe errors without naming an arbitrary path", async () => {
-  const fixture = watcherFixture();
-  writeFileSync(join(fixture.currentDir, "100.sock"), "");
-  writeFileSync(join(fixture.currentDir, "200.sock"), "");
-  writeFileSync(join(fixture.stateDir, "300.sock"), "", { mode: 0o600 });
-  try {
-    await assert.rejects(
-      runWatcher(import.meta.url, ["session-1"], process.cwd(), {
-        stateDir: fixture.stateDir,
-        isProcessAlive: () => true,
-        request: async () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
-      }),
-      (error) => {
-        assert.match(error.message, /Probed 3 candidate sockets; discovery errors: none; status probe errors: EPERM \(3\/3\)/);
-        assert.doesNotMatch(error.message, /100\.sock|200\.sock|300\.sock/);
-        return true;
-      },
-    );
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test("watcher removes a dead flat-layout socket without probing or reporting it", async () => {
-  const fixture = watcherFixture();
-  const current = join(fixture.currentDir, "100.sock");
-  const stale = join(fixture.stateDir, "300.sock");
-  writeFileSync(current, "");
-  writeFileSync(stale, "", { mode: 0o600 });
-  const requests = [];
-  try {
-    await assert.rejects(
-      runWatcher(import.meta.url, ["session-1"], process.cwd(), {
-        stateDir: fixture.stateDir,
-        isProcessAlive: () => false,
-        request: async (path) => {
-          requests.push(path);
-          return { ok: true, running: true, hostSessionBound: true, agentSessionId: "another-session" };
-        },
-      }),
-      (error) => {
-        assert.match(error.message, /Probed 1 candidate socket; discovery errors: none; status probe errors: none/);
-        assert.doesNotMatch(error.message, /300\.sock/);
-        return true;
-      },
-    );
-    assert.deepEqual(requests, [current]);
-    assert.equal(existsSync(stale), false);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test("watcher skips a flat candidate that vanishes during discovery", async () => {
-  const fixture = watcherFixture();
-  const current = join(fixture.currentDir, "100.sock");
-  const vanished = join(fixture.stateDir, "300.sock");
-  writeFileSync(current, "");
-  writeFileSync(vanished, "", { mode: 0o600 });
-  try {
-    const result = await runWatcher(import.meta.url, ["session-1"], process.cwd(), {
-      stateDir: fixture.stateDir,
-      lstat: (path) => {
-        if (path === vanished) throw Object.assign(new Error("vanished"), { code: "ENOENT" });
-        return lstatSync(path);
-      },
-      request: async (_path, payload) => payload.action === "status"
-        ? { ok: true, running: true, hostSessionBound: true, agentSessionId: "session-1" }
-        : { ok: true, ready: true },
-    });
-    assert.equal(result, 0);
-  } finally {
-    fixture.cleanup();
-  }
 });
 
 test("MCP client factory keeps one process identity through dedicated session bootstrap", async () => {
@@ -1012,7 +873,7 @@ test("status and connect distinguish bridge health from local waiter attachment"
     assert.equal(suspended.structuredContent.responsiveDelivery.state, "watching");
     assert.equal(suspended.structuredContent.responsiveDelivery.reason, "idle_wake_suspended");
     assert.equal(suspended.structuredContent.responsiveDelivery.nextActionKey, "wait-for-prompt");
-    assert.match(suspended.structuredContent.compactText, /Delivery      watching \(idle wake suspended: watcher keeps detaching\)/);
+    assert.match(suspended.structuredContent.compactText, /Delivery      watching \(idle wake suspended: the wake attachment keeps closing\)/);
     // The bridge observes detaches, not their cause; the shared card (also
     // served to Codex) must not diagnose memory pressure.
     assert.doesNotMatch(suspended.structuredContent.compactText, /memory pressure/);

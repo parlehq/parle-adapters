@@ -4546,7 +4546,7 @@ function nextTextFor(key) {
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "wait-for-prompt":
-      return "idle wake resumes at the next prompt; do not re-arm the watcher until then.";
+      return "idle wake resumes at the next prompt; do not re-attach until then.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     case "repair-delivery-host":
@@ -4577,7 +4577,7 @@ function deliveryLine(input) {
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
     return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_suspended")
-    return `${input.state} (idle wake suspended: watcher keeps detaching)`;
+    return `${input.state} (idle wake suspended: the wake attachment keeps closing)`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
@@ -23168,7 +23168,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.42";
+var ADAPTER_VERSION = "0.7.43";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.69 (2026-09-05)
+
+- Refresh the bundled MCP artifact to server 0.7.66 and the shared hook: the `--parle-watch` command and the bridge's Unix-socket `wait` action are removed, the hook drops the Claude-only `--idle-wake-launcher` argument, and the suspended idle-wake card reads `the wake attachment keeps closing`. Codex used none of them, so behavior is unchanged (#196, #197).
+
 ## 0.6.68 (2026-09-05)
 
 - Refresh the bundled MCP artifact to server 0.7.65: it now carries the `claude-monitor` idle-wake mode behind `PARLE_HOST_IDLE_WAKE=claude-monitor`. No host enables it yet, so behavior is unchanged; the Claude plugin switches to it in #196 (#195). Codex keeps `codex-queue`.

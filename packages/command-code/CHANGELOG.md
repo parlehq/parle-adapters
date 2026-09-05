@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.43 (2026-09-05)
+
+- Carry client 0.8.56 and server 0.7.66 into the Command Code mod artifact: the bundled compact card renders a suspended idle wake as `the wake attachment keeps closing` with the next line `do not re-attach until then`. Command Code has no hook-bridge idle wake, so beyond that shared wording its runtime behavior is unchanged (#196).
+
 ## 0.7.42 (2026-09-05)
 
 - Carry the `claude-monitor` host idle-wake capability of MCP server 0.7.65 (`McpHostCapabilities` accepts `PARLE_HOST_IDLE_WAKE=claude-monitor`; host next-guidance replaces the client arm text only for states the host owns) into the Command Code mod artifact. Command Code declares no idle-wake mode, so its behavior is unchanged (#195).

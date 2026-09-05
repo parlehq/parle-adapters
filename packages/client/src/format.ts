@@ -59,7 +59,7 @@ export function nextTextFor(key?: CompactConnectionNextKey | string): string {
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "wait-for-prompt":
-      return "idle wake resumes at the next prompt; do not re-arm the watcher until then.";
+      return "idle wake resumes at the next prompt; do not re-attach until then.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     case "repair-delivery-host":
@@ -91,9 +91,9 @@ function deliveryLine(input: CompactConnectionCardInput["responsiveDelivery"]): 
   if (!input) return undefined;
   if (typeof input === "string") return input;
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake)) return `${input.state} (idle wake ${input.idleWake})`;
-  // A latched suspension renders truthfully instead of inviting a re-arm
-  // (host memory-pressure reaps, #185).
-  if (input.reason === "idle_wake_suspended") return `${input.state} (idle wake suspended: watcher keeps detaching)`;
+  // A latched suspension renders truthfully instead of inviting a re-attach
+  // (#185). The bridge observes only that its wake peer keeps closing.
+  if (input.reason === "idle_wake_suspended") return `${input.state} (idle wake suspended: the wake attachment keeps closing)`;
   if (input.reason === "idle_wake_unarmed") return `${input.state} (idle wake unarmed)`;
   return input.state;
 }

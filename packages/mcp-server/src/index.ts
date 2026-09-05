@@ -1,22 +1,21 @@
 #!/usr/bin/env node
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { connect } from "node:net";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, inspectResponsiveDeliveryPid, processClientInstanceId, readResponsiveDeliverySnapshots, redactString, resolveConfig, resolveResponsiveDelivery, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateRoomParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomInventorySection, knownAddressContextFor, parseKeyValueFile, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { ClaudeMonitorWake } from "./claude-monitor-wake.js";
 import { CodexQueueWake } from "./codex-host.js";
-import { HookDeliveryBridge, hookBridgeStateDir, processIsAlive, removeDeadHookBridgeArtifact, type HostIdleWake } from "./hook-delivery-bridge.js";
+import { HookDeliveryBridge, type HostIdleWake } from "./hook-delivery-bridge.js";
 import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type IdleWakeState, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, resolveCodexHostExecutable } from "./codex-host.js";
 export { CLAUDE_MONITOR_WAKE_FRAME, ClaudeMonitorWake } from "./claude-monitor-wake.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.65";
+export const MCP_CLIENT_VERSION = "0.7.66";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -310,148 +309,6 @@ export function isDirectRun(metaUrl: string, argvPath = process.argv[1]): boolea
   return Boolean(argvPath) && metaUrl === pathToFileURL(argvPath).href;
 }
 
-export const WATCHER_USAGE = "Usage: parle-watch.sh <agent_session_id>";
-
-export class WatcherUsageError extends Error {
-  constructor() {
-    super(WATCHER_USAGE);
-    this.name = "WatcherUsageError";
-  }
-}
-
-export function parseWatcherArgs(args: string[]): string {
-  if (args.length !== 1 || !args[0] || args[0].startsWith("-")) throw new WatcherUsageError();
-  return args[0];
-}
-
-const HOOK_BRIDGE_REQUEST_TIMEOUT_MS = 1000;
-
-function hookBridgeRequest(path: string, payload: unknown, timeoutMs = 0): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const socket = connect(path);
-    socket.setEncoding("utf8");
-    if (timeoutMs > 0) socket.setTimeout(timeoutMs, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
-    let response = "";
-    socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
-    socket.on("data", (chunk) => {
-      response += chunk;
-      if (Buffer.byteLength(response, "utf8") > 16 * 1024) {
-        socket.destroy(new Error("Parle hook bridge response exceeded 16 KiB"));
-        return;
-      }
-      const newline = response.indexOf("\n");
-      if (newline < 0) return;
-      socket.end();
-      try {
-        resolve(JSON.parse(response.slice(0, newline)));
-      } catch {
-        reject(new Error("Parle hook bridge returned malformed JSON"));
-      }
-    });
-    socket.once("error", reject);
-    socket.once("end", () => {
-      if (!response.includes("\n")) reject(new Error("Parle hook bridge closed without a response"));
-    });
-  });
-}
-
-type WatcherDependencies = {
-  stateDir?: string;
-  request?: typeof hookBridgeRequest;
-  isProcessAlive?: typeof processIsAlive;
-  lstat?: typeof lstatSync;
-};
-
-export async function runWatcher(_metaUrl: string, args: string[], cwd = process.cwd(), dependencies: WatcherDependencies = {}): Promise<number> {
-  const agentSessionId = parseWatcherArgs(args);
-  const stateDir = dependencies.stateDir || hookBridgeStateDir(cwd);
-  const request = dependencies.request || hookBridgeRequest;
-  const isProcessAlive = dependencies.isProcessAlive || processIsAlive;
-  const lstat = dependencies.lstat || lstatSync;
-  const state = lstat(stateDir);
-  if (!state.isDirectory() || state.isSymbolicLink()
-    || (typeof process.getuid === "function" && state.uid !== process.getuid())
-    || (state.mode & 0o077) !== 0) {
-    throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
-  }
-  const entries = readdirSync(stateDir, { withFileTypes: true });
-  const discoveryErrors = new Map<string, number>();
-  const recordDiscoveryError = (error: any) => {
-    const code = typeof error?.code === "string" && error.code ? error.code : "UNKNOWN";
-    discoveryErrors.set(code, (discoveryErrors.get(code) || 0) + 1);
-  };
-  const currentPaths = entries
-    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-    .flatMap((entry) => {
-      const parentDir = join(stateDir, entry.name);
-      let parentState;
-      try { parentState = lstat(parentDir); } catch (error) {
-        recordDiscoveryError(error);
-        return [];
-      }
-      if (parentState.isSymbolicLink()
-        || (typeof process.getuid === "function" && parentState.uid !== process.getuid())
-        || (parentState.mode & 0o077) !== 0) return [];
-      return readdirSync(parentDir)
-        .filter((name) => /^\d+\.sock$/.test(name))
-        .map((name) => join(parentDir, name));
-    })
-    .sort();
-  // Flat sockets predate host-pid isolation. Keep live ones as a compatibility
-  // fallback, but never let dead legacy processes block current candidates.
-  const legacyPaths = entries
-    .filter((entry) => /^\d+\.sock$/.test(entry.name))
-    .flatMap((entry) => {
-      const path = join(stateDir, entry.name);
-      if (removeDeadHookBridgeArtifact(path, entry.name, false, undefined, { lstat, processIsAlive: isProcessAlive })) return [];
-      let socketState;
-      try { socketState = lstat(path); } catch (error) {
-        recordDiscoveryError(error);
-        return [];
-      }
-      if (socketState.isSymbolicLink()
-        || (typeof process.getuid === "function" && socketState.uid !== process.getuid())
-        || (socketState.mode & 0o077) !== 0) return [];
-      return [path];
-    })
-    .sort();
-  const paths = [...currentPaths, ...legacyPaths];
-  const probeErrors = new Map<string, number>();
-  for (const path of paths) {
-    let status;
-    try {
-      status = await request(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
-    } catch (error: any) {
-      const code = typeof error?.code === "string" && error.code ? error.code : "UNKNOWN";
-      probeErrors.set(code, (probeErrors.get(code) || 0) + 1);
-      continue;
-    }
-    if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
-    if (status.waiterAttached === true) {
-      console.log("parle-watch: local delivery waiter already attached");
-      return 0;
-    }
-    const result = await request(path, { action: "wait", agentSessionId });
-    if (result?.ok && result.alreadyAttached === true) {
-      console.log("parle-watch: local delivery waiter already attached");
-      return 0;
-    }
-    // Compatibility with an older bridge during a plugin update.
-    if (result?.error === "Parle hook bridge already has a waiter") {
-      console.log("parle-watch: local delivery waiter already attached");
-      return 0;
-    }
-    if (!result?.ok || !result.ready) throw new Error(result?.error || "Parle hook bridge wait failed");
-    console.log("parle-watch: responsive delivery queued");
-    return 0;
-  }
-  const discoveryDetail = discoveryErrors.size === 0 ? "none" : [...discoveryErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count})`).join(", ");
-  const detail = paths.length === 0
-    ? `Found 0 candidate sockets; discovery errors: ${discoveryDetail}.`
-    : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; discovery errors: ${discoveryDetail}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
-  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. ${detail} Run parle_connect in this project, then re-arm with its current agent session id.`);
-}
-
 async function runKnownAddressContext(cwd: string): Promise<void> {
   const cfg = resolveConfig(cwd, process.env);
   if (!cfg.apiBase.value || !cfg.roomId?.value) return;
@@ -468,14 +325,11 @@ async function runKnownAddressContext(cwd: string): Promise<void> {
 
 if (isDirectRun(import.meta.url)) {
   const command = process.argv[2];
-  const task = command === "--parle-watch"
-    ? runWatcher(import.meta.url, process.argv.slice(3)).then((code) => { process.exitCode = code; })
-    : command === "--parle-known-address-context"
-      ? runKnownAddressContext(process.argv[3] || process.cwd())
-      : runStdio();
+  const task = command === "--parle-known-address-context"
+    ? runKnownAddressContext(process.argv[3] || process.cwd())
+    : runStdio();
   task.catch((error) => {
-    if (error instanceof WatcherUsageError) console.error(WATCHER_USAGE);
-    else console.error(`Parle stopped: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`Parle stopped: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 2;
   });
 }
