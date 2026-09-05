@@ -277,10 +277,32 @@ async function take(scope, sessionId, allowBind, event, directParent, shellLaunc
   return undefined;
 }
 
-// The bridge's loopback Monitor wake address. It reaches this hook only inside
-// the bound session's owner-only take response and is repeated to the model
-// verbatim; the hook never constructs, logs, or stores it.
-const MONITOR_WAKE_URL_PREFIX = "ws://127.0.0.1:";
+// The bridge's loopback Monitor wake address, ws://127.0.0.1:<port>/<token>,
+// where the token is 32 random bytes as base64url (exactly 43 characters). It
+// reaches this hook only inside the bound session's owner-only take response.
+// The hook never constructs, logs, or stores it; it repeats it to the model
+// only after strict parsing and only in canonical form, so nothing but that
+// address (no userinfo, other host, query, fragment, or stray characters) can
+// ride into the instruction text.
+const MONITOR_WAKE_TOKEN_PATH = /^\/[A-Za-z0-9_-]{43}$/;
+
+function monitorWakeUrl(value) {
+  if (typeof value !== "string") return undefined;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "ws:" || url.hostname !== "127.0.0.1") return undefined;
+  if (!/^[1-9]\d{0,4}$/.test(url.port) || Number(url.port) > 65535) return undefined;
+  if (url.username || url.password || url.search || url.hash) return undefined;
+  if (!MONITOR_WAKE_TOKEN_PATH.test(url.pathname)) return undefined;
+  // An empty "?" or "#" survives in href with empty search and hash; the
+  // canonical form must round-trip exactly.
+  const canonical = `ws://127.0.0.1:${url.port}${url.pathname}`;
+  return url.href === canonical ? canonical : undefined;
+}
 
 function idleWakeInstruction(url) {
   return `Parle idle wake is not attached. Call the Monitor tool once with ws: { url: "${url}" }, persistent: true, description: "Parle responsive delivery". Do not use Bash, do not run a watcher script, and do not call it again while that Monitor task is running.`;
@@ -302,10 +324,11 @@ async function idleWakeContext(payload, sessionId, delivery) {
     && Array.isArray(delivery.messages);
   if (!eligible) return { context: "" };
   if (delivery.status.idleWakeSuspended !== true) {
-    // A bridge without a Monitor wake hands out no address: nothing to attach,
+    // A bridge without a Monitor wake hands out no address, and anything but
+    // the bridge's own loopback address is not repeated: nothing to attach,
     // and parle_status keeps reporting idle_wake_unarmed.
-    const url = delivery.idleWakeUrl;
-    return { context: typeof url === "string" && url.startsWith(MONITOR_WAKE_URL_PREFIX) ? idleWakeInstruction(url) : "" };
+    const url = monitorWakeUrl(delivery.idleWakeUrl);
+    return { context: url ? idleWakeInstruction(url) : "" };
   }
   if (delivery.status.idleWakeSuspensionAnnounced === true) return { context: "" };
   let announced;

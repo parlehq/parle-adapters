@@ -17,8 +17,10 @@ const HOOK = resolve(root, "hooks/parle-hook.mjs");
 const MCP_BRIDGE_MODULE = pathToFileURL(resolve(root, "../mcp-server/dist/hook-delivery-bridge.js")).href;
 const CLAUDE_ARGS = ["--bind", "--direct-parent", "--stop-additional-context"];
 const ROUTE_ID = "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61";
-// The bridge's loopback Monitor wake address, handed out only inside take.
-const WAKE_URL = "ws://127.0.0.1:41873/Q2xhdWRlIE1vbml0b3Igd2FrZSB0b2tlbg";
+// The bridge's loopback Monitor wake address, handed out only inside take: a
+// 32-byte base64url token (43 characters) on an ephemeral loopback port.
+const WAKE_TOKEN = "fN7NzVhw45f6V_zvNyEF3To2sY3-DNXXmEk92a-D2k0";
+const WAKE_URL = `ws://127.0.0.1:41873/${WAKE_TOKEN}`;
 
 function stateDir(scope) {
   const key = createHash("sha256").update(scope).digest("hex").slice(0, 16);
@@ -228,7 +230,11 @@ test("Stop asks once for the Monitor attachment only for an empty unarmed bridge
     assert.equal(output.hookSpecificOutput.hookEventName, "Stop");
     assert.equal(Object.hasOwn(output, "decision"), false);
     assert.equal(output.hookSpecificOutput.additionalContext, MONITOR_LINE);
-    // No launcher, no shell command, no plugin path: the url is the whole address.
+    // The quoted url in the instruction is exactly the canonical address and
+    // nothing else; no launcher, shell command, or plugin path rides along.
+    const quoted = output.hookSpecificOutput.additionalContext.match(/ws: \{ url: "([^"]*)" \}/)[1];
+    assert.equal(quoted, WAKE_URL);
+    assert.match(quoted, /^ws:\/\/127\.0\.0\.1:\d{1,5}\/[A-Za-z0-9_-]{43}$/);
     assert.doesNotMatch(result.stdout, /run_in_background|parle-watch|CLAUDE_PLUGIN_ROOT|shell &/);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
   });
@@ -241,11 +247,35 @@ test("Stop asks once for the Monitor attachment only for an empty unarmed bridge
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
   });
 
-  // Only the bridge's own loopback address is ever repeated to the model.
-  await withBridge({ messages: [], idleWakeUrl: "ws://example.invalid:1/token" }, async ({ cwd }) => {
-    const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
-    assert.deepEqual(JSON.parse(result.stdout), {});
-  });
+  // Only the bridge's own loopback address, strictly parsed, is ever repeated
+  // to the model; a crafted address cannot smuggle another host, userinfo, or
+  // stray characters into the instruction.
+  for (const rejected of [
+    `ws://127.0.0.1:80@example.com/${WAKE_TOKEN}`,
+    `wss://127.0.0.1:41873/${WAKE_TOKEN}`,
+    `ws://example.invalid:41873/${WAKE_TOKEN}`,
+    `ws://127.0.0.2:41873/${WAKE_TOKEN}`,
+    `ws://127.0.0.1/${WAKE_TOKEN}`,
+    `ws://127.0.0.1:80/${WAKE_TOKEN}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}?x=1`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}?`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}#frag`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}#`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}/`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(1)}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN}A`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(0, 20)}"${WAKE_TOKEN.slice(21)}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(0, 20)} ${WAKE_TOKEN.slice(21)}`,
+    `ws://127.0.0.1:41873/${WAKE_TOKEN.slice(0, 42)}+`,
+    "ws://127.0.0.1:41873/",
+    "not a url",
+  ]) {
+    await withBridge({ messages: [], idleWakeUrl: rejected }, async ({ cwd, bridge }) => {
+      const result = await runHook(CLAUDE_ARGS, { hook_event_name: "Stop", session_id: "claude-session", cwd });
+      assert.deepEqual(JSON.parse(result.stdout), {}, `rejected wake url must produce no instruction: ${rejected}`);
+      assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
+    });
+  }
 
   for (const [options, payload] of [
     [{ messages: [], idleWakeUrl: WAKE_URL, busy: true }, { hook_event_name: "Stop", session_id: "claude-session" }],

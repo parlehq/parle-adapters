@@ -95,6 +95,13 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /reload or restart Claude/);
   assert.match(skill, /upstream-blocked/);
   assert.match(skill, /Never start a second Monitor while one is running/);
+  // Attachment is triggered only by the Stop hook's instruction; a status
+  // report is never permission to attach, and status is never polled for it.
+  assert.match(skill, /The only trigger for calling Monitor is a Stop-hook instruction that supplies the URL/);
+  assert.match(skill, /`idle_wake_unarmed` from `parle_connect` or `parle_status` is a report, not a trigger/);
+  assert.match(skill, /Never call `parle_status` repeatedly to wait for it/);
+  assert.match(skill, /do not work around the denial with Bash, a script, or another tool/);
+  assert.doesNotMatch(skill, /reports `idle_wake_unarmed` and no Monitor task is running/);
   // The Bash watcher is gone (#197): no launcher, exit codes, reaper, or
   // background-shell guidance may survive in the skill.
   assert.doesNotMatch(skill, /run_in_background|parle-watch\.sh|PRESSURE_REAP|memory pressure|[Ee]xit [02]\b|status: killed/);
