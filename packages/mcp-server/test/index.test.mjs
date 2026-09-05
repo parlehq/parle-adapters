@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CONNECT_NEXT_GUIDANCE, ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, SESSION_ESTABLISHED_NEXT_GUIDANCE, processStartedAtIso } from "@parlehq/agent-client";
-import { MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, resolveHostCapabilities, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
+import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, WATCHER_USAGE, WatcherUsageError, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, parseWatcherArgs, resolveConfigCwd, resolveHostCapabilities, runWatcher, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -1887,7 +1887,91 @@ test("resolveHostCapabilities accepts the codex-queue ceiling and rejects unknow
   assert.deepEqual(resolveHostCapabilities({}), {});
   assert.deepEqual(resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "none" }), { idleWake: "none" });
   assert.deepEqual(resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "codex-queue" }), { idleWake: "codex-queue" });
+  assert.deepEqual(resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "claude-monitor" }), { idleWake: "claude-monitor" });
   assert.throws(() => resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "daemon" }), /Unsupported PARLE_HOST_IDLE_WAKE mode: daemon/);
+  assert.throws(() => resolveHostCapabilities({ PARLE_HOST_IDLE_WAKE: "claude-monitor-ws" }), /Unsupported PARLE_HOST_IDLE_WAKE mode: claude-monitor-ws/);
+});
+
+test("createHostIdleWake constructs one wake surface per declared host mode and none without the bridge (#195)", () => {
+  assert.equal(createHostIdleWake({}, true, 4242), undefined);
+  assert.equal(createHostIdleWake({ idleWake: "none" }, true, 4242), undefined);
+  assert.equal(createHostIdleWake({ idleWake: "codex-queue" }, true, undefined), undefined, "the queue wake needs the correlated host process");
+  const codex = createHostIdleWake({ idleWake: "codex-queue" }, true, 4242);
+  assert.ok(codex instanceof CodexQueueWake);
+  assert.equal(codex instanceof ClaudeMonitorWake, false);
+  const monitor = createHostIdleWake({ idleWake: "claude-monitor" }, true, 4242);
+  assert.ok(monitor instanceof ClaudeMonitorWake);
+  assert.equal(monitor instanceof CodexQueueWake, false);
+  assert.equal(monitor.threadTarget, "bound", "Claude Code sends no MCP thread metadata, so the hook binding alone arms");
+  assert.ok(createHostIdleWake({ idleWake: "claude-monitor" }, true, undefined) instanceof ClaudeMonitorWake, "the monitor wake needs only the bridge");
+  for (const idleWake of [undefined, "none", "codex-queue", "claude-monitor"]) assert.equal(createHostIdleWake({ idleWake }, false, 4242), undefined, "no bridge, no wake");
+});
+
+test("a claude-monitor host keeps the waiter contract: the attached peer is the waiter and the client arm guidance stays (#195)", async () => {
+  const session = { established: "this_call", sessionAddress: "@p.a.s1", agentSessionId: "as-1", expiresAt: "later", next: SESSION_ESTABLISHED_NEXT_GUIDANCE };
+  const fakeClient = {
+    status: () => ({ runtime: { bootstrapState: "ready", sessionAddress: "@p.a.s1", agentSessionId: "as-1", rooms: [{ roomId: "room-1", roomHandle: "room-one" }] } }),
+    connect: async () => ({ connected: true, sessionAddress: "@p.a.s1", roomHandle: "room-one", agentSessionId: "as-1", cursor: 3, next: CONNECT_NEXT_GUIDANCE }),
+    readInbox: async () => ({ messages: [], session }),
+    ensureReadySafe: async () => false,
+  };
+  let waiterAttached = false;
+  const deliveryBridge = {
+    start: async () => {},
+    bindHostSession: () => true,
+    status: () => ({
+      running: true,
+      pending: 0,
+      baselineSkipped: 0,
+      socketPath: "/tmp/parle-test.sock",
+      hostSessionBound: true,
+      waiterAttached,
+      waiterDetachesRecent: 0,
+      idleWakeSuspended: false,
+      idleWakeSuspensionAnnounced: false,
+      hostSessionId: "claude-1",
+      idleWake: waiterAttached
+        ? { state: "daemon-attached", outstanding: false, frames: 0, attachments: 1 }
+        : { state: "unavailable", reason: "monitor-not-attached", outstanding: false, frames: 0, attachments: 0 },
+    }),
+  };
+  const evidencePath = join(process.cwd(), ".parle", "runtime", "responsive", `${process.pid}.json`);
+  new ResponsiveDeliveryRecorder({
+    cwd: process.cwd(),
+    pid: process.pid,
+    processStartedAt: processStartedAtIso(),
+    publisher: { name: "issue195-test", clientInstanceId: "issue195-test" },
+    target: { agentSessionId: "as-1" },
+    persist: true,
+  }).record("watching", { expectedProgressMs: 570_000, lastSuccessAt: new Date().toISOString() });
+  const server = createParleMcpServer(fakeClient, undefined, deliveryBridge, undefined, false, { idleWake: "claude-monitor" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "parle-mcp-claude-monitor", version: "0.0.0" }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    for (const attached of [false, true]) {
+      waiterAttached = attached;
+      const connect = (await client.callTool({ name: "parle_connect", arguments: {} })).structuredContent;
+      const status = (await client.callTool({ name: "parle_status", arguments: {} })).structuredContent;
+      const inbox = (await client.callTool({ name: "parle_inbox", arguments: {} })).structuredContent;
+      assert.equal(connect.next, CONNECT_NEXT_GUIDANCE, "a waiter host keeps the client arm guidance");
+      assert.equal(inbox.session.next, SESSION_ESTABLISHED_NEXT_GUIDANCE);
+      for (const result of [connect, status]) {
+        const delivery = result.responsiveDelivery;
+        assert.equal(delivery.state, "watching");
+        assert.equal(delivery.idleWake, attached ? "armed" : "unarmed");
+        assert.equal(delivery.reason, attached ? undefined : "idle_wake_unarmed");
+        assert.equal(delivery.nextActionKey, attached ? "already-connected" : "arm-or-verify-watcher");
+        assert.equal(result.responsiveDeliveryBridge.waiterAttached, attached);
+        assert.equal(JSON.stringify(result).includes("ws://"), false, "no wake url reaches the MCP surface");
+        assert.doesNotMatch(result.compactText, /idle wake unavailable/);
+      }
+    }
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(evidencePath, { force: true });
+  }
 });
 
 test("a codex-queue host renders queue-only, degraded, and unavailable idle wake from bridge evidence (#174)", async () => {

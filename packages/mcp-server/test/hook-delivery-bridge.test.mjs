@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { ParleApiError } from "@parlehq/agent-client";
+import { CLAUDE_MONITOR_WAKE_FRAME, ClaudeMonitorWake } from "../dist/claude-monitor-wake.js";
 import {
   HookDeliveryBridge,
   cleanupHookBridgeArtifacts,
@@ -1457,6 +1458,172 @@ test("UserPromptSubmit reset cannot bypass the live lease and suspension-claim f
     assert.equal(bridge.status().idleWakeSuspended, false);
   } finally {
     await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+// Claude monitor wake (parlehq/parle-adapters#195): the bridge's idle wake is
+// a loopback WebSocket the host's Monitor tool attaches to. The bridge still
+// owns every decision about work; the socket carries one content-free hint.
+const WAKE_URL = /^ws:\/\/127\.0\.0\.1:\d+\/([A-Za-z0-9_-]{43})$/;
+
+function openMonitorPeer(url) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url);
+    const frames = [];
+    const closed = new Promise((done) => socket.addEventListener("close", (event) => done({ code: event.code, reason: event.reason })));
+    socket.addEventListener("message", (event) => frames.push(String(event.data)));
+    socket.addEventListener("open", () => resolve({ socket, frames, closed }));
+    socket.addEventListener("error", () => reject(new Error("websocket handshake failed")));
+  });
+}
+
+test("hook bridge frames an attached Claude monitor peer and hands the wake url only to the bound session's take", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-monitor-"));
+  const stderr = [];
+  const originalError = console.error;
+  console.error = (...args) => stderr.push(args.map(String).join(" "));
+  const wake = new ClaudeMonitorWake();
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd, process.execPath, cwd, process.ppid, undefined, wake);
+  try {
+    await bridge.start();
+    await wake.ready(2_000);
+    const path = bridge.status().socketPath;
+    assert.equal(bridge.status().waiterAttached, false);
+    assert.equal(bridge.status().idleWake.state, "unavailable");
+    assert.equal(bridge.status().idleWake.reason, "monitor-not-attached");
+
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "claude-1", hookEventName: "SessionStart" }), { ok: true, bound: true });
+    const empty = await request(path, { action: "take", sessionId: "claude-1" });
+    assert.equal(empty.ok, true);
+    assert.deepEqual(empty.messages, []);
+    const url = empty.idleWakeUrl;
+    const token = url.match(WAKE_URL)?.[1];
+    assert.ok(token, `an empty take hands the bound session the wake url: ${url}`);
+    assert.equal(JSON.stringify(empty.status).includes(token), false, "the status snapshot inside take carries no url");
+    assert.equal((await request(path, { action: "take", sessionId: "other" })).ok, false, "an unbound session gets no take and no url");
+    // Claude Code sends no MCP thread metadata: the hook binding alone arms.
+    assert.equal(bridge.status().metaHostSessionId, undefined);
+
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 1, event_id: "evt-1", content: "queued before attach" } });
+    assert.equal(bridge.status().pending, 1);
+    assert.equal(wake.status().outstanding, false, "no peer, no frame");
+    assert.equal(bridge.status().idleWake.reason, "monitor-not-attached");
+
+    const peer = await openMonitorPeer(url);
+    await eventually(() => bridge.status().waiterAttached === true);
+    await eventually(() => peer.frames.length === 1);
+    assert.deepEqual(peer.frames, [CLAUDE_MONITOR_WAKE_FRAME], "attaching with pending work frames once");
+    assert.equal(bridge.status().idleWake.state, "daemon-attached");
+    assert.equal(bridge.status().idleWake.outstanding, true);
+    assert.equal(bridge.status().pending, 1, "a frame dequeues nothing");
+    const socketStatus = await request(path, { action: "status" });
+    assert.equal(socketStatus.waiterAttached, true);
+    assert.equal(socketStatus.pending, 1);
+    assert.equal(JSON.stringify(socketStatus).includes(token), false, "the status action carries no url");
+
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 2, event_id: "evt-2", content: "second" } });
+    await settle(50);
+    assert.equal(peer.frames.length, 1, "no second frame while one is outstanding");
+
+    const first = await request(path, { action: "take", sessionId: "claude-1" });
+    assert.equal(first.messages.length, 2, "the frame acknowledged nothing: both rows are still leasable");
+    assert.equal(first.idleWakeUrl, url);
+    assert.equal(wake.status().outstanding, false, "a take consumes the outstanding frame");
+    bridge.enqueue({ roomId: ROOM, cursorScope: "session", message: { seq: 3, event_id: "evt-3", content: "third" } });
+    await settle(50);
+    assert.equal(peer.frames.length, 1, "no frame while a lease is live");
+    const busy = await request(path, { action: "take", sessionId: "claude-1" });
+    assert.equal(busy.busy, true);
+    assert.equal(busy.idleWakeUrl, url, "a busy take still carries the url");
+    assert.deepEqual(await request(path, { action: "commit", sessionId: "claude-1", leaseId: first.leaseId }), { ok: true, committed: 2 });
+    await eventually(() => peer.frames.length === 2);
+    assert.equal(bridge.status().pending, 1, "remaining work after commit frames again and stays queued");
+    const second = await request(path, { action: "take", sessionId: "claude-1" });
+    assert.equal(second.messages.length, 1);
+    assert.deepEqual(await request(path, { action: "commit", sessionId: "claude-1", leaseId: second.leaseId }), { ok: true, committed: 1 });
+    await settle(50);
+    assert.equal(peer.frames.length, 2, "an empty queue frames nothing");
+
+    // The url is owner-only: not in status(), the runtime descriptor, the
+    // evidence files, or anything the bridge or wake wrote to stderr.
+    assert.equal(JSON.stringify(bridge.status()).includes(token), false);
+    assert.equal(readFileSync(hookBridgeRuntimeDescriptorPath(cwd, process.pid, process.ppid), "utf8").includes(token), false);
+    const evidenceDir = join(cwd, ".parle", "runtime", "responsive");
+    const evidence = readdirSync(evidenceDir);
+    assert.ok(evidence.length > 0, "evidence was published");
+    for (const name of evidence) assert.equal(readFileSync(join(evidenceDir, name), "utf8").includes(token), false);
+    assert.ok(stderr.length > 0, "the bridge and wake logged");
+    assert.equal(stderr.join("\n").includes(token), false, "stderr never carries the token");
+    assert.equal(stderr.join("\n").includes("ws://"), false, "stderr never carries the url");
+
+    peer.socket.close(1000, "user stopped the monitor");
+    await eventually(() => bridge.status().waiterAttached === false);
+    await eventually(() => bridge.status().waiterDetachesRecent === 1);
+    assert.equal(bridge.status().idleWake.reason, "monitor-not-attached");
+  } finally {
+    console.error = originalError;
+    await bridge.stop();
+    cleanupFixture(cwd);
+  }
+});
+
+test("hook bridge counts Claude monitor detaches like waiter detaches and never a replacement or its own stop (#185)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "parle-hook-monitor-detach-"));
+  const wake = new ClaudeMonitorWake({ log: () => {} });
+  const bridge = new HookDeliveryBridge(suspensionClient(), cwd, process.execPath, cwd, undefined, undefined, wake);
+  let stopped = false;
+  try {
+    await bridge.start();
+    await wake.ready(2_000);
+    const path = bridge.status().socketPath;
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "claude-1", hookEventName: "SessionStart" }), { ok: true, bound: true });
+    const { idleWakeUrl: url } = await request(path, { action: "take", sessionId: "claude-1" });
+    assert.match(url, WAKE_URL);
+
+    const first = await openMonitorPeer(url);
+    await eventually(() => bridge.status().waiterAttached === true);
+    const second = await openMonitorPeer(url);
+    assert.deepEqual(await first.closed, { code: 1000, reason: "replaced" });
+    const third = await openMonitorPeer(url);
+    assert.deepEqual(await second.closed, { code: 1000, reason: "replaced" });
+    await settle(50);
+    assert.equal(bridge.status().waiterDetachesRecent, 0, "a Monitor restart cannot manufacture a suspension");
+    assert.equal(bridge.status().waiterAttached, true);
+    assert.equal(wake.status().attachments, 3);
+
+    third.socket.close();
+    await eventually(() => bridge.status().waiterDetachesRecent === 1);
+    assert.equal(bridge.status().waiterAttached, false);
+    assert.equal(bridge.status().idleWakeSuspended, false);
+    for (const expected of [2, 3]) {
+      const peer = await openMonitorPeer(url);
+      await eventually(() => bridge.status().waiterAttached === true);
+      peer.socket.close();
+      await eventually(() => bridge.status().waiterDetachesRecent === expected);
+    }
+    assert.equal(bridge.status().idleWakeSuspended, true, "three external closes inside the hour latch the suspension");
+    assert.equal(bridge.status().idleWakeSuspensionAnnounced, false);
+    const taken = await request(path, { action: "take", sessionId: "claude-1" });
+    assert.equal(taken.status.idleWakeSuspended, true);
+    assert.equal(taken.idleWakeUrl, url, "the url is still handed out; the hook decides whether to re-arm");
+    const claimed = await request(path, { action: "announce-suspension", sessionId: "claude-1", claim: true });
+    assert.equal(claimed.owed, true);
+    assert.deepEqual(await request(path, { action: "commit-suspension", sessionId: "claude-1", claimId: claimed.claimId }), { ok: true, announced: true });
+
+    assert.deepEqual(await request(path, { action: "bind", sessionId: "claude-1", hookEventName: "UserPromptSubmit" }), { ok: true, bound: true });
+    assert.equal(bridge.status().idleWakeSuspended, false, "a human prompt ends the episode");
+    assert.equal(bridge.status().waiterDetachesRecent, 0);
+
+    const last = await openMonitorPeer(url);
+    await eventually(() => bridge.status().waiterAttached === true);
+    stopped = true;
+    await bridge.stop();
+    assert.equal((await last.closed).code, 1001, "stop closes the peer as going away");
+    assert.equal(bridge.status().waiterDetachesRecent, 0, "the bridge's own stop is not a detach");
+    assert.equal(bridge.status().waiterAttached, false);
+  } finally {
+    if (!stopped) await bridge.stop();
     cleanupFixture(cwd);
   }
 });

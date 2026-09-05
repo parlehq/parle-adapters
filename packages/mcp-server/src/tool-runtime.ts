@@ -186,9 +186,11 @@ const HOST_IDLE_WAKE_READY_MS = 2_000;
 // Static host capabilities the plugin manifest declares. `idleWake: "none"`
 // means the host has no arm action, so status must never ask for one.
 // `codex-queue` is a ceiling: the bridge's host module reports the state its
-// runtime evidence supports.
+// runtime evidence supports. `claude-monitor` keeps the waiter contract: the
+// bridge reports its attached Monitor peer as `waiterAttached`, so the host
+// arms or verifies exactly as it does for the waiter task.
 export type McpHostCapabilities = {
-  idleWake?: "none" | "codex-queue";
+  idleWake?: "none" | "codex-queue" | "claude-monitor";
 };
 
 export type IdleWakeState = "unavailable" | "unarmed" | "armed" | "queue-only" | "daemon-attached" | "degraded";
@@ -233,13 +235,14 @@ function hostIdleWakeNext(idleWake: IdleWakeState): HostIdleWakeNext | undefined
 }
 
 // The shared client's connect and session-established `next` guidance tells
-// the model to arm responsive delivery. A host that declares its idle-wake
-// capability gets the same guidance the card renders instead; other hosts
-// keep the client text.
+// the model to arm responsive delivery. A host that owns idle wake itself
+// gets the same guidance the card renders instead; waiter hosts (including
+// the Claude monitor peer) keep the client text.
 function withHostNextGuidance<T>(result: T, host: McpHostCapabilities, idleWake: IdleWakeState): T {
-  if (host.idleWake === undefined || !result || typeof result !== "object") return result;
+  const hostNext = hostIdleWakeNext(idleWake);
+  if (host.idleWake === undefined || !hostNext || !result || typeof result !== "object") return result;
   const value = result as Record<string, unknown>;
-  const guidance = nextTextFor(hostIdleWakeNext(idleWake)?.nextActionKey ?? "idle-wake-unavailable");
+  const guidance = nextTextFor(hostNext.nextActionKey);
   const session = value.session;
   return {
     ...value,
