@@ -220,3 +220,84 @@ test("claude monitor wake keeps the url out of status and logs and stops cleanly
   wake.requestWake("thread-1", () => true);
   assert.equal(wake.status().outstanding, false);
 });
+
+test("claude monitor wake rebind closes the peer deliberately and retires the old address", async () => {
+  const { wake, url, attachments } = await startWake();
+  try {
+    const before = await openPeer(url);
+    await eventually(() => attachments.length === 1);
+    wake.requestWake("thread-1", () => true);
+    await eventually(() => before.frames.length === 1);
+    assert.equal(wake.status().outstanding, true);
+
+    wake.rebind();
+    assert.deepEqual(await before.closed, { code: 1000, reason: "rebound" });
+    await settle();
+    assert.deepEqual(attachments, [true], "a rebind close is not a detach");
+    assert.equal(wake.status().outstanding, false);
+    assert.equal(wake.status().reason, "monitor-not-attached");
+    const after = wake.wakeUrl();
+    assert.match(after, URL_PATTERN);
+    assert.notEqual(after, url, "the token rotates");
+    assert.equal(new URL(after).port, new URL(url).port, "the listener is unchanged");
+    await assert.rejects(openPeer(url), "the old address is dead");
+
+    const next = await openPeer(after);
+    await eventually(() => attachments.length === 2);
+    wake.requestWake("thread-2", () => true);
+    await eventually(() => next.frames.length === 1);
+    assert.deepEqual(before.frames, [CLAUDE_MONITOR_WAKE_FRAME], "the replaced peer heard nothing more");
+    next.peer.close();
+    await next.closed;
+
+    wake.rebind();
+    assert.notEqual(wake.wakeUrl(), after, "rebind without a peer still rotates");
+  } finally {
+    wake.stop();
+  }
+});
+
+// A send callback can fail late, after the peer that was sending has been
+// replaced; that failure must not release the frame the current peer holds.
+function fakePeer() {
+  return {
+    readyState: WebSocket.OPEN,
+    sent: [],
+    callbacks: [],
+    closes: [],
+    handlers: {},
+    on(event, handler) { this.handlers[event] = handler; },
+    send(data, callback) { this.sent.push(data); this.callbacks.push(callback); },
+    close(code, reason) { this.closes.push({ code, reason }); },
+  };
+}
+
+test("claude monitor wake ignores a late send failure from a replaced peer", () => {
+  const wake = new ClaudeMonitorWake({ log: () => {} });
+  const first = fakePeer();
+  wake.attach(first);
+  wake.requestWake("thread-1", () => true);
+  assert.deepEqual(first.sent, [CLAUDE_MONITOR_WAKE_FRAME]);
+  assert.equal(wake.status().outstanding, true);
+
+  const second = fakePeer();
+  wake.attach(second);
+  assert.deepEqual(first.closes, [{ code: 1000, reason: "replaced" }]);
+  assert.equal(wake.status().outstanding, false, "the replaced peer's frame is not outstanding for the new peer");
+  wake.requestWake("thread-1", () => true);
+  assert.deepEqual(second.sent, [CLAUDE_MONITOR_WAKE_FRAME]);
+  assert.equal(wake.status().outstanding, true);
+
+  first.callbacks[0](new Error("EPIPE: broken pipe"));
+  assert.equal(wake.status().outstanding, true, "the stale failure does not clear the current peer's frame");
+  assert.match(wake.status().lastError, /EPIPE/);
+  wake.requestWake("thread-1", () => true);
+  assert.equal(second.sent.length, 1, "no duplicate frame");
+
+  second.callbacks[0](new Error("ECONNRESET"));
+  assert.equal(wake.status().outstanding, false, "the current peer's own failure releases the frame");
+  wake.requestWake("thread-1", () => true);
+  assert.equal(second.sent.length, 2);
+  wake.stop();
+  assert.deepEqual(second.closes, [{ code: 1001, reason: "stopped" }]);
+});

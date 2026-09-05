@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.65 (2026-09-05)
+
+- Refresh the bundled MCP artifact to server 0.7.65: it now carries the `claude-monitor` idle-wake mode behind `PARLE_HOST_IDLE_WAKE=claude-monitor`. No host enables it yet, so behavior is unchanged; the Claude plugin switches to it in #196 (#195). Claude Desktop declares no idle-wake mode.
+
 ## 0.8.64 (2026-08-28)
 
 - Carry the hook bridge idle-wake suspension of MCP server 0.7.64 through the refreshed MCP artifact (#185).

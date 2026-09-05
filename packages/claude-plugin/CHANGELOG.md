@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.70 (2026-09-05)
+
+- Refresh the bundled MCP artifact to server 0.7.65: it now carries the `claude-monitor` idle-wake mode behind `PARLE_HOST_IDLE_WAKE=claude-monitor` (a loopback WebSocket wake surface for the Monitor tool). No host enables it yet, so behavior is unchanged; the Claude plugin switches to it in #196 (#195).
+
 ## 0.9.69 (2026-08-28)
 
 - Quiet the watcher re-arm loop: after three watcher detaches within an hour the Stop hook announces once that idle wake is suspended (the watcher keeps detaching, usually host memory pressure) instead of asking to re-arm, `parle_status` renders `idle wake suspended: watcher keeps detaching`, and the suspension ends at the next prompt. The announcement is committed only after the hook wrote its output, and the hook decides on the bridge's take-time status rather than its earlier discovery probe. The skill treats a `status: killed`, empty-output watcher notification as a silent same-turn re-arm under this recovery policy, and the README documents the operator-side `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1` opt-out that the plugin never sets (#185).

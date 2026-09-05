@@ -110,6 +110,10 @@ export type HostIdleWake = {
   onAttachment?(listener: (attached: boolean) => void): void;
   // The peer's owner-only address. Returned only inside a `take` response.
   wakeUrl?(): string | undefined;
+  // The hook binding moved to another session: end the current peer (not a
+  // detach) and retire the address it holds, so the successor's own take is
+  // the only way to attach again.
+  rebind?(): void;
 };
 
 type PendingMessage = ResponsiveDeliveryMessage & {
@@ -416,6 +420,12 @@ export class HookDeliveryBridge {
     // metadata, or a thread that never called a tool) is replaceable so a
     // cleared session in the same process is not stranded.
     if (this.hostSessionId && this.metaHostSessionId === this.hostSessionId && this.pending.length > 0) return false;
+    // The replaced session's peer must neither hear the successor's frames
+    // nor reconnect with the address it was handed.
+    if (this.hostSessionId && this.idleWake?.rebind) {
+      this.idleWake.rebind();
+      this.wakePeerAttached = false;
+    }
     this.hostSessionId = sessionId;
     this.requestIdleWake();
     return true;

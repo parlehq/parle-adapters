@@ -33,6 +33,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function newToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
 // A loopback WebSocket the Claude host's Monitor tool attaches to. The path
 // token is the credential: it reaches the host only inside the owner-only
 // hook `take` response, so a peer that presents it is the hook-bound session.
@@ -40,7 +44,7 @@ function errorMessage(error: unknown): string {
 // work: this module never sees content and a frame acknowledges nothing.
 export class ClaudeMonitorWake implements HostIdleWake {
   readonly threadTarget = "bound" as const;
-  private readonly token = randomBytes(32).toString("base64url");
+  private token = newToken();
   private server?: Server;
   private sockets?: WebSocketServer;
   private listening?: Promise<void>;
@@ -103,6 +107,18 @@ export class ClaudeMonitorWake implements HostIdleWake {
     this.listener = listener;
   }
 
+  // The binding moved to another host session. The old address dies with the
+  // token and the current peer is closed deliberately, so its close handler
+  // (which sees this.peer !== peer) reports no detach.
+  rebind(): void {
+    const peer = this.peer;
+    this.peer = undefined;
+    this.outstanding = false;
+    this.token = newToken();
+    peer?.close(1000, "rebound");
+    this.log({ stage: "monitor_rebound", peerClosed: Boolean(peer) });
+  }
+
   // The owner-only address the hook hands to the host. Never logged and never
   // part of status().
   wakeUrl(): string | undefined {
@@ -124,15 +140,18 @@ export class ClaudeMonitorWake implements HostIdleWake {
   }
 
   requestWake(_threadId: string, stillPending: () => boolean): void {
-    if (this.stopped || !this.peer || this.peer.readyState !== WebSocket.OPEN || this.outstanding || !stillPending()) return;
+    const peer = this.peer;
+    if (this.stopped || !peer || peer.readyState !== WebSocket.OPEN || this.outstanding || !stillPending()) return;
     this.outstanding = true;
     this.frames += 1;
     this.lastFrameAt = new Date(this.now()).toISOString();
-    this.peer.send(CLAUDE_MONITOR_WAKE_FRAME, (error) => {
+    peer.send(CLAUDE_MONITOR_WAKE_FRAME, (error) => {
       if (!error) return;
       this.lastError = errorMessage(error);
-      this.outstanding = false;
       this.log({ stage: "frame_failed", error: this.lastError });
+      // A late failure from a peer that has since been replaced says nothing
+      // about the frame the current peer holds.
+      if (this.peer === peer) this.outstanding = false;
     });
     this.log({ stage: "frame_sent" });
   }

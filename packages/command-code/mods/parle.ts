@@ -22539,10 +22539,11 @@ function hostIdleWakeNext(idleWake) {
   }
 }
 function withHostNextGuidance(result2, host, idleWake) {
-  if (host.idleWake === void 0 || !result2 || typeof result2 !== "object")
+  const hostNext = hostIdleWakeNext(idleWake);
+  if (host.idleWake === void 0 || !hostNext || !result2 || typeof result2 !== "object")
     return result2;
   const value = result2;
-  const guidance = nextTextFor(hostIdleWakeNext(idleWake)?.nextActionKey ?? "idle-wake-unavailable");
+  const guidance = nextTextFor(hostNext.nextActionKey);
   const session = value.session;
   return {
     ...value,
@@ -23167,7 +23168,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.41";
+var ADAPTER_VERSION = "0.7.42";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
