@@ -86,7 +86,7 @@ Current adapters use three modes:
 : Host-neutral MCP-child component that owns the owner-only Unix socket, bounded in-memory queue, host binding, lease, commit fences, and process-correlated runtime artifacts. It delegates wake, drain, deduplication, and acknowledgement to the controller.
 
 **Waiter**
-: Claude-only local process that performs one credential-free socket wait against the current hook bridge. It owns no session, cursor, queue, lease, injection, or acknowledgement state.
+: The host's wake peer, reported as `waiterAttached`. On Claude it is the harness-tracked Monitor ws task attached to the bridge's loopback wake; it receives one content-free frame per queued episode and owns no session, cursor, queue, lease, injection, or acknowledgement state.
 
 **Lifecycle hook**
 : Short-lived host-launched process that binds to the current bridge, takes a lease, writes host-valid output, and commits the lease. A hook does not own the bridge queue or responsive cursor.
@@ -115,14 +115,14 @@ Use these stage names in issues, logs, and validation. Do not collapse them into
 3. **Wake notification**: The adapter receives an SSE hint. Hints are advisory.
 4. **Fetch**: The controller drains `responsive-delivery?wait=0`.
 5. **Queue readiness**: An eligible row enters the host queue or persisted host entry.
-6. **Waiter exit**: Claude's one-shot socket waiter observes queued work and exits.
+6. **Wake frame**: Claude's Monitor attachment receives the bridge's content-free frame.
 7. **Host wake**: A host reacts to local task completion or another supported lifecycle event.
 8. **Injection**: Complete server-framed content is written through the host boundary.
 9. **Commit**: The host-specific completion boundary succeeds.
 10. **Acknowledgement**: The controller acknowledges the row to Parle.
 11. **Model turn**: The host begins model action with the injected context.
 
-Only stages that a surface directly observes may be claimed. Route issuance is not injection. Waiter exit is not host wake. Hook output is not a model turn. Acknowledgement proves the adapter completion boundary, not model reasoning or response completion.
+Only stages that a surface directly observes may be claimed. Route issuance is not injection. A wake frame is not host wake. Hook output is not a model turn. Acknowledgement proves the adapter completion boundary, not model reasoning or response completion.
 
 ## Shared and isolated state
 
@@ -194,24 +194,28 @@ Command Code is native and in-process. Arrival during an active run can continue
     HookDeliveryBridge
       (queue and lease)
       ⇄ owner-only socket
+      ClaudeMonitorWake
+        (token path, one peer)
   [lifecycle hook process]
     take → write additionalContext → commit
-  [harness-tracked waiter process]
-    socket wait → exit on queue readiness
-              ↓ public task completion may wake host
+  [harness-tracked Monitor ws task] ⇄ loopback ws (token path)
+    frame on queue readiness
+              ↓ Monitor notification starts a turn
   next lifecycle boundary
               ↓
   model turn
   ✕ live profile switching while hook-bridge delivery is active
 ```
 
-The bridge and controller own delivery. The waiter is only a host-wake shim. `waiterAttached: true` proves a live socket attachment, not that Claude tracks the process or began a model turn. `watching` proves controller health, not waiter attachment or idle wake. Claude's bridge scope defaults to the MCP cwd and uses direct-parent PID nesting to isolate top-level Claude processes in one project.
+The bridge and controller own delivery. The Monitor attachment is only a host-wake peer: when work is queued and no lease is live the bridge sends it one content-free frame, `parle: responsive delivery queued`, and a hook `take` consumes it. `waiterAttached: true` proves a live Monitor peer, not that a frame began a model turn. `watching` proves controller health, not attachment or idle wake. Claude's bridge scope defaults to the MCP cwd and uses direct-parent PID nesting to isolate top-level Claude processes in one project.
 
-Phase A uses one bounded eligible `Stop` continuation to request the exact current-plugin waiter through Claude's tracked background-task surface. Delivery context comes first when the same Stop also has queued work. `stop_hook_active` fences subsequent Stop calls before bridge IPC. Denied Bash, another Stop hook, or model non-compliance can leave a visible `idle_wake_unarmed` state.
+Phase B (current) has the bridge own the wake surface. With `PARLE_HOST_IDLE_WAKE=claude-monitor` it serves a loopback WebSocket whose only path is a per-process random token; the token reaches the host only inside the bound session's owner-only `take` response, and it rotates when the hook binding moves to another session. One bounded eligible `Stop` continuation asks Claude to call `Monitor({ ws: { url }, persistent: true })` once. Delivery context comes first when the same Stop also has queued work, and `stop_hook_active` fences later Stop calls before bridge IPC. A peer close the wake did not cause (`TaskStop`, restart, socket loss) is a detach that feeds the suspension latch of [issue #185](https://github.com/parlehq/parle-adapters/issues/185); a replacement or rebind is not. Two Claude Code facts, verified in the 2.1.261 binary, make this the supported surface: goal evaluation defers while any non-terminal `local_bash` or agent task exists, and `monitor_ws` tasks are outside both that set and the memory-pressure reaper.
 
-Supported remediation is finite: allow automatic reattachment, run the one exact current-plugin repair action, reload or restart Claude, then report the upstream limitation. Cache discovery, projection polling, a second Parle session, shell backgrounding, and internal Claude fields are unsupported.
+Phase A is superseded (claude-plugin 0.9.71). The Stop hook asked Claude to launch `parle-watch.sh` through `Bash run_in_background`, a one-shot Unix-socket waiter whose exit woke the host. That task counted as running work for goal check-ins, was killed by the memory-pressure reaper ([issue #185](https://github.com/parlehq/parle-adapters/issues/185)), and named a plugin cache path that went stale after a live update ([issue #194](https://github.com/parlehq/parle-adapters/issues/194)). The bridge's `wait` action and the `--parle-watch` command were removed with it ([issue #197](https://github.com/parlehq/parle-adapters/issues/197)).
 
-The durable design remains blocked in [issue #99](https://github.com/parlehq/parle-adapters/issues/99). Claude must expose a public non-error idle-wake context or equivalent pre-model injection boundary with observable completion and failure semantics before ownership can move beyond Phase A.
+Supported remediation is finite: allow automatic reattachment, make the one Monitor call the hook asks for, reload or restart Claude, then report the upstream limitation. Cache discovery, projection polling, a second Parle session, shell backgrounding, and internal Claude fields are unsupported.
+
+The durable design remains tracked in [issue #99](https://github.com/parlehq/parle-adapters/issues/99) and [issue #14](https://github.com/parlehq/parle-adapters/issues/14): Claude exposes no public acknowledgement that a Monitor frame began a model turn, so model-turn behavior stays an external validation concern.
 
 ### Codex
 
@@ -232,7 +236,7 @@ The durable design remains blocked in [issue #99](https://github.com/parlehq/par
   ✕ live profile switching while hook-bridge delivery is active
 ```
 
-Codex uses the same MCP-child controller and bridge, bound to the exact Codex thread id, with the constant bridge scope `codex-plugin` and direct-parent nesting under the owning `codex` process. It has no Claude waiter. On Codex 0.149 or newer the bridge wakes an idle thread through the parent's own `codex queue` (see the Codex plugin README, Idle wake); the queued item is a fixed trigger and the hook still carries the content. Where that is unavailable (older Codex, unverified parent, unbound or conflicting thread), rows received after the thread becomes idle stay queued until the next user prompt or lifecycle event. Hook trust and Unix-socket support are prerequisites for injection.
+Codex uses the same MCP-child controller and bridge, bound to the exact Codex thread id, with the constant bridge scope `codex-plugin` and direct-parent nesting under the owning `codex` process. It has no Monitor attachment. On Codex 0.149 or newer the bridge wakes an idle thread through the parent's own `codex queue` (see the Codex plugin README, Idle wake); the queued item is a fixed trigger and the hook still carries the content. Where that is unavailable (older Codex, unverified parent, unbound or conflicting thread), rows received after the thread becomes idle stay queued until the next user prompt or lifecycle event. Hook trust and Unix-socket support are prerequisites for injection.
 
 ### Claude Desktop
 
@@ -268,8 +272,8 @@ The generic MCP server is delivery-tool-only by default, with count-only unread 
 Three surfaces answer different questions:
 
 - The runtime snapshot is credential-free lifecycle evidence published by one client process. It supports local UX and bounded stale detection, but it is not a live bridge query.
-- Live bridge inspection reports current socket, binding, pending, lease-adjacent, and waiter attachment state for the selected bridge.
-- Statuslines aggregate cwd snapshots. They are never authoritative for one Claude session's waiter attachment or idle-wake readiness. The Claude reader is a mechanically copied, reproducibility-checked mirror of `packages/client/src/responsive-delivery.ts`; it reads snapshot files and opens no bridge socket.
+- Live bridge inspection reports current socket, binding, pending, lease-adjacent, and Monitor attachment state for the selected bridge.
+- Statuslines aggregate cwd snapshots. They are never authoritative for one Claude session's Monitor attachment or idle-wake readiness. The Claude reader is a mechanically copied, reproducibility-checked mirror of `packages/client/src/responsive-delivery.ts`; it reads snapshot files and opens no bridge socket.
 
 Responsive-delivery errors retain ownership:
 
@@ -287,7 +291,7 @@ The load-bearing claims above map to current executable sources:
 - Shared ownership and error domains: `packages/client/src/delivery.ts` and `packages/client/test/delivery.test.mjs`
 - Runtime and responsive snapshots: `packages/client/src/runtime-file.ts`, `packages/client/src/responsive-delivery.ts`, and their client tests
 - MCP mode and scope selection: `packages/mcp-server/src/index.ts`
-- Bridge queue, waiter, lease, commit, and error flattening: `packages/mcp-server/src/hook-delivery-bridge.ts` and `packages/mcp-server/test/hook-delivery-bridge.test.mjs`
+- Bridge queue, Monitor wake, lease, commit, and error flattening: `packages/mcp-server/src/hook-delivery-bridge.ts`, `packages/mcp-server/src/claude-monitor-wake.ts`, and `packages/mcp-server/test/hook-delivery-bridge.test.mjs`
 - Claude mode and parent correlation: `packages/claude-plugin/.mcp.json`, hook tests, and delivery tests
 - Codex mode, scope, and lifecycle events: `packages/codex-plugin/.mcp.json`, `packages/codex-plugin/hooks/hooks.json`, and plugin tests
 - Pi injection and completion: `packages/pi-extension/src/index.ts` and package tests

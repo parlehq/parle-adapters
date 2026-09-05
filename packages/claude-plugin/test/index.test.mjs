@@ -19,6 +19,9 @@ test("Claude plugin metadata and MCP config point at bundled server", () => {
   assert.deepEqual(mcp.mcpServers.parle.env, {
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",
     PARLE_HOOK_BRIDGE_HOST_PROCESS: "direct-parent",
+    // The bridge serves the loopback Monitor wake the Stop hook asks Claude to
+    // attach to; without this literal every Stop would report idle_wake_unarmed.
+    PARLE_HOST_IDLE_WAKE: "claude-monitor",
     PARLE_INTEGRATION_NAME: "@parlehq/claude-plugin",
     PARLE_INTEGRATION_VERSION: plugin.version,
   });
@@ -44,7 +47,9 @@ test("Claude hooks bind the host session and cover every delivery boundary", () 
     assert.ok(hooks.hooks[event], `${event} hook is missing; queued delivery would strand`);
     assert.equal(hooks.hooks[event][0].hooks[0].command, bind, `${event} must drain delivery`);
   }
-  assert.equal(hooks.hooks.Stop[0].hooks[0].command, `${bind} --stop-additional-context --idle-wake-launcher "\${CLAUDE_PLUGIN_ROOT}/skills/parle/scripts/parle-watch.sh"`);
+  // Stop carries no launcher path: the attachment address comes from the
+  // bridge's take response, so a stale plugin cache cannot be named (#194).
+  assert.equal(hooks.hooks.Stop[0].hooks[0].command, `${bind} --stop-additional-context`);
 
   // Claude-native schema only. Codex-only keys and launcher assumptions must
   // not be copied across hosts.
@@ -72,7 +77,9 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   // must not restore parle_inbox as the delivery path.
   assert.match(skill, /Opaque reply routes reach you through hook-bridge injection/);
   assert.match(skill, /Do not treat `parle_inbox` as the delivery path/);
-  assert.match(skill, /owner-only.*socket wait/);
+  assert.match(skill, /Monitor\(\{ ws: \{ url \}, persistent: true, description: "Parle responsive delivery" \}\)/);
+  assert.match(skill, /never construct or guess it/);
+  assert.match(skill, /parle: responsive delivery queued/);
   assert.match(skill, /opens no Parle session or network connection/);
   assert.match(skill, /@principal\.agent\.session/);
   assert.match(skill, /parle_connect/);
@@ -84,12 +91,13 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /Never infer delivery health from MCP connectivity/);
   assert.match(skill, /`waiterAttached` means only/);
   assert.match(skill, /`idle_wake_unarmed`/);
-  assert.match(skill, /`status: killed`/);
   assert.match(skill, /idle wake suspended/);
-  assert.match(skill, /Do not disable the host's memory-pressure safety valve/);
   assert.match(skill, /reload or restart Claude/);
   assert.match(skill, /upstream-blocked/);
-  assert.match(skill, /Do not start another watcher merely because delivery completed/);
+  assert.match(skill, /Never start a second Monitor while one is running/);
+  // The Bash watcher is gone (#197): no launcher, exit codes, reaper, or
+  // background-shell guidance may survive in the skill.
+  assert.doesNotMatch(skill, /run_in_background|parle-watch\.sh|PRESSURE_REAP|memory pressure|[Ee]xit [02]\b|status: killed/);
   assert.match(skill, /Do not report UUIDs, cursor, expiry, backlog, or config provenance/);
   // The hook bridge makes live switching throw. Guidance must say so rather
   // than keep documenting the retired stop-switch-re-arm sequence as current.
@@ -101,12 +109,7 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   assert.match(skill, /parle_claim_principal_invite/);
   assert.match(skill, /0600/);
   assert.doesNotMatch(skill, /watcherStopped: true|--profile <profile>|projection\?wait=[1-9]/);
-  const usage = "Usage: parle-watch.sh <agent_session_id>";
-  const usagePattern = new RegExp(usage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  assert.match(skill, usagePattern);
-  const launcher = readFileSync(resolve(root, "skills/parle/scripts/parle-watch.sh"), "utf8");
-  assert.match(launcher, usagePattern);
-  assert.doesNotMatch(launcher, /PARLE_ROOM_AGENT_TOKEN|PARLE_WATCH_AGENT_SESSION|projection/);
+  assert.equal(existsSync(resolve(root, "skills/parle/scripts")), false, "the watcher script directory was removed with #197");
 
   const artifact = resolve(root, "dist/parle-mcp.js");
   assert.equal(existsSync(artifact), true);

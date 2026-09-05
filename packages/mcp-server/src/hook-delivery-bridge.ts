@@ -38,15 +38,14 @@ const MAX_HOOK_BATCH = 20;
 const MAX_HOOK_BYTES = 512 * 1024;
 const MAX_SOCKET_INPUT = 16 * 1024;
 const LEASE_MS = 30_000;
-// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps ending the
-// waiter task without the bridge delivering anything (on Claude Code usually
-// the memory-pressure reaper, but the bridge sees only the detach). Repeated
-// detaches inside one window mean re-arming is churn, so the bridge latches a
-// suspension until a human prompt arrives, deliberately trading repeated
-// re-arm noise for no idle wake at all until that prompt. The one
-// announcement per episode is
-// claimed and then committed only after the hook wrote its output, so a hook
-// that dies in between does not consume it.
+// Idle-wake suspension (parlehq/parle-adapters#185): the host keeps ending its
+// wake attachment without the bridge delivering anything (the bridge sees
+// only the detach, never its cause). Repeated detaches inside one window mean
+// re-attaching is churn, so the bridge latches a suspension until a human
+// prompt arrives, deliberately trading repeated re-attach noise for no idle
+// wake at all until that prompt. The one announcement per episode is claimed
+// and then committed only after the hook wrote its output, so a hook that
+// dies in between does not consume it.
 const WAITER_DETACH_RING = 16;
 const WAITER_DETACH_WINDOW_MS = 60 * 60_000;
 const WAITER_DETACH_SUSPEND_THRESHOLD = 3;
@@ -58,9 +57,10 @@ export type HookDeliveryBridgeStatus = {
   baselineSkipped: number;
   socketPath: string;
   hostSessionBound: boolean;
+  // The host's wake peer (the Claude Monitor attachment) is connected.
   waiterAttached: boolean;
-  // Waiter sockets that closed without a queued-delivery response in the last
-  // hour, and the latched suspension they can trigger.
+  // Peer closes the wake did not cause in the last hour, and the latched
+  // suspension they can trigger.
   waiterDetachesRecent: number;
   idleWakeSuspended: boolean;
   idleWakeSuspensionAnnounced: boolean;
@@ -313,7 +313,6 @@ export class HookDeliveryBridge {
   private metaHostSessionId?: string;
   private idleWakeStarted = false;
   private leaseTimer?: unknown;
-  private waiter?: Socket;
   private wakePeerAttached = false;
   private readonly waiterDetaches: number[] = [];
   private idleWakeSuspended = false;
@@ -336,7 +335,7 @@ export class HookDeliveryBridge {
       throw new Error("Parle hook bridge host parent pid must be greater than 1");
     }
     // An attaching peer is the host's waiter: pending work may frame it once,
-    // and a close the wake did not cause counts like a reaped waiter task.
+    // and a close the wake did not cause is a detach.
     this.idleWake?.onAttachment?.((attached) => {
       this.wakePeerAttached = attached;
       if (attached) this.requestIdleWake();
@@ -379,7 +378,7 @@ export class HookDeliveryBridge {
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
-      waiterAttached: Boolean(this.waiter) || this.wakePeerAttached,
+      waiterAttached: this.wakePeerAttached,
       waiterDetachesRecent: this.recentWaiterDetaches(Date.now()),
       idleWakeSuspended: this.idleWakeSuspended,
       idleWakeSuspensionAnnounced: this.idleWakeSuspensionAnnounced,
@@ -454,7 +453,6 @@ export class HookDeliveryBridge {
     // ended the attachment.
     this.idleWake?.stop?.();
     this.wakePeerAttached = false;
-    this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
     this.unsubscribeCommitGuard?.();
@@ -578,7 +576,6 @@ export class HookDeliveryBridge {
       eventId: input.message.event_id,
       seq: input.message.seq,
     }));
-    this.finishWaiter({ ok: true, ready: true });
     this.requestIdleWake();
   }
 
@@ -676,10 +673,6 @@ export class HookDeliveryBridge {
         socket.end(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`);
         return;
       }
-      if (command?.action === "wait") {
-        this.wait(socket, String(command.agentSessionId || ""));
-        return;
-      }
       void this.handleCommand(command).then(
         (response) => socket.end(`${JSON.stringify(response)}\n`),
         (error) => socket.end(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`),
@@ -711,9 +704,8 @@ export class HookDeliveryBridge {
     return this.waiterDetaches.filter((at) => at > now - WAITER_DETACH_WINDOW_MS).length;
   }
 
-  // Called when the attached waiter socket closes before the bridge ended it
-  // with a queued-delivery response (the host reaped or killed the task), or
-  // when the idle wake's peer closes for a reason other than replacement.
+  // Called when the idle wake's peer closes for a reason the wake did not
+  // cause (anything but replacement, rebind, or stop).
   private recordWaiterDetach(at = Date.now()): void {
     this.waiterDetaches.push(at);
     if (this.waiterDetaches.length > WAITER_DETACH_RING) this.waiterDetaches.splice(0, this.waiterDetaches.length - WAITER_DETACH_RING);
@@ -758,34 +750,6 @@ export class HookDeliveryBridge {
     this.idleWakeSuspended = false;
     this.idleWakeSuspensionAnnounced = false;
     this.suspensionClaim = undefined;
-  }
-
-  private wait(socket: Socket, agentSessionId: string): void {
-    const current = String((this.client as any).runtime?.agentSessionId || "");
-    if (!agentSessionId || agentSessionId !== current) {
-      socket.end(`${JSON.stringify({ ok: false, error: "Parle agent session does not own this hook bridge" })}\n`);
-      return;
-    }
-    if (this.pending.length > 0) {
-      socket.end(`${JSON.stringify({ ok: true, ready: true })}\n`);
-      return;
-    }
-    if (this.waiter) {
-      socket.end(`${JSON.stringify({ ok: true, ready: true, alreadyAttached: true })}\n`);
-      return;
-    }
-    this.waiter = socket;
-    socket.once("close", () => {
-      if (this.waiter !== socket) return;
-      this.waiter = undefined;
-      this.recordWaiterDetach();
-    });
-  }
-
-  private finishWaiter(response: unknown): void {
-    const waiter = this.waiter;
-    this.waiter = undefined;
-    if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}\n`);
   }
 
   // The response carries a status snapshot taken now, not at the hook's

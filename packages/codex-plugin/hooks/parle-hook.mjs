@@ -18,7 +18,6 @@ function parseArgs(argv) {
   let shellLaunched = false;
   let knownAddressContext = false;
   let stopAdditionalContext = false;
-  let idleWakeLauncher;
   let scope;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--bind") bind = true;
@@ -29,17 +28,13 @@ function parseArgs(argv) {
     else if (argv[index] === "--shell-launched") shellLaunched = true;
     else if (argv[index] === "--known-address-context") knownAddressContext = true;
     else if (argv[index] === "--stop-additional-context") stopAdditionalContext = true;
-    else if (argv[index] === "--idle-wake-launcher") {
-      idleWakeLauncher = argv[++index];
-      if (!idleWakeLauncher || !isAbsolute(idleWakeLauncher)) throw new Error("Parle idle-wake launcher must be an absolute path");
-    }
     else if (argv[index] === "--scope") {
       scope = argv[++index];
       if (!scope) throw new Error("Parle hook scope must not be empty");
     }
     else throw new Error(`Unknown Parle hook argument: ${argv[index]}`);
   }
-  return { bind, directParent, shellLaunched, knownAddressContext, stopAdditionalContext, idleWakeLauncher, scope };
+  return { bind, directParent, shellLaunched, knownAddressContext, stopAdditionalContext, scope };
 }
 
 function renderKnownAddressContext(cwd) {
@@ -282,24 +277,23 @@ async function take(scope, sessionId, allowBind, event, directParent, shellLaunc
   return undefined;
 }
 
-function shellLiteral(value) {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+// The bridge's loopback Monitor wake address. It reaches this hook only inside
+// the bound session's owner-only take response and is repeated to the model
+// verbatim; the hook never constructs, logs, or stores it.
+const MONITOR_WAKE_URL_PREFIX = "ws://127.0.0.1:";
+
+function idleWakeInstruction(url) {
+  return `Parle idle wake is not attached. Call the Monitor tool once with ws: { url: "${url}" }, persistent: true, description: "Parle responsive delivery". Do not use Bash, do not run a watcher script, and do not call it again while that Monitor task is running.`;
 }
 
-function idleWakeInstruction(launcher, agentSessionId) {
-  const command = `${shellLiteral(launcher)} ${shellLiteral(agentSessionId)}`;
-  return `Parle idle wake is not attached. Use the Bash tool once with run_in_background: true to run this exact command unchanged. Do not append shell &: ${command}`;
-}
+const IDLE_WAKE_SUSPENDED = "Parle idle wake suspended: the Monitor attachment keeps closing; it resumes at the next prompt.";
 
-const IDLE_WAKE_SUSPENDED = "Parle idle wake suspended: the watcher keeps detaching (usually host memory pressure); it resumes at the next prompt.";
-
-// The bridge latches a suspension after repeated waiter detaches. While
-// suspended, Stop never asks to re-arm; the bridge owns the once-per-episode
+// The bridge latches a suspension after repeated peer detaches. While
+// suspended, Stop never asks to re-attach; the bridge owns the once-per-episode
 // announcement so this hook stays stateless. The announcement is claimed here
 // and committed only after output is written, like a delivery lease.
-async function idleWakeContext(args, payload, sessionId, delivery) {
-  const eligible = args.idleWakeLauncher
-    && payload.hook_event_name === "Stop"
+async function idleWakeContext(payload, sessionId, delivery) {
+  const eligible = payload.hook_event_name === "Stop"
     && delivery?.bound === true
     && delivery.status?.waiterAttached === false
     && typeof delivery.status.agentSessionId === "string"
@@ -307,7 +301,12 @@ async function idleWakeContext(args, payload, sessionId, delivery) {
     && delivery.busy !== true
     && Array.isArray(delivery.messages);
   if (!eligible) return { context: "" };
-  if (delivery.status.idleWakeSuspended !== true) return { context: idleWakeInstruction(args.idleWakeLauncher, delivery.status.agentSessionId) };
+  if (delivery.status.idleWakeSuspended !== true) {
+    // A bridge without a Monitor wake hands out no address: nothing to attach,
+    // and parle_status keeps reporting idle_wake_unarmed.
+    const url = delivery.idleWakeUrl;
+    return { context: typeof url === "string" && url.startsWith(MONITOR_WAKE_URL_PREFIX) ? idleWakeInstruction(url) : "" };
+  }
   if (delivery.status.idleWakeSuspensionAnnounced === true) return { context: "" };
   let announced;
   try {
@@ -399,7 +398,7 @@ async function main() {
     const sessionId = typeof payload.session_id === "string" && payload.session_id ? payload.session_id : undefined;
     const delivery = sessionId ? await take(scope, sessionId, args.bind, payload.hook_event_name, args.directParent, args.shellLaunched) : undefined;
     const deliveryBatch = delivery && Array.isArray(delivery.messages) && delivery.messages.length > 0 ? delivery : undefined;
-    const idleWake = await idleWakeContext(args, payload, sessionId, delivery);
+    const idleWake = await idleWakeContext(payload, sessionId, delivery);
     const rearm = idleWake.context;
     const registryBlock = args.knownAddressContext && payload.hook_event_name === "SessionStart"
       ? renderKnownAddressContext(cwd)

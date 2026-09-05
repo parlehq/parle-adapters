@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.66 (2026-09-05)
+
+- Refresh the bundled MCP artifact to server 0.7.66: the `--parle-watch` command and the bridge's Unix-socket `wait` action are removed and the suspended idle-wake card wording changes. Claude Desktop launches the stdio artifact only and declares no idle-wake mode, so behavior is unchanged (#196, #197).
+
 ## 0.8.65 (2026-09-05)
 
 - Refresh the bundled MCP artifact to server 0.7.65: it now carries the `claude-monitor` idle-wake mode behind `PARLE_HOST_IDLE_WAKE=claude-monitor`. No host enables it yet, so behavior is unchanged; the Claude plugin switches to it in #196 (#195). Claude Desktop declares no idle-wake mode.

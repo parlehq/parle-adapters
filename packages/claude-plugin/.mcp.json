@@ -8,8 +8,9 @@
       "env": {
         "PARLE_RESPONSIVE_DELIVERY": "hook-bridge",
         "PARLE_HOOK_BRIDGE_HOST_PROCESS": "direct-parent",
+        "PARLE_HOST_IDLE_WAKE": "claude-monitor",
         "PARLE_INTEGRATION_NAME": "@parlehq/claude-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.9.70"
+        "PARLE_INTEGRATION_VERSION": "0.9.71"
       },
       "alwaysLoad": true
     }

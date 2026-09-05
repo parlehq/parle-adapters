@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.71 (2026-09-05)
+
+- Idle wake moves to the Monitor tool. `.mcp.json` sets `PARLE_HOST_IDLE_WAKE=claude-monitor`, so the bridge serves its loopback WebSocket wake, and at an eligible Stop the hook asks once for `Monitor({ ws: { url }, persistent: true, description: "Parle responsive delivery" })` with the address the bridge handed only to the bound session. A `monitor_ws` task is outside Claude Code's goal check-ins and its memory-pressure reaper (verified in 2.1.261), so Parle no longer appears as background work and `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP` is no longer needed for it. The skill's Responsive watch section becomes Responsive delivery attachment, and the suspension announcement reads `the Monitor attachment keeps closing` (#196).
+- Remove the Bash watcher: `skills/parle/scripts/parle-watch.sh`, the Stop hook's `--idle-wake-launcher` argument, and the skill's `run_in_background`, exit-code, and reaper guidance are gone, and the bundled server 0.7.66 drops `--parle-watch` and the bridge's `wait` action (#197).
+- The stale-launcher failure, a Stop hook naming an inactive plugin cache path after a live update, is resolved by design: the attachment instruction carries only the bridge's loopback address. Sessions started before this update still run the previous hook and need a Claude Code restart (#194).
+
 ## 0.9.70 (2026-09-05)
 
 - Refresh the bundled MCP artifact to server 0.7.65: it now carries the `claude-monitor` idle-wake mode behind `PARLE_HOST_IDLE_WAKE=claude-monitor` (a loopback WebSocket wake surface for the Monitor tool). No host enables it yet, so behavior is unchanged; the Claude plugin switches to it in #196 (#195).

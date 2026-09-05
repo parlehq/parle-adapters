@@ -34639,8 +34639,7 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { lstatSync as lstatSync8, readFileSync as readFileSync7, readdirSync as readdirSync4, realpathSync as realpathSync3, statSync as statSync5 } from "node:fs";
-import { connect } from "node:net";
+import { readFileSync as readFileSync7, realpathSync as realpathSync3, statSync as statSync5 } from "node:fs";
 import { isAbsolute as isAbsolute5, join as join11 } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -39225,7 +39224,7 @@ function nextTextFor(key) {
     case "wait-for-watcher":
       return "wait for responsive delivery startup.";
     case "wait-for-prompt":
-      return "idle wake resumes at the next prompt; do not re-arm the watcher until then.";
+      return "idle wake resumes at the next prompt; do not re-attach until then.";
     case "recover-watcher":
       return "inspect the responsive delivery error and restart the host if it does not recover.";
     case "repair-delivery-host":
@@ -39256,7 +39255,7 @@ function deliveryLine(input) {
   if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
     return `${input.state} (idle wake ${input.idleWake})`;
   if (input.reason === "idle_wake_suspended")
-    return `${input.state} (idle wake suspended: watcher keeps detaching)`;
+    return `${input.state} (idle wake suspended: the wake attachment keeps closing)`;
   if (input.reason === "idle_wake_unarmed")
     return `${input.state} (idle wake unarmed)`;
   return input.state;
@@ -43353,7 +43352,6 @@ var HookDeliveryBridge = class {
   metaHostSessionId;
   idleWakeStarted = false;
   leaseTimer;
-  waiter;
   wakePeerAttached = false;
   waiterDetaches = [];
   idleWakeSuspended = false;
@@ -43373,7 +43371,7 @@ var HookDeliveryBridge = class {
       baselineSkipped: this.baselineSkipped,
       socketPath: hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid),
       hostSessionBound: Boolean(this.hostSessionId),
-      waiterAttached: Boolean(this.waiter) || this.wakePeerAttached,
+      waiterAttached: this.wakePeerAttached,
       waiterDetachesRecent: this.recentWaiterDetaches(Date.now()),
       idleWakeSuspended: this.idleWakeSuspended,
       idleWakeSuspensionAnnounced: this.idleWakeSuspensionAnnounced,
@@ -43430,7 +43428,6 @@ var HookDeliveryBridge = class {
     this.clearLease();
     this.idleWake?.stop?.();
     this.wakePeerAttached = false;
-    this.finishWaiter({ ok: false, error: "Parle hook bridge stopped" });
     this.publishEvidence("stopped", { reason: "host_shutdown" });
     await this.controller.stop();
     this.unsubscribeCommitGuard?.();
@@ -43542,7 +43539,6 @@ var HookDeliveryBridge = class {
       eventId: input.message.event_id,
       seq: input.message.seq
     }));
-    this.finishWaiter({ ok: true, ready: true });
     this.requestIdleWake();
   }
   async listen() {
@@ -43636,10 +43632,6 @@ var HookDeliveryBridge = class {
 `);
         return;
       }
-      if (command?.action === "wait") {
-        this.wait(socket, String(command.agentSessionId || ""));
-        return;
-      }
       void this.handleCommand(command).then(
         (response) => socket.end(`${JSON.stringify(response)}
 `),
@@ -43668,9 +43660,8 @@ var HookDeliveryBridge = class {
   recentWaiterDetaches(now) {
     return this.waiterDetaches.filter((at) => at > now - WAITER_DETACH_WINDOW_MS).length;
   }
-  // Called when the attached waiter socket closes before the bridge ended it
-  // with a queued-delivery response (the host reaped or killed the task), or
-  // when the idle wake's peer closes for a reason other than replacement.
+  // Called when the idle wake's peer closes for a reason the wake did not
+  // cause (anything but replacement, rebind, or stop).
   recordWaiterDetach(at = Date.now()) {
     this.waiterDetaches.push(at);
     if (this.waiterDetaches.length > WAITER_DETACH_RING) this.waiterDetaches.splice(0, this.waiterDetaches.length - WAITER_DETACH_RING);
@@ -43711,36 +43702,6 @@ var HookDeliveryBridge = class {
     this.idleWakeSuspended = false;
     this.idleWakeSuspensionAnnounced = false;
     this.suspensionClaim = void 0;
-  }
-  wait(socket, agentSessionId) {
-    const current = String(this.client.runtime?.agentSessionId || "");
-    if (!agentSessionId || agentSessionId !== current) {
-      socket.end(`${JSON.stringify({ ok: false, error: "Parle agent session does not own this hook bridge" })}
-`);
-      return;
-    }
-    if (this.pending.length > 0) {
-      socket.end(`${JSON.stringify({ ok: true, ready: true })}
-`);
-      return;
-    }
-    if (this.waiter) {
-      socket.end(`${JSON.stringify({ ok: true, ready: true, alreadyAttached: true })}
-`);
-      return;
-    }
-    this.waiter = socket;
-    socket.once("close", () => {
-      if (this.waiter !== socket) return;
-      this.waiter = void 0;
-      this.recordWaiterDetach();
-    });
-  }
-  finishWaiter(response) {
-    const waiter = this.waiter;
-    this.waiter = void 0;
-    if (waiter && !waiter.destroyed) waiter.end(`${JSON.stringify(response)}
-`);
   }
   // The response carries a status snapshot taken now, not at the hook's
   // earlier discovery probe, so a suspension latched in between is seen.
@@ -44626,7 +44587,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.65";
+var MCP_CLIENT_VERSION = "0.7.66";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -44856,121 +44817,6 @@ function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = (
 function isDirectRun(metaUrl, argvPath = process.argv[1]) {
   return Boolean(argvPath) && metaUrl === pathToFileURL(argvPath).href;
 }
-var WATCHER_USAGE = "Usage: parle-watch.sh <agent_session_id>";
-var WatcherUsageError = class extends Error {
-  constructor() {
-    super(WATCHER_USAGE);
-    this.name = "WatcherUsageError";
-  }
-};
-function parseWatcherArgs(args) {
-  if (args.length !== 1 || !args[0] || args[0].startsWith("-")) throw new WatcherUsageError();
-  return args[0];
-}
-var HOOK_BRIDGE_REQUEST_TIMEOUT_MS = 1e3;
-function hookBridgeRequest(path, payload, timeoutMs = 0) {
-  return new Promise((resolve2, reject) => {
-    const socket = connect(path);
-    socket.setEncoding("utf8");
-    if (timeoutMs > 0) socket.setTimeout(timeoutMs, () => socket.destroy(Object.assign(new Error("Parle hook bridge request timed out"), { code: "ETIMEDOUT" })));
-    let response = "";
-    socket.once("connect", () => socket.write(`${JSON.stringify(payload)}
-`));
-    socket.on("data", (chunk) => {
-      response += chunk;
-      if (Buffer.byteLength(response, "utf8") > 16 * 1024) {
-        socket.destroy(new Error("Parle hook bridge response exceeded 16 KiB"));
-        return;
-      }
-      const newline = response.indexOf("\n");
-      if (newline < 0) return;
-      socket.end();
-      try {
-        resolve2(JSON.parse(response.slice(0, newline)));
-      } catch {
-        reject(new Error("Parle hook bridge returned malformed JSON"));
-      }
-    });
-    socket.once("error", reject);
-    socket.once("end", () => {
-      if (!response.includes("\n")) reject(new Error("Parle hook bridge closed without a response"));
-    });
-  });
-}
-async function runWatcher(_metaUrl, args, cwd = process.cwd(), dependencies = {}) {
-  const agentSessionId = parseWatcherArgs(args);
-  const stateDir = dependencies.stateDir || hookBridgeStateDir(cwd);
-  const request = dependencies.request || hookBridgeRequest;
-  const isProcessAlive = dependencies.isProcessAlive || processIsAlive;
-  const lstat = dependencies.lstat || lstatSync8;
-  const state = lstat(stateDir);
-  if (!state.isDirectory() || state.isSymbolicLink() || typeof process.getuid === "function" && state.uid !== process.getuid() || (state.mode & 63) !== 0) {
-    throw new Error(`Unsafe Parle hook bridge directory: ${stateDir}`);
-  }
-  const entries = readdirSync4(stateDir, { withFileTypes: true });
-  const discoveryErrors = /* @__PURE__ */ new Map();
-  const recordDiscoveryError = (error51) => {
-    const code = typeof error51?.code === "string" && error51.code ? error51.code : "UNKNOWN";
-    discoveryErrors.set(code, (discoveryErrors.get(code) || 0) + 1);
-  };
-  const currentPaths = entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
-    const parentDir = join11(stateDir, entry.name);
-    let parentState;
-    try {
-      parentState = lstat(parentDir);
-    } catch (error51) {
-      recordDiscoveryError(error51);
-      return [];
-    }
-    if (parentState.isSymbolicLink() || typeof process.getuid === "function" && parentState.uid !== process.getuid() || (parentState.mode & 63) !== 0) return [];
-    return readdirSync4(parentDir).filter((name) => /^\d+\.sock$/.test(name)).map((name) => join11(parentDir, name));
-  }).sort();
-  const legacyPaths = entries.filter((entry) => /^\d+\.sock$/.test(entry.name)).flatMap((entry) => {
-    const path = join11(stateDir, entry.name);
-    if (removeDeadHookBridgeArtifact(path, entry.name, false, void 0, { lstat, processIsAlive: isProcessAlive })) return [];
-    let socketState;
-    try {
-      socketState = lstat(path);
-    } catch (error51) {
-      recordDiscoveryError(error51);
-      return [];
-    }
-    if (socketState.isSymbolicLink() || typeof process.getuid === "function" && socketState.uid !== process.getuid() || (socketState.mode & 63) !== 0) return [];
-    return [path];
-  }).sort();
-  const paths = [...currentPaths, ...legacyPaths];
-  const probeErrors = /* @__PURE__ */ new Map();
-  for (const path of paths) {
-    let status;
-    try {
-      status = await request(path, { action: "status" }, HOOK_BRIDGE_REQUEST_TIMEOUT_MS);
-    } catch (error51) {
-      const code = typeof error51?.code === "string" && error51.code ? error51.code : "UNKNOWN";
-      probeErrors.set(code, (probeErrors.get(code) || 0) + 1);
-      continue;
-    }
-    if (!status?.ok || !status.running || !status.hostSessionBound || status.agentSessionId !== agentSessionId) continue;
-    if (status.waiterAttached === true) {
-      console.log("parle-watch: local delivery waiter already attached");
-      return 0;
-    }
-    const result2 = await request(path, { action: "wait", agentSessionId });
-    if (result2?.ok && result2.alreadyAttached === true) {
-      console.log("parle-watch: local delivery waiter already attached");
-      return 0;
-    }
-    if (result2?.error === "Parle hook bridge already has a waiter") {
-      console.log("parle-watch: local delivery waiter already attached");
-      return 0;
-    }
-    if (!result2?.ok || !result2.ready) throw new Error(result2?.error || "Parle hook bridge wait failed");
-    console.log("parle-watch: responsive delivery queued");
-    return 0;
-  }
-  const discoveryDetail = discoveryErrors.size === 0 ? "none" : [...discoveryErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count})`).join(", ");
-  const detail = paths.length === 0 ? `Found 0 candidate sockets; discovery errors: ${discoveryDetail}.` : `Probed ${paths.length} candidate socket${paths.length === 1 ? "" : "s"}; discovery errors: ${discoveryDetail}; status probe errors: ${probeErrors.size === 0 ? "none" : [...probeErrors].sort(([a], [b]) => a.localeCompare(b)).map(([code, count]) => `${code} (${count}/${paths.length})`).join(", ")}.`;
-  throw new Error(`No live Parle hook bridge owns agent session ${agentSessionId}. ${detail} Run parle_connect in this project, then re-arm with its current agent session id.`);
-}
 async function runKnownAddressContext(cwd) {
   const cfg = resolveConfig(cwd, process.env);
   if (!cfg.apiBase.value || !cfg.roomId?.value) return;
@@ -44987,12 +44833,9 @@ async function runKnownAddressContext(cwd) {
 }
 if (isDirectRun(import.meta.url)) {
   const command = process.argv[2];
-  const task = command === "--parle-watch" ? runWatcher(import.meta.url, process.argv.slice(3)).then((code) => {
-    process.exitCode = code;
-  }) : command === "--parle-known-address-context" ? runKnownAddressContext(process.argv[3] || process.cwd()) : runStdio();
+  const task = command === "--parle-known-address-context" ? runKnownAddressContext(process.argv[3] || process.cwd()) : runStdio();
   task.catch((error51) => {
-    if (error51 instanceof WatcherUsageError) console.error(WATCHER_USAGE);
-    else console.error(`Parle stopped: ${error51 instanceof Error ? error51.message : String(error51)}`);
+    console.error(`Parle stopped: ${error51 instanceof Error ? error51.message : String(error51)}`);
     process.exitCode = 2;
   });
 }
@@ -45005,21 +44848,17 @@ export {
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
   MIN_CODEX_QUEUE_VERSION,
-  WATCHER_USAGE,
-  WatcherUsageError,
   createHostIdleWake,
   createMcpAgentClient,
   createParleMcpServer,
   hostSessionIdFromMeta,
   isDirectRun,
-  parseWatcherArgs,
   registerParleTools,
   resolveCodexHostExecutable,
   resolveConfigCwd,
   resolveHostCapabilities,
   resolveIntegrationMetadata,
   runStdio,
-  runWatcher,
   scheduleEagerBootstrap,
   scheduleHostParentCheck
 };
