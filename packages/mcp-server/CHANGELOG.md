@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.70 (2026-09-06)
+
+- Make live-presence routing self-contained in the room tool descriptions: read room details first, enforce the owner gate, render the exact privacy-safe fallback, aggregate by agent, and omit session identifiers and timestamps by default.
+
 ## 0.7.69 (2026-09-06)
 
 - End the live agent session concurrently with delivery teardown on SIGINT, SIGTERM, SIGHUP, and stdin closure, with one bounded hard-exit deadline and no retry. Shorten the Claude Monitor attachment instruction and carry client 0.8.58.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.47 (2026-09-06)
+
+- Carry server 0.7.70 so the room tool descriptions enforce details-first owner checks and privacy-safe live-session output.
+
 ## 0.7.46 (2026-09-06)
 
 - Start session release concurrently with responsive-delivery teardown when the host session ends, and return the combined completion promise when the host awaits it. Carry client 0.8.58 connection ordering.

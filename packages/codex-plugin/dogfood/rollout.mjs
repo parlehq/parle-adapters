@@ -311,16 +311,40 @@ function evaluateStatusText(parsed, check) {
   return { pass, detail };
 }
 
+function evaluateToolOrder(parsed, check) {
+  const before = parsed.toolCalls.findIndex((call) => call.name === check.before);
+  const after = parsed.toolCalls.findIndex((call) => call.name === check.after);
+  const pass = after === -1 || (before !== -1 && before < after);
+  return { pass, detail: pass ? `${check.after} never precedes the first ${check.before}` : `${check.after} precedes the first ${check.before}` };
+}
+
 function evaluateAgentMessage(parsed, check) {
   const text = parsed.agentMessages.at(-1);
   if (text === undefined) return { pass: false, detail: "no assistant message in the rollout" };
   const absent = missing(text, check.contains);
   const anyHit = check.containsAny ? present(text, check.containsAny) : undefined;
-  const pass = absent.length === 0 && (anyHit === undefined || anyHit.length > 0);
-  const detail = pass
-    ? `final assistant message matches${anyHit ? ` via ${JSON.stringify(anyHit)}` : ""}`
-    : [absent.length ? `missing ${JSON.stringify(absent)}` : "", anyHit && anyHit.length === 0 ? `none of ${JSON.stringify(check.containsAny)} present` : ""].filter(Boolean).join("; ");
-  return { pass, detail };
+  const leaked = present(text, check.excludes);
+  const lines = text.split(/\r?\n/).map((line) => line.trim());
+  const absentLines = (check.containsLine || []).filter((line) => !lines.includes(line));
+  const matchedPatterns = [];
+  const invalidPatterns = [];
+  for (const pattern of check.excludesPattern || []) {
+    try {
+      if (new RegExp(pattern).test(text)) matchedPatterns.push(pattern);
+    } catch {
+      invalidPatterns.push(pattern);
+    }
+  }
+  const pass = absent.length === 0 && (anyHit === undefined || anyHit.length > 0) && leaked.length === 0 && absentLines.length === 0 && matchedPatterns.length === 0 && invalidPatterns.length === 0;
+  const failures = [
+    absent.length ? `missing ${JSON.stringify(absent)}` : "",
+    anyHit && anyHit.length === 0 ? `none of ${JSON.stringify(check.containsAny)} present` : "",
+    leaked.length ? `contains excluded ${JSON.stringify(leaked)}` : "",
+    absentLines.length ? `missing exact line(s) ${JSON.stringify(absentLines)}` : "",
+    matchedPatterns.length ? `matches excluded pattern(s) ${JSON.stringify(matchedPatterns)}` : "",
+    invalidPatterns.length ? `invalid excluded pattern(s) ${JSON.stringify(invalidPatterns)}` : "",
+  ].filter(Boolean);
+  return { pass, detail: pass ? `final assistant message matches${anyHit ? ` via ${JSON.stringify(anyHit)}` : ""}` : failures.join("; ") };
 }
 
 function evaluateHookDelivery(parsed) {
@@ -334,6 +358,9 @@ export function evaluateDiagnostics(parsed, checks) {
     switch (check.kind) {
       case "tool-calls":
         result = evaluateToolCalls(parsed, check);
+        break;
+      case "tool-order":
+        result = evaluateToolOrder(parsed, check);
         break;
       case "no-shell-polling": {
         const offenders = shellPollingOffenders(parsed);

@@ -174,6 +174,8 @@ test("Codex skill pins the #172 identity checkpoint and forbids identity fallbac
 
 test("Codex skill routes room membership and live-session questions safely", () => {
   const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
+  const description = skill.match(/^---\nname: parle\ndescription: (.*)\n---\n/)?.[1];
+  assert.match(description, /room participants, membership, who is online, or live presence/);
   assert.match(skill, /"list participants" as a membership question/);
   assert.match(skill, /Call `mcp__parle__parle_room_details` only/);
   assert.match(skill, /Never use `room_details\.caller\.is_owner`/);

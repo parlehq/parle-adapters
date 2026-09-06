@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.64 (2026-09-06)
+
+- Enforce details-first owner checks and privacy-safe live-session output directly in the room tool descriptions.
+
 ## 0.7.63 (2026-09-06)
 
 - Carry client 0.8.58, which presents connection details only after supported responsive-delivery setup is complete. Pi's existing awaited session-shutdown path is unchanged.

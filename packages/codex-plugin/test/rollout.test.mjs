@@ -171,6 +171,33 @@ test("diagnostic agent-message requires all of contains and one of containsAny",
   assert.match(partial.detail, /missing \["posted hello"\]/);
 });
 
+test("room behavior diagnostics enforce tool order and final-message privacy", () => {
+  const checks = [
+    { kind: "tool-order", before: "mcp__parle__parle_room_details", after: "mcp__parle__parle_room_participants" },
+    { kind: "agent-message", containsLine: ["Live sessions: not observable from this seat."] },
+    { kind: "agent-message", excludes: ["secret-canary"] },
+    { kind: "agent-message", excludesPattern: [String.raw`\b[a-z2-7]{16}\b`, String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}`, String.raw`\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`] },
+  ];
+  assert.deepEqual(evaluateDiagnostics(loadFixture("room-behavior-pass"), checks).map((row) => row.pass), [true, true, true, true]);
+  const failed = evaluateDiagnostics(loadFixture("room-behavior-fail"), checks);
+  assert.deepEqual(failed.map((row) => row.pass), [false, false, false, false]);
+  assert.match(failed[0].detail, /precedes/);
+  assert.match(failed[1].detail, /missing exact line/);
+  assert.match(failed[2].detail, /contains excluded/);
+  assert.match(failed[3].detail, /matches excluded pattern/);
+});
+
+test("tool-order leaves presence and count checks to tool-calls", () => {
+  const row = evaluateDiagnostics(parseRollout([]), [{ kind: "tool-order", before: "mcp__parle__parle_room_details", after: "mcp__parle__parle_room_participants" }])[0];
+  assert.equal(row.pass, true, row.detail);
+});
+
+test("agent-message rejects invalid excluded patterns", () => {
+  const row = evaluateOne("room-behavior-pass", { kind: "agent-message", excludesPattern: ["["] });
+  assert.equal(row.pass, false);
+  assert.match(row.detail, /invalid excluded pattern/);
+});
+
 test("identity-mismatch phrases accept the plugin's own error vocabulary and still reject unrelated refusals (#184)", () => {
   const check = { kind: "agent-message", containsAny: ["mismatch", "does not match", "could not confirm", "profile_not_found", "not the requested"] };
   // The observed live-smoke refusal: the agent authored nothing and reported

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171/#174 status card line `Delivery      watching (idle wake queue-only)` (a verified Codex >= 0.149 whose hook-bound and MCP thread ids agree) with `arm or verify`, `idle wake unarmed`, and `idle wake unavailable` absent. Scenarios whose checks need trusted hooks (a hook-bound thread for the idle-wake state, hook-delivered reply routes) run under the app-server driver: `codex exec` never trusts or runs hooks, so status-wording, attended-hold, and idle-wake are app-server scenarios. The scenario window for authoritative checks runs from container start to teardown.",
+  "_note": "Consumed by parle's real-Codex dogfood driver (parlehq/parle milestone 102). Pinned strings, changed only together with the runtime in the same commit: #170 bounded inbox waits are `mcp__parle__parle_inbox` with `waitSeconds: 30`; #171/#174 status card line `Delivery      watching (idle wake queue-only)` (a verified Codex >= 0.149 whose hook-bound and MCP thread ids agree) with `arm or verify`, `idle wake unarmed`, and `idle wake unavailable` absent. Scenarios whose checks need trusted hooks (a hook-bound thread for the idle-wake state, hook-delivered reply routes) run under the app-server driver: `codex exec` never trusts or runs hooks, so status-wording, attended-hold, and idle-wake are app-server scenarios. The scenario window for authoritative checks runs from container start to teardown. #202 room behavior: membership uses room_details only; owner presence calls details before participants and excludes raw session handles, timestamps, and UUIDs; non-owner presence never calls participants and emits the exact fallback line.",
   "plugin": {
     "name": "parle-codex-plugin",
     "marketplace": "parlehq"
@@ -108,6 +108,57 @@
       "diagnostic": [
         { "kind": "hook-delivery-present" },
         { "kind": "tool-calls", "tool": "mcp__parle__parle_reply", "min": 1 }
+      ]
+    },
+    {
+      "id": "room-membership",
+      "adaptersIssue": 202,
+      "driver": "exec",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session asked an unqualified room membership question.",
+      "task": "list participants",
+      "authoritative": [
+        { "kind": "participant-identity", "agent": "expected" }
+      ],
+      "diagnostic": [
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_room_details", "min": 1, "max": 1 },
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_room_participants", "min": 0, "max": 0 }
+      ]
+    },
+    {
+      "id": "room-presence-owner",
+      "adaptersIssue": 202,
+      "driver": "exec",
+      "catalog": "owner",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session acting for the room owner and carrying the matching human session.",
+      "task": "who is online",
+      "authoritative": [
+        { "kind": "participant-identity", "agent": "expected" }
+      ],
+      "diagnostic": [
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_room_details", "min": 1 },
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_room_participants", "min": 1, "max": 1 },
+        { "kind": "tool-order", "before": "mcp__parle__parle_room_details", "after": "mcp__parle__parle_room_participants" },
+        { "kind": "agent-message", "contains": ["@{{peer_agent_handle}}"], "excludesPattern": ["\\b[a-z2-7]{16}\\b", "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}", "\\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\b"] }
+      ]
+    },
+    {
+      "id": "room-presence-non-owner",
+      "adaptersIssue": 202,
+      "driver": "exec",
+      "catalog": "two-profile",
+      "env": { "PARLE_PROFILE": "codex" },
+      "persona": "A Codex session acting for a principal that does not own the room.",
+      "task": "who is online",
+      "authoritative": [
+        { "kind": "participant-identity", "agent": "expected" }
+      ],
+      "diagnostic": [
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_room_details", "min": 1 },
+        { "kind": "tool-calls", "tool": "mcp__parle__parle_room_participants", "min": 0, "max": 0 },
+        { "kind": "agent-message", "containsLine": ["Live sessions: not observable from this seat."] }
       ]
     }
   ]

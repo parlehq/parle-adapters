@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.73 (2026-09-06)
+
+- Load the Parle skill for bare room-membership and presence prompts, and carry server 0.7.70 so the always-visible room tool descriptions enforce owner-gated, privacy-safe live-session reporting.
+
 ## 0.6.72 (2026-09-06)
 
 - Refresh the bundled MCP server to 0.7.69 and client to 0.8.58. Graceful MCP shutdown now starts session release independently of delivery teardown; the shared hook carries the shorter Claude-only Monitor instruction.

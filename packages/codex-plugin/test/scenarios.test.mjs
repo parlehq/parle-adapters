@@ -86,7 +86,11 @@ test("scenario manifest is consistent with the plugin, the MCP config, and the s
     if (scenario.capMinutes !== undefined) assert.equal(scenario.id, "attended-hold");
     for (const check of scenario.diagnostic) {
       if (check.kind === "tool-calls") assert.ok(registeredTools.has(check.tool), `${scenario.id} names unregistered tool ${check.tool}`);
-      if (check.kind === "agent-message") assert.ok(check.contains || check.containsAny, `${scenario.id} agent-message check has nothing to match`);
+      if (check.kind === "tool-order") {
+        assert.ok(registeredTools.has(check.before), `${scenario.id} names unregistered before tool ${check.before}`);
+        assert.ok(registeredTools.has(check.after), `${scenario.id} names unregistered after tool ${check.after}`);
+      }
+      if (check.kind === "agent-message") assert.ok(check.contains || check.containsAny || check.containsLine || check.excludes || check.excludesPattern, `${scenario.id} agent-message check has nothing to match`);
       if (check.kind === "status-text") assert.ok(check.contains || check.excludes, `${scenario.id} status-text check has nothing to match`);
     }
     for (const check of scenario.authoritative) {
@@ -114,7 +118,25 @@ test("scenario manifest is consistent with the plugin, the MCP config, and the s
   // trusts or runs hooks: no bound thread, no idle-wake state, no delivered
   // reply route.
   for (const id of ["status-wording", "attended-hold", "idle-wake"]) assert.equal(byId[id].driver, "app-server", id);
-  for (const id of ["profile-select", "attended-hold-control", "identity-mismatch"]) assert.equal(byId[id].driver, "exec", id);
+  for (const id of ["profile-select", "attended-hold-control", "identity-mismatch", "room-membership", "room-presence-owner", "room-presence-non-owner"]) assert.equal(byId[id].driver, "exec", id);
   assert.match(byId["attended-hold"].task, /parle_reply with the delivered reply route when one is present, otherwise send directly to the address the delivery carries/);
   assert.match(manifest._note, /codex exec` never trusts or runs hooks/);
+
+  const membership = byId["room-membership"];
+  assert.equal(membership.adaptersIssue, 202);
+  assert.deepEqual(membership.diagnostic, [
+    { kind: "tool-calls", tool: "mcp__parle__parle_room_details", min: 1, max: 1 },
+    { kind: "tool-calls", tool: "mcp__parle__parle_room_participants", min: 0, max: 0 },
+  ]);
+  const owner = byId["room-presence-owner"];
+  assert.equal(owner.catalog, "owner");
+  assert.deepEqual(owner.diagnostic[2], { kind: "tool-order", before: "mcp__parle__parle_room_details", after: "mcp__parle__parle_room_participants" });
+  assert.deepEqual(owner.diagnostic[3].excludesPattern, [
+    String.raw`\b[a-z2-7]{16}\b`,
+    String.raw`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}`,
+    String.raw`\b[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b`,
+  ]);
+  const nonOwner = byId["room-presence-non-owner"];
+  assert.deepEqual(nonOwner.diagnostic[1], { kind: "tool-calls", tool: "mcp__parle__parle_room_participants", min: 0, max: 0 });
+  assert.deepEqual(nonOwner.diagnostic[2], { kind: "agent-message", containsLine: ["Live sessions: not observable from this seat."] });
 });

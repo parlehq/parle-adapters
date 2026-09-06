@@ -970,7 +970,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.63" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.64" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1656,7 +1656,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.63");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.64");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2549,9 +2549,13 @@ test("parle_room_details returns stable room seat membership", async () => {
   assert.equal(result.details.room_id, "room-send");
   assert.equal(result.details.roster.agent_seats[0].agent_handle, "agent-one");
   assert.match(harness.tools.parle_room_details.description, /default tool for generic questions about who is in a room/);
+  assert.match(harness.tools.parle_room_details.description, /who is online, call this tool first/);
   assert.match(harness.tools.parle_room_details.description, /Present principal seats and agent seats concisely/);
   assert.equal(harness.tools.parle_room_participants.label, "List Active Parle Room Sessions");
   assert.match(harness.tools.parle_room_participants.description, /use parle_room_details instead/i);
+  assert.match(harness.tools.parle_room_participants.description, /room_details\.owner\.handle matches the connected principal handle from parle_status/);
+  assert.match(harness.tools.parle_room_participants.description, /Live sessions: not observable from this seat\./);
+  assert.match(harness.tools.parle_room_participants.description, /Do not show raw session handles, UUIDs, heartbeat timestamps, or expiry/);
 });
 
 test("parle_affordances wraps the room affordances endpoint", async () => {
