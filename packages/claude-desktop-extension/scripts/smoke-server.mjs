@@ -41,6 +41,7 @@ try {
     "parle_read",
     "parle_reply",
     "parle_room_capacity_recovery",
+    "parle_room_details",
     "parle_room_participants",
     "parle_rooms",
     "parle_saved_start",

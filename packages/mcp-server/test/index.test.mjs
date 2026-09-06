@@ -36,6 +36,7 @@ const expectedTools = [
   "parle_read",
   "parle_reply",
   "parle_room_capacity_recovery",
+  "parle_room_details",
   "parle_room_participants",
   "parle_rooms",
   "parle_saved_start",
@@ -411,6 +412,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
     guidance: async () => ({ ok: true }),
     readProjection: async (params) => { calls.push(["read", params]); return { messages: [], cursorAfter: 3 }; },
     readInbox: async () => ({ messages: [] }),
+    roomDetails: async (params) => { calls.push(["room-details", params]); return { room_id: params.roomId, roster: { principal_seats: [], agent_seats: [{ agent_handle: "agent-one" }] } }; },
     affordances: async () => ({ affordances: [] }),
     send: async (params) => { calls.push(["send", params]); return { event_id: "evt-1", idempotencyKey: params.idempotencyKey, routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, deliveryStatus: { state: "accepted_scan_skipped", message: "Message accepted. This room/config skipped moderation scanning, so do not describe it as awaiting moderation completion." } }; },
     submitReply: async (params) => { calls.push(["reply", params]); return { event_id: "evt-reply", idempotencyKey: params.idempotencyKey, interaction: { interaction_id: "interaction-1", reply_hop: 3 } }; },
@@ -457,6 +459,10 @@ test("in-memory server maps read, send, and errors through fake client", async (
     const deleteAgentTool = tools.tools.find((tool) => tool.name === "parle_delete_own_agent");
     assert.match(deleteAgentTool.description, /Terminally delete/);
     assert.match(deleteAgentTool.description, /revokes active tokens/);
+    const roomDetailsTool = tools.tools.find((tool) => tool.name === "parle_room_details");
+    assert.match(roomDetailsTool.description, /stable room facts/);
+    assert.match(roomDetailsTool.description, /does not expose live session handles/);
+    assert.match(roomDetailsTool.description, /not a currently live session/);
     const participantTool = tools.tools.find((tool) => tool.name === "parle_room_participants");
     assert.match(participantTool.description, /does not connect an agent/);
     assert.match(participantTool.description, /principal-private/);
@@ -504,6 +510,8 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.equal(createdAgent.structuredContent.agent_id, "agent-1");
     const deletedAgent = await client.callTool({ name: "parle_delete_own_agent", arguments: { agentId: "agent-1", confirmMutation: true, reason: "delete agent" } });
     assert.equal(deletedAgent.structuredContent.http_status, 204);
+    const details = await client.callTool({ name: "parle_room_details", arguments: { roomId: "room-1" } });
+    assert.equal(details.structuredContent.roster.agent_seats[0].agent_handle, "agent-one");
     const participants = await client.callTool({ name: "parle_room_participants", arguments: { roomId: "room-1" } });
     assert.equal(participants.structuredContent.participants[0].agent_session_id, "session-1");
     const recovery = await client.callTool({ name: "parle_room_capacity_recovery", arguments: { action: "preview", roomId: "room-1" } });
@@ -532,6 +540,7 @@ test("in-memory server maps read, send, and errors through fake client", async (
       ["create-room", { kind: "shared", confirmMutation: true, reason: "create" }],
       ["create-own-agent", { agentHandle: "testagent1", displayName: "Test Agent 1", confirmMutation: true, reason: "create agent" }],
       ["delete-own-agent", { agentId: "agent-1", confirmMutation: true, reason: "delete agent" }],
+      ["room-details", { roomId: "room-1" }],
       ["room-participants", { roomId: "room-1" }],
       ["room-capacity-recovery", { action: "preview", roomId: "room-1" }, { state: "unknown", reason: "runtime_session_state_unresolved" }],
       ["end-own-session", { agentSessionId: "session-1", confirmMutation: true, reason: "reclaim" }],

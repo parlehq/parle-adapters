@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.44 (2026-09-06)
+
+- Add the read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57 and server 0.7.67.
+
 ## 0.7.43 (2026-09-05)
 
 - Carry client 0.8.56 and server 0.7.66 into the Command Code mod artifact: the bundled compact card renders a suspended idle wake as `the wake attachment keeps closing` with the next line `do not re-attach until then`. Command Code has no hook-bridge idle wake, so beyond that shared wording its runtime behavior is unchanged (#196).

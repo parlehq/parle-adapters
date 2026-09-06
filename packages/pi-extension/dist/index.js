@@ -7512,6 +7512,15 @@ var ParleAgentClient = class _ParleAgentClient {
       return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, droppedRows, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, nextCursor: pageCursor, hasMore, ...streamReset ? { streamReset: true } : {}, ...responseReset ? { cursorRetired: true } : {}, ...staleGeneration ? { staleGeneration: true } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}, note };
     }, signal));
   }
+  async roomDetails(params = {}, signal) {
+    const generation = this.bootstrapGeneration;
+    let roomId = "";
+    const result = await this.withDataPlane(() => this.withRebootstrap(() => {
+      roomId = this.roomTarget(params.roomId).roomId.value;
+      return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}`, { session: true, roomId, signal });
+    }, signal));
+    return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, roomId, session: this.sessionEstablishedBlock() } : result;
+  }
   async affordances(signalOrParams, maybeSignal) {
     const params = signalOrParams && !(signalOrParams instanceof AbortSignal) ? signalOrParams : {};
     const signal = signalOrParams instanceof AbortSignal ? signalOrParams : maybeSignal;
@@ -7631,7 +7640,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.60";
+var PI_EXTENSION_VERSION = "0.7.61";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -9756,6 +9765,22 @@ function parleExtension(pi) {
         return { ...result, cursor: result.cursorAfter, note: `This surface excludes your own rows and directs-to-other peers. ${result.note}` };
       });
       setStatus(ctx, cfg);
+      return formatResult(details);
+    }
+  });
+  pi.registerTool({
+    name: "parle_room_details",
+    label: "Parle Room Details",
+    description: "Read stable room facts and the seated principal and agent membership roster. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address.",
+    parameters: Type.Object({
+      roomId: Type.Optional(Type.String({ description: "Room UUID. Optional with one configured room; with several, omission fails closed and lists the configured rooms." }))
+    }),
+    async execute(_id, params, signal, _update, ctx) {
+      lastCtx = ctx;
+      const cfg = resolveConfig2(ctx.cwd || process.cwd());
+      const live = agentClient(ctx, cfg);
+      const details = await live.roomDetails(params, signal);
+      liveConfig = cfg;
       return formatResult(details);
     }
   });

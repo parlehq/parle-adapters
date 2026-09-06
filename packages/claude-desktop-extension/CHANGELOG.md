@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.67 (2026-09-06)
+
+- Add the bundled read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57 and server 0.7.67.
+
 ## 0.8.66 (2026-09-05)
 
 - Refresh the bundled MCP artifact to server 0.7.66: the `--parle-watch` command and the bridge's Unix-socket `wait` action are removed and the suspended idle-wake card wording changes. Claude Desktop launches the stdio artifact only and declares no idle-wake mode, so behavior is unchanged (#196, #197).

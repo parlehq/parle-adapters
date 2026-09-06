@@ -1,5 +1,5 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, nextTextFor, parseKeyValueFile, parseSessionAddress, resolveProfileCatalogPath } from "@parlehq/agent-client";
+import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomDetailsParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, nextTextFor, parseKeyValueFile, parseSessionAddress, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
 export type ParleMcpClientLike = {
@@ -12,6 +12,7 @@ export type ParleMcpClientLike = {
   guidance(target?: "ai" | "api-llms" | "openapi" | "catalog"): Promise<unknown>;
   readProjection(params?: ReadParams): Promise<unknown>;
   readInbox(params?: ReadParams): Promise<unknown>;
+  roomDetails(params?: RoomDetailsParams): Promise<unknown>;
   affordances(params?: { roomId?: string }): Promise<unknown>;
   send(params: SendParams): Promise<unknown>;
   submitReply(params: SubmitReplyParams): Promise<unknown>;
@@ -57,6 +58,10 @@ const replySchema = {
   body: z.string(),
   replyRouteId: z.string(),
   idempotencyKey: z.string().optional(),
+  roomId: z.string().optional(),
+};
+
+const roomDetailsSchema = {
   roomId: z.string().optional(),
 };
 
@@ -863,6 +868,16 @@ export function registerParleTools(
   }, async (params, extra) => {
     observeRequest(extra);
     return safeTool(async () => hostGuidance(await client.readInbox(params as ReadParams)));
+  });
+
+  registerTool("parle_room_details", {
+    title: "Parle Room Details",
+    description: `Read stable room facts and the seated principal and agent membership roster. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address. ${ROOM_TEXT}`,
+    inputSchema: roomDetailsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.roomDetails(params as RoomDetailsParams));
   });
 
   registerTool("parle_affordances", {

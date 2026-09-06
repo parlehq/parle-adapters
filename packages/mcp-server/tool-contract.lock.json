@@ -394,6 +394,19 @@
       "roomId"
     ]
   },
+  "parle_room_details": {
+    "title": "Parle Room Details",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "input": [
+      "roomId"
+    ],
+    "required": []
+  },
   "parle_room_participants": {
     "title": "List Parle Room Participants",
     "annotations": {
