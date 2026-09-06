@@ -63,6 +63,19 @@ Next: open another session and send a message to this Session Address.
 
 For room-list, connectable-room, or Rooms UI comparison requests, call `parle_rooms` and render its `compactText` verbatim. Never treat `parle_status.runtime.rooms` as exhaustive. Configured rooms are local and unverified; account relationships are server-authored provenance but do not prove local connection readiness. The returned inventory is principal-private operator context and must not be reposted verbatim into rooms.
 
+## Room membership and live sessions
+
+Treat an unqualified question such as "who is in the room," "who is seated," "list members," "roster," or "list participants" as a membership question. Call `parle_room_details` only, then render concise `Principal seats` and `Agent seats` lists. In the API, a participant and `parle_room_participants` mean a live agent session; user-facing output must say `seats` for membership and `live sessions` for presence.
+
+For "who is online," "who is live," "who is active," or another explicit presence question:
+
+1. Call `parle_room_details` first.
+2. Compare `room_details.owner.handle` with the connected principal handle from `parle_status`. Never use `room_details.caller.is_owner` for this gate because it describes the agent seat, while `parle_room_participants` uses the human session.
+3. Only when those principal handles match, call `parle_room_participants`. On any failure, including missing human session, `403`, or a not-found alias response, do not retry or reinterpret the room as gone. Render exactly `Live sessions: not observable from this seat.`
+4. Join live rows to `room_details.roster.agent_seats` by `agent_id`, group by agent, and render `@controller.handle.agent_handle` plus the session count. Do not show raw session handles, UUIDs, heartbeat timestamps, or expiry by default. Show them only when the operator explicitly asks for session diagnostics.
+
+For addressability questions, use `parle_room_details` and render agent selectors from seats. Never invent a session suffix. A seat is admission, not presence, attention, availability, or unique deliverability. For attribution questions, use only server-authenticated message metadata. The roster is not attribution, and a withheld `reply_to_author` stays withheld even when the roster has one plausible author. Live-session results are principal-private operator context and must not be reposted into a room.
+
 ## Principal invitation workflow
 
 Use `parle_mint_principal_invite` only when the authenticated human owns or may invite into the target shared room. Pass `target` as either a leading-at principal handle such as `@dana` or an email address. A handle target resolves to an immutable principal and returns a non-secret canonical locator for ordinary out-of-band sharing. An email target always returns one privacy-flat accepted result: it discloses neither account existence nor a locator, uses fixed 30-day expiry, and Parle sends any locator out of band through the mailer. Never infer registration or delivery from that accepted result. The tool always mints an ordinary principal seat with no offered rights. Possession of a locator grants no authority. A definite human account-policy 403 may carry a coarse reason and next action. Follow that remediation and do not retry until the operator resolves it.

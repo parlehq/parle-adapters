@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.45 (2026-09-06)
+
+- Clarify the bundled room tools so generic membership questions use stable principal and agent seats while live-session diagnostics remain explicit. Carries server 0.7.68.
+
 ## 0.7.44 (2026-09-06)
 
 - Add the read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57 and server 0.7.67.

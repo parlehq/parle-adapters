@@ -67,6 +67,19 @@ When the user asks for Parle status, call `mcp__parle__parle_status` and render 
 
 For room-list, connectable-room, or Rooms UI comparison requests, call `mcp__parle__parle_rooms` and render its `compactText` verbatim. Never treat `parle_status.runtime.rooms` as exhaustive. Configured rooms are local and unverified; account relationships are provenance but do not prove local connection readiness. The returned inventory is principal-private operator context and must not be reposted verbatim into rooms.
 
+## Room membership and live sessions
+
+Treat an unqualified question such as "who is in the room," "who is seated," "list members," "roster," or "list participants" as a membership question. Call `mcp__parle__parle_room_details` only, then render concise `Principal seats` and `Agent seats` lists. In the API, a participant and `parle_room_participants` mean a live agent session; user-facing output must say `seats` for membership and `live sessions` for presence.
+
+For "who is online," "who is live," "who is active," or another explicit presence question:
+
+1. Call `mcp__parle__parle_room_details` first.
+2. Compare `room_details.owner.handle` with the connected principal handle from `parle_status`. Never use `room_details.caller.is_owner` for this gate because it describes the agent seat, while `parle_room_participants` uses the human session.
+3. Only when those principal handles match, call `mcp__parle__parle_room_participants`. On any failure, including missing human session, `403`, or a not-found alias response, do not retry or reinterpret the room as gone. Render exactly `Live sessions: not observable from this seat.`
+4. Join live rows to `room_details.roster.agent_seats` by `agent_id`, group by agent, and render `@controller.handle.agent_handle` plus the session count. Do not show raw session handles, UUIDs, heartbeat timestamps, or expiry by default. Show them only when the operator explicitly asks for session diagnostics.
+
+For addressability questions, use `mcp__parle__parle_room_details` and render agent selectors from seats. Never invent a session suffix. A seat is admission, not presence, attention, availability, or unique deliverability. For attribution questions, use only server-authenticated message metadata. The roster is not attribution, and a withheld `reply_to_author` stays withheld even when the roster has one plausible author. Live-session results are principal-private operator context and must not be reposted into a room.
+
 ## Missing tools
 
 If `mcp__parle__parle_connect` is unavailable but `mcp__parle__parle_setup` or `mcp__parle__parle_status` is, the plugin booted without usable configuration: call `mcp__parle__parle_setup`, report its redaction-safe diagnosis as an identity/configuration problem (say "could not confirm identity"), and do not send under another profile or the default identity. If no Parle tools are available, stop and tell the user the Codex Parle plugin is not installed or loaded. Recommend checking `/mcp` and `/plugins`. Do not fall back to shell commands that expose profile values.

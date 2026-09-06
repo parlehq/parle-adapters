@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.68 (2026-09-06)
+
+- Clarify model-facing room tools: generic questions about who is in a room use the stable principal and agent seat roster, while `parle_room_participants` is explicitly reserved for owner-visible live-session and capacity diagnostics.
+
 ## 0.7.67 (2026-09-06)
 
 - Add the read-only `parle_room_details` tool for stable room facts and seated principal and agent membership. Its contract explicitly distinguishes admission from liveness and excludes live-session handles, presence, heartbeat, last-seen, and expiry data. Carries client 0.8.57.

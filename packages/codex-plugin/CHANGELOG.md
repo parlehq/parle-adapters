@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.71 (2026-09-06)
+
+- Add room-query guidance that distinguishes stable seats from live sessions, defaults ambiguous `participants` requests to membership, aggregates explicit owner-visible presence by agent, and never uses a roster to infer attribution. Carries server 0.7.68.
+
 ## 0.6.70 (2026-09-06)
 
 - Add the bundled read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57 and server 0.7.67.

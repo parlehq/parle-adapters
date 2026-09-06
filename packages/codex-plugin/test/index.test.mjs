@@ -172,6 +172,16 @@ test("Codex skill pins the #172 identity checkpoint and forbids identity fallbac
   ));
 });
 
+test("Codex skill routes room membership and live-session questions safely", () => {
+  const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
+  assert.match(skill, /"list participants" as a membership question/);
+  assert.match(skill, /Call `mcp__parle__parle_room_details` only/);
+  assert.match(skill, /Never use `room_details\.caller\.is_owner`/);
+  assert.match(skill, /Live sessions: not observable from this seat\./);
+  assert.match(skill, /Join live rows.*by `agent_id`/);
+  assert.match(skill, /withheld `reply_to_author` stays withheld/);
+});
+
 test("Codex plugin includes bounded guidance and the copied MCP artifact", () => {
   const skill = readFileSync(resolve(root, "skills/parle/SKILL.md"), "utf8");
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/);

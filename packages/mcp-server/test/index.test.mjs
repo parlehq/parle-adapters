@@ -461,9 +461,13 @@ test("in-memory server maps read, send, and errors through fake client", async (
     assert.match(deleteAgentTool.description, /revokes active tokens/);
     const roomDetailsTool = tools.tools.find((tool) => tool.name === "parle_room_details");
     assert.match(roomDetailsTool.description, /stable room facts/);
+    assert.match(roomDetailsTool.description, /default tool for generic questions about who is in a room/);
+    assert.match(roomDetailsTool.description, /Present principal seats and agent seats concisely/);
     assert.match(roomDetailsTool.description, /does not expose live session handles/);
     assert.match(roomDetailsTool.description, /not a currently live session/);
     const participantTool = tools.tools.find((tool) => tool.name === "parle_room_participants");
+    assert.equal(participantTool.title, "List Active Parle Room Sessions");
+    assert.match(participantTool.description, /use parle_room_details instead/i);
     assert.match(participantTool.description, /does not connect an agent/);
     assert.match(participantTool.description, /principal-private/);
     const recoveryTool = tools.tools.find((tool) => tool.name === "parle_room_capacity_recovery");

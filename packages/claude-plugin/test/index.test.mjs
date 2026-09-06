@@ -106,6 +106,12 @@ test("Claude plugin includes skill guidance and copied MCP artifact", () => {
   // background-shell guidance may survive in the skill.
   assert.doesNotMatch(skill, /run_in_background|parle-watch\.sh|PRESSURE_REAP|memory pressure|[Ee]xit [02]\b|status: killed/);
   assert.match(skill, /Do not report UUIDs, cursor, expiry, backlog, or config provenance/);
+  assert.match(skill, /"list participants" as a membership question/);
+  assert.match(skill, /Call `parle_room_details` only/);
+  assert.match(skill, /Never use `room_details\.caller\.is_owner`/);
+  assert.match(skill, /Live sessions: not observable from this seat\./);
+  assert.match(skill, /Join live rows.*by `agent_id`/);
+  assert.match(skill, /withheld `reply_to_author` stays withheld/);
   // The hook bridge makes live switching throw. Guidance must say so rather
   // than keep documenting the retired stop-switch-re-arm sequence as current.
   assert.match(skill, /parle_switch_profile/);

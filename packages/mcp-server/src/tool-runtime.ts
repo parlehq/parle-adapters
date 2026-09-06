@@ -695,8 +695,8 @@ export function registerParleTools(
   });
 
   registerTool("parle_room_participants", {
-    title: "List Parle Room Participants",
-    description: "List active live-session participants for one owned room through the fixed human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
+    title: "List Active Parle Room Sessions",
+    description: "List active live sessions for one owned room through the fixed human-session endpoint. Use only for explicit presence, session, heartbeat, expiry, or capacity diagnostics. For generic questions about who is in a room, members, seats, the roster, or unqualified participants, use parle_room_details instead. This does not connect an agent to the room. Rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders sessions oldest first and includes non-secret last-seen and expiry metadata. The result is principal-private operator context and must not be reposted into rooms.",
     inputSchema: roomParticipantsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => {
@@ -872,7 +872,7 @@ export function registerParleTools(
 
   registerTool("parle_room_details", {
     title: "Parle Room Details",
-    description: `Read stable room facts and the seated principal and agent membership roster. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address. ${ROOM_TEXT}`,
+    description: `Read stable room facts and the seated principal and agent membership roster. This is the default tool for generic questions about who is in a room, members, seats, the roster, or unqualified participants. Present principal seats and agent seats concisely. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address. ${ROOM_TEXT}`,
     inputSchema: roomDetailsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params, extra) => {

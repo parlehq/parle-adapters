@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.62 (2026-09-06)
+
+- Route generic room-membership questions to `parle_room_details` and reserve `parle_room_participants` for explicit owner-visible live-session and capacity diagnostics.
+
 ## 0.7.61 (2026-09-06)
 
 - Add the read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57.

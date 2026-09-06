@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.61";
+const PI_EXTENSION_VERSION = "0.7.62";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -2347,8 +2347,8 @@ export default function parleExtension(pi: any) {
 
   pi.registerTool({
     name: "parle_room_participants",
-    label: "List Parle Room Participants",
-    description: "List active live-session participants for one owned room through the fixed GET /v/rooms/{roomID}/participants human-session endpoint. This does not connect an agent to the room. Roster rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders participants oldest first and includes non-secret last-seen and expiry metadata. Never repost this principal-private operator context into rooms.",
+    label: "List Active Parle Room Sessions",
+    description: "List active live sessions for one owned room through the fixed GET /v/rooms/{roomID}/participants human-session endpoint. Use only for explicit presence, session, heartbeat, expiry, or capacity diagnostics. For generic questions about who is in a room, members, seats, the roster, or unqualified participants, use parle_room_details instead. This does not connect an agent to the room. Rows are active sessions, not stale cleanup candidates, and last_seen_at is authenticated-request heartbeat recency rather than workload idleness. The server orders sessions oldest first and includes non-secret last-seen and expiry metadata. Never repost this principal-private operator context into rooms.",
     parameters: Type.Object({
       roomId: Type.String({ description: "Exact UUID of the owned room." }),
     }),
@@ -2621,7 +2621,7 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_room_details",
     label: "Parle Room Details",
-    description: "Read stable room facts and the seated principal and agent membership roster. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address.",
+    description: "Read stable room facts and the seated principal and agent membership roster. This is the default tool for generic questions about who is in a room, members, seats, the roster, or unqualified participants. Present principal seats and agent seats concisely. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address.",
     parameters: Type.Object({
       roomId: Type.Optional(Type.String({ description: "Room UUID. Optional with one configured room; with several, omission fails closed and lists the configured rooms." })),
     }),

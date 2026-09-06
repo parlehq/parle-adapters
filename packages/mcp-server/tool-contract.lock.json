@@ -408,7 +408,7 @@
     "required": []
   },
   "parle_room_participants": {
-    "title": "List Parle Room Participants",
+    "title": "List Active Parle Room Sessions",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,
