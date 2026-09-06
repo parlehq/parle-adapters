@@ -121,9 +121,25 @@ function isNonResponding(error) {
 const MAX_HOST_ANCESTRY = 8;
 const CODEX_EXECUTABLE_NAME = /^codex(?:[-.][\w.-]*)?$/i;
 
+function processInfoFromLsof(pid, exec = execFileSync) {
+  try {
+    const listing = exec("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-FpRn"], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    const lines = listing.split("\n");
+    const parentPid = Number(lines.find((entry) => entry.startsWith("R"))?.slice(1));
+    const path = lines.find((entry) => entry.startsWith("n/"))?.slice(1);
+    return { parentPid: Number.isSafeInteger(parentPid) ? parentPid : undefined, path };
+  } catch {
+    return {};
+  }
+}
+
+function psAccessDenied(error) {
+  return ["EACCES", "EPERM"].includes(error?.code) || /\b(?:EACCES|EPERM)\b/.test(error instanceof Error ? error.message : String(error));
+}
+
 // Parent of a live process: /proc where it exists, otherwise the fixed ps
-// binary. Undefined ends the walk.
-function parentPidOf(pid) {
+// binary. Agent Safehouse may deny ps while permitting read-only lsof.
+export function parentPidOf(pid, { exec = execFileSync, platform = process.platform } = {}) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
@@ -131,40 +147,34 @@ function parentPidOf(pid) {
   } catch {
     // Not Linux, or the process is gone.
   }
-  if (process.platform === "win32") return undefined;
+  if (platform === "win32") return undefined;
   try {
-    const parent = Number(execFileSync("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 1000, windowsHide: true }).trim());
+    const parent = Number(exec("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 1000, windowsHide: true }).trim());
     return Number.isSafeInteger(parent) ? parent : undefined;
-  } catch {
-    return undefined;
+  } catch (error) {
+    return platform === "darwin" && psAccessDenied(error) ? processInfoFromLsof(pid, exec).parentPid : undefined;
   }
 }
 
 // Executable path of a live process without a PATH lookup: /proc where it
-// exists; otherwise ps, which on macOS reports argv[0] as typed, and the lsof
-// text mapping for the absolute path only when that bare name could be Codex.
-function executablePathOf(pid) {
+// exists; otherwise ps, which on macOS reports argv[0] as typed, and lsof for
+// a PATH-launched host or when Agent Safehouse denies ps.
+export function executablePathOf(pid, { exec = execFileSync, platform = process.platform } = {}) {
   try {
     return readlinkSync(`/proc/${pid}/exe`);
   } catch {
     // Not Linux, not our process, or gone.
   }
-  if (process.platform !== "darwin") return undefined;
+  if (platform !== "darwin") return undefined;
   let comm;
   try {
-    comm = execFileSync("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 1000, windowsHide: true }).trim();
-  } catch {
-    return undefined;
+    comm = exec("/bin/ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf8", timeout: 1000, windowsHide: true }).trim();
+  } catch (error) {
+    return psAccessDenied(error) ? processInfoFromLsof(pid, exec).path : undefined;
   }
   if (isAbsolute(comm)) return comm;
   if (!CODEX_EXECUTABLE_NAME.test(basename(comm.replace(/^-/, "")))) return undefined;
-  try {
-    const listing = execFileSync("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { encoding: "utf8", timeout: 3000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
-    const line = listing.split("\n").find((entry) => entry.startsWith("n/"));
-    return line ? line.slice(1) : undefined;
-  } catch {
-    return undefined;
-  }
+  return processInfoFromLsof(pid, exec).path;
 }
 
 // The executable rule the bridge applies to its own parent: owned by this

@@ -16,7 +16,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import { acceptableHostExecutable } from "../hooks/parle-hook.mjs";
+import { acceptableHostExecutable, executablePathOf, parentPidOf } from "../hooks/parle-hook.mjs";
 
 function withoutAmbientParle(env = process.env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("PARLE_")));
@@ -541,6 +541,29 @@ for (const shell of ["/bin/zsh", "/bin/bash"]) {
     }
   });
 }
+
+test("Codex hook falls back to lsof only when Safehouse denies ps (#204)", () => {
+  const denied = Object.assign(new Error("spawnSync /bin/ps EPERM"), { code: "EPERM" });
+  const calls = [];
+  const exec = (file) => {
+    calls.push(file);
+    if (file === "/bin/ps") throw denied;
+    return "p4242\nR3131\nn/opt/codex/codex\n";
+  };
+
+  assert.equal(parentPidOf(4242, { exec, platform: "darwin" }), 3131);
+  assert.equal(executablePathOf(4242, { exec, platform: "darwin" }), "/opt/codex/codex");
+  assert.deepEqual(calls, ["/bin/ps", "/usr/sbin/lsof", "/bin/ps", "/usr/sbin/lsof"]);
+
+  const unrelatedCalls = [];
+  const unrelated = (file) => {
+    unrelatedCalls.push(file);
+    throw Object.assign(new Error("spawnSync /bin/ps EIO"), { code: "EIO" });
+  };
+  assert.equal(parentPidOf(4242, { exec: unrelated, platform: "darwin" }), undefined);
+  assert.equal(executablePathOf(4242, { exec: unrelated, platform: "darwin" }), undefined);
+  assert.deepEqual(unrelatedCalls, ["/bin/ps", "/bin/ps"], "unrelated ps failures never invoke lsof");
+});
 
 test("Codex hook executable rule accepts user- or root-owned binaries and refuses other owners and loose modes (#174)", () => {
   const uid = 1000;
