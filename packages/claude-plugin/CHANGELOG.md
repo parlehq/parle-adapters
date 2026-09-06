@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.77 (2026-09-06)
+
+- Refresh the bundled MCP server and shared hook to 0.7.72. Claude Monitor behavior is unchanged.
+
 ## 0.9.76 (2026-09-06)
 
 - Refresh the bundled MCP server to 0.7.71. Claude Monitor behavior is unchanged.

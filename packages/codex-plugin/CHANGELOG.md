@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.75 (2026-09-06)
+
+- Bind Safehouse-backed Codex threads through the shared hook by falling back to `lsof` only when macOS denies `ps`; carries server 0.7.72.
+
 ## 0.6.74 (2026-09-06)
 
 - Carry server 0.7.71 so Safehouse-backed Codex sessions can verify the host through `lsof` when macOS refuses to spawn `ps`.
