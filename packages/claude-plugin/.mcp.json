@@ -10,7 +10,7 @@
         "PARLE_HOOK_BRIDGE_HOST_PROCESS": "direct-parent",
         "PARLE_HOST_IDLE_WAKE": "claude-monitor",
         "PARLE_INTEGRATION_NAME": "@parlehq/claude-plugin",
-        "PARLE_INTEGRATION_VERSION": "0.9.73"
+        "PARLE_INTEGRATION_VERSION": "0.9.74"
       },
       "alwaysLoad": true
     }

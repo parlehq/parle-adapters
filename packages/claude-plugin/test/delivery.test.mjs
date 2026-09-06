@@ -221,7 +221,7 @@ test("an empty queue neither blocks Stop nor acknowledges anything", async () =>
   });
 });
 
-const MONITOR_LINE = `Parle idle wake is not attached. Call the Monitor tool once with ws: { url: "${WAKE_URL}" }, persistent: true, description: "Parle responsive delivery". Do not use Bash, do not run a watcher script, and do not call it again while that Monitor task is running.`;
+const MONITOR_LINE = `Parle: call Monitor({ ws: { url: "${WAKE_URL}" }, persistent: true, description: "Parle responsive delivery" }) once.`;
 
 test("Stop asks once for the Monitor attachment only for an empty unarmed bridge that hands out its wake url", async () => {
   await withBridge({ messages: [], idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
@@ -333,7 +333,7 @@ test("a suspended idle wake is announced once at Stop instead of re-attached", a
   await withBridge({ messages: [], idleWakeSuspended: true, idleWakeSuspensionAnnounced: true, idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
     const result = await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd });
     assert.deepEqual(JSON.parse(result.stdout), {});
-    assert.doesNotMatch(result.stdout, /idle wake is not attached/);
+    assert.doesNotMatch(result.stdout, /Parle: call Monitor/);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take"]);
   });
 
@@ -342,7 +342,7 @@ test("a suspended idle wake is announced once at Stop instead of re-attached", a
     const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
     const context = output.hookSpecificOutput.additionalContext;
     assert.match(context, /Parle responsive delivery seq=15/);
-    assert.doesNotMatch(context, /idle wake is not attached/);
+    assert.doesNotMatch(context, /Parle: call Monitor/);
     assert.ok(context.endsWith(suspended));
     assert.ok(context.indexOf("seq=15") < context.indexOf("idle wake suspended"));
     // The cheap local suspension commit precedes the delivery acknowledgement.
@@ -405,7 +405,7 @@ test("Stop decides suspension from the take-time status, falling back to the dis
   await withBridge({ messages: [], suspendOnTake: true, idleWakeUrl: WAKE_URL }, async ({ cwd, bridge }) => {
     const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
     assert.equal(output.hookSpecificOutput.additionalContext, SUSPENDED_LINE);
-    assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /idle wake is not attached/);
+    assert.doesNotMatch(output.hookSpecificOutput.additionalContext, /Parle: call Monitor/);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit-suspension"]);
   });
 
@@ -417,7 +417,7 @@ test("Stop decides suspension from the take-time status, falling back to the dis
   });
   await withBridge({ messages: [], legacyTake: true, idleWakeUrl: WAKE_URL }, async ({ cwd }) => {
     const output = JSON.parse((await runHook(args, { hook_event_name: "Stop", session_id: "claude-session", cwd })).stdout);
-    assert.match(output.hookSpecificOutput.additionalContext, /idle wake is not attached/);
+    assert.match(output.hookSpecificOutput.additionalContext, /Parle: call Monitor/);
   });
 });
 
@@ -431,7 +431,7 @@ test("a lost announcement claim is never committed and does not cost the Stop it
     const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
     assert.match(context, /Parle responsive delivery seq=16/);
     assert.doesNotMatch(context, /idle wake suspended/);
-    assert.doesNotMatch(context, /idle wake is not attached/);
+    assert.doesNotMatch(context, /Parle: call Monitor/);
     assert.match(result.stderr, /Parle hook failed open: timeout/);
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "announce-suspension", "commit"]);
   });
@@ -462,7 +462,7 @@ test("a Stop-delivered batch stays first and carries re-attachment through the s
     assert.equal(Object.hasOwn(output, "decision"), false);
     assert.match(context, /Parle responsive delivery seq=10/);
     assert.ok(context.endsWith(`\n\n${MONITOR_LINE}`));
-    assert.ok(context.indexOf("Parle responsive delivery seq=10") < context.indexOf("Parle idle wake is not attached"));
+    assert.ok(context.indexOf("Parle responsive delivery seq=10") < context.indexOf("Parle: call Monitor"));
     assert.deepEqual(bridge.actions.map((action) => action.action), ["status", "bind", "take", "commit"]);
   });
 });

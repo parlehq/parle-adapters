@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.46 (2026-09-06)
+
+- Start session release concurrently with responsive-delivery teardown when the host session ends, and return the combined completion promise when the host awaits it. Carry client 0.8.58 connection ordering.
+
 ## 0.7.45 (2026-09-06)
 
 - Clarify the bundled room tools so generic membership questions use stable principal and agent seats while live-session diagnostics remain explicit. Carries server 0.7.68.

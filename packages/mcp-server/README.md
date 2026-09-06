@@ -62,7 +62,7 @@ The stdio entrypoint constructs a `ParleAgentClient` with runtime publishing ena
 
 `parle_status` auto-connects by default when configured and not yet connected, reporting `bootstrapAttempted`; `inspect: true` restores the passive no-network read. Explicit calls (`parle_connect`, reads, sends) always retry regardless of the backoff window.
 
-The client publishes a display-safe per-process snapshot to `<cwd>/.parle/runtime/<pid>.json` (0700 directory, 0600 file, atomic rename; never a credential) for host UX surfaces such as statuslines. Its `clientInstanceId` matches the request header for local PID correlation. Snapshots self-invalidate via expiry plus pid liveness; provably stale sibling files are pruned at startup; SIGINT/SIGTERM end the session best-effort and remove the file.
+The client publishes a display-safe per-process snapshot to `<cwd>/.parle/runtime/<pid>.json` (0700 directory, 0600 file, atomic rename; never a credential) for host UX surfaces such as statuslines. Its `clientInstanceId` matches the request header for local PID correlation. Snapshots self-invalidate via expiry plus pid liveness; provably stale sibling files are pruned at startup. SIGINT, SIGTERM, SIGHUP, and stdin closure end the session best-effort without waiting for delivery teardown and remove the file. Uncatchable termination relies on the server-owned session expiry.
 
 ## Unread observation
 

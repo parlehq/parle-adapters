@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.58 (2026-09-06)
+
+- Order connection guidance so supported host delivery setup completes before one settled connection result is presented. Apply the same order to sessions established lazily by another tool.
+
 ## 0.8.57 (2026-09-06)
 
 - Add `roomDetails`, an agent-authenticated read of stable room facts and the seated principal and agent roster. The endpoint exposes no live-session handle, presence, heartbeat, last-seen, or expiry data.

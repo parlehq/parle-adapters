@@ -5457,8 +5457,8 @@ function assertNoReservedProtocolHeaders(headers) {
   if (overridden)
     throw new ParleApiError(`Caller header ${overridden} is reserved by the Parle client`, { code: "validation_failed", action: "fix_client", scope: "request" });
 }
-var CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
-var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+var CONNECT_NEXT_GUIDANCE = "Arm responsive delivery before rendering compactText once as the connection card: use the host watcher when available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Arm responsive delivery before reporting the session address and expiry: use the host watcher when available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
 function isSessionScopeEntryFailure(error51) {
   return error51 instanceof ParleApiError && (error51.scope === "agent_session" || error51.action === "rebootstrap");
 }
@@ -23189,7 +23189,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.45";
+var ADAPTER_VERSION = "0.7.46";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [
@@ -23528,7 +23528,7 @@ async function registerCommandCodeMod(cmd, env = process.env) {
       if (statusTimer) clearInterval(statusTimer);
       statusTimer = void 0;
       cmd.ui.setStatus(null);
-      void delivery?.stop().then(() => client?.endSession()).catch(() => void 0);
+      return Promise.allSettled([delivery?.stop(), client?.endSession()]);
     },
     onTurnStart: ({ state }) => delivery?.foldPending(state) || state,
     onRunEnd: () => delivery?.completeFolded(),

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.63 (2026-09-06)
+
+- Carry client 0.8.58, which presents connection details only after supported responsive-delivery setup is complete. Pi's existing awaited session-shutdown path is unchanged.
+
 ## 0.7.62 (2026-09-06)
 
 - Route generic room-membership questions to `parle_room_details` and reserve `parle_room_participants` for explicit owner-visible live-session and capacity diagnostics.

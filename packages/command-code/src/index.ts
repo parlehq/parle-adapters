@@ -3,7 +3,7 @@ import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.45";
+const ADAPTER_VERSION = "0.7.46";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 
@@ -382,7 +382,7 @@ export async function registerCommandCodeMod(cmd: any, env: NodeJS.ProcessEnv = 
       if (statusTimer) clearInterval(statusTimer);
       statusTimer = undefined;
       cmd.ui.setStatus(null);
-      void delivery?.stop().then(() => client?.endSession()).catch(() => undefined);
+      return Promise.allSettled([delivery?.stop(), client?.endSession()]);
     },
     onTurnStart: ({ state }: { state: any }) => delivery?.foldPending(state) || state,
     onRunEnd: () => delivery?.completeFolded(),

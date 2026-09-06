@@ -1208,11 +1208,11 @@ test("connect guidance pins the #170 operator-authorized attended hold wording",
   const suffix = " Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
   assert.equal(
     CONNECT_NEXT_GUIDANCE,
-    "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card." + suffix,
+    "Arm responsive delivery before rendering compactText once as the connection card: use the host watcher when available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked." + suffix,
   );
   assert.equal(
     SESSION_ESTABLISHED_NEXT_GUIDANCE,
-    "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token." + suffix,
+    "Arm responsive delivery before reporting the session address and expiry: use the host watcher when available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token." + suffix,
   );
 });
 
@@ -1236,10 +1236,35 @@ test("connect bootstraps once, returns factual summary, and reuses live sessions
   assert.equal(first.rooms[0].cursor, 7);
   assert.equal(first.rooms[0].heldBacklogCount, 2);
   assert.equal(first.rooms[0].roomHandle, "room-handle");
-  assert.match(first.next, /arm responsive delivery/);
-  assert.match(first.next, /^Render compactText verbatim/);
+  assert.match(first.next, /Arm responsive delivery/);
+  assert.match(first.next, /^Arm responsive delivery before rendering compactText once/);
   const second = await client.connect();
   assert.equal(second.reusedExistingSession, true);
+  assert.equal(sessions, 1);
+});
+
+test("an ended client cannot rebootstrap a replacement session", async () => {
+  let sessions = 0;
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url, init = {}) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") {
+        sessions += 1;
+        return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", address: "@p.a.s1", expires_at: "2999-01-01T00:00:00Z" }, 201);
+      }
+      if (path.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 0 }, 201);
+      if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+      if (path.endsWith("/end")) return new Response(null, { status: 204 });
+      throw new Error(`unexpected ${path}`);
+    },
+  });
+
+  await client.connect();
+  await client.endSession();
+  const result = await client.send({ body: "after end" });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "client_ended");
   assert.equal(sessions, 1);
 });
 
@@ -1279,7 +1304,7 @@ test("implicit bootstrap attaches session block to the triggering call only", as
   assert.equal(first.session.established, "this_call");
   assert.equal(first.session.sessionAddress, "@p.a.s1");
   assert.equal(first.session.agentSessionId, "as-1");
-  assert.match(first.session.next, /arm responsive delivery/);
+  assert.match(first.session.next, /Arm responsive delivery/);
   // Lazy session blocks carry no compactText, so their guidance must not point at one.
   assert.doesNotMatch(first.session.next, /compactText/);
   const second = await client.readInbox();

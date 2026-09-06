@@ -305,7 +305,7 @@ function monitorWakeUrl(value) {
 }
 
 function idleWakeInstruction(url) {
-  return `Parle idle wake is not attached. Call the Monitor tool once with ws: { url: "${url}" }, persistent: true, description: "Parle responsive delivery". Do not use Bash, do not run a watcher script, and do not call it again while that Monitor task is running.`;
+  return `Parle: call Monitor({ ws: { url: "${url}" }, persistent: true, description: "Parle responsive delivery" }) once.`;
 }
 
 const IDLE_WAKE_SUSPENDED = "Parle idle wake suspended: the Monitor attachment keeps closing; it resumes at the next prompt.";

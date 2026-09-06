@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -10,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CONNECT_NEXT_GUIDANCE, ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, SESSION_ESTABLISHED_NEXT_GUIDANCE, processStartedAtIso } from "@parlehq/agent-client";
-import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, isDirectRun, resolveConfigCwd, resolveHostCapabilities, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
+import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, installLifecycleHandlers, isDirectRun, resolveConfigCwd, resolveHostCapabilities, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -173,6 +174,52 @@ test("direct-parent check is unreferenced and shuts down once when correlation c
   stop();
   assert.equal(shutdowns, 1);
   assert.equal(cleared, 1);
+});
+
+test("graceful MCP boundaries end once without waiting for bridge teardown", async () => {
+  for (const trigger of ["SIGTERM", "SIGHUP", "stdin-end", "stdin-close"]) {
+    const events = new EventEmitter();
+    const stdin = new EventEmitter();
+    let endCalls = 0;
+    let timer;
+    let exits = 0;
+    const host = {
+      on: events.on.bind(events),
+      stdin: { once: stdin.once.bind(stdin) },
+      setTimer(listener, delayMs) {
+        assert.equal(delayMs, 3000);
+        timer = listener;
+        return listener;
+      },
+      clearTimer() {},
+      exit(code) {
+        assert.equal(code, 0);
+        exits += 1;
+      },
+    };
+    const client = {
+      endSession() {
+        endCalls += 1;
+        return Promise.resolve();
+      },
+      discardRuntimeFile() {},
+    };
+    let resolveStop;
+    const bridge = { stop: () => new Promise((resolve) => { resolveStop = resolve; }) };
+
+    installLifecycleHandlers(client, bridge, () => {}, undefined, host);
+    if (trigger.startsWith("stdin-")) stdin.emit(trigger.slice(6));
+    else events.emit(trigger);
+    events.emit("SIGINT");
+
+    assert.equal(endCalls, 1, `${trigger} starts one session end`);
+    assert.equal(exits, 0, `${trigger} does not wait for the stalled bridge`);
+    timer();
+    assert.equal(exits, 1, `${trigger} exits at the hard deadline`);
+    resolveStop();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(exits, 1, `${trigger} exits only once after late teardown`);
+  }
 });
 
 test("direct-run detection handles URL-encoded paths", () => {

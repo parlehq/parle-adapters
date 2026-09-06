@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.69 (2026-09-06)
+
+- End the live agent session concurrently with delivery teardown on SIGINT, SIGTERM, SIGHUP, and stdin closure, with one bounded hard-exit deadline and no retry. Shorten the Claude Monitor attachment instruction and carry client 0.8.58.
+
 ## 0.7.68 (2026-09-06)
 
 - Clarify model-facing room tools: generic questions about who is in a room use the stable principal and agent seat roster, while `parle_room_participants` is explicitly reserved for owner-visible live-session and capacity diagnostics.

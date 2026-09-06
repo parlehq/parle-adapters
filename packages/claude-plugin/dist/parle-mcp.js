@@ -40135,8 +40135,8 @@ function assertNoReservedProtocolHeaders(headers) {
   if (overridden)
     throw new ParleApiError(`Caller header ${overridden} is reserved by the Parle client`, { code: "validation_failed", action: "fix_client", scope: "request" });
 }
-var CONNECT_NEXT_GUIDANCE = "Render compactText verbatim to the user as the connection card, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Hosts with the parle skill arm the watcher first and add its status line to the card. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
-var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Report the session address and expiry, then arm responsive delivery before going idle: host watcher if available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+var CONNECT_NEXT_GUIDANCE = "Arm responsive delivery before rendering compactText once as the connection card: use the host watcher when available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Agent-session expiry ends only this session incarnation: parle_connect uses the still-valid agent token to create a replacement session. Reauthorize only when the agent token is invalid or revoked. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
+var SESSION_ESTABLISHED_NEXT_GUIDANCE = "Arm responsive delivery before reporting the session address and expiry: use the host watcher when available, otherwise /v/agent/wake SSE followed by responsive-delivery?wait=0 drain and ack. Expiry ends only this session incarnation; parle_connect creates a replacement with the still-valid agent token. Do not poll with waitSeconds on your own initiative; a live operator may authorize one capped attended hold as the host skill describes.";
 function isSessionScopeEntryFailure(error51) {
   return error51 instanceof ParleApiError && (error51.scope === "agent_session" || error51.action === "rebootstrap");
 }
@@ -44608,7 +44608,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.68";
+var MCP_CLIENT_VERSION = "0.7.69";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -44812,28 +44812,42 @@ function scheduleHostParentCheck(expectedPid, shutdown, options = {}) {
     clearCheckInterval(timer);
   };
 }
+var defaultLifecycleHost = {
+  on: (event, listener) => process.on(event, listener),
+  stdin: process.stdin,
+  setTimer: (listener, delayMs) => setTimeout(listener, delayMs),
+  clearTimer: (timer) => clearTimeout(timer),
+  exit: (code) => process.exit(code)
+};
 function installLifecycleHandlers(client, deliveryBridge, stopEagerBootstrap = () => {
-}, hostParentPid) {
+}, hostParentPid, host = defaultLifecycleHost) {
   let ending = false;
+  let exited = false;
   let stopHostParentCheck = () => {
+  };
+  const exit = () => {
+    if (exited) return;
+    exited = true;
+    host.exit(0);
   };
   const shutdown = () => {
     if (ending) return;
     ending = true;
     stopHostParentCheck();
     stopEagerBootstrap();
-    const timer = setTimeout(() => process.exit(0), 2e3);
-    void deliveryBridge?.stop().catch(() => {
-    }).then(() => client.endSession()).catch(() => {
-    }).finally(() => {
-      clearTimeout(timer);
-      process.exit(0);
+    const timer = host.setTimer(exit, 3e3);
+    void Promise.allSettled([deliveryBridge?.stop(), client.endSession()]).finally(() => {
+      host.clearTimer(timer);
+      exit();
     });
   };
   if (hostParentPid !== void 0) stopHostParentCheck = scheduleHostParentCheck(hostParentPid, shutdown);
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-  process.on("exit", () => client.discardRuntimeFile());
+  host.on("SIGINT", shutdown);
+  host.on("SIGTERM", shutdown);
+  host.on("SIGHUP", shutdown);
+  host.stdin.once("end", shutdown);
+  host.stdin.once("close", shutdown);
+  host.on("exit", () => client.discardRuntimeFile());
 }
 function isDirectRun(metaUrl, argvPath = process.argv[1]) {
   return Boolean(argvPath) && metaUrl === pathToFileURL(argvPath).href;
@@ -44873,6 +44887,7 @@ export {
   createMcpAgentClient,
   createParleMcpServer,
   hostSessionIdFromMeta,
+  installLifecycleHandlers,
   isDirectRun,
   registerParleTools,
   resolveCodexHostExecutable,

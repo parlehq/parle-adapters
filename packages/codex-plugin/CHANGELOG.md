@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.72 (2026-09-06)
+
+- Refresh the bundled MCP server to 0.7.69 and client to 0.8.58. Graceful MCP shutdown now starts session release independently of delivery teardown; the shared hook carries the shorter Claude-only Monitor instruction.
+
 ## 0.6.71 (2026-09-06)
 
 - Add room-query guidance that distinguishes stable seats from live sessions, defaults ambiguous `participants` requests to membership, aggregates explicit owner-visible presence by agent, and never uses a roster to infer attribution. Carries server 0.7.68.

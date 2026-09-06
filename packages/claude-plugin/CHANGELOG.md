@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.74 (2026-09-06)
+
+- Present one settled connection card after the required Monitor attachment instead of an intermediate unarmed card plus explanation. Shorten the visible Stop-hook instruction and carry server 0.7.69 with broader graceful session cleanup.
+
 ## 0.9.73 (2026-09-06)
 
 - Add room-query guidance that distinguishes stable seats from live sessions, defaults ambiguous `participants` requests to membership, aggregates explicit owner-visible presence by agent, and never uses a roster to infer attribution. Carries server 0.7.68.

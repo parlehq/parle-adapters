@@ -15,7 +15,7 @@ export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, reso
 export { CLAUDE_MONITOR_WAKE_FRAME, ClaudeMonitorWake } from "./claude-monitor-wake.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.68";
+export const MCP_CLIENT_VERSION = "0.7.69";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -282,27 +282,52 @@ export function scheduleHostParentCheck(expectedPid: number, shutdown: () => voi
   };
 }
 
-function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge, stopEagerBootstrap: () => void = () => {}, hostParentPid?: number) {
+type LifecycleHost = {
+  on(event: string, listener: () => void): unknown;
+  stdin: { once(event: string, listener: () => void): unknown };
+  setTimer(listener: () => void, delayMs: number): unknown;
+  clearTimer(timer: unknown): void;
+  exit(code: number): void;
+};
+
+const defaultLifecycleHost: LifecycleHost = {
+  on: (event, listener) => process.on(event, listener),
+  stdin: process.stdin,
+  setTimer: (listener, delayMs) => setTimeout(listener, delayMs),
+  clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  exit: (code) => process.exit(code),
+};
+
+export function installLifecycleHandlers(client: ParleAgentClient, deliveryBridge?: HookDeliveryBridge, stopEagerBootstrap: () => void = () => {}, hostParentPid?: number, host: LifecycleHost = defaultLifecycleHost) {
   let ending = false;
+  let exited = false;
   let stopHostParentCheck = () => {};
+  const exit = () => {
+    if (exited) return;
+    exited = true;
+    host.exit(0);
+  };
   const shutdown = () => {
     if (ending) return;
     ending = true;
     stopHostParentCheck();
     stopEagerBootstrap();
-    const timer = setTimeout(() => process.exit(0), 2000);
-    void deliveryBridge?.stop().catch(() => {}).then(() => client.endSession()).catch(() => {}).finally(() => {
-      clearTimeout(timer);
-      process.exit(0);
+    const timer = host.setTimer(exit, 3000);
+    void Promise.allSettled([deliveryBridge?.stop(), client.endSession()]).finally(() => {
+      host.clearTimer(timer);
+      exit();
     });
   };
   if (hostParentPid !== undefined) stopHostParentCheck = scheduleHostParentCheck(hostParentPid, shutdown);
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  host.on("SIGINT", shutdown);
+  host.on("SIGTERM", shutdown);
+  host.on("SIGHUP", shutdown);
+  host.stdin.once("end", shutdown);
+  host.stdin.once("close", shutdown);
   // exit allows no async work; drop the runtime file so readers never see a
   // dead-pid snapshot longer than necessary. Session end over the network is
-  // the SIGINT/SIGTERM path's job.
-  process.on("exit", () => client.discardRuntimeFile());
+  // handled at the graceful boundaries above.
+  host.on("exit", () => client.discardRuntimeFile());
 }
 
 export function isDirectRun(metaUrl: string, argvPath = process.argv[1]): boolean {

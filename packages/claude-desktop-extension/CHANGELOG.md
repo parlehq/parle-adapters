@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.69 (2026-09-06)
+
+- Refresh the bundled MCP server to 0.7.69 and client to 0.8.58. Graceful MCP shutdown now covers SIGHUP and stdin closure and starts session release independently of local teardown.
+
 ## 0.8.68 (2026-09-06)
 
 - Clarify the bundled room tools so generic membership questions use stable principal and agent seats while live-session diagnostics remain explicit. Carries server 0.7.68.
