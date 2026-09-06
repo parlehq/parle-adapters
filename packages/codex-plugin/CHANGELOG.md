@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.74 (2026-09-06)
+
+- Carry server 0.7.71 so Safehouse-backed Codex sessions can verify the host through `lsof` when macOS refuses to spawn `ps`.
+
 ## 0.6.73 (2026-09-06)
 
 - Load the Parle skill for bare room-membership and presence prompts, and carry server 0.7.70 so the always-visible room tool descriptions enforce owner-gated, privacy-safe live-session reporting.

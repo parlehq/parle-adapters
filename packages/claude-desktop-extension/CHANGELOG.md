@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.71 (2026-09-06)
+
+- Refresh the bundled MCP server to 0.7.71. Claude Desktop behavior is unchanged.
+
 ## 0.8.70 (2026-09-06)
 
 - Carry server 0.7.70 so the room tool descriptions enforce details-first owner checks and privacy-safe live-session output.
