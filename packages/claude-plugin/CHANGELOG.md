@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.75 (2026-09-06)
+
+- Carry server 0.7.70 so the room tool descriptions enforce details-first owner checks and privacy-safe live-session output.
+
 ## 0.9.74 (2026-09-06)
 
 - Present one settled connection card after the required Monitor attachment instead of an intermediate unarmed card plus explanation. Shorten the visible Stop-hook instruction and carry server 0.7.69 with broader graceful session cleanup.

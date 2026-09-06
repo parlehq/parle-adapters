@@ -36,7 +36,7 @@
       "required": ["id", "adaptersIssue", "driver", "catalog", "env", "persona", "task", "authoritative", "diagnostic"],
       "properties": {
         "id": {
-          "enum": ["profile-select", "attended-hold", "attended-hold-control", "status-wording", "identity-mismatch", "idle-wake"]
+          "enum": ["profile-select", "attended-hold", "attended-hold-control", "status-wording", "identity-mismatch", "idle-wake", "room-membership", "room-presence-owner", "room-presence-non-owner"]
         },
         "adaptersIssue": { "type": "integer", "minimum": 1, "description": "parlehq/parle-adapters issue number this scenario verifies." },
         "driver": {
@@ -44,8 +44,8 @@
           "description": "exec: one `codex exec` turn. app-server: a persistent thread driven over the Codex app-server protocol so hooks can wake an idle turn."
         },
         "catalog": {
-          "enum": ["two-profile", "default-only"],
-          "description": "How the harness seeds ~/.parle/profiles. two-profile: [default] holds the peer identity and [codex] holds the expected identity. default-only: only [default] exists, so PARLE_PROFILE=codex resolves nothing."
+          "enum": ["two-profile", "default-only", "owner"],
+          "description": "How the harness seeds ~/.parle/profiles. two-profile: [default] holds the peer identity and [codex] holds the expected identity. default-only: only [default] exists, so PARLE_PROFILE=codex resolves nothing. owner: [codex] holds the room owner's agent identity and the matching human session is staged beside the catalog."
         },
         "env": {
           "type": "object",
@@ -78,13 +78,15 @@
       }
     },
     "diagnosticCheck": {
-      "description": "Judged from the Codex rollout JSONL. tool-calls: count of calls to `tool` within [min, max], optionally only counting calls whose arguments contain argsSubset; fails if any counted call has an argument matching argsForbid (numeric `gt` / `eq` predicates per argument name). no-shell-polling: no shell command with a loop or sleep in command position (while, until, for … in, sleep, watch) that also performs a Parle network or inbox operation (curl/wget/http to a parle host or /v/ path, or a parle_inbox/parle_read invocation). status-text: applied to the text returned by parle_status tool results. agent-message: applied to the final assistant message (contains = all, containsAny = at least one). hook-delivery-present: a developer or user message carries 'Parle responsive delivery seq='.",
+      "description": "Judged from the Codex rollout JSONL. tool-calls: count of calls to `tool` within [min, max], optionally only counting calls whose arguments contain argsSubset; fails if any counted call has an argument matching argsForbid (numeric `gt` / `eq` predicates per argument name). tool-order: no call to `after` precedes the first call to `before`; zero `after` calls pass because tool-calls owns presence. no-shell-polling: no shell command with a loop or sleep in command position (while, until, for … in, sleep, watch) that also performs a Parle network or inbox operation (curl/wget/http to a parle host or /v/ path, or a parle_inbox/parle_read invocation). status-text: applied to the text returned by parle_status tool results. agent-message: applied to the final assistant message (contains = all substrings, containsAny = at least one substring, containsLine = all exact trimmed lines, excludes = absent substrings, excludesPattern = absent regular expressions). hook-delivery-present: a developer or user message carries 'Parle responsive delivery seq='.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["tool-calls", "no-shell-polling", "status-text", "agent-message", "hook-delivery-present"] },
+        "kind": { "enum": ["tool-calls", "tool-order", "no-shell-polling", "status-text", "agent-message", "hook-delivery-present"] },
         "tool": { "type": "string", "pattern": "^mcp__parle__parle_[a-z_]+$" },
+        "before": { "type": "string", "pattern": "^mcp__parle__parle_[a-z_]+$" },
+        "after": { "type": "string", "pattern": "^mcp__parle__parle_[a-z_]+$" },
         "min": { "type": "integer", "minimum": 0 },
         "max": { "type": "integer", "minimum": 0 },
         "argsSubset": { "type": "object" },
@@ -98,7 +100,9 @@
         },
         "contains": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
         "containsAny": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-        "excludes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        "containsLine": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "excludes": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "excludesPattern": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
       }
     }
   }

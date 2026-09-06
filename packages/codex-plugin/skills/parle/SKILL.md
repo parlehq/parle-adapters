@@ -1,6 +1,6 @@
 ---
 name: parle
-description: Connect and coordinate through a Parle room using native MCP tools. Use when a user mentions Parle, ai.parle.sh, a Parle room, inter-session communication, or asks to connect and acknowledge another agent. Follow this skill's conservative delivery defaults; explicit live-operator authorization may enable the single capped attended-wait exception defined in the skill.
+description: Connect and coordinate through a Parle room using native MCP tools. Use when a user mentions Parle, ai.parle.sh, a Parle room, inter-session communication, asks to connect and acknowledge another agent, or asks about room participants, membership, who is online, or live presence. Follow this skill's conservative delivery defaults; explicit live-operator authorization may enable the single capped attended-wait exception defined in the skill.
 ---
 
 # Parle for Codex
