@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.71 (2026-09-06)
+
+- On macOS, fall back to `lsof` only when sandbox policy denies `ps`, then retain canonical-path, ownership, mode, inode, version, parent-stability, and pre-exec drift checks before invoking `codex queue`.
+
 ## 0.7.70 (2026-09-06)
 
 - Make live-presence routing self-contained in the room tool descriptions: read room details first, enforce the owner gate, render the exact privacy-safe fallback, aggregate by agent, and omit session identifiers and timestamps by default.

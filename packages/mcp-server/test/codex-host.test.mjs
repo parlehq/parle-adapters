@@ -77,6 +77,7 @@ function linuxDeps(overrides = {}) {
 
 const psComm = (value) => [(file, args) => file === "/bin/ps" && args[1] === "comm=", ok(`${value}\n`)];
 const psArgs = (value) => [(file, args) => file === "/bin/ps" && args[1] === "args=", ok(`${value}\n`)];
+const psSpawnDenied = (code = "EPERM", field) => [(file, args) => file === "/bin/ps" && (!field || args[1] === field), () => { throw Object.assign(new Error(`spawn ${code}`), { code }); }];
 const lsofText = (path) => [(file) => file === "/usr/sbin/lsof", ok(`p${PARENT}\nftxt\nn${path}\nftxt\nn/usr/lib/dyld\n`)];
 
 function darwinDeps(handlers, overrides = {}) {
@@ -154,6 +155,26 @@ test("codex host discovery on macOS accepts an absolute ps comm and falls back t
   const noText = await resolveCodexHostExecutable(PARENT, darwinDeps([psComm("codex"), [(file) => file === "/usr/sbin/lsof", ok(`p${PARENT}\n`)], psArgs("codex")]));
   assert.equal(noText.ok, false);
   assert.equal(noText.reason, "parent-not-codex");
+});
+
+test("codex host discovery on macOS falls back to lsof only when ps execution is denied", async () => {
+  const calls = [];
+  const safehouse = await resolveCodexHostExecutable(PARENT, darwinDeps([], {
+    execFile: fakeExec([psSpawnDenied("EPERM", "comm="), lsofText(CODEX), versionBanner("0.150.1")], calls),
+  }));
+  assert.equal(safehouse.ok, true, JSON.stringify(safehouse));
+  assert.deepEqual(calls.map((call) => call.file), ["/bin/ps", "/usr/sbin/lsof", CODEX]);
+
+  const argsDenied = await resolveCodexHostExecutable(PARENT, darwinDeps([
+    psComm(CODEX),
+    psSpawnDenied("EACCES", "args="),
+  ]));
+  assert.equal(argsDenied.ok, true, JSON.stringify(argsDenied));
+
+  const otherFailure = await resolveCodexHostExecutable(PARENT, darwinDeps([
+    [(file, args) => file === "/bin/ps" && args[1] === "comm=", failed(1, "no such process")],
+  ]));
+  assert.deepEqual(otherFailure, { ok: false, reason: "parent-not-codex", detail: "/bin/ps exited 1" });
 });
 
 test("codex host discovery refuses a relative path, remote topology, wrong uid, non-executable, and a changed parent", async () => {

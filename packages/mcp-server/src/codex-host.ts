@@ -153,19 +153,39 @@ async function readParentProcess(pid: number, platform: NodeJS.Platform, deps: C
   const env = hostSubprocessEnv(deps.env);
   const probe = async (args: string[]) => {
     const outcome = await execFile("/bin/ps", ["-o", ...args, "-p", String(pid)], { timeout: PROBE_TIMEOUT_MS, env });
+    if (outcome.spawnError) throw new Error(outcome.spawnError);
     if (outcome.code !== 0) throw new Error(`/bin/ps exited ${outcome.code ?? outcome.signal}`);
     return outcome.stdout.trim();
   };
-  let path = await probe(["comm="]);
+  const lsofExecutable = async () => {
+    const outcome = await execFile("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: PROBE_TIMEOUT_MS, env });
+    const executable = outcome.stdout.split("\n").find((line) => line.startsWith("n/"));
+    if (outcome.spawnError || outcome.code !== 0 || !executable) throw new Error(outcome.spawnError ?? "parent executable path is not absolute");
+    return executable.slice(1);
+  };
+  let path: string;
+  try {
+    path = await probe(["comm="]);
+  } catch (error) {
+    if (!/\b(?:EACCES|EPERM)\b/.test(errorMessage(error))) throw error;
+    // Agent Safehouse permits lsof with process inspection enabled but macOS
+    // still refuses to spawn ps. The executable remains independently pinned below.
+    path = await lsofExecutable();
+    return { path, args: [] };
+  }
   if (!isAbsolute(path)) {
     // macOS ps reports argv[0] as typed; a PATH-launched host shows a bare
     // name. lsof lists the executable's text mapping by absolute path.
-    const outcome = await execFile("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: PROBE_TIMEOUT_MS, env });
-    const executable = outcome.stdout.split("\n").find((line) => line.startsWith("n/"));
-    if (outcome.code !== 0 || !executable) throw new Error("parent executable path is not absolute");
-    path = executable.slice(1);
+    path = await lsofExecutable();
   }
-  const args = (await probe(["args="])).split(/\s+/).filter(Boolean);
+  let args: string[] = [];
+  try {
+    args = (await probe(["args="])).split(/\s+/).filter(Boolean);
+  } catch (error) {
+    if (!/\b(?:EACCES|EPERM)\b/.test(errorMessage(error))) throw error;
+    // As on Linux when cmdline is unavailable, retain executable verification
+    // and omit only the remote-topology check.
+  }
   return { path, args };
 }
 

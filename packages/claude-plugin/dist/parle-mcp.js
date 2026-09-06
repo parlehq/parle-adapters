@@ -42880,17 +42880,33 @@ async function readParentProcess(pid, platform, deps) {
   const env = hostSubprocessEnv(deps.env);
   const probe = async (args2) => {
     const outcome = await execFile("/bin/ps", ["-o", ...args2, "-p", String(pid)], { timeout: PROBE_TIMEOUT_MS, env });
+    if (outcome.spawnError) throw new Error(outcome.spawnError);
     if (outcome.code !== 0) throw new Error(`/bin/ps exited ${outcome.code ?? outcome.signal}`);
     return outcome.stdout.trim();
   };
-  let path = await probe(["comm="]);
-  if (!isAbsolute3(path)) {
+  const lsofExecutable = async () => {
     const outcome = await execFile("/usr/sbin/lsof", ["-a", "-p", String(pid), "-d", "txt", "-Fn"], { timeout: PROBE_TIMEOUT_MS, env });
     const executable = outcome.stdout.split("\n").find((line2) => line2.startsWith("n/"));
-    if (outcome.code !== 0 || !executable) throw new Error("parent executable path is not absolute");
-    path = executable.slice(1);
+    if (outcome.spawnError || outcome.code !== 0 || !executable) throw new Error(outcome.spawnError ?? "parent executable path is not absolute");
+    return executable.slice(1);
+  };
+  let path;
+  try {
+    path = await probe(["comm="]);
+  } catch (error51) {
+    if (!/\b(?:EACCES|EPERM)\b/.test(errorMessage2(error51))) throw error51;
+    path = await lsofExecutable();
+    return { path, args: [] };
   }
-  const args = (await probe(["args="])).split(/\s+/).filter(Boolean);
+  if (!isAbsolute3(path)) {
+    path = await lsofExecutable();
+  }
+  let args = [];
+  try {
+    args = (await probe(["args="])).split(/\s+/).filter(Boolean);
+  } catch (error51) {
+    if (!/\b(?:EACCES|EPERM)\b/.test(errorMessage2(error51))) throw error51;
+  }
   return { path, args };
 }
 async function resolveCodexHostExecutable(hostParentPid, deps = {}) {
@@ -44608,7 +44624,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.70";
+var MCP_CLIENT_VERSION = "0.7.71";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
