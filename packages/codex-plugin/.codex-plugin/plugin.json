@@ -1,6 +1,6 @@
 {
   "name": "parle-codex-plugin",
-  "version": "0.6.69",
+  "version": "0.6.70",
   "description": "Parle room tools for Codex through the bundled Parle MCP server",
   "author": {
     "name": "Parle"

@@ -20,6 +20,7 @@ MCP v1 room tools:
 - `parle_guidance`
 - `parle_read`
 - `parle_inbox`
+- `parle_room_details`
 - `parle_affordances`
 - `parle_send`
 - `parle_reply`

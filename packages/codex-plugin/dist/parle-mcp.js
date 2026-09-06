@@ -42448,6 +42448,15 @@ var ParleAgentClient = class _ParleAgentClient {
       return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, droppedRows, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, nextCursor: pageCursor, hasMore, ...streamReset ? { streamReset: true } : {}, ...responseReset ? { cursorRetired: true } : {}, ...staleGeneration ? { staleGeneration: true } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}, note };
     }, signal));
   }
+  async roomDetails(params = {}, signal) {
+    const generation = this.bootstrapGeneration;
+    let roomId = "";
+    const result2 = await this.withDataPlane(() => this.withRebootstrap(() => {
+      roomId = this.roomTarget(params.roomId).roomId.value;
+      return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}`, { session: true, roomId, signal });
+    }, signal));
+    return this.bootstrapGeneration !== generation && result2 && typeof result2 === "object" ? { ...result2, roomId, session: this.sessionEstablishedBlock() } : result2;
+  }
   async affordances(signalOrParams, maybeSignal) {
     const params = signalOrParams && !(signalOrParams instanceof AbortSignal) ? signalOrParams : {};
     const signal = signalOrParams instanceof AbortSignal ? signalOrParams : maybeSignal;
@@ -43879,6 +43888,9 @@ var replySchema = {
   idempotencyKey: external_exports.string().optional(),
   roomId: external_exports.string().optional()
 };
+var roomDetailsSchema = {
+  roomId: external_exports.string().optional()
+};
 var affordancesSchema = {
   roomId: external_exports.string().optional()
 };
@@ -44497,6 +44509,15 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
     observeRequest(extra);
     return safeTool(async () => hostGuidance(await client.readInbox(params)));
   });
+  registerTool("parle_room_details", {
+    title: "Parle Room Details",
+    description: `Read stable room facts and the seated principal and agent membership roster. This surface does not expose live session handles, presence, heartbeat, last-seen, or expiry metadata. A roster entry proves room admission, not a currently live session or a uniquely deliverable address. ${ROOM_TEXT}`,
+    inputSchema: roomDetailsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, async (params, extra) => {
+    observeRequest(extra);
+    return safeTool(() => client.roomDetails(params));
+  });
   registerTool("parle_affordances", {
     title: "Parle Affordances",
     description: `List advisory Parle actions available to this room actor. Affordances are advisory, the attempted API call remains the source of truth. ${ROOM_TEXT}`,
@@ -44587,7 +44608,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.66";
+var MCP_CLIENT_VERSION = "0.7.67";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

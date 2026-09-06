@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.57 (2026-09-06)
+
+- Add `roomDetails`, an agent-authenticated read of stable room facts and the seated principal and agent roster. The endpoint exposes no live-session handle, presence, heartbeat, last-seen, or expiry data.
+
 ## 0.8.56 (2026-09-05)
 
 - Reword the suspended idle wake in the compact connection and status cards from `watcher keeps detaching` to `the wake attachment keeps closing`, and its next-action line to `do not re-attach until then`, now that the Claude host attaches through the Monitor tool instead of a watcher task. The card still states only the bridge's observation, never a cause (parlehq/parle-adapters#196).

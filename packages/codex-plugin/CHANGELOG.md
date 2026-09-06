@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.70 (2026-09-06)
+
+- Add the bundled read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57 and server 0.7.67.
+
 ## 0.6.69 (2026-09-05)
 
 - Refresh the bundled MCP artifact to server 0.7.66 and the shared hook: the `--parle-watch` command and the bridge's Unix-socket `wait` action are removed, the hook drops the Claude-only `--idle-wake-launcher` argument, and the suspended idle-wake card reads `the wake attachment keeps closing`. Codex used none of them, so behavior is unchanged (#196, #197).

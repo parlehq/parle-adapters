@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.61 (2026-09-06)
+
+- Add the read-only `parle_room_details` tool for stable room facts and seated principal and agent membership without live-session metadata. Carries client 0.8.57.
+
 ## 0.7.60 (2026-08-27)
 
 - Carry the connect `next` guidance of client 0.8.52 into the Pi bundle: do not poll with `waitSeconds` on your own initiative, while a live operator may authorize one capped attended hold as the host skill describes (#170).

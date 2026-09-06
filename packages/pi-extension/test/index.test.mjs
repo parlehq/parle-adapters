@@ -970,7 +970,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.60" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.61" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1656,7 +1656,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.60");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.61");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2532,6 +2532,22 @@ test("setStatus ignores stale Pi UI contexts", () => {
   };
 
   assert.doesNotThrow(() => __testing.setStatus(staleCtx));
+});
+
+test("parle_room_details returns stable room seat membership", async () => {
+  const harness = installSendHarness(async (url) => {
+    const u = String(url);
+    if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-details", session_credential: "parle_ses_details", session_handle: "details", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.details" }), { status: 201 });
+    if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-details" }), { status: 201 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.endsWith("/v/rooms/room-send")) return new Response(JSON.stringify({ room_id: "room-send", roster: { principal_seats: [], agent_seats: [{ agent_handle: "agent-one" }] } }), { status: 200 });
+    throw new Error("unexpected " + u);
+  });
+
+  const result = await harness.call("parle_room_details");
+
+  assert.equal(result.details.room_id, "room-send");
+  assert.equal(result.details.roster.agent_seats[0].agent_handle, "agent-one");
 });
 
 test("parle_affordances wraps the room affordances endpoint", async () => {

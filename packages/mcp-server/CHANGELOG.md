@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.67 (2026-09-06)
+
+- Add the read-only `parle_room_details` tool for stable room facts and seated principal and agent membership. Its contract explicitly distinguishes admission from liveness and excludes live-session handles, presence, heartbeat, last-seen, and expiry data. Carries client 0.8.57.
+
 ## 0.7.66 (2026-09-05)
 
 - Remove the `--parle-watch` command from the `parle-mcp` bin, a deliberate breaking CLI removal, together with the hook bridge's Unix-socket `wait` action and its single-waiter plumbing. The Claude plugin's Stop hook now attaches Claude's Monitor tool to the `claude-monitor` loopback WebSocket wake introduced in 0.7.65 instead of launching `parle-watch.sh`, so the one-shot socket waiter has no caller left; `waiterAttached` now reflects only the attached Monitor peer, and a peer close the wake did not cause still feeds the #185 suspension latch. The bundled hook drops the `--idle-wake-launcher` argument: at an eligible Stop it emits one Monitor instruction carrying the `idleWakeUrl` from the owner-only `take` response, strictly parsed (`ws:`, host `127.0.0.1`, explicit port 1-65535, a 43-character base64url token path, no userinfo, query, or fragment) and repeated only in canonical form, so a crafted address can carry neither another host nor stray characters into the instruction; anything else, or no address at all, yields no instruction. Its suspension announcement reads `the Monitor attachment keeps closing`. The compact card wording for `idle_wake_suspended` follows client 0.8.56 (#196, #197).

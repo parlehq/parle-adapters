@@ -235,6 +235,10 @@ export type SubmitReplyParams = {
   roomId?: string;
 };
 
+export type RoomDetailsParams = {
+  roomId?: string;
+};
+
 // Room-scoped runtime. Cursors, participant identity, acknowledgement state,
 // and health belong to one room and never migrate to another. Room-wire and
 // token failures gate only this room; session failures gate the session.
@@ -3038,6 +3042,16 @@ export class ParleAgentClient {
       const note = [baseNote, completeness, reset, stale, surface === "inbound" ? INBOX_REPLY_GUIDANCE : ""].filter(Boolean).join(" ");
       return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, droppedRows, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, nextCursor: pageCursor, hasMore, ...(streamReset ? { streamReset: true } : {}), ...(responseReset ? { cursorRetired: true } : {}), ...(staleGeneration ? { staleGeneration: true } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}), note };
     }, signal));
+  }
+
+  async roomDetails(params: RoomDetailsParams = {}, signal?: AbortSignal) {
+    const generation = this.bootstrapGeneration;
+    let roomId = "";
+    const result = await this.withDataPlane(() => this.withRebootstrap(() => {
+      roomId = this.roomTarget(params.roomId).roomId!.value!;
+      return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}`, { session: true, roomId, signal });
+    }, signal));
+    return this.bootstrapGeneration !== generation && result && typeof result === "object" ? { ...result, roomId, session: this.sessionEstablishedBlock() } : result;
   }
 
   async affordances(signalOrParams?: AbortSignal | { roomId?: string }, maybeSignal?: AbortSignal) {

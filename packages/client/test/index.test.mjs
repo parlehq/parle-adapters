@@ -910,6 +910,23 @@ test("concurrent terminal failures share one rebootstrap flight", async () => {
   assert.equal(inboxAttempts, 4);
 });
 
+test("room details returns the stable seat roster", async () => {
+  const client = new ParleAgentClient({
+    env: { PARLE_ROOM_ID: "room-1", PARLE_ROOM_AGENT_TOKEN: "opaque-token" },
+    fetch: async (url) => {
+      const u = String(url);
+      if (u.endsWith("/v/agent/sessions")) return json({ agent_session_id: "as-1", session_credential: "parle_ses_s1", session_handle: "s1", expires_at: "later" }, 201);
+      if (u.endsWith("/participants")) return json({ participant_id: "part-1", generation: "g0", baseline_seq: 33 }, 201);
+      if (u.includes("/projection")) return json({ generation: "g0", watermark: 33, next_since_seq: 33, has_more: false, messages: [] });
+      if (u.endsWith("/v/rooms/room-1")) return json({ room_id: "room-1", roster: { principal_seats: [{ handle: "gilman" }], agent_seats: [{ agent_handle: "galexc" }] } });
+      return json({});
+    },
+  });
+  const result = await client.roomDetails();
+  assert.equal(result.room_id, "room-1");
+  assert.deepEqual(result.roster.agent_seats, [{ agent_handle: "galexc" }]);
+});
+
 test("affordances rebootstrap after agent-session terminal error and preserve cursor", async () => {
   let sessions = 0;
   let affordanceAttempts = 0;

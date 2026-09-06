@@ -141,6 +141,7 @@ The extension registers these Pi tools:
 - `parle_request` - make guarded allowlisted unauthenticated or agent-token API requests. Generic human-session requests are intentionally unsupported.
 - `parle_read` - read projection rows from the current room.
 - `parle_inbox` - read the self-excluding inbound attention surface.
+- `parle_room_details` - read stable room facts and the seated principal and agent roster without live-session metadata.
 - `parle_affordances` - list advisory room actions.
 - `parle_send` - send a raw Parle-native room message or deliberately start a new addressed interaction.
 - `parle_reply` - redeem one server-authored opaque reply route without selector, broadcast, or unaddressed fallback.
