@@ -322,7 +322,7 @@ function evaluateAgentMessage(parsed, check) {
   const text = parsed.agentMessages.at(-1);
   if (text === undefined) return { pass: false, detail: "no assistant message in the rollout" };
   const absent = missing(text, check.contains);
-  const anyHit = check.containsAny ? present(text, check.containsAny) : undefined;
+  const anyHit = check.containsAny ? check.containsAny.filter((value) => text.toLowerCase().includes(value.toLowerCase())) : undefined;
   const leaked = present(text, check.excludes);
   const lines = text.split(/\r?\n/).map((line) => line.trim());
   const absentLines = (check.containsLine || []).filter((line) => !lines.includes(line));

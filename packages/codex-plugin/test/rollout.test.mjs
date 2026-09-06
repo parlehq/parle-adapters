@@ -205,6 +205,8 @@ test("identity-mismatch phrases accept the plugin's own error vocabulary and sti
   // mismatch phrasing.
   const observed = evaluateOne("agent-message-profile-not-found-pass", check);
   assert.equal(observed.pass, true, observed.detail);
+  const sentenceCase = evaluateDiagnostics({ agentMessages: ["Could not confirm identity; nothing was posted."] }, [check])[0];
+  assert.equal(sentenceCase.pass, true, sentenceCase.detail);
   // A refusal with no identity language at all still fails the check.
   const unrelated = evaluateOne("agent-message-unrelated-refusal-fail", check);
   assert.equal(unrelated.pass, false);
