@@ -21,7 +21,7 @@ test("Codex plugin metadata and MCP config point at the bundled server", () => {
   assert.equal(mcp.mcpServers.parle.command, "node");
   assert.deepEqual(mcp.mcpServers.parle.args, ["./dist/parle-mcp.js"]);
   assert.equal(mcp.mcpServers.parle.cwd, ".");
-  assert.deepEqual(mcp.mcpServers.parle.env_vars, ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PWD", "CODEX_HOME", "PARLE_ALLOW_INSECURE_LOCAL"]);
+  assert.deepEqual(mcp.mcpServers.parle.env_vars, ["PARLE_PROFILE", "PARLE_PROFILES", "PARLE_PROFILES_PATH", "PARLE_EXPECT_AGENT", "PARLE_EXPECT_ROOM_ID", "PARLE_EXPECT_ROOM_HANDLE", "PWD", "CODEX_HOME", "PARLE_ALLOW_INSECURE_LOCAL"]);
   assert.deepEqual(mcp.mcpServers.parle.env, {
     PARLE_CONFIG_CWD_FROM_PWD: "1",
     PARLE_RESPONSIVE_DELIVERY: "hook-bridge",

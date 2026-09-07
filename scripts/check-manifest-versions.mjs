@@ -17,6 +17,11 @@ const checks = [
 
 const runtimeChecks = [
   {
+    sourcePath: 'packages/command-code/src/index.ts',
+    packagePath: 'packages/command-code/package.json',
+    patterns: [/const ADAPTER_VERSION = "([^"]+)";/],
+  },
+  {
     sourcePath: 'packages/pi-extension/src/index.ts',
     packagePath: 'packages/pi-extension/package.json',
     patterns: [/const PI_EXTENSION_VERSION = "([^"]+)";/],
@@ -45,6 +50,21 @@ for (const check of checks) {
     console.error(
       `${check.manifestPath} version ${manifest.version} does not match ${check.packagePath} version ${packageJson.version}`,
     );
+  }
+}
+
+for (const plugin of ['claude-plugin', 'codex-plugin', 'claude-desktop-extension']) {
+  const path = `packages/${plugin}`;
+  const manifestPath = `${path}/${plugin === 'claude-desktop-extension' ? 'manifest.json' : '.mcp.json'}`;
+  const [manifest, packageJson] = await Promise.all([
+    readJson(manifestPath),
+    readJson(`${path}/package.json`),
+  ]);
+  const env = plugin === 'claude-desktop-extension' ? manifest.server?.mcp_config?.env : manifest.mcpServers?.parle?.env;
+  const version = env?.PARLE_INTEGRATION_VERSION;
+  if (version !== packageJson.version) {
+    failed = true;
+    console.error(`${manifestPath} integration version ${version || '<missing>'} does not match package version ${packageJson.version}`);
   }
 }
 
