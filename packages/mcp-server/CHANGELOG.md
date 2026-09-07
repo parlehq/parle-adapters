@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.73
+
+- Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
+
 ## 0.7.72 (2026-09-06)
 
 - Let the trusted Codex hook use `lsof` for parent and executable discovery only when Agent Safehouse denies `ps`, so the hook can bind the verified thread without broader process permissions.

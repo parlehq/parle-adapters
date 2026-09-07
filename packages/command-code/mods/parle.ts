@@ -5066,6 +5066,7 @@ var ResponsiveDeliveryController = class {
     }
   }
   async doDrainRoom(room, trigger) {
+    let previousEmptyScan = -1;
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted)
         return;
@@ -5113,8 +5114,14 @@ var ResponsiveDeliveryController = class {
       }
       try {
         const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
-        if (messages.length === 0)
-          return;
+        if (messages.length === 0) {
+          const scanned = delivery?.scanned_max;
+          if (delivery?.has_more !== true || !Number.isSafeInteger(scanned) || scanned < 0 || scanned <= previousEmptyScan)
+            return;
+          previousEmptyScan = scanned;
+          continue;
+        }
+        previousEmptyScan = -1;
         const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
         sourceFence.cursorScope = cursorScope;
         const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
@@ -23189,7 +23196,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.47";
+var ADAPTER_VERSION = "0.7.48";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

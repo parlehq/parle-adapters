@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.65
+
+- Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
+
 ## 0.7.64 (2026-09-06)
 
 - Enforce details-first owner checks and privacy-safe live-session output directly in the room tool descriptions.

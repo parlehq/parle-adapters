@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.76
+
+- Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
+
 ## 0.6.75 (2026-09-06)
 
 - Bind Safehouse-backed Codex threads through the shared hook by falling back to `lsof` only when macOS denies `ps`; carries server 0.7.72.

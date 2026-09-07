@@ -542,6 +542,7 @@ export class ResponsiveDeliveryController {
   }
 
   private async doDrainRoom(room: RoomRuntime, trigger: DeliveryFetchTrigger): Promise<void> {
+    let previousEmptyScan = -1;
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted) return;
       let delivery: any;
@@ -587,7 +588,15 @@ export class ResponsiveDeliveryController {
       }
       try {
         const messages: ResponsiveDeliveryMessage[] = Array.isArray(delivery?.messages) ? delivery.messages : [];
-        if (messages.length === 0) return;
+        if (messages.length === 0) {
+          const scanned = delivery?.scanned_max;
+          // Empty candidate pages can precede reachable work. A repeated or
+          // regressing scan is parked; never spin or acknowledge an empty page.
+          if (delivery?.has_more !== true || !Number.isSafeInteger(scanned) || scanned < 0 || scanned <= previousEmptyScan) return;
+          previousEmptyScan = scanned;
+          continue;
+        }
+        previousEmptyScan = -1;
         const cursorScope: ResponsiveCursorScope | undefined = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias"
           ? delivery.delivery.cursor_scope
           : undefined;

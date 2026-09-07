@@ -4830,6 +4830,7 @@ var ResponsiveDeliveryController = class {
     }
   }
   async doDrainRoom(room, trigger) {
+    let previousEmptyScan = -1;
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted)
         return;
@@ -4877,8 +4878,14 @@ var ResponsiveDeliveryController = class {
       }
       try {
         const messages = Array.isArray(delivery?.messages) ? delivery.messages : [];
-        if (messages.length === 0)
-          return;
+        if (messages.length === 0) {
+          const scanned = delivery?.scanned_max;
+          if (delivery?.has_more !== true || !Number.isSafeInteger(scanned) || scanned < 0 || scanned <= previousEmptyScan)
+            return;
+          previousEmptyScan = scanned;
+          continue;
+        }
+        previousEmptyScan = -1;
         const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
         sourceFence.cursorScope = cursorScope;
         const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
@@ -7640,7 +7647,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.64";
+var PI_EXTENSION_VERSION = "0.7.65";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

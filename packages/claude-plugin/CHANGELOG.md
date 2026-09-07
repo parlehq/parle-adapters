@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.78
+
+- Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
+
 ## 0.9.77 (2026-09-06)
 
 - Refresh the bundled MCP server and shared hook to 0.7.72. Claude Monitor behavior is unchanged.

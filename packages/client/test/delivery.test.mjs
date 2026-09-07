@@ -368,6 +368,65 @@ test("an empty fetch reports liveness without handling or acknowledgement", asyn
   }
 });
 
+test("empty responsive pages continue only while server scan progress advances", async () => {
+  for (const { scans, more, expected, capped } of [
+    { scans: [200, 400, 400], more: true, expected: 3 },
+    { scans: [200, 100], more: true, expected: 2 },
+    { scans: [200], more: false, expected: 1 },
+    { scans: [undefined], more: true, expected: 1 },
+    { scans: [-1], more: true, expected: 1 },
+    { scans: [200, 400, 600], more: true, expected: 3, capped: true },
+  ]) {
+    const h = harness({ rooms: { [ALPHA]: [] }, profiles: "alpha" });
+    let reads = 0;
+    let releases = 0;
+    h.client.drainResponsiveDeliveryWithFence = async () => ({
+      delivery: { messages: [], has_more: more, scanned_max: scans[reads++] },
+      fence: {},
+      release: () => { releases += 1; },
+    });
+    const controller = new ResponsiveDeliveryController(h.client, {
+      handler: async () => assert.fail("empty pages must not invoke the handler"),
+      maxDrainBatches: 3,
+    });
+    try {
+      await h.client.connect();
+      await controller.drainForTest(ALPHA);
+      assert.equal(reads, expected, JSON.stringify(scans));
+      assert.equal(releases, reads, "every page releases its lifecycle fence");
+      assert.equal(h.acks.length, 0, "empty pages must not be acknowledged");
+      assert.equal(Boolean(controller.status().rooms[0].lastError), Boolean(capped));
+    } finally {
+      await controller.stop();
+      h.cleanup();
+    }
+  }
+});
+
+test("responsive work after an empty candidate page is handled in the same drain", async () => {
+  const h = harness({ rooms: { [ALPHA]: [{ seq: 402, event_id: "after-history" }] }, profiles: "alpha" });
+  const original = h.client.drainResponsiveDeliveryWithFence.bind(h.client);
+  let first = true;
+  h.client.drainResponsiveDeliveryWithFence = async (...args) => {
+    if (!first) return original(...args);
+    first = false;
+    return { delivery: { messages: [], has_more: true, scanned_max: 200 }, fence: {}, release() {} };
+  };
+  const handled = [];
+  const controller = new ResponsiveDeliveryController(h.client, {
+    handler: async ({ message }) => { handled.push(message.event_id); return "handled"; },
+  });
+  try {
+    await h.client.connect();
+    await controller.drainForTest(ALPHA);
+    assert.deepEqual(handled, ["after-history"]);
+    assert.deepEqual(h.acks.map(([, eventId]) => eventId), ["after-history"]);
+  } finally {
+    await controller.stop();
+    h.cleanup();
+  }
+});
+
 test("progress diagnostics never interrupt delivery", async () => {
   const h = harness({ rooms: { [ALPHA]: [{ seq: 1, event_id: "diagnostic-failure" }] }, profiles: "alpha" });
   const controller = new ResponsiveDeliveryController(h.client, {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.59
+
+- Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
+
 ## 0.8.58 (2026-09-06)
 
 - Order connection guidance so supported host delivery setup completes before one settled connection result is presented. Apply the same order to sessions established lazily by another tool.

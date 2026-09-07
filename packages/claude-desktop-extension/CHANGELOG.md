@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.73
+
+- Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
+
 ## 0.8.72 (2026-09-06)
 
 - Refresh the bundled MCP server to 0.7.72. Claude Desktop behavior is unchanged.
