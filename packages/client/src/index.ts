@@ -9,6 +9,7 @@ import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShar
 import { ProfileConfigError, ProfileDeletionError, catalogGitExposureWarning, deleteProfile as deleteProfileFromCatalog, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile, type DeleteProfileParams } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
+import { parseSessionAddress } from "./format.js";
 import { enrollKnownAddress, shortenKnownAddressAfterUnprocessable } from "./known-address-registry.js";
 import { inspectResponsiveDeliveryPid, pruneResponsiveDeliverySnapshots } from "./responsive-delivery.js";
 
@@ -101,6 +102,11 @@ export type ParleConfig = {
   agentToken?: ConfigValue;
   agentTokenId?: ConfigValue;
   sessionAlias?: ConfigValue;
+  // Optional server-authenticated identity assertions. They are process config,
+  // never profile credential fields.
+  expectedAgent?: ConfigValue;
+  expectedRoomId?: ConfigValue;
+  expectedRoomHandle?: ConfigValue;
   watchEnabled: ConfigValue;
   unreadPollIntervalSeconds: ConfigValue;
   profile?: ConfigValue;
@@ -128,6 +134,8 @@ export type RuntimeState = {
   sessionHandle: string;
   sessionAddress: string | null;
   sessionAlias?: string;
+  // Taken only from the server session address, never host synthesis.
+  authenticatedAgent?: string;
   sessionGeneration: number;
   sessionRevision: number;
   createdAt: string;
@@ -246,6 +254,9 @@ export type RoomRuntime = {
   profile?: string;
   roomId: string;
   roomHandle?: string;
+  // Taken only from room-entry response metadata, never configuration.
+  authenticatedRoomHandle?: string;
+  authenticatedRoomId?: string;
   participantId: string;
   cursor: number;
   // The stream generation the cursor belongs to (#766), learned at room entry
@@ -615,12 +626,15 @@ export function resolveConfig(cwd = process.cwd(), env: Record<string, string | 
     agentToken: profile ? profileValue("PARLE_ROOM_AGENT_TOKEN", profile.agentToken) : firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
     agentTokenId: profile ? profileValue("PARLE_AGENT_TOKEN_ID", profile.agentTokenId) : firstConfigValue("PARLE_AGENT_TOKEN_ID", sources),
     sessionAlias: aliasConfig(sources, warnings),
+    expectedAgent: firstConfigValue("PARLE_EXPECT_AGENT", sources),
+    expectedRoomId: firstConfigValue("PARLE_EXPECT_ROOM_ID", sources),
+    expectedRoomHandle: firstConfigValue("PARLE_EXPECT_ROOM_HANDLE", sources),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     unreadPollIntervalSeconds: firstConfigValue("PARLE_UNREAD_POLL_INTERVAL_SECONDS", sources, "60"),
     profile: profileSelector.value ? profileSelector : undefined,
     warnings,
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.expectedAgent, cfg.expectedRoomId, cfg.expectedRoomHandle, cfg.watchEnabled]) {
     if (value?.warning) cfg.warnings.push(value.warning);
   }
   if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
@@ -1545,6 +1559,7 @@ export class ParleAgentClient {
     this.publishRuntimeState();
     try {
       this.assertConfigured();
+      this.assertDeclaredIdentityConfiguration();
       const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
@@ -1595,8 +1610,60 @@ export class ParleAgentClient {
     this.publishRuntimeState();
   }
 
+  private declaredIdentityError(code: string, message: string): ParleApiError {
+    return new ParleApiError(message, { code, action: "fix_client", scope: "agent_session", retryable: false });
+  }
+
+  private assertDeclaredIdentityConfiguration(): void {
+    const roomId = this.cfg.expectedRoomId?.value;
+    const roomHandle = this.cfg.expectedRoomHandle?.value;
+    const agent = this.cfg.expectedAgent?.value;
+    if (agent && !/^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_AGENT must be principal.agent without a session or leading @.");
+    }
+    if (roomHandle && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(roomHandle)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_HANDLE must be a room handle.");
+    }
+    if (roomId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(roomId)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_ID must be a lowercase UUID.");
+    }
+    if (roomId && !this.roomConfigs.some((room) => room.roomId?.value === roomId)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_ID must name a configured PARLE_ROOM_ID.");
+    }
+    if (roomHandle && this.roomConfigs.length > 1 && !roomId) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_HANDLE requires PARLE_EXPECT_ROOM_ID when PARLE_PROFILES configures multiple rooms.");
+    }
+  }
+
+  private assertDeclaredAgent(candidate: RuntimeState): void {
+    const expected = this.cfg.expectedAgent?.value;
+    if (!expected) return;
+    if (!candidate.authenticatedAgent) throw this.declaredIdentityError("identity_metadata_missing", "Parle session response omitted authenticated address required by PARLE_EXPECT_AGENT.");
+    if (candidate.authenticatedAgent !== expected) throw this.declaredIdentityError("identity_expectation_mismatch", `Parle authenticated agent ${candidate.authenticatedAgent} does not match PARLE_EXPECT_AGENT ${expected}.`);
+  }
+
+  private assertDeclaredRoom(room: RoomRuntime): void {
+    const expectedId = this.cfg.expectedRoomId?.value;
+    const expected = this.cfg.expectedRoomHandle?.value;
+    if (!expectedId && !expected) return;
+    const expectedRoomId = expectedId || this.roomConfigs[0]?.roomId?.value;
+    if (room.roomId !== expectedRoomId) return;
+    if (expectedId && room.authenticatedRoomId !== expectedId) {
+      throw this.declaredIdentityError("identity_expectation_mismatch", "Parle room entry omitted or mismatched authenticated room_id required by PARLE_EXPECT_ROOM_ID.");
+    }
+    if (!expected) return;
+    if (!room.authenticatedRoomHandle) throw this.declaredIdentityError("identity_metadata_missing", "Parle room entry omitted authenticated room_handle required by PARLE_EXPECT_ROOM_HANDLE.");
+    if (room.authenticatedRoomHandle !== expected) throw this.declaredIdentityError("identity_expectation_mismatch", `Parle authenticated room handle ${room.authenticatedRoomHandle} does not match PARLE_EXPECT_ROOM_HANDLE ${expected}.`);
+  }
+
+  private assertRuntimeDeclaredIdentity(): void {
+    this.assertDeclaredAgent(this.runtime);
+    for (const room of this.roomRuntimes.values()) this.assertDeclaredRoom(room);
+  }
+
   private async prepareCandidate(alias: string | undefined, signal: AbortSignal | undefined, preserveCursor: boolean, requireWakeReadiness: boolean): Promise<PreparedCandidate> {
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
+    const authenticatedAddress = parseSessionAddress(typeof session.address === "string" ? session.address : null);
     const candidate: RuntimeState = {
       bootstrapped: false,
       bootstrapState: "starting",
@@ -1605,6 +1672,7 @@ export class ParleAgentClient {
         { sessionHandle: typeof session.session_handle === "string" ? session.session_handle : undefined },
         typeof session.address === "string" ? session.address : null,
       ),
+      ...(authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {}),
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
       createdAt: String(session.created_at || ""),
@@ -1617,6 +1685,7 @@ export class ParleAgentClient {
     let aliasClaimed = false;
     const rooms = new Map<string, RoomRuntime>();
     try {
+      this.assertDeclaredAgent(candidate);
       // One session enters every configured room with that room's own token.
       // An ordinary room failure degrades only that room; a session-scope
       // rejection aborts the whole set because the session itself is unusable.
@@ -1654,7 +1723,12 @@ export class ParleAgentClient {
             method: "POST", roomId, sessionCredential: candidate.sessionHandle, signal, retry: false,
           });
           room.participantId = String(entry.participant_id || "");
-          if (typeof entry.room_handle === "string" && entry.room_handle) room.roomHandle = entry.room_handle;
+          room.authenticatedRoomId = typeof entry.room_id === "string" ? entry.room_id : undefined;
+          if (typeof entry.room_handle === "string" && entry.room_handle) {
+            room.roomHandle = entry.room_handle;
+            room.authenticatedRoomHandle = entry.room_handle;
+          }
+          this.assertDeclaredRoom(room);
           // Ask BEFORE adopting: a generation change at entry retires the
           // carried cursor along with the stream it belonged to.
           const entryReset = retiresCursor(room, entry);
@@ -1902,8 +1976,13 @@ export class ParleAgentClient {
         method: "POST", roomId, session: true, signal, retry: false,
       });
       room.participantId = String(entry.participant_id || room.participantId || "");
-      if (typeof entry.room_handle === "string" && entry.room_handle) room.roomHandle = entry.room_handle;
-      else if (!room.roomHandle && cfg.roomHandle?.value) room.roomHandle = cfg.roomHandle.value;
+      room.authenticatedRoomId = typeof entry.room_id === "string" ? entry.room_id : undefined;
+      room.authenticatedRoomHandle = undefined;
+      if (typeof entry.room_handle === "string" && entry.room_handle) {
+        room.roomHandle = entry.room_handle;
+        room.authenticatedRoomHandle = entry.room_handle;
+      } else if (!room.roomHandle && cfg.roomHandle?.value) room.roomHandle = cfg.roomHandle.value;
+      this.assertDeclaredRoom(room);
       // Ask BEFORE adopting; see prepareCandidate. A reset retires the cursor.
       const entryReset = retiresCursor(room, entry);
       if (entryReset) room.pendingStreamReset = true;
@@ -1924,7 +2003,9 @@ export class ParleAgentClient {
       return true;
     } catch (error) {
       room.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.recordRoomOperationTerminalCause(error, roomId);
       this.publishRoomRuntimes();
+      this.publishRuntimeState();
       return false;
     }
   }
@@ -2191,6 +2272,9 @@ export class ParleAgentClient {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) throw new ParleApiError("Parle rollover requires a live current session", { code: "session_unavailable", action: "rebootstrap", scope: "agent_session" });
     if (this.runtime.rolloverLatched) throw new ParleApiError("Parle proactive rollover is cooling down after a bounded failure storm", { code: "rollover_cooling_down", action: "backoff", scope: "agent_session", retryable: true, retryAfterMs: ROLLOVER_COOLDOWN_MS });
     const epoch = this.lifecycleEpoch;
+    this.assertConfigured();
+    this.assertDeclaredIdentityConfiguration();
+    this.assertRuntimeDeclaredIdentity();
     const old = { ...this.runtime };
     let prepared: PreparedCandidate;
     // Bridge-owned guards run synchronously after all candidate I/O. When an
@@ -2267,6 +2351,8 @@ export class ParleAgentClient {
       const priorAlias = old.sessionAlias;
       const priorAddress = old.sessionAddress;
       this.assertConfigured();
+      this.assertDeclaredIdentityConfiguration();
+      this.assertRuntimeDeclaredIdentity();
       // An anonymous live session claims the alias IN PLACE (parle-adapters#115,
       // parlehq/parle#797): core's claim precondition (alias-free, generation 0)
       // admits exactly this session, and replacing it would end the exact-session

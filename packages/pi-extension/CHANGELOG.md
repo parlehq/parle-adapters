@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.66
+
+- Verify declared identity expectations before alias claim or responsive delivery in every Pi mode. Refuse prompts until verification succeeds, retain terminal failures, and reject changed expectations until process restart. RPC supervisors use the startup extension error as their failure signal; Pi 0.85.1 does not provide a nonzero graceful RPC exit.
+
 ## 0.7.65
 
 - Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.

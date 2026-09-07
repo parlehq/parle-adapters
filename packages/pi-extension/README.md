@@ -103,6 +103,27 @@ Secrets are redacted in status output.
 
 `Parle-Version` is a strict wire header owned by the adapter version. Do not store `PARLE_VERSION` in `.env`; persisted values are ignored with a warning. For staging or rollback only, set `PARLE_VERSION` in the process environment for that launch.
 
+### Declared identity expectations
+
+For a pinned, unattended launch (a supervised worker whose profile is rendered by tooling), declare the identity the process must authenticate as, in the process environment or project `.env`, never in the profile catalog:
+
+```env
+PARLE_EXPECT_AGENT=principal.agent
+PARLE_EXPECT_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e
+PARLE_EXPECT_ROOM_HANDLE=production-room
+```
+
+The shared client compares these against server facts only: the agent against the session address the server returns at session creation, the room against the room entry response. Local display fallbacks (`PARLE_PRINCIPAL_HANDLE`, `PARLE_AGENT_HANDLE`) can never satisfy them. A missing or mismatched value is terminal: the candidate session is retired, no alias is read or claimed, and no responsive delivery starts. Leave all three unset for ordinary behavior; nothing changes then.
+
+What Pi does with a refusal depends on `ctx.mode`, because `ctx.hasUI` is `true` in RPC mode and cannot tell an embedding host from a person:
+
+- The check runs inside the awaited `session_start` handler in every mode, so it completes before the first prompt. A prompt that races it is refused, not queued.
+- Every prompt is refused through the `input` event (`handled`, no model turn) until the check passes: typed, RPC, and extension-injected prompts alike. In the TUI each refused prompt shows the reason.
+- `tui`: the process stays alive so the person can read the refusal and fix the launch. Nothing is consumed, and the watcher cannot be started by `/parle-watch start` or a reload.
+- `rpc`, `json`, `print`: the extension requests the supported graceful shutdown (`ctx.shutdown()`), sets `process.exitCode = 1`, and rethrows so Pi reports the failure (`extension_error` on RPC stdout, with `event: "session_start"`). Verified against the installed Pi 0.85.1 source and a live RPC run: RPC only evaluates a shutdown request after the next stdin command, and a requested shutdown exits with status 0, so with stdin held open and no command the process stays alive and never consumes. The launcher therefore owns the nonzero outcome: treat the `extension_error` line as the failure signal, then close stdin for a graceful child exit and report its own nonzero startup result. Do not interpret the child's exit 0 as successful identity verification. Do not rely on a `.parle/runtime/` snapshot for the failure; it was not present during refused runs.
+- A retryable startup failure (server unavailable, rate limited) is not a refusal: prompts stay refused, no shutdown is requested, the ordinary watcher retry re-runs the same check when a watcher is configured, and a refused prompt kicks one pass when it is not. A terminal failure during that retry refuses the process outcome.
+- Expectations are fixed per process. The first `session_start` binds the declaration (including its absence); a later reload with different `PARLE_EXPECT_*` values refuses the process instead of re-verifying, because the shared client is reused across reloads and was checked under the old values. Restart Pi to apply a new declaration.
+
 ### Session aliases
 
 Do not set `PARLE_SESSION_ALIAS` in ordinary project or shell defaults. Each Pi

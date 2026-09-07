@@ -1160,6 +1160,16 @@ function responsiveReplyPresentation(message) {
   };
 }
 
+// ../client/dist/format.js
+function parseSessionAddress(address) {
+  if (!address)
+    return void 0;
+  const match = address.match(/^@([^\.\s]+)\.([^\.\s]+)\.([^\.\s]+)$/);
+  if (!match)
+    return void 0;
+  return { principal: match[1], agent: match[2] };
+}
+
 // ../client/dist/known-address-registry.js
 import { existsSync as existsSync3 } from "node:fs";
 import { dirname as dirname3, join as join4 } from "node:path";
@@ -5405,12 +5415,15 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     agentToken: profile ? profileValue("PARLE_ROOM_AGENT_TOKEN", profile.agentToken) : firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
     agentTokenId: profile ? profileValue("PARLE_AGENT_TOKEN_ID", profile.agentTokenId) : firstConfigValue("PARLE_AGENT_TOKEN_ID", sources),
     sessionAlias: aliasConfig(sources, warnings),
+    expectedAgent: firstConfigValue("PARLE_EXPECT_AGENT", sources),
+    expectedRoomId: firstConfigValue("PARLE_EXPECT_ROOM_ID", sources),
+    expectedRoomHandle: firstConfigValue("PARLE_EXPECT_ROOM_HANDLE", sources),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     unreadPollIntervalSeconds: firstConfigValue("PARLE_UNREAD_POLL_INTERVAL_SECONDS", sources, "60"),
     profile: profileSelector.value ? profileSelector : void 0,
     warnings
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.expectedAgent, cfg.expectedRoomId, cfg.expectedRoomHandle, cfg.watchEnabled]) {
     if (value?.warning)
       cfg.warnings.push(value.warning);
   }
@@ -6205,6 +6218,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.publishRuntimeState();
     try {
       this.assertConfigured();
+      this.assertDeclaredIdentityConfiguration();
       const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
@@ -6256,13 +6270,70 @@ var ParleAgentClient = class _ParleAgentClient {
     this.runtime.lastError = this.missingAliasWarning;
     this.publishRuntimeState();
   }
+  declaredIdentityError(code, message) {
+    return new ParleApiError(message, { code, action: "fix_client", scope: "agent_session", retryable: false });
+  }
+  assertDeclaredIdentityConfiguration() {
+    const roomId = this.cfg.expectedRoomId?.value;
+    const roomHandle = this.cfg.expectedRoomHandle?.value;
+    const agent = this.cfg.expectedAgent?.value;
+    if (agent && !/^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_AGENT must be principal.agent without a session or leading @.");
+    }
+    if (roomHandle && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(roomHandle)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_HANDLE must be a room handle.");
+    }
+    if (roomId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(roomId)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_ID must be a lowercase UUID.");
+    }
+    if (roomId && !this.roomConfigs.some((room) => room.roomId?.value === roomId)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_ID must name a configured PARLE_ROOM_ID.");
+    }
+    if (roomHandle && this.roomConfigs.length > 1 && !roomId) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_HANDLE requires PARLE_EXPECT_ROOM_ID when PARLE_PROFILES configures multiple rooms.");
+    }
+  }
+  assertDeclaredAgent(candidate) {
+    const expected = this.cfg.expectedAgent?.value;
+    if (!expected)
+      return;
+    if (!candidate.authenticatedAgent)
+      throw this.declaredIdentityError("identity_metadata_missing", "Parle session response omitted authenticated address required by PARLE_EXPECT_AGENT.");
+    if (candidate.authenticatedAgent !== expected)
+      throw this.declaredIdentityError("identity_expectation_mismatch", `Parle authenticated agent ${candidate.authenticatedAgent} does not match PARLE_EXPECT_AGENT ${expected}.`);
+  }
+  assertDeclaredRoom(room) {
+    const expectedId = this.cfg.expectedRoomId?.value;
+    const expected = this.cfg.expectedRoomHandle?.value;
+    if (!expectedId && !expected)
+      return;
+    const expectedRoomId = expectedId || this.roomConfigs[0]?.roomId?.value;
+    if (room.roomId !== expectedRoomId)
+      return;
+    if (expectedId && room.authenticatedRoomId !== expectedId) {
+      throw this.declaredIdentityError("identity_expectation_mismatch", "Parle room entry omitted or mismatched authenticated room_id required by PARLE_EXPECT_ROOM_ID.");
+    }
+    if (!expected)
+      return;
+    if (!room.authenticatedRoomHandle)
+      throw this.declaredIdentityError("identity_metadata_missing", "Parle room entry omitted authenticated room_handle required by PARLE_EXPECT_ROOM_HANDLE.");
+    if (room.authenticatedRoomHandle !== expected)
+      throw this.declaredIdentityError("identity_expectation_mismatch", `Parle authenticated room handle ${room.authenticatedRoomHandle} does not match PARLE_EXPECT_ROOM_HANDLE ${expected}.`);
+  }
+  assertRuntimeDeclaredIdentity() {
+    this.assertDeclaredAgent(this.runtime);
+    for (const room of this.roomRuntimes.values())
+      this.assertDeclaredRoom(room);
+  }
   async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness) {
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
+    const authenticatedAddress = parseSessionAddress(typeof session.address === "string" ? session.address : null);
     const candidate = {
       bootstrapped: false,
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
       sessionAddress: this.deriveSessionAddress({ sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof session.address === "string" ? session.address : null),
+      ...authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {},
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
       createdAt: String(session.created_at || ""),
@@ -6275,6 +6346,7 @@ var ParleAgentClient = class _ParleAgentClient {
     let aliasClaimed = false;
     const rooms = /* @__PURE__ */ new Map();
     try {
+      this.assertDeclaredAgent(candidate);
       for (const roomCfg of this.roomConfigs) {
         const roomId = roomCfg.roomId.value;
         const room = {
@@ -6307,8 +6379,12 @@ var ParleAgentClient = class _ParleAgentClient {
             retry: false
           });
           room.participantId = String(entry.participant_id || "");
-          if (typeof entry.room_handle === "string" && entry.room_handle)
+          room.authenticatedRoomId = typeof entry.room_id === "string" ? entry.room_id : void 0;
+          if (typeof entry.room_handle === "string" && entry.room_handle) {
             room.roomHandle = entry.room_handle;
+            room.authenticatedRoomHandle = entry.room_handle;
+          }
+          this.assertDeclaredRoom(room);
           const entryReset = retiresCursor(room, entry);
           if (entryReset)
             room.pendingStreamReset = true;
@@ -6539,10 +6615,14 @@ var ParleAgentClient = class _ParleAgentClient {
         retry: false
       });
       room.participantId = String(entry.participant_id || room.participantId || "");
-      if (typeof entry.room_handle === "string" && entry.room_handle)
+      room.authenticatedRoomId = typeof entry.room_id === "string" ? entry.room_id : void 0;
+      room.authenticatedRoomHandle = void 0;
+      if (typeof entry.room_handle === "string" && entry.room_handle) {
         room.roomHandle = entry.room_handle;
-      else if (!room.roomHandle && cfg.roomHandle?.value)
+        room.authenticatedRoomHandle = entry.room_handle;
+      } else if (!room.roomHandle && cfg.roomHandle?.value)
         room.roomHandle = cfg.roomHandle.value;
+      this.assertDeclaredRoom(room);
       const entryReset = retiresCursor(room, entry);
       if (entryReset)
         room.pendingStreamReset = true;
@@ -6566,7 +6646,9 @@ var ParleAgentClient = class _ParleAgentClient {
       return true;
     } catch (error) {
       room.lastError = redactString(error instanceof Error ? error.message : String(error));
+      this.recordRoomOperationTerminalCause(error, roomId);
       this.publishRoomRuntimes();
+      this.publishRuntimeState();
       return false;
     }
   }
@@ -6809,6 +6891,9 @@ var ParleAgentClient = class _ParleAgentClient {
     if (this.runtime.rolloverLatched)
       throw new ParleApiError("Parle proactive rollover is cooling down after a bounded failure storm", { code: "rollover_cooling_down", action: "backoff", scope: "agent_session", retryable: true, retryAfterMs: ROLLOVER_COOLDOWN_MS });
     const epoch = this.lifecycleEpoch;
+    this.assertConfigured();
+    this.assertDeclaredIdentityConfiguration();
+    this.assertRuntimeDeclaredIdentity();
     const old = { ...this.runtime };
     let prepared;
     let guardRejected = false;
@@ -6860,6 +6945,8 @@ var ParleAgentClient = class _ParleAgentClient {
       const priorAlias = old.sessionAlias;
       const priorAddress = old.sessionAddress;
       this.assertConfigured();
+      this.assertDeclaredIdentityConfiguration();
+      this.assertRuntimeDeclaredIdentity();
       if (!priorAlias && old.bootstrapped && old.agentSessionId && old.sessionHandle) {
         return this.claimAliasInPlace(alias, old, epoch, signal);
       }
@@ -7647,7 +7734,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.65";
+var PI_EXTENSION_VERSION = "0.7.66";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -7666,6 +7753,77 @@ var RATE_LIMIT_MAX_ELAPSED_MS = 15 * 60 * 1e3;
 var INJECTED_KEY_LIMIT = 4096;
 var DELIVERY_PROGRESS_LIMIT = 64;
 var runtime = { watcherState: "off" };
+var identityGuard = "unconfigured";
+var identityRefusal;
+function identityExpectationsConfigured(cfg) {
+  return Boolean(cfg.expectedAgent?.value || cfg.expectedRoomId?.value || cfg.expectedRoomHandle?.value);
+}
+function headlessHost(ctx) {
+  return typeof ctx?.mode === "string" && ctx.mode !== "tui";
+}
+function identityRefusalMessage() {
+  return identityGuard === "refused" ? `Parle declared identity check failed; this session will not consume prompts: ${identityRefusal || "declared identity mismatch"}` : "Parle declared identity check has not completed; the prompt was not consumed.";
+}
+function refuseDeclaredIdentity(ctx, cfg, error) {
+  identityGuard = "refused";
+  identityRefusal = redactString(error instanceof Error ? error.message : String(error));
+  recordAutomaticFailure(error, cfg);
+  runtime.nextRetryAt = void 0;
+  runtime.watcherState = terminalWatcherState(error) || "disconnected";
+  runtime.lastError = identityRefusal;
+  setStatus(ctx, cfg);
+  if (!headlessHost(ctx)) return;
+  process.exitCode = 1;
+  try {
+    ctx.shutdown?.();
+  } catch {
+  }
+}
+var identityVerifyInFlight = false;
+var identityExpectationsBound;
+function identityExpectationsKey(cfg) {
+  return JSON.stringify([cfg.expectedAgent?.value || "", cfg.expectedRoomId?.value || "", cfg.expectedRoomHandle?.value || ""]);
+}
+function freshExpectationsKey(ctx, fallback) {
+  try {
+    return identityExpectationsKey(resolveConfig2(ctx?.cwd || process.cwd()));
+  } catch {
+    return identityExpectationsKey(fallback);
+  }
+}
+function bindDeclaredExpectations(ctx, cfg) {
+  const key = freshExpectationsKey(ctx, cfg);
+  if (identityExpectationsBound === void 0) {
+    identityExpectationsBound = key;
+    return;
+  }
+  if (identityExpectationsBound === key) return;
+  const error = new Error("PARLE_EXPECT_* changed while Pi is running; declared identity expectations are fixed per process. Restart Pi to apply the new declaration.");
+  error.code = "identity_expectation_changed";
+  error.action = "fix_client";
+  error.scope = "agent_session";
+  error.retryable = false;
+  refuseDeclaredIdentity(ctx, cfg, error);
+  throw error;
+}
+async function verifyDeclaredIdentity(ctx, cfg) {
+  if (identityGuard === "refused") throw new Error(identityRefusalMessage());
+  if (identityGuard !== "verified") identityGuard = "pending";
+  identityRefusal = void 0;
+  identityVerifyInFlight = true;
+  try {
+    await ensureBootstrapped(ctx, cfg);
+  } catch (error) {
+    if (terminalError(error)) refuseDeclaredIdentity(ctx, cfg, error);
+    else {
+      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+      setStatus(ctx, cfg);
+    }
+    throw error;
+  } finally {
+    identityVerifyInFlight = false;
+  }
+}
 var client;
 var clientBinding;
 var unsubscribeCommitGuard;
@@ -7723,6 +7881,9 @@ function clientEnvironment(cfg) {
     if (cfg.wakeBase.source !== "default") env.PARLE_WAKE_BASE = cfg.wakeBase.value;
   }
   if (cfg.sessionAlias?.value) env.PARLE_SESSION_ALIAS = cfg.sessionAlias.value;
+  if (cfg.expectedAgent?.value) env.PARLE_EXPECT_AGENT = cfg.expectedAgent.value;
+  if (cfg.expectedRoomId?.value) env.PARLE_EXPECT_ROOM_ID = cfg.expectedRoomId.value;
+  if (cfg.expectedRoomHandle?.value) env.PARLE_EXPECT_ROOM_HANDLE = cfg.expectedRoomHandle.value;
   if (process.env.PARLE_VERSION) env.PARLE_VERSION = process.env.PARLE_VERSION;
   return env;
 }
@@ -7946,6 +8107,9 @@ function resolveConfig2(cwd, profileOverride = activeProfileOverride) {
     agentHandle: pick("PARLE_AGENT_HANDLE", void 0),
     sessionCookie: firstConfigValue2(sourceCandidates("PARLE_SESSION_COOKIE", true)) || (enabled ? makeValue(readSessionCookieFile(sessionCookieFilePath2(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true) : void 0) || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
     sessionAlias: pick("PARLE_SESSION_ALIAS", void 0),
+    expectedAgent: pick("PARLE_EXPECT_AGENT", void 0),
+    expectedRoomId: pick("PARLE_EXPECT_ROOM_ID", void 0),
+    expectedRoomHandle: pick("PARLE_EXPECT_ROOM_HANDLE", void 0),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
     wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_WAKE_BASE) : pick("PARLE_WAKE_BASE", DEFAULT_WAKE_BASE),
     profile: profileSelector,
@@ -7953,7 +8117,7 @@ function resolveConfig2(cwd, profileOverride = activeProfileOverride) {
     profilesPath: { value: catalogPath, source: catalogOverride ? catalogOverride.source : "default", key: "PARLE_PROFILES_PATH" },
     warnings
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.agentId, cfg.principalHandle, cfg.agentHandle, cfg.sessionCookie, cfg.sessionAlias, cfg.watchEnabled, cfg.profile]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.agentId, cfg.principalHandle, cfg.agentHandle, cfg.sessionCookie, cfg.sessionAlias, cfg.expectedAgent, cfg.expectedRoomId, cfg.expectedRoomHandle, cfg.watchEnabled, cfg.profile]) {
     if (value?.warning) cfg.warnings.push(value.warning);
   }
   if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
@@ -8266,6 +8430,7 @@ async function ensureBootstrapped(ctx, cfg, signal) {
   const live = agentClient(ctx, cfg);
   await live.ensureBootstrapped(signal);
   liveConfig = cfg;
+  if (identityExpectationsConfigured(cfg)) identityGuard = "verified";
 }
 async function performSessionRollover(signal) {
   assertLifecycleActive();
@@ -8733,6 +8898,7 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
   } catch (error) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
+      if (identityGuard !== "unconfigured" && identityGuard !== "refused" && terminalError(error)) refuseDeclaredIdentity(ctx, cfg, error);
       const terminalState = terminalWatcherState(error);
       runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       watcherLoopRunning = false;
@@ -8752,6 +8918,7 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
 }
 function startWatcher(pi, ctx, cfg = resolveConfig2(ctx.cwd || process.cwd())) {
   if (shutdownRequested || lifecycleEnded) return;
+  if (identityGuard === "refused") return;
   if (client?.runtime.bootstrapped && cfg.roomId?.value && client.runtime.rooms?.[0]?.roomId && client.runtime.rooms[0].roomId !== cfg.roomId.value) return;
   if (!watcherConfigured(cfg) || automaticGateClosed(cfg)) return;
   const controllerRunning = Boolean(deliveryController?.status().running);
@@ -8873,6 +9040,11 @@ function statusDetails(ctx) {
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue2(cfg.sessionAlias),
+    identityGuard,
+    ...identityRefusal ? { identityRefusal } : {},
+    expectedAgent: redactedValue2(cfg.expectedAgent),
+    expectedRoomId: redactedValue2(cfg.expectedRoomId),
+    expectedRoomHandle: redactedValue2(cfg.expectedRoomHandle),
     watchEnabled: redactedValue2(cfg.watchEnabled),
     profile: redactedValue2(cfg.profile),
     profiles: redactedValue2(cfg.profiles),
@@ -9035,8 +9207,14 @@ var __testing = {
     if (timing.clearTimer) rolloverClearTimer = timing.clearTimer;
   },
   setStatus,
+  identityGuard() {
+    return identityGuard;
+  },
   resetRuntime() {
     runtime = { watcherState: "off" };
+    identityGuard = "unconfigured";
+    identityRefusal = void 0;
+    identityExpectationsBound = void 0;
     discardDeliveryController();
     detachClient();
     activeProfileOverride = void 0;
@@ -9123,14 +9301,38 @@ async function shutdownLifecycle(ctx, _cfg) {
 }
 function parleExtension(pi) {
   lastPi = pi;
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx;
     pruneRuntimeFiles(ctx.cwd || process.cwd());
     const cfg = resolveLifecycleConfig(ctx);
     if (!cfg) return;
     preflightAutomaticBinding(cfg);
+    bindDeclaredExpectations(ctx, cfg);
+    if (identityExpectationsConfigured(cfg)) {
+      try {
+        await verifyDeclaredIdentity(ctx, cfg);
+      } catch (error) {
+        if (identityGuard !== "refused") startWatcher(pi, ctx, cfg);
+        throw error;
+      }
+    } else {
+      identityGuard = "unconfigured";
+    }
     setStatus(ctx, cfg);
     startWatcher(pi, ctx, cfg);
+  });
+  pi.on("input", async (_event, ctx) => {
+    if (identityGuard === "unconfigured" || identityGuard === "verified") return { action: "continue" };
+    const reason = identityRefusalMessage();
+    try {
+      if (ctx?.hasUI) ctx.ui?.notify?.(reason, "error");
+    } catch {
+    }
+    if (identityGuard === "pending" && !identityVerifyInFlight && !watcherLoopRunning) {
+      const cfg = resolveLifecycleConfig(ctx);
+      if (cfg && identityExpectationsConfigured(cfg)) void verifyDeclaredIdentity(ctx, cfg).catch(() => void 0);
+    }
+    return { action: "handled" };
   });
   pi.on("agent_settled", async (_event, ctx) => {
     lastCtx = ctx;

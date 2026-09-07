@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.65";
+const PI_EXTENSION_VERSION = "0.7.66";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -53,6 +53,9 @@ type ParleConfig = {
   agentHandle?: ConfigValue;
   sessionCookie?: ConfigValue;
   sessionAlias?: ConfigValue;
+  expectedAgent?: ConfigValue;
+  expectedRoomId?: ConfigValue;
+  expectedRoomHandle?: ConfigValue;
   watchEnabled: ConfigValue;
   wakeBase: ConfigValue;
   profile?: ConfigValue;
@@ -213,6 +216,128 @@ type ParleSwitchProfileParams = {
 // backoff bookkeeping, and the pending injection queue. The session, rooms,
 // cursor, alias, and lifecycle all live in the shared ParleAgentClient.
 let runtime: PiWatchRuntime = { watcherState: "off" };
+
+// Declared identity guard (PARLE_EXPECT_*). Pi cannot refuse a turn from
+// session_start alone: a thrown handler only surfaces as an extension error and
+// the host keeps running (extensions.md "session_start", rpc.md
+// "extension_error"). The only supported turn blocker is the `input` event
+// returning `handled` (extensions.md "input"), and the only supported host
+// termination is ctx.shutdown() (extensions.md "ctx.shutdown()"). The guard is
+// registered at extension load, BEFORE session_start, so a prompt that arrives
+// while the awaited identity check is still in flight is refused rather than
+// raced. It is per process, not per session: a reload re-verifies.
+type IdentityGuardState = "unconfigured" | "pending" | "verified" | "refused";
+let identityGuard: IdentityGuardState = "unconfigured";
+let identityRefusal: string | undefined;
+
+function identityExpectationsConfigured(cfg: ParleConfig): boolean {
+  return Boolean(cfg.expectedAgent?.value || cfg.expectedRoomId?.value || cfg.expectedRoomHandle?.value);
+}
+
+// ctx.hasUI is TRUE in RPC mode (rpc.md, extensions.md "Mode Behavior"), so it
+// cannot distinguish an embedding host from a person. ctx.mode can: only "tui"
+// has a human who can read the refusal and act; rpc, json, and print are owned
+// by a launcher that needs a process outcome. An absent mode is treated as
+// interactive, the direction that never kills a host by mistake.
+function headlessHost(ctx: any): boolean {
+  return typeof ctx?.mode === "string" && ctx.mode !== "tui";
+}
+
+function identityRefusalMessage(): string {
+  return identityGuard === "refused"
+    ? `Parle declared identity check failed; this session will not consume prompts: ${identityRefusal || "declared identity mismatch"}`
+    : "Parle declared identity check has not completed; the prompt was not consumed.";
+}
+
+// Report the terminal refusal after the shared client retires the candidate.
+// RPC supervisors consume extension_error; preboot snapshot publication is
+// best-effort and is not a reliable failure signal.
+function refuseDeclaredIdentity(ctx: any, cfg: ParleConfig, error: any): void {
+  identityGuard = "refused";
+  identityRefusal = redactString(error instanceof Error ? error.message : String(error));
+  // Latches automaticGateClosed() through runtime.terminalCause, so a later
+  // /parle-watch start, wake hint, or reload cannot start a watcher.
+  recordAutomaticFailure(error, cfg);
+  runtime.nextRetryAt = undefined;
+  runtime.watcherState = terminalWatcherState(error) || "disconnected";
+  runtime.lastError = identityRefusal;
+  setStatus(ctx, cfg);
+  if (!headlessHost(ctx)) return;
+  // Supported termination request only. Verified against the installed Pi
+  // 0.85.1 source (dist/modes/rpc/rpc-mode.js): the RPC shutdownHandler merely
+  // sets a flag that checkShutdownRequested() evaluates AFTER the next stdin
+  // command, and a requested shutdown always calls process.exit(0); a SIGTERM
+  // exits 143 but its handler is registered only after session_start returns.
+  // So with stdin held open and no command, the process stays alive, and a
+  // requested exit is never nonzero. The nonzero outcome therefore belongs to
+  // the launcher: it reads the extension_error event and closes stdin
+  // (graceful child exit 0), then reports its own nonzero startup outcome.
+  // process.exitCode is still set for hosts whose exit path
+  // honours it (print mode exits on its own). Never process.exit() here: it
+  // would skip session_shutdown for every other extension.
+  process.exitCode = 1;
+  try { ctx.shutdown?.(); } catch {}
+}
+
+// One verification pass over the shared client. A terminal failure refuses
+// the process outcome; a retryable one leaves the guard pending and reports.
+// The caller decides who retries: session_start hands that to the ordinary
+// watcher, and a refused prompt kicks one pass so a host without a watcher
+// still converges.
+let identityVerifyInFlight = false;
+
+// Expectations are immutable for the life of the process. The shared client is
+// reused across session reloads and its binding key does not include
+// PARLE_EXPECT_*, so a reload with a changed declaration would otherwise mark
+// "verified" against a client that was checked under the OLD values. Instead
+// the first session_start binds the declaration (including "none"), and any
+// later difference, read fresh from the environment rather than from the live
+// config, refuses the process: restart Pi to apply a new declared identity.
+let identityExpectationsBound: string | undefined;
+function identityExpectationsKey(cfg: Pick<ParleConfig, "expectedAgent" | "expectedRoomId" | "expectedRoomHandle">): string {
+  return JSON.stringify([cfg.expectedAgent?.value || "", cfg.expectedRoomId?.value || "", cfg.expectedRoomHandle?.value || ""]);
+}
+function freshExpectationsKey(ctx: any, fallback: ParleConfig): string {
+  try {
+    return identityExpectationsKey(resolveConfig(ctx?.cwd || process.cwd()));
+  } catch {
+    return identityExpectationsKey(fallback);
+  }
+}
+function bindDeclaredExpectations(ctx: any, cfg: ParleConfig): void {
+  const key = freshExpectationsKey(ctx, cfg);
+  if (identityExpectationsBound === undefined) {
+    identityExpectationsBound = key;
+    return;
+  }
+  if (identityExpectationsBound === key) return;
+  const error: any = new Error("PARLE_EXPECT_* changed while Pi is running; declared identity expectations are fixed per process. Restart Pi to apply the new declaration.");
+  error.code = "identity_expectation_changed";
+  error.action = "fix_client";
+  error.scope = "agent_session";
+  error.retryable = false;
+  refuseDeclaredIdentity(ctx, cfg, error);
+  throw error;
+}
+
+async function verifyDeclaredIdentity(ctx: any, cfg: ParleConfig): Promise<void> {
+  if (identityGuard === "refused") throw new Error(identityRefusalMessage());
+  if (identityGuard !== "verified") identityGuard = "pending";
+  identityRefusal = undefined;
+  identityVerifyInFlight = true;
+  try {
+    await ensureBootstrapped(ctx, cfg);
+  } catch (error) {
+    if (terminalError(error)) refuseDeclaredIdentity(ctx, cfg, error);
+    else {
+      runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
+      setStatus(ctx, cfg);
+    }
+    throw error;
+  } finally {
+    identityVerifyInFlight = false;
+  }
+}
 let client: ParleAgentClient | undefined;
 let clientBinding: string | undefined;
 let unsubscribeCommitGuard: (() => void) | undefined;
@@ -294,6 +419,9 @@ function clientEnvironment(cfg: ParleConfig): Record<string, string | undefined>
     if (cfg.wakeBase.source !== "default") env.PARLE_WAKE_BASE = cfg.wakeBase.value;
   }
   if (cfg.sessionAlias?.value) env.PARLE_SESSION_ALIAS = cfg.sessionAlias.value;
+  if (cfg.expectedAgent?.value) env.PARLE_EXPECT_AGENT = cfg.expectedAgent.value;
+  if (cfg.expectedRoomId?.value) env.PARLE_EXPECT_ROOM_ID = cfg.expectedRoomId.value;
+  if (cfg.expectedRoomHandle?.value) env.PARLE_EXPECT_ROOM_HANDLE = cfg.expectedRoomHandle.value;
   if (process.env.PARLE_VERSION) env.PARLE_VERSION = process.env.PARLE_VERSION;
   return env;
 }
@@ -581,6 +709,9 @@ function resolveConfig(cwd: string, profileOverride = activeProfileOverride): Pa
       || (enabled ? makeValue(readSessionCookieFile(sessionCookieFilePath(catalogPath)), "session_file", "PARLE_SESSION_COOKIE", true) : undefined)
       || { value: "", source: "default", key: "PARLE_SESSION_COOKIE", secret: true },
     sessionAlias: pick("PARLE_SESSION_ALIAS", undefined),
+    expectedAgent: pick("PARLE_EXPECT_AGENT", undefined),
+    expectedRoomId: pick("PARLE_EXPECT_ROOM_ID", undefined),
+    expectedRoomHandle: pick("PARLE_EXPECT_ROOM_HANDLE", undefined),
     watchEnabled: pick("PARLE_WATCH_ENABLED", "1"),
     wakeBase: profile ? fromProfile("PARLE_WAKE_BASE", profile.wakeBase, DEFAULT_WAKE_BASE) : pick("PARLE_WAKE_BASE", DEFAULT_WAKE_BASE),
     profile: profileSelector,
@@ -588,7 +719,7 @@ function resolveConfig(cwd: string, profileOverride = activeProfileOverride): Pa
     profilesPath: { value: catalogPath, source: catalogOverride ? catalogOverride.source : "default", key: "PARLE_PROFILES_PATH" },
     warnings,
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.agentId, cfg.principalHandle, cfg.agentHandle, cfg.sessionCookie, cfg.sessionAlias, cfg.watchEnabled, cfg.profile]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.agentId, cfg.principalHandle, cfg.agentHandle, cfg.sessionCookie, cfg.sessionAlias, cfg.expectedAgent, cfg.expectedRoomId, cfg.expectedRoomHandle, cfg.watchEnabled, cfg.profile]) {
     if (value?.warning) cfg.warnings.push(value.warning);
   }
   if (wakeBaseExplicit && cfg.wakeBase.value === cfg.apiBase.value) {
@@ -957,6 +1088,10 @@ async function ensureBootstrapped(ctx: any, cfg: ParleConfig, signal?: AbortSign
   const live = agentClient(ctx, cfg);
   await live.ensureBootstrapped(signal);
   liveConfig = cfg;
+  // The shared client asserted PARLE_EXPECT_* against the raw server session
+  // and entry responses before any alias read or claim; a bootstrap that
+  // returned is the proof that unblocks prompts.
+  if (identityExpectationsConfigured(cfg)) identityGuard = "verified";
 }
 
 // Proactive rollover is client-owned: the client schedules it from session
@@ -1506,6 +1641,10 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
   } catch (error: any) {
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
+      // Under declared expectations a terminal bootstrap failure (identity
+      // mismatch on a replacement, unusable credential) is a refusal of the
+      // process outcome, not merely a stopped watcher.
+      if (identityGuard !== "unconfigured" && identityGuard !== "refused" && terminalError(error)) refuseDeclaredIdentity(ctx, cfg, error);
       const terminalState = terminalWatcherState(error);
       runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       watcherLoopRunning = false;
@@ -1526,6 +1665,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
 
 function startWatcher(pi: any, ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
   if (shutdownRequested || lifecycleEnded) return;
+  if (identityGuard === "refused") return;
   if (client?.runtime.bootstrapped && cfg.roomId?.value && client.runtime.rooms?.[0]?.roomId && client.runtime.rooms[0].roomId !== cfg.roomId.value) return;
   if (!watcherConfigured(cfg) || automaticGateClosed(cfg)) return;
   const controllerRunning = Boolean(deliveryController?.status().running);
@@ -1660,6 +1800,11 @@ function statusDetails(ctx: any) {
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
+    identityGuard,
+    ...(identityRefusal ? { identityRefusal } : {}),
+    expectedAgent: redactedValue(cfg.expectedAgent),
+    expectedRoomId: redactedValue(cfg.expectedRoomId),
+    expectedRoomHandle: redactedValue(cfg.expectedRoomHandle),
     watchEnabled: redactedValue(cfg.watchEnabled),
     profile: redactedValue(cfg.profile),
     profiles: redactedValue(cfg.profiles),
@@ -1822,8 +1967,12 @@ export const __testing = {
     if (timing.clearTimer) rolloverClearTimer = timing.clearTimer;
   },
   setStatus,
+  identityGuard() { return identityGuard; },
   resetRuntime() {
     runtime = { watcherState: "off" };
+    identityGuard = "unconfigured";
+    identityRefusal = undefined;
+    identityExpectationsBound = undefined;
     discardDeliveryController();
     detachClient();
     activeProfileOverride = undefined;
@@ -1921,14 +2070,50 @@ async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
 export default function parleExtension(pi: any) {
   lastPi = pi;
 
-  pi.on("session_start", (_event: any, ctx: any) => {
+  pi.on("session_start", async (_event: any, ctx: any) => {
     lastCtx = ctx;
     pruneRuntimeFiles(ctx.cwd || process.cwd());
     const cfg = resolveLifecycleConfig(ctx);
     if (!cfg) return;
     preflightAutomaticBinding(cfg);
+    // Runs on every session_start (startup, reload, new, resume, fork): a
+    // changed declaration refuses; an unchanged one re-verifies below.
+    bindDeclaredExpectations(ctx, cfg);
+    if (identityExpectationsConfigured(cfg)) {
+      // Pi awaits session_start, so the shared fail-closed check runs before
+      // the first prompt in every mode; the input guard covers a prompt that
+      // races it. A terminal failure (identity mismatch, unusable credential)
+      // refuses the process outcome; a retryable one keeps the guard pending
+      // and lets the ordinary watcher retry re-run the same check.
+      try {
+        await verifyDeclaredIdentity(ctx, cfg);
+      } catch (error) {
+        // Retryable: the ordinary watcher retry (runWatcher -> ensureBootstrapped)
+        // re-runs the same client check and flips the guard on success; a
+        // refused prompt kicks one pass when no watcher is configured. Pi still
+        // reports the error (extension_error in RPC) either way.
+        if (identityGuard !== "refused") startWatcher(pi, ctx, cfg);
+        throw error;
+      }
+    } else {
+      identityGuard = "unconfigured";
+    }
     setStatus(ctx, cfg);
     startWatcher(pi, ctx, cfg);
+  });
+
+  // Registered at load: the guard must exist before session_start's awaited
+  // check, and it must also refuse extension-injected prompts (source
+  // "extension"), which is how responsive delivery would otherwise start a turn.
+  pi.on("input", async (_event: any, ctx: any) => {
+    if (identityGuard === "unconfigured" || identityGuard === "verified") return { action: "continue" };
+    const reason = identityRefusalMessage();
+    try { if (ctx?.hasUI) ctx.ui?.notify?.(reason, "error"); } catch {}
+    if (identityGuard === "pending" && !identityVerifyInFlight && !watcherLoopRunning) {
+      const cfg = resolveLifecycleConfig(ctx);
+      if (cfg && identityExpectationsConfigured(cfg)) void verifyDeclaredIdentity(ctx, cfg).catch(() => undefined);
+    }
+    return { action: "handled" };
   });
 
   pi.on("agent_settled", async (_event: any, ctx: any) => {

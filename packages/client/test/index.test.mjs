@@ -2061,7 +2061,7 @@ test("PARLE_PROFILES rejects duplicate rooms and mixed origins", () => {
 });
 
 function twoRoomClient(options = {}) {
-  const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILES: "alpha,beta" });
+  const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILES: "alpha,beta", ...options.env });
   const alpha = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
   const beta = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
   const calls = [];
@@ -2076,7 +2076,7 @@ function twoRoomClient(options = {}) {
       const room = path.includes(alpha) ? "alpha" : "beta";
       if (options.denyEntry === room) return json({ error: { code: "forbidden", message: "no seat", action: "fix_client", scope: "request" } }, 403);
       if (options.sessionDeny === room) return json({ error: { code: "agent_mismatch", message: "session not valid here", action: "rebootstrap", scope: "agent_session" } }, 403);
-      return json({ participant_id: `part-${room}`, room_handle: `${room}-room`, generation: "g0", baseline_seq: room === "alpha" ? 10 : 20 }, 201);
+      return json({ participant_id: `part-${room}`, room_id: room === "alpha" ? alpha : beta, room_handle: `${room}-room`, generation: "g0", baseline_seq: room === "alpha" ? 10 : 20 }, 201);
     }
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
     if (path.includes("/projection")) return json({ watermark: path.includes(alpha) ? 10 : 20, messages: [] });
@@ -2089,6 +2089,50 @@ function twoRoomClient(options = {}) {
   const client = new ParleAgentClient({ cwd: project.cwd, env: project.env, fetch });
   return { client, calls, alpha, beta, cleanup: project.cleanup };
 }
+
+test("profile switch cannot shed process identity expectations", async () => {
+  const project = roomSetProject(TWO_ROOM_CATALOG, { PARLE_PROFILE: "alpha", PARLE_EXPECT_AGENT: "p.a", PARLE_SESSION_ALIAS: "main" });
+  const calls = [];
+  const client = new ParleAgentClient({ cwd: project.cwd, env: project.env, fetch: async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const target = init.headers?.Authorization === "Bearer parle_agt_beta";
+    calls.push([path, target]);
+    if (path === "/v/agent/sessions") return json({ agent_session_id: target ? "target" : "old", session_credential: target ? "parle_ses_target" : "parle_ses_old", address: target ? "@p.other.target" : "@p.a.old" }, 201);
+    if (path.endsWith("/participants")) return json({ participant_id: "participant", baseline_seq: 0 }, 201);
+    if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+    if (path === "/v/agent/wake") return new Response(": ready\n\n");
+    if (path.startsWith("/v/agent/session-aliases/")) return json({ alias: "main", generation: 0, current_agent_session_id: null });
+    if (path.endsWith("/claim-alias")) return json({ alias: "main", generation: 1 });
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  }});
+  try {
+    await client.connect();
+    calls.length = 0;
+    await assert.rejects(client.switchProfile("beta"), /does not match PARLE_EXPECT_AGENT/);
+    assert.equal(client.runtime.agentSessionId, "old", "failed switch preserves the validated current session");
+    assert.equal(client.cfg.profile.value, "alpha");
+    assert.deepEqual(calls.map(([path]) => path), ["/v/agent/sessions", "/v/agent/sessions/target/end"]);
+  } finally { project.cleanup(); }
+});
+
+test("declared room expectations select one authenticated room in a multi-room session", async () => {
+  const beta = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
+  for (const [env, failure] of [
+    [{ PARLE_EXPECT_ROOM_ID: beta, PARLE_EXPECT_ROOM_HANDLE: "beta-room" }, undefined],
+    [{ PARLE_EXPECT_ROOM_ID: beta, PARLE_EXPECT_ROOM_HANDLE: "alpha-room" }, /does not match/],
+    [{ PARLE_EXPECT_ROOM_HANDLE: "beta-room" }, /requires PARLE_EXPECT_ROOM_ID/],
+  ]) {
+    const harness = twoRoomClient({ env });
+    try {
+      if (failure) await assert.rejects(harness.client.connect(), failure);
+      else {
+        await harness.client.connect();
+        assert.equal(harness.client.runtime.rooms.length, 2);
+      }
+    } finally { harness.cleanup(); }
+  }
+});
 
 test("one session enters every configured room with that room's own bearer", async () => {
   const harness = twoRoomClient();
@@ -2471,4 +2515,88 @@ test("in-place alias claim preserves the live session and its fences", async () 
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+
+test("declared identity expectations fail closed before alias, delivery, or local address fallback", async () => {
+  const ROOM = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const run = async (env = {}, response = {}) => {
+    const calls = [];
+    const client = new ParleAgentClient({
+      env: { PARLE_ROOM_ID: ROOM, PARLE_ROOM_AGENT_TOKEN: "parle_agt_expect", ...env },
+      fetch: async (url, init = {}) => {
+        const path = new URL(String(url)).pathname;
+        calls.push(path);
+        if (path === "/v/agent/sessions") return json({ agent_session_id: "candidate", session_credential: "parle_ses_candidate", session_handle: "candidate", address: "@principal.agent.candidate", ...response.session }, 201);
+        if (path.endsWith("/participants")) return json({ participant_id: "participant", room_id: ROOM, room_handle: "expected-room", ...response.entry }, 201);
+        if (path.endsWith("/projection")) return json({ watermark: 0, messages: [] });
+        if (path === "/v/agent/wake") return new Response(": ready\n\n");
+        if (path.startsWith("/v/agent/session-aliases/")) return json({ alias: "main", generation: 0, current_agent_session_id: null });
+        if (path.endsWith("/claim-alias")) return json({ agent_session_id: "candidate", alias: "main", generation: 1 });
+        if (path.endsWith("/end")) return new Response(null, { status: 204 });
+        throw new Error(`unexpected ${path}`);
+      },
+      // A local presentation fallback must not satisfy PARLE_EXPECT_AGENT.
+      synthesizeSessionAddress: () => "@expected.agent.local",
+    });
+    return { client, calls };
+  };
+
+  for (const [env, response, expected] of [
+    [{ PARLE_EXPECT_AGENT: "expected.agent", PARLE_SESSION_ALIAS: "main" }, {}, /does not match PARLE_EXPECT_AGENT/],
+    [{ PARLE_EXPECT_ROOM_ID: ROOM, PARLE_EXPECT_ROOM_HANDLE: "wanted", PARLE_SESSION_ALIAS: "main" }, {}, /does not match PARLE_EXPECT_ROOM_HANDLE/],
+    [{ PARLE_EXPECT_AGENT: "principal.agent" }, { session: { address: undefined } }, /omitted authenticated address/],
+    [{ PARLE_EXPECT_ROOM_ID: ROOM }, { entry: { room_id: undefined } }, /omitted or mismatched authenticated room_id/],
+    [{ PARLE_EXPECT_ROOM_ID: ROOM }, { entry: { room_id: "wrong-room" } }, /omitted or mismatched authenticated room_id/],
+    [{ PARLE_EXPECT_ROOM_ID: ROOM, PARLE_EXPECT_ROOM_HANDLE: "expected-room" }, { entry: { room_handle: undefined } }, /omitted authenticated room_handle/],
+  ]) {
+    const { client, calls } = await run(env, response);
+    await assert.rejects(client.connect(), expected);
+    assert.equal(calls.some((path) => path.endsWith("/claim-alias")), false, "identity failure never claims an alias");
+    assert.equal(calls.some((path) => path.includes("responsive-delivery") || path === "/v/agent/wake"), false, "identity failure never consumes responsive delivery");
+    assert.equal(calls.at(-1), "/v/agent/sessions/candidate/end", "failed candidate is retired best-effort");
+    assert.equal(client.runtime.terminalCause?.retryable, false);
+    assert.equal(client.runtime.bootstrapState, "failed");
+    assert.equal(client.runtime.nextRetryAt, undefined);
+  }
+
+  const correct = await run({ PARLE_EXPECT_AGENT: "principal.agent", PARLE_EXPECT_ROOM_ID: ROOM, PARLE_EXPECT_ROOM_HANDLE: "expected-room" });
+  await correct.client.connect();
+  assert.equal(correct.client.runtime.sessionAddress, "@expected.agent.local", "presentation may still use host synthesis");
+  assert.equal(correct.client.runtime.authenticatedAgent, "principal.agent", "expectation uses the server address instead");
+  correct.client.runtime.authenticatedAgent = "wrong.agent";
+  await assert.rejects(correct.client.switchSessionAlias("main"), /does not match PARLE_EXPECT_AGENT/);
+  assert.equal(correct.calls.some((path) => path.endsWith("/claim-alias")), false, "direct alias path rechecks the authenticated identity");
+  correct.client.runtime.authenticatedAgent = "principal.agent";
+  await correct.client.switchSessionAlias("main");
+  assert.ok(correct.calls.some((path) => path.endsWith("/claim-alias")), "validated direct alias path may claim");
+
+  for (const env of [{ PARLE_EXPECT_AGENT: "@principal.agent" }, { PARLE_EXPECT_AGENT: "principal.agent.session" }, { PARLE_EXPECT_ROOM_HANDLE: "bad room" }, { PARLE_EXPECT_ROOM_ID: "other" }]) {
+    const invalid = await run(env);
+    await assert.rejects(invalid.client.connect(), (error) => error.code === "identity_expectation_invalid");
+    assert.deepEqual(invalid.calls, [], "invalid configuration does not create a session");
+  }
+
+  const changedResponse = { session: {} };
+  const replacement = await run({ PARLE_EXPECT_AGENT: "principal.agent" }, changedResponse);
+  await replacement.client.connect();
+  changedResponse.session.address = "@different.agent.candidate";
+  replacement.calls.length = 0;
+  await assert.rejects(replacement.client.bootstrap(undefined, true), /does not match PARLE_EXPECT_AGENT/);
+  assert.deepEqual(replacement.calls, ["/v/agent/sessions", "/v/agent/sessions/candidate/end"], "replacement rechecks before room entry or claim");
+
+  const entryResponse = { entry: {} };
+  const recovery = await run({ PARLE_EXPECT_ROOM_ID: ROOM, PARLE_EXPECT_ROOM_HANDLE: "expected-room" }, entryResponse);
+  await recovery.client.connect();
+  const room = recovery.client.roomRuntimes.get(ROOM);
+  room.state = "degraded";
+  entryResponse.entry.room_handle = undefined;
+  recovery.calls.length = 0;
+  assert.equal(await recovery.client.recoverRoom(ROOM), false, "reentry cannot reuse an old authenticated handle");
+  assert.equal(recovery.client.runtime.terminalCause?.code, "identity_metadata_missing");
+  assert.equal(recovery.calls.some((path) => path.endsWith("/projection")), false);
+
+  const compatible = await run({}, { session: { address: undefined }, entry: { room_handle: undefined } });
+  await compatible.client.connect();
+  assert.equal(compatible.client.runtime.bootstrapped, true, "ordinary bootstrap accepts absent optional identity metadata");
 });

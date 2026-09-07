@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.74
+
+- Carry shared fail-closed declared identity expectations before alias and responsive-delivery work.
+
 ## 0.7.73
 
 - Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.

@@ -1144,6 +1144,144 @@ function responsiveReplyPresentation(message) {
   };
 }
 
+// ../client/dist/format.js
+var HOST_IDLE_WAKE_LINE_STATES = /* @__PURE__ */ new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
+var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
+var CARD_RULE = "========================================";
+function nextTextFor(key) {
+  if (!key)
+    return DEFAULT_NEXT;
+  switch (key) {
+    case "open-another-session":
+      return DEFAULT_NEXT;
+    case "already-connected":
+      return "read your inbox when you are ready.";
+    case "read-inbox":
+      return "read your inbox for messages addressed to this session.";
+    case "arm-watcher":
+    case "arm-or-verify-watcher":
+      return "arm or verify responsive delivery.";
+    case "idle-wake-unavailable":
+      return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
+    case "idle-wake-queue-only":
+      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
+    case "idle-wake-daemon-attached":
+      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
+    case "idle-wake-degraded":
+      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
+    case "wait-for-watcher":
+      return "wait for responsive delivery startup.";
+    case "wait-for-prompt":
+      return "idle wake resumes at the next prompt; do not re-attach until then.";
+    case "recover-watcher":
+      return "inspect the responsive delivery error and restart the host if it does not recover.";
+    case "repair-delivery-host":
+      return "restart the host after correcting the local delivery socket error.";
+    default:
+      return key;
+  }
+}
+function parseSessionAddress(address) {
+  if (!address)
+    return void 0;
+  const match = address.match(/^@([^\.\s]+)\.([^\.\s]+)\.([^\.\s]+)$/);
+  if (!match)
+    return void 0;
+  return { principal: match[1], agent: match[2] };
+}
+function roomLabels(rooms) {
+  return (rooms || []).map((room) => room.roomHandle || room.roomId).filter((raw) => Boolean(raw)).map((raw) => raw.startsWith("#") ? raw : `#${raw}`);
+}
+function line(label, value) {
+  return `${label.padEnd(14, " ")}${value}`;
+}
+function deliveryLine(input) {
+  if (!input)
+    return void 0;
+  if (typeof input === "string")
+    return input;
+  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
+    return `${input.state} (idle wake ${input.idleWake})`;
+  if (input.reason === "idle_wake_suspended")
+    return `${input.state} (idle wake suspended: the wake attachment keeps closing)`;
+  if (input.reason === "idle_wake_unarmed")
+    return `${input.state} (idle wake unarmed)`;
+  return input.state;
+}
+function formatCompactConnectionCard(input) {
+  const lines = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
+  const parsed = parseSessionAddress(input.sessionAddress);
+  if (parsed) {
+    lines.push(line("You are", `@${parsed.principal}`));
+    lines.push(line("Acting as", `@${parsed.principal}.${parsed.agent}`));
+  }
+  const rooms = roomLabels(input.rooms);
+  if (rooms.length === 1)
+    lines.push(line("In room", rooms[0]));
+  else if (rooms.length > 1)
+    lines.push(line("In rooms", rooms.join(", ")));
+  const delivery = deliveryLine(input.responsiveDelivery);
+  if (delivery)
+    lines.push(line("Delivery", delivery));
+  if (typeof input.unread === "number" && input.unread > 0)
+    lines.push(line("Unread", String(input.unread)));
+  if (input.sessionAddress) {
+    lines.push("", "Session Address:", input.sessionAddress);
+  }
+  lines.push("", `Next: ${nextTextFor(input.next)}`, CARD_RULE);
+  const collapsed = lines.filter((entry, index) => entry !== "" || lines[index - 1] !== "");
+  return collapsed.join("\n");
+}
+function compactConnectionCardFromSummary(summary, opts = {}) {
+  return formatCompactConnectionCard({
+    sessionAddress: summary.sessionAddress,
+    rooms: summary.rooms,
+    next: opts.next || (summary.reusedExistingSession ? "already-connected" : void 0),
+    responsiveDelivery: opts.responsiveDelivery,
+    connectedLabel: opts.connectedLabel
+  });
+}
+function unknownWatcherNext(idleWake) {
+  switch (idleWake) {
+    case "unavailable":
+      return "idle-wake-unavailable";
+    case "queue-only":
+      return "idle-wake-queue-only";
+    case "daemon-attached":
+      return "idle-wake-daemon-attached";
+    case "degraded":
+      return "idle-wake-degraded";
+    default:
+      return "arm-or-verify-watcher";
+  }
+}
+function compactStatusCardFromStatus(status) {
+  const runtime = status.runtime;
+  if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
+    const rooms = status.rooms?.length ? status.rooms : runtime.rooms;
+    const counts = (rooms || []).map((room) => room.unreadCount).filter((count) => typeof count === "number");
+    const unread = counts.length ? counts.reduce((total, count) => total + count, 0) : void 0;
+    return formatCompactConnectionCard({
+      sessionAddress: runtime.sessionAddress,
+      rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
+      unread,
+      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason, idleWake: status.responsiveDelivery.idleWake } : void 0,
+      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? unknownWatcherNext(status.responsiveDelivery.idleWake) : "already-connected")
+    });
+  }
+  const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
+  if (configured) {
+    return formatCompactConnectionCard({
+      connectedLabel: "Parle configured, not connected",
+      next: "run parle_connect to establish the session."
+    });
+  }
+  return formatCompactConnectionCard({
+    connectedLabel: "Parle not configured",
+    next: "run parle_setup to diagnose configuration."
+  });
+}
+
 // ../client/dist/known-address-registry.js
 import { existsSync as existsSync3 } from "node:fs";
 import { dirname as dirname3, join as join4 } from "node:path";
@@ -4518,144 +4656,6 @@ var ParleAccountClient = class {
   }
 };
 
-// ../client/dist/format.js
-var HOST_IDLE_WAKE_LINE_STATES = /* @__PURE__ */ new Set(["unavailable", "queue-only", "daemon-attached", "degraded"]);
-var DEFAULT_NEXT = "open another session and send a message to this Session Address.";
-var CARD_RULE = "========================================";
-function nextTextFor(key) {
-  if (!key)
-    return DEFAULT_NEXT;
-  switch (key) {
-    case "open-another-session":
-      return DEFAULT_NEXT;
-    case "already-connected":
-      return "read your inbox when you are ready.";
-    case "read-inbox":
-      return "read your inbox for messages addressed to this session.";
-    case "arm-watcher":
-    case "arm-or-verify-watcher":
-      return "arm or verify responsive delivery.";
-    case "idle-wake-unavailable":
-      return "Messages arriving while idle will be delivered at the next prompt. If you need to stay available now, explicitly authorize one capped attended wait.";
-    case "idle-wake-queue-only":
-      return "idle wake is armed through the host queue; messages arriving while idle start a turn within about 10 seconds.";
-    case "idle-wake-daemon-attached":
-      return "idle wake is armed through the host daemon; messages arriving while idle start a turn immediately.";
-    case "idle-wake-degraded":
-      return "a wake trigger may be queued but its delivery is unproven; check Parle or prompt once.";
-    case "wait-for-watcher":
-      return "wait for responsive delivery startup.";
-    case "wait-for-prompt":
-      return "idle wake resumes at the next prompt; do not re-attach until then.";
-    case "recover-watcher":
-      return "inspect the responsive delivery error and restart the host if it does not recover.";
-    case "repair-delivery-host":
-      return "restart the host after correcting the local delivery socket error.";
-    default:
-      return key;
-  }
-}
-function parseSessionAddress(address) {
-  if (!address)
-    return void 0;
-  const match = address.match(/^@([^\.\s]+)\.([^\.\s]+)\.([^\.\s]+)$/);
-  if (!match)
-    return void 0;
-  return { principal: match[1], agent: match[2] };
-}
-function roomLabels(rooms) {
-  return (rooms || []).map((room) => room.roomHandle || room.roomId).filter((raw) => Boolean(raw)).map((raw) => raw.startsWith("#") ? raw : `#${raw}`);
-}
-function line(label, value) {
-  return `${label.padEnd(14, " ")}${value}`;
-}
-function deliveryLine(input) {
-  if (!input)
-    return void 0;
-  if (typeof input === "string")
-    return input;
-  if (input.idleWake && HOST_IDLE_WAKE_LINE_STATES.has(input.idleWake))
-    return `${input.state} (idle wake ${input.idleWake})`;
-  if (input.reason === "idle_wake_suspended")
-    return `${input.state} (idle wake suspended: the wake attachment keeps closing)`;
-  if (input.reason === "idle_wake_unarmed")
-    return `${input.state} (idle wake unarmed)`;
-  return input.state;
-}
-function formatCompactConnectionCard(input) {
-  const lines = [CARD_RULE, input.connectedLabel || "Connected to Parle", ""];
-  const parsed = parseSessionAddress(input.sessionAddress);
-  if (parsed) {
-    lines.push(line("You are", `@${parsed.principal}`));
-    lines.push(line("Acting as", `@${parsed.principal}.${parsed.agent}`));
-  }
-  const rooms = roomLabels(input.rooms);
-  if (rooms.length === 1)
-    lines.push(line("In room", rooms[0]));
-  else if (rooms.length > 1)
-    lines.push(line("In rooms", rooms.join(", ")));
-  const delivery = deliveryLine(input.responsiveDelivery);
-  if (delivery)
-    lines.push(line("Delivery", delivery));
-  if (typeof input.unread === "number" && input.unread > 0)
-    lines.push(line("Unread", String(input.unread)));
-  if (input.sessionAddress) {
-    lines.push("", "Session Address:", input.sessionAddress);
-  }
-  lines.push("", `Next: ${nextTextFor(input.next)}`, CARD_RULE);
-  const collapsed = lines.filter((entry, index) => entry !== "" || lines[index - 1] !== "");
-  return collapsed.join("\n");
-}
-function compactConnectionCardFromSummary(summary, opts = {}) {
-  return formatCompactConnectionCard({
-    sessionAddress: summary.sessionAddress,
-    rooms: summary.rooms,
-    next: opts.next || (summary.reusedExistingSession ? "already-connected" : void 0),
-    responsiveDelivery: opts.responsiveDelivery,
-    connectedLabel: opts.connectedLabel
-  });
-}
-function unknownWatcherNext(idleWake) {
-  switch (idleWake) {
-    case "unavailable":
-      return "idle-wake-unavailable";
-    case "queue-only":
-      return "idle-wake-queue-only";
-    case "daemon-attached":
-      return "idle-wake-daemon-attached";
-    case "degraded":
-      return "idle-wake-degraded";
-    default:
-      return "arm-or-verify-watcher";
-  }
-}
-function compactStatusCardFromStatus(status) {
-  const runtime = status.runtime;
-  if (runtime?.bootstrapState === "ready" && runtime.sessionAddress) {
-    const rooms = status.rooms?.length ? status.rooms : runtime.rooms;
-    const counts = (rooms || []).map((room) => room.unreadCount).filter((count) => typeof count === "number");
-    const unread = counts.length ? counts.reduce((total, count) => total + count, 0) : void 0;
-    return formatCompactConnectionCard({
-      sessionAddress: runtime.sessionAddress,
-      rooms: rooms?.length ? rooms : status.config?.roomId?.value ? [{ roomId: status.config.roomId.value, roomHandle: status.config?.roomHandle?.value }] : void 0,
-      unread,
-      responsiveDelivery: status.responsiveDelivery?.state ? { state: status.responsiveDelivery.state, reason: status.responsiveDelivery.reason, idleWake: status.responsiveDelivery.idleWake } : void 0,
-      next: status.responsiveDelivery?.nextActionKey || (unread && unread > 0 ? "read-inbox" : status.responsiveDelivery?.state === "unknown" ? unknownWatcherNext(status.responsiveDelivery.idleWake) : "already-connected")
-    });
-  }
-  const configured = Boolean(status.config?.roomId?.configured && status.config?.agentToken?.configured);
-  if (configured) {
-    return formatCompactConnectionCard({
-      connectedLabel: "Parle configured, not connected",
-      next: "run parle_connect to establish the session."
-    });
-  }
-  return formatCompactConnectionCard({
-    connectedLabel: "Parle not configured",
-    next: "run parle_setup to diagnose configuration."
-  });
-}
-
 // ../client/dist/delivery.js
 var DEFAULT_MAX_HANDLER_ATTEMPTS = 3;
 var DEFAULT_MAX_DRAIN_BATCHES = 100;
@@ -5663,12 +5663,15 @@ function resolveConfig(cwd = process.cwd(), env = process.env) {
     agentToken: profile ? profileValue("PARLE_ROOM_AGENT_TOKEN", profile.agentToken) : firstConfigValue("PARLE_ROOM_AGENT_TOKEN", sources),
     agentTokenId: profile ? profileValue("PARLE_AGENT_TOKEN_ID", profile.agentTokenId) : firstConfigValue("PARLE_AGENT_TOKEN_ID", sources),
     sessionAlias: aliasConfig(sources, warnings),
+    expectedAgent: firstConfigValue("PARLE_EXPECT_AGENT", sources),
+    expectedRoomId: firstConfigValue("PARLE_EXPECT_ROOM_ID", sources),
+    expectedRoomHandle: firstConfigValue("PARLE_EXPECT_ROOM_HANDLE", sources),
     watchEnabled: firstConfigValue("PARLE_WATCH_ENABLED", sources, "1"),
     unreadPollIntervalSeconds: firstConfigValue("PARLE_UNREAD_POLL_INTERVAL_SECONDS", sources, "60"),
     profile: profileSelector.value ? profileSelector : void 0,
     warnings
   };
-  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.watchEnabled]) {
+  for (const value of [cfg.apiBase, cfg.wakeBase, cfg.version, cfg.roomId, cfg.roomHandle, cfg.agentToken, cfg.agentTokenId, cfg.sessionAlias, cfg.expectedAgent, cfg.expectedRoomId, cfg.expectedRoomHandle, cfg.watchEnabled]) {
     if (value?.warning)
       cfg.warnings.push(value.warning);
   }
@@ -6463,6 +6466,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.publishRuntimeState();
     try {
       this.assertConfigured();
+      this.assertDeclaredIdentityConfiguration();
       const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
@@ -6514,13 +6518,70 @@ var ParleAgentClient = class _ParleAgentClient {
     this.runtime.lastError = this.missingAliasWarning;
     this.publishRuntimeState();
   }
+  declaredIdentityError(code, message) {
+    return new ParleApiError(message, { code, action: "fix_client", scope: "agent_session", retryable: false });
+  }
+  assertDeclaredIdentityConfiguration() {
+    const roomId = this.cfg.expectedRoomId?.value;
+    const roomHandle = this.cfg.expectedRoomHandle?.value;
+    const agent = this.cfg.expectedAgent?.value;
+    if (agent && !/^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(agent)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_AGENT must be principal.agent without a session or leading @.");
+    }
+    if (roomHandle && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(roomHandle)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_HANDLE must be a room handle.");
+    }
+    if (roomId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(roomId)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_ID must be a lowercase UUID.");
+    }
+    if (roomId && !this.roomConfigs.some((room) => room.roomId?.value === roomId)) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_ID must name a configured PARLE_ROOM_ID.");
+    }
+    if (roomHandle && this.roomConfigs.length > 1 && !roomId) {
+      throw this.declaredIdentityError("identity_expectation_invalid", "PARLE_EXPECT_ROOM_HANDLE requires PARLE_EXPECT_ROOM_ID when PARLE_PROFILES configures multiple rooms.");
+    }
+  }
+  assertDeclaredAgent(candidate) {
+    const expected = this.cfg.expectedAgent?.value;
+    if (!expected)
+      return;
+    if (!candidate.authenticatedAgent)
+      throw this.declaredIdentityError("identity_metadata_missing", "Parle session response omitted authenticated address required by PARLE_EXPECT_AGENT.");
+    if (candidate.authenticatedAgent !== expected)
+      throw this.declaredIdentityError("identity_expectation_mismatch", `Parle authenticated agent ${candidate.authenticatedAgent} does not match PARLE_EXPECT_AGENT ${expected}.`);
+  }
+  assertDeclaredRoom(room) {
+    const expectedId = this.cfg.expectedRoomId?.value;
+    const expected = this.cfg.expectedRoomHandle?.value;
+    if (!expectedId && !expected)
+      return;
+    const expectedRoomId = expectedId || this.roomConfigs[0]?.roomId?.value;
+    if (room.roomId !== expectedRoomId)
+      return;
+    if (expectedId && room.authenticatedRoomId !== expectedId) {
+      throw this.declaredIdentityError("identity_expectation_mismatch", "Parle room entry omitted or mismatched authenticated room_id required by PARLE_EXPECT_ROOM_ID.");
+    }
+    if (!expected)
+      return;
+    if (!room.authenticatedRoomHandle)
+      throw this.declaredIdentityError("identity_metadata_missing", "Parle room entry omitted authenticated room_handle required by PARLE_EXPECT_ROOM_HANDLE.");
+    if (room.authenticatedRoomHandle !== expected)
+      throw this.declaredIdentityError("identity_expectation_mismatch", `Parle authenticated room handle ${room.authenticatedRoomHandle} does not match PARLE_EXPECT_ROOM_HANDLE ${expected}.`);
+  }
+  assertRuntimeDeclaredIdentity() {
+    this.assertDeclaredAgent(this.runtime);
+    for (const room of this.roomRuntimes.values())
+      this.assertDeclaredRoom(room);
+  }
   async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness) {
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
+    const authenticatedAddress = parseSessionAddress(typeof session.address === "string" ? session.address : null);
     const candidate = {
       bootstrapped: false,
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
       sessionAddress: this.deriveSessionAddress({ sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof session.address === "string" ? session.address : null),
+      ...authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {},
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
       createdAt: String(session.created_at || ""),
@@ -6533,6 +6594,7 @@ var ParleAgentClient = class _ParleAgentClient {
     let aliasClaimed = false;
     const rooms = /* @__PURE__ */ new Map();
     try {
+      this.assertDeclaredAgent(candidate);
       for (const roomCfg of this.roomConfigs) {
         const roomId = roomCfg.roomId.value;
         const room = {
@@ -6565,8 +6627,12 @@ var ParleAgentClient = class _ParleAgentClient {
             retry: false
           });
           room.participantId = String(entry.participant_id || "");
-          if (typeof entry.room_handle === "string" && entry.room_handle)
+          room.authenticatedRoomId = typeof entry.room_id === "string" ? entry.room_id : void 0;
+          if (typeof entry.room_handle === "string" && entry.room_handle) {
             room.roomHandle = entry.room_handle;
+            room.authenticatedRoomHandle = entry.room_handle;
+          }
+          this.assertDeclaredRoom(room);
           const entryReset = retiresCursor(room, entry);
           if (entryReset)
             room.pendingStreamReset = true;
@@ -6797,10 +6863,14 @@ var ParleAgentClient = class _ParleAgentClient {
         retry: false
       });
       room.participantId = String(entry.participant_id || room.participantId || "");
-      if (typeof entry.room_handle === "string" && entry.room_handle)
+      room.authenticatedRoomId = typeof entry.room_id === "string" ? entry.room_id : void 0;
+      room.authenticatedRoomHandle = void 0;
+      if (typeof entry.room_handle === "string" && entry.room_handle) {
         room.roomHandle = entry.room_handle;
-      else if (!room.roomHandle && cfg.roomHandle?.value)
+        room.authenticatedRoomHandle = entry.room_handle;
+      } else if (!room.roomHandle && cfg.roomHandle?.value)
         room.roomHandle = cfg.roomHandle.value;
+      this.assertDeclaredRoom(room);
       const entryReset = retiresCursor(room, entry);
       if (entryReset)
         room.pendingStreamReset = true;
@@ -6824,7 +6894,9 @@ var ParleAgentClient = class _ParleAgentClient {
       return true;
     } catch (error51) {
       room.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
+      this.recordRoomOperationTerminalCause(error51, roomId);
       this.publishRoomRuntimes();
+      this.publishRuntimeState();
       return false;
     }
   }
@@ -7067,6 +7139,9 @@ var ParleAgentClient = class _ParleAgentClient {
     if (this.runtime.rolloverLatched)
       throw new ParleApiError("Parle proactive rollover is cooling down after a bounded failure storm", { code: "rollover_cooling_down", action: "backoff", scope: "agent_session", retryable: true, retryAfterMs: ROLLOVER_COOLDOWN_MS });
     const epoch = this.lifecycleEpoch;
+    this.assertConfigured();
+    this.assertDeclaredIdentityConfiguration();
+    this.assertRuntimeDeclaredIdentity();
     const old = { ...this.runtime };
     let prepared;
     let guardRejected = false;
@@ -7118,6 +7193,8 @@ var ParleAgentClient = class _ParleAgentClient {
       const priorAlias = old.sessionAlias;
       const priorAddress = old.sessionAddress;
       this.assertConfigured();
+      this.assertDeclaredIdentityConfiguration();
+      this.assertRuntimeDeclaredIdentity();
       if (!priorAlias && old.bootstrapped && old.agentSessionId && old.sessionHandle) {
         return this.claimAliasInPlace(alias, old, epoch, signal);
       }
@@ -23196,7 +23273,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.48";
+var ADAPTER_VERSION = "0.7.49";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var SYSTEM_GUIDANCE = [

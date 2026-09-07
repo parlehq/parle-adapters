@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.74
+
+- Refresh the bundled MCP server to 0.7.74 with declared identity expectations.
+
 ## 0.8.73
 
 - Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.

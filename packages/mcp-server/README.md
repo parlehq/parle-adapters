@@ -44,6 +44,10 @@ MCP account-plane tools:
 
 `parle_request` is intentionally deferred from MCP v1.
 
+## Declared identity expectations
+
+Set optional `PARLE_EXPECT_AGENT=principal.agent`, `PARLE_EXPECT_ROOM_ID=<configured UUID>`, and `PARLE_EXPECT_ROOM_HANDLE=<server room handle>` in the MCP child environment or project `.env`. The shared client compares agent identity only from the server session `address` and room handle only from authenticated room entry metadata. Missing or mismatched declared metadata is terminal before alias and responsive-delivery work; no expectations preserve normal bootstrap.
+
 ## Configuration
 
 The stdio server uses the shared client resolver. It supports direct process env and project `.env` configuration, plus atomic `PARLE_PROFILE` bindings from a single profile catalog (`~/.parle/profiles` by default, `PARLE_PROFILES_PATH` to relocate; the override replaces the default entirely). An explicit profile cannot be mixed with direct room-binding values. With no explicit binding, `[default]` is selected when present. See [`docs/design/storage-layout.md`](../../docs/design/storage-layout.md) for the accepted storage rationale.

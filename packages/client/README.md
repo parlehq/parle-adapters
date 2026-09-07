@@ -31,6 +31,18 @@ The release is pinned to `Parle-Version: 2026-08-17`. Session creation always se
 
 The client schedules proactive replacement at `max(created_at, expires_at - 5 minutes - jitter)`, where deterministic jitter is below 60 seconds and derived from `agent_session_id`. Timers are injectable, single-flight, bounded after failures, and unreferenced under Node. Session revision events let bridges restart owned wake streams after a committed swap.
 
+### Declared identity expectations
+
+Optional process or project `.env` expectations pin a bootstrap candidate before alias lookup or claim and before responsive-delivery setup:
+
+```env
+PARLE_EXPECT_AGENT=principal.agent
+PARLE_EXPECT_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e
+PARLE_EXPECT_ROOM_HANDLE=production-room
+```
+
+`PARLE_EXPECT_AGENT` uses lowercase `principal.agent` without a leading `@` and compares only the server session response `address`; host-synthesized or local fallback addresses never satisfy it. `PARLE_EXPECT_ROOM_ID` is a lowercase UUID that must name a configured room and match its authenticated entry response `room_id`. `PARLE_EXPECT_ROOM_HANDLE` compares only the entry response `room_handle`, never `PARLE_ROOM_HANDLE`. Missing or mismatched authenticated metadata fails terminally and retires the unclaimed candidate best-effort before alias lookup, claim, wake setup, or responsive delivery. Session creation and room entry may precede rejection; these checks do not mint tokens or change durable seats. Hosts own model-turn and process-exit behavior. With multiple rooms, pair a room-handle expectation with `PARLE_EXPECT_ROOM_ID`; only the selected room is asserted, not the entire room set. Omitting all three preserves ordinary bootstrap behavior.
+
 Responsive delivery reports the server-selected `delivery.cursor_scope` as `session` or `alias`. This is separate from the adapter projection cursor. Alias scope preserves server-owned unacknowledged redelivery across prepared generations. Anonymous replacement may preserve the adapter projection cursor, but exact-session responsive state does not transfer.
 
 ## Credential profiles

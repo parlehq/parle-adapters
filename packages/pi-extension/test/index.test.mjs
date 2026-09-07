@@ -96,6 +96,274 @@ test("status reads room and token from project .env and redacts token", async ()
   assert.deepEqual(watching.details.responsiveDelivery, { state: "watching", updatedAt: "2026-08-08T20:00:00.000Z" });
 });
 
+
+
+const IDENTITY_ROOM = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+
+// PARLE_EXPECT_* refusals: the shared client rejects before any alias read or
+// claim; this file proves what Pi does with that rejection per host mode
+// (extensions.md "ctx.mode", "ctx.shutdown()", "input"; rpc.md: hasUI is true
+// in RPC, so mode is the only honest discriminator).
+function identityRefusalFetch(calls) {
+  return async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    calls.push(`${init.method || "GET"} ${path}`);
+    if (path === "/v/agent/sessions") return new Response(JSON.stringify({ agent_session_id: "identity", session_credential: "parle_ses_identity", session_handle: "identity", expires_at: "later", address: "@other.agent.identity" }), { status: 201 });
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  };
+}
+
+async function inputOutcomes(harness, ctx) {
+  const out = {};
+  for (const source of ["rpc", "interactive", "extension"]) {
+    out[source] = (await harness.handlers.input({ text: "hello", source }, ctx))?.action;
+  }
+  return out;
+}
+
+test("declared identity refusal in RPC mode shuts the host down without a model turn", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=expected.agent\nPARLE_WATCH_ENABLED=1\n`);
+  const harness = installHarness(cwd);
+  const calls = [];
+  globalThis.fetch = identityRefusalFetch(calls);
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", hasUI: true, shutdown() { shutdowns.push(true); } };
+  const previousExitCode = process.exitCode;
+  try {
+    await assert.rejects(harness.handlers.session_start({ reason: "startup" }, ctx), /does not match PARLE_EXPECT_AGENT/);
+    assert.equal(__testing.identityGuard(), "refused");
+    assert.equal(shutdowns.length, 1, "RPC host is asked for a supported graceful shutdown exactly once");
+    assert.equal(process.exitCode, 1, "the eventual process result is set, never forced");
+    assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" });
+    assert.deepEqual(harness.injected, []);
+    assert.ok(calls.includes("POST /v/agent/sessions/identity/end"), "the refused candidate session is retired");
+    assert.equal(calls.some((call) => call.includes("/participants") || call.includes("claim-alias") || call.includes("/wake")), false, "no entry, claim, or wake after refusal");
+    // Nothing can revive delivery: automatic gate, explicit start, and the /parle-watch command all stay inert.
+    assert.equal(__testing.automaticGateClosed(__testing.resolveConfig(cwd)), true);
+    __testing.startWatcher(harness.pi, ctx);
+    await harness.commands["parle-watch"].handler("start", ctx);
+    assert.equal(__testing.deliveryController(), undefined);
+    assert.notEqual(__testing.runtimeState().watcherState, "watching");
+    const status = await harness.call("parle_status");
+    assert.equal(status.details.identityGuard, "refused");
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("declared identity refusal in the TUI keeps the host alive but consumes nothing", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=expected.agent\nPARLE_WATCH_ENABLED=0\n`);
+  const harness = installHarness(cwd);
+  globalThis.fetch = identityRefusalFetch([]);
+  const shutdowns = [];
+  const notices = [];
+  const ctx = { ...harness.ctx, mode: "tui", hasUI: true, shutdown() { shutdowns.push(true); }, ui: { ...harness.ctx.ui, notify(message, level) { notices.push({ message, level }); } } };
+  const previousExitCode = process.exitCode;
+  try {
+    await assert.rejects(harness.handlers.session_start({ reason: "startup" }, ctx), /does not match PARLE_EXPECT_AGENT/);
+    assert.equal(shutdowns.length, 0, "a person can read the refusal; the host is never shut down");
+    assert.equal(process.exitCode, previousExitCode);
+    assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" });
+    assert.ok(notices.some((n) => n.level === "error" && /declared identity check failed/.test(n.message)), "the refusal is explained on each refused prompt");
+    // An absent mode is treated as interactive: never a shutdown by mistake.
+    __testing.resetRuntime();
+    const harness2 = installHarness(cwd);
+    const shutdowns2 = [];
+    const ctx2 = { ...harness2.ctx, shutdown() { shutdowns2.push(true); } };
+    await assert.rejects(harness2.handlers.session_start({ reason: "startup" }, ctx2), /does not match PARLE_EXPECT_AGENT/);
+    assert.equal(shutdowns2.length, 0);
+    assert.equal(process.exitCode, previousExitCode);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("prompts are refused while the declared identity check is in flight and admitted once it passes", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=principal.agent\nPARLE_EXPECT_ROOM_ID=${IDENTITY_ROOM}\nPARLE_WATCH_ENABLED=0\n`);
+  const harness = installHarness(cwd);
+  let releaseSession;
+  const sessionGate = new Promise((resolve) => { releaseSession = resolve; });
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      await sessionGate;
+      return new Response(JSON.stringify({ agent_session_id: "verified", session_credential: "parle_ses_verified", session_handle: "verified", expires_at: "later", address: "@principal.agent.verified" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-verified", room_id: IDENTITY_ROOM, room_handle: "verified-room", agent_session_id: "verified", generation: "g0", baseline_seq: 3 }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 3, messages: [] }), { status: 200 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", hasUI: true, shutdown() { shutdowns.push(true); } };
+  const startup = harness.handlers.session_start({ reason: "startup" }, ctx);
+  assert.equal(__testing.identityGuard(), "pending");
+  assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" }, "a prompt racing the check is refused, not queued");
+  releaseSession();
+  await startup;
+  assert.equal(__testing.identityGuard(), "verified");
+  assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "continue", interactive: "continue", extension: "continue" });
+  assert.equal(shutdowns.length, 0);
+});
+
+test("a retryable startup failure keeps the guard pending, starts the watcher retry, and verifies once the server recovers", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=principal.agent\nPARLE_WATCH_ENABLED=1\n`);
+  const harness = installHarness(cwd);
+  let sessionAttempts = 0;
+  let recovered = false;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      sessionAttempts += 1;
+      if (!recovered) return new Response(JSON.stringify({ error: { code: "unavailable", message: "temporarily unavailable", action: "retry_with_backoff", retryable: true, scope: "request", retry_after_ms: 10 } }), { status: 502 });
+      return new Response(JSON.stringify({ agent_session_id: "recovered", session_credential: "parle_ses_recovered", session_handle: "recovered", expires_at: "later", address: "@principal.agent.recovered" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-recovered", room_id: IDENTITY_ROOM, room_handle: "recovered-room", agent_session_id: "recovered", generation: "g0", baseline_seq: 1 }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 1, messages: [] }), { status: 200 });
+    if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 1, messages: [], has_more: false, scanned_max: 1 }), { status: 200 });
+    if (path.includes("/inbound")) return new Response(JSON.stringify({ watermark: 1, messages: [] }), { status: 200 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", hasUI: true, shutdown() { shutdowns.push(true); } };
+  const previousExitCode = process.exitCode;
+  try {
+    await assert.rejects(harness.handlers.session_start({ reason: "startup" }, ctx), /temporarily unavailable/);
+    assert.equal(__testing.identityGuard(), "pending", "unverified is not refused");
+    assert.equal(shutdowns.length, 0);
+    assert.equal(process.exitCode, previousExitCode);
+    assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" });
+    // The ordinary watcher retry re-runs the same shared check.
+    const attemptsAfterStartup = sessionAttempts;
+    await eventually(() => sessionAttempts > attemptsAfterStartup);
+    recovered = true;
+    await eventually(() => __testing.identityGuard() === "verified");
+    assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "continue", interactive: "continue", extension: "continue" });
+    assert.equal(shutdowns.length, 0);
+  } finally {
+    await harness.commands["parle-watch"].handler("stop", ctx);
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("a refused prompt kicks one verification pass when no watcher is configured", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=principal.agent\nPARLE_WATCH_ENABLED=0\n`);
+  const harness = installHarness(cwd);
+  let recovered = false;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      if (!recovered) return new Response(JSON.stringify({ error: { code: "unavailable", message: "temporarily unavailable", action: "retry_with_backoff", retryable: true, scope: "request", retry_after_ms: 10 } }), { status: 502 });
+      return new Response(JSON.stringify({ agent_session_id: "kicked", session_credential: "parle_ses_kicked", session_handle: "kicked", expires_at: "later", address: "@principal.agent.kicked" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-kicked", room_id: IDENTITY_ROOM, room_handle: "kicked-room", agent_session_id: "kicked", generation: "g0", baseline_seq: 1 }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 1, messages: [] }), { status: 200 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const ctx = { ...harness.ctx, mode: "tui", hasUI: true, shutdown() { assert.fail("never shut down a TUI"); } };
+  await assert.rejects(harness.handlers.session_start({ reason: "startup" }, ctx), /temporarily unavailable/);
+  assert.equal(__testing.identityGuard(), "pending");
+  recovered = true;
+  assert.equal((await harness.handlers.input({ text: "hello", source: "interactive" }, ctx)).action, "handled", "the kicking prompt itself is still refused");
+  await eventually(() => __testing.identityGuard() === "verified");
+  assert.equal((await harness.handlers.input({ text: "hello", source: "interactive" }, ctx)).action, "continue");
+});
+
+test("a terminal failure during the watcher retry refuses the process outcome", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=principal.agent\nPARLE_WATCH_ENABLED=1\n`);
+  const harness = installHarness(cwd);
+  let sessionAttempts = 0;
+  globalThis.fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      sessionAttempts += 1;
+      if (sessionAttempts === 1) return new Response(JSON.stringify({ error: { code: "unavailable", message: "temporarily unavailable", action: "retry_with_backoff", retryable: true, scope: "request", retry_after_ms: 10 } }), { status: 502 });
+      return new Response(JSON.stringify({ agent_session_id: "late", session_credential: "parle_ses_late", session_handle: "late", expires_at: "later", address: "@other.agent.late" }), { status: 201 });
+    }
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", hasUI: true, shutdown() { shutdowns.push(true); } };
+  const previousExitCode = process.exitCode;
+  try {
+    await assert.rejects(harness.handlers.session_start({ reason: "startup" }, ctx), /temporarily unavailable/);
+    await eventually(() => __testing.identityGuard() === "refused");
+    assert.equal(shutdowns.length, 1);
+    assert.equal(process.exitCode, 1);
+    assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" });
+    const status = await harness.call("parle_status");
+    assert.equal(status.details.identityGuard, "refused");
+    assert.match(status.details.identityRefusal, /does not match PARLE_EXPECT_AGENT/);
+  } finally {
+    await harness.commands["parle-watch"].handler("stop", ctx);
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("declared identity expectations are immutable per process: a changed reload refuses instead of re-verifying", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=principal.agent\nPARLE_WATCH_ENABLED=0\n`);
+  const harness = installHarness(cwd);
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    calls.push(`${init.method || "GET"} ${path}`);
+    if (path === "/v/agent/sessions") return new Response(JSON.stringify({ agent_session_id: "bound", session_credential: "parle_ses_bound", session_handle: "bound", expires_at: "later", address: "@principal.agent.bound" }), { status: 201 });
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-bound", room_id: IDENTITY_ROOM, room_handle: "bound-room", agent_session_id: "bound", generation: "g0", baseline_seq: 1 }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 1, messages: [] }), { status: 200 });
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", hasUI: true, shutdown() { shutdowns.push(true); } };
+  const previousExitCode = process.exitCode;
+  try {
+    await harness.handlers.session_start({ reason: "startup" }, ctx);
+    assert.equal(__testing.identityGuard(), "verified");
+    // Same declaration on reload: still verified, no shutdown.
+    await harness.handlers.session_start({ reason: "reload" }, ctx);
+    assert.equal(__testing.identityGuard(), "verified");
+    assert.equal(shutdowns.length, 0);
+    // Changed declaration on reload: the live client was checked under the old
+    // values, so this is a refusal, never a silent pass.
+    writeFileSync(join(cwd, ".env"), `PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=someone.else\nPARLE_WATCH_ENABLED=0\n`);
+    await assert.rejects(harness.handlers.session_start({ reason: "reload" }, ctx), /fixed per process/);
+    assert.equal(__testing.identityGuard(), "refused");
+    assert.equal(shutdowns.length, 1);
+    assert.equal(process.exitCode, 1);
+    assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" });
+    assert.equal(calls.filter((call) => call === "POST /v/agent/sessions").length, 1, "the changed declaration never re-bootstraps the reused client");
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("adding declared identity expectations to a running process refuses until restart", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_WATCH_ENABLED=0\n`);
+  const harness = installHarness(cwd);
+  globalThis.fetch = async () => { throw new Error("offline test"); };
+  const ctx = { ...harness.ctx, mode: "tui", hasUI: true, shutdown() { assert.fail("never shut down a TUI"); } };
+  await harness.handlers.session_start({ reason: "startup" }, ctx);
+  assert.equal(__testing.identityGuard(), "unconfigured");
+  writeFileSync(join(cwd, ".env"), `PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_EXPECT_AGENT=principal.agent\nPARLE_WATCH_ENABLED=0\n`);
+  await assert.rejects(harness.handlers.session_start({ reason: "reload" }, ctx), /fixed per process/);
+  assert.equal(__testing.identityGuard(), "refused");
+  assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "handled", interactive: "handled", extension: "handled" });
+});
+
+test("without declared expectations the input guard is inert", async () => {
+  const cwd = tempProject(`PARLE_ROOM_ID=${IDENTITY_ROOM}\nPARLE_ROOM_AGENT_TOKEN=token-identity\nPARLE_WATCH_ENABLED=0\n`);
+  const harness = installHarness(cwd);
+  globalThis.fetch = async () => { throw new Error("offline test"); };
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", hasUI: true, shutdown() { shutdowns.push(true); } };
+  await harness.handlers.session_start({ reason: "startup" }, ctx);
+  assert.equal(__testing.identityGuard(), "unconfigured");
+  assert.deepEqual(await inputOutcomes(harness, ctx), { rpc: "continue", interactive: "continue", extension: "continue" });
+  assert.equal(shutdowns.length, 0);
+});
+
 test("status warns when an explicit wake base matches the API base", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WAKE_BASE=https://api.parle.sh\nPARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async () => { throw new Error("offline test"); };
@@ -970,7 +1238,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.65" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.66" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1656,7 +1924,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.65");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.66");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");

@@ -15,7 +15,7 @@ export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, reso
 export { CLAUDE_MONITOR_WAKE_FRAME, ClaudeMonitorWake } from "./claude-monitor-wake.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.73";
+export const MCP_CLIENT_VERSION = "0.7.74";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {

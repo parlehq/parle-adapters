@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.49
+
+- Carry the shared declared identity expectations in the native bundle.
+
 ## 0.7.48
 
 - Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.60
+
+- Add optional fail-closed declared identity expectations before alias lookup, claim, or responsive-delivery setup. `PARLE_EXPECT_AGENT` compares only the server session address principal and agent; `PARLE_EXPECT_ROOM_ID` selects an already configured exact room and `PARLE_EXPECT_ROOM_HANDLE` compares only the server room-entry handle.
+
 ## 0.8.59
 
 - Continue advancing empty responsive-delivery pages when the server reports more work; stop on stalled scan progress and retain bounded drain limits.
