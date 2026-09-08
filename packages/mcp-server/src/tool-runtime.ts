@@ -1,4 +1,6 @@
 import { type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ParleApiError, ProfileConfigError, ProfileNotFoundError, ReadParams, SendParams, SubmitReplyParams, activeRoomSectionFromStatus, assertClientInstanceId, assertClientName, assertClientVersion, compactConnectionCardFromSummary, compactStatusCardFromStatus, deleteProfile, deleteSavedStart, inspectResponsiveDeliveryPid, loadSavedStart, parleApiErrorFields, processClientInstanceId, processStartedAtIso, readResponsiveDeliverySnapshots, readSavedStarts, recoveryInvokerState, redactResponsiveDeliveryDiagnostic, redactString, resolveConfig, resolveProfileCatalogPathForProcess, resolveResponsiveDelivery, resolveSavedStartCatalogPath, ResponsiveDeliveryRecorder, saveSavedStart, savedStartPlan, type AcceptRoomInvitationParams, type ActiveRoomInventoryRow, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ClientOptions, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type ParleRoomsInventory, type RoomCapacityRecoveryParams, type RoomDetailsParams, type RoomInventorySection, type RoomParticipantsParams, knownAddressContextFor, nextTextFor, parseKeyValueFile, parseSessionAddress, resolveProfileCatalogPath } from "@parlehq/agent-client";
 import { z } from "zod";
 
@@ -22,7 +24,10 @@ export type ParleMcpClientLike = {
   disableOwnAliasRoomOfflineDelivery?(alias: string, roomId?: string, signal?: AbortSignal): Promise<unknown>;
   switchProfile?(profile: string, signal?: AbortSignal): Promise<unknown>;
   deleteProfile?(params: DeleteProfileParams): Promise<unknown>;
-  switchSessionAlias?(alias: string, signal?: AbortSignal): Promise<unknown>;
+  switchSessionAlias?(alias: string, options?: { agentId?: string } | AbortSignal, signal?: AbortSignal): Promise<unknown>;
+  // Adapter-local, credential-free result of checking that this host has an
+  // exact agent ID plus the narrow human-owner creation transport.
+  aliasAssumptionAgentId?: string;
   // Optional lifecycle surface (present on ParleAgentClient); guarded so
   // minimal fake clients keep working.
   ensureReadySafe?(signal?: AbortSignal): Promise<boolean>;
@@ -175,6 +180,7 @@ export type ParleAccountClientLike = {
   hardenAccount(params: HardenAccountParams): Promise<unknown>;
   ownedAliasDelivery?(params: OwnedAliasDeliveryParams): Promise<unknown>;
   ownedAliasRelease?(params: OwnedAliasReleaseParams): Promise<unknown>;
+  ownedAliasCreationTransport?(expectedOrigin: string): { request(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<unknown> };
 };
 
 export type HookDeliveryBridgeLike = {
@@ -187,6 +193,31 @@ export type HookDeliveryBridgeLike = {
 // A status or connect card must not race the host's idle-wake verification
 // (a version probe of the parent executable); it waits at most this long.
 const HOST_IDLE_WAKE_READY_MS = 2_000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export type AliasAssumptionCapability = {
+  agentId: string;
+  humanAliasTransport: NonNullable<ParleAccountClientLike["ownedAliasCreationTransport"]> extends (origin: string) => infer Transport ? Transport : never;
+};
+
+// An absent alias may be created only through the account client's fixed
+// human-owner capability. A host needs both an exact configured agent UUID and
+// that capability; otherwise explicit assume remains an honest fail-closed
+// operation. This reads configuration only and persists no credential.
+export function aliasAssumptionCapability(accountClient: ParleAccountClientLike, cwd = process.cwd(), env: Record<string, string | undefined> = process.env): AliasAssumptionCapability | undefined {
+  let agentId = env.PARLE_AGENT_ID;
+  if (!agentId) {
+    try { agentId = parseKeyValueFile(readFileSync(join(cwd, ".env"), "utf8")).PARLE_AGENT_ID; } catch {}
+  }
+  if (!agentId || !UUID_RE.test(agentId) || typeof accountClient.ownedAliasCreationTransport !== "function") return undefined;
+  try {
+    const apiBase = resolveConfig(cwd, env).apiBase.value;
+    if (!apiBase) return undefined;
+    return { agentId, humanAliasTransport: accountClient.ownedAliasCreationTransport(new URL(apiBase).origin) };
+  } catch {
+    return undefined;
+  }
+}
 
 // Static host capabilities the plugin manifest declares. `idleWake: "none"`
 // means the host has no arm action, so status must never ask for one.
@@ -563,7 +594,7 @@ export function registerParleTools(
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
     if (typeof client.switchSessionAlias !== "function") throw new Error("This Parle client does not support live session aliases.");
-    const result = await client.switchSessionAlias(params.alias);
+    const result = await client.switchSessionAlias(params.alias, client.aliasAssumptionAgentId ? { agentId: client.aliasAssumptionAgentId } : undefined);
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => undefined);
     return result;
   }));

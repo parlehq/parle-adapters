@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CONNECT_NEXT_GUIDANCE, ParleAgentClient, ParleApiError, ProfileNotFoundError, ResponsiveDeliveryRecorder, SESSION_ESTABLISHED_NEXT_GUIDANCE, processStartedAtIso } from "@parlehq/agent-client";
-import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, installLifecycleHandlers, isDirectRun, resolveConfigCwd, resolveHostCapabilities, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
+import { ClaudeMonitorWake, CodexQueueWake, MCP_CLIENT_INSTANCE_ID, MCP_CLIENT_NAME, MCP_CLIENT_VERSION, aliasAssumptionCapability, createHostIdleWake, createMcpAgentClient, createParleMcpServer, hostSessionIdFromMeta, installLifecycleHandlers, isDirectRun, resolveConfigCwd, resolveHostCapabilities, scheduleEagerBootstrap, scheduleHostParentCheck } from "../dist/index.js";
 
 const expectedTools = [
   "parle_accept_room_invitation",
@@ -1655,6 +1655,43 @@ test("alias delivery tools preserve agent reduction and guarded human release pa
   } finally {
     await client.close();
     await server.close();
+  }
+});
+
+test("MCP alias assume passes exact human creation authority only when the host supplied it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "parle-mcp-alias-assume-"));
+  const agentId = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+  const calls = [];
+  const account = {
+    ownedAliasCreationTransport(origin) {
+      calls.push(["transport", origin]);
+      return { request: async () => ({}) };
+    },
+  };
+  try {
+    writeFileSync(join(root, ".env"), `PARLE_AGENT_ID=${agentId}\nPARLE_API_BASE=https://api.parle.sh\n`);
+    const capability = aliasAssumptionCapability(account, root, {});
+    assert.equal(capability.agentId, agentId);
+    assert.deepEqual(calls, [["transport", "https://api.parle.sh"]]);
+    assert.equal(aliasAssumptionCapability({}, root, {}), undefined, "missing human custody fails closed");
+
+    const fakeClient = {
+      aliasAssumptionAgentId: capability.agentId,
+      switchSessionAlias: async (alias, options) => { calls.push(["assume", alias, options]); return { alias }; },
+    };
+    const server = createParleMcpServer(fakeClient, account);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "parle-mcp-alias-assume", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      await client.callTool({ name: "parle_session_alias", arguments: { alias: "durable" } });
+      assert.deepEqual(calls.at(-1), ["assume", "durable", { agentId }]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

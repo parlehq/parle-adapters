@@ -9144,7 +9144,7 @@ var require_websocket = __commonJS({
     var http = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes2, createHash: createHash4 } = __require("crypto");
+    var { randomBytes: randomBytes2, createHash: createHash5 } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -9812,7 +9812,7 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest = createHash4("sha1").update(key + GUID).digest("base64");
+        const digest = createHash5("sha1").update(key + GUID).digest("base64");
         if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
@@ -10181,7 +10181,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash4 } = __require("crypto");
+    var { createHash: createHash5 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -10488,7 +10488,7 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest = createHash4("sha1").update(key + GUID).digest("base64");
+        const digest = createHash5("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
@@ -34639,14 +34639,14 @@ var StdioServerTransport = class {
 };
 
 // src/index.ts
-import { readFileSync as readFileSync7, realpathSync as realpathSync3, statSync as statSync5 } from "node:fs";
-import { isAbsolute as isAbsolute5, join as join11 } from "node:path";
+import { readFileSync as readFileSync8, realpathSync as realpathSync3, statSync as statSync5 } from "node:fs";
+import { isAbsolute as isAbsolute5, join as join13 } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // ../client/dist/index.js
-import { readFileSync as readFileSync5, existsSync as existsSync7 } from "node:fs";
-import { join as join9 } from "node:path";
-import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
+import { readFileSync as readFileSync5, existsSync as existsSync8 } from "node:fs";
+import { join as join10 } from "node:path";
+import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
 
 // ../client/dist/runtime-file.js
 import { readdirSync, rmSync } from "node:fs";
@@ -35318,6 +35318,7 @@ function isValidSessionAlias(value) {
 // ../client/dist/alias.js
 var SESSION_INVENTORY_MAX_PAGES = 100;
 var CLAIM_RECOVERY_ATTEMPTS = 3;
+var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function validAlias(alias) {
   const value = alias.trim().toLowerCase();
   if (!isValidSessionAlias(value)) {
@@ -35370,10 +35371,11 @@ var AliasClaimOutcomeUnknownError = class extends ParleApiError {
 async function ownAliasFacts(transport, alias, signal) {
   const facts = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
   const current = facts?.current_agent_session_id;
-  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || current !== null && current !== void 0 && typeof current !== "string") {
+  const identity2 = facts?.alias_identity_id;
+  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || identity2 !== null && identity2 !== void 0 && (typeof identity2 !== "string" || !UUID_RE.test(identity2)) || (identity2 === null || identity2 === void 0) && facts.generation !== 0 || current !== null && current !== void 0 && typeof current !== "string") {
     throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
   }
-  return { alias, generation: facts.generation, ...typeof current === "string" ? { currentAgentSessionId: current } : {} };
+  return { alias, generation: facts.generation, ...typeof identity2 === "string" ? { aliasIdentityId: identity2 } : {}, ...typeof current === "string" ? { currentAgentSessionId: current } : {} };
 }
 async function findInventorySession(transport, predicate, signal) {
   let after;
@@ -35393,14 +35395,40 @@ async function findInventorySession(transport, predicate, signal) {
   }
   throw new ParleApiError(`Parle session inventory exceeded ${SESSION_INVENTORY_MAX_PAGES} pages`, { code: "inventory_limit", action: "stop", scope: "agent_session" });
 }
-async function claimAliasWithRecovery(transport, candidate, alias, expectedGeneration, signal) {
+async function claimAliasWithRecovery(transport, candidate, alias, expectedGeneration, signal, expectedAliasIdentityId) {
   const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
   const body = { alias, expected_generation: expectedGeneration };
   let lastError;
   for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
     try {
-      return await transport.request(path, { method: "POST", body, sessionCredential: candidate.sessionHandle, signal, rawResponse: true, retry: false });
+      const claimed = await transport.request(path, { method: "POST", body, sessionCredential: candidate.sessionHandle, signal, rawResponse: true, retry: false });
+      if (claimed?.alias_identity_id === void 0) {
+        const facts = await ownAliasFacts(transport, alias, signal);
+        if (!facts.aliasIdentityId || facts.currentAgentSessionId !== candidate.agentSessionId || facts.generation !== expectedGeneration + 1 || expectedAliasIdentityId && facts.aliasIdentityId !== expectedAliasIdentityId) {
+          throw new ParleApiError("Claim mapping no longer confirms this exact candidate", { code: "alias_claim_identity_changed", action: "stop", scope: "agent_session", retryable: false });
+        }
+        claimed.alias_identity_id = facts.aliasIdentityId;
+      }
+      if (claimed?.agent_session_id !== candidate.agentSessionId || claimed?.alias !== alias || typeof claimed?.alias_identity_id !== "string" || !UUID_RE.test(claimed.alias_identity_id) || !Number.isInteger(claimed?.generation) || claimed.generation !== expectedGeneration + 1) {
+        throw new ParleApiError("Parle alias claim response did not confirm the exact immutable identity and generation", {
+          code: "invalid_response",
+          action: "fix_client",
+          scope: "server",
+          retryable: false
+        });
+      }
+      if (expectedAliasIdentityId && claimed.alias_identity_id !== expectedAliasIdentityId) {
+        throw new ParleApiError("Parle alias claim response changed immutable alias identity", {
+          code: "alias_claim_identity_changed",
+          action: "stop",
+          scope: "agent_session",
+          retryable: false
+        });
+      }
+      return claimed;
     } catch (error51) {
+      if (error51 instanceof ParleApiError && ["invalid_response", "alias_claim_identity_changed"].includes(error51.code || ""))
+        throw error51;
       const status = typeof error51?.status === "number" ? error51.status : void 0;
       if (status === 409)
         throw error51;
@@ -35412,6 +35440,14 @@ async function claimAliasWithRecovery(transport, candidate, alias, expectedGener
       try {
         facts = await ownAliasFacts(transport, alias, signal);
       } catch {
+      }
+      if (expectedAliasIdentityId && facts?.aliasIdentityId && facts.aliasIdentityId !== expectedAliasIdentityId) {
+        throw new ParleApiError("Parle alias identity changed while confirming this exact claim", {
+          code: "alias_claim_identity_changed",
+          action: "stop",
+          scope: "agent_session",
+          retryable: false
+        });
       }
       if (facts?.currentAgentSessionId === candidate.agentSessionId && facts.generation === expectedGeneration + 1) {
         const confirmedGeneration = facts.generation;
@@ -35428,9 +35464,9 @@ async function claimAliasWithRecovery(transport, candidate, alias, expectedGener
         }
         if (committed)
           return committed;
-        throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
+        throw new ParleApiError("Parle alias claim committed but its exact candidate is no longer live; explicit resolution is required", {
           code: "alias_claim_committed_session_unavailable",
-          action: "rebootstrap",
+          action: "stop",
           scope: "agent_session",
           retryable: false
         });
@@ -35448,26 +35484,123 @@ async function claimAliasWithRecovery(transport, candidate, alias, expectedGener
   });
 }
 
+// ../client/dist/alias-lifecycle-state.js
+import { createHash } from "node:crypto";
+import { existsSync as existsSync2 } from "node:fs";
+import { dirname as dirname2, join as join3 } from "node:path";
+var ALIAS_LIFECYCLE_STATE_MAX_BYTES = 16384;
+var LABEL = "Parle alias lifecycle state";
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var KEYS = "alias,aliasIdentityId,heldGeneration,instructionRef,lostGeneration,observedAt,operationId,requestedGeneration,state,version";
+var generation = (v) => Number.isSafeInteger(v) && v >= 0;
+function aliasLifecycleStatePath(catalogPath, apiBase, roomIds, tokenIdentities) {
+  const origin = new URL(apiBase).origin;
+  const binding = createHash("sha256").update(JSON.stringify([origin, [...roomIds].sort(), [...tokenIdentities].sort()])).digest("hex");
+  return join3(dirname2(catalogPath), `alias-lifecycle-${binding}`);
+}
+function readStore(path) {
+  if (!existsSync2(path))
+    return void 0;
+  const value = JSON.parse(readOwnerOnlyTextFile(path, { label: LABEL, maxBytes: ALIAS_LIFECYCLE_STATE_MAX_BYTES }));
+  if (!value || Object.keys(value).sort().join(",") !== "current,records,version" || value.version !== 3 || !UUID.test(value.current) || !value.records || Array.isArray(value.records))
+    throw new Error("invalid state");
+  for (const [id, entry] of Object.entries(value.records)) {
+    const e = entry;
+    if (!e || Object.keys(e).sort().join(",") !== KEYS || !UUID.test(id) || e.aliasIdentityId !== id || e.version !== 3 || !isValidSessionAlias(e.alias) || !["requested", "held", "lost", "refused", "outcome_unknown"].includes(e.state) || !generation(e.requestedGeneration) || !(e.heldGeneration === null || generation(e.heldGeneration)) || !(e.lostGeneration === null || generation(e.lostGeneration)) || !UUID.test(e.instructionRef) || !UUID.test(e.operationId) || typeof e.observedAt !== "string" || !Number.isFinite(Date.parse(e.observedAt)))
+      throw new Error("invalid state");
+  }
+  if (!Object.hasOwn(value.records, value.current))
+    throw new Error("invalid state");
+  return value;
+}
+function readAliasLifecycleState(path) {
+  try {
+    const store = readStore(path);
+    return store ? { available: true, state: store.records[store.current] } : { available: true, reason: "missing" };
+  } catch {
+    return { available: false, reason: "malformed" };
+  }
+}
+function update(path, next, prior) {
+  try {
+    ensureOwnerOnlyDirectory(dirname2(path), { label: `${LABEL} directory` });
+    return withOwnerOnlyFileLock(path, { label: LABEL, durability: "required" }, () => {
+      const store = readStore(path) || { version: 3, current: next.aliasIdentityId, records: {} };
+      const current = store.records[next.aliasIdentityId];
+      if (prior && (!current || current.operationId !== prior.operationId || current.instructionRef !== prior.instructionRef || current.state !== prior.state || current.observedAt !== prior.observedAt))
+        return void 0;
+      if (!prior && current?.instructionRef === next.instructionRef)
+        return void 0;
+      store.records[next.aliasIdentityId] = next;
+      if (!prior)
+        store.current = next.aliasIdentityId;
+      const history = Object.keys(store.records).filter((id) => id !== store.current && id !== next.aliasIdentityId && !["requested", "outcome_unknown"].includes(store.records[id].state));
+      while (Object.keys(store.records).length > 16) {
+        const settled = history.shift();
+        if (!settled)
+          return void 0;
+        delete store.records[settled];
+      }
+      atomicReplaceOwnerOnlyFile(path, `${JSON.stringify(store)}
+`, {
+        label: LABEL,
+        maxBytes: ALIAS_LIFECYCLE_STATE_MAX_BYTES,
+        durability: "required"
+      });
+      return next;
+    });
+  } catch {
+    return void 0;
+  }
+}
+function recordAliasAssumption(path, alias, aliasIdentityId, requestedGeneration, instructionRef, observedAt) {
+  if (!isValidSessionAlias(alias) || !UUID.test(aliasIdentityId) || !generation(requestedGeneration) || !UUID.test(instructionRef) || !Number.isFinite(Date.parse(observedAt)))
+    return void 0;
+  return update(path, {
+    version: 3,
+    alias,
+    aliasIdentityId,
+    requestedGeneration,
+    instructionRef,
+    operationId: instructionRef,
+    heldGeneration: null,
+    lostGeneration: null,
+    observedAt,
+    state: "requested"
+  });
+}
+function transitionAliasState(path, prior, state, observedAt, heldGeneration = prior.heldGeneration, operationId = prior.operationId) {
+  const next = {
+    ...prior,
+    state,
+    observedAt,
+    heldGeneration,
+    operationId,
+    lostGeneration: state === "lost" ? prior.heldGeneration ?? prior.requestedGeneration : prior.lostGeneration
+  };
+  return update(path, next, prior);
+}
+
 // ../client/dist/profiles.js
 import { execFileSync } from "node:child_process";
-import { existsSync as existsSync2, lstatSync as lstatSync2, readFileSync, statSync } from "node:fs";
+import { existsSync as existsSync3, lstatSync as lstatSync2, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname as dirname2, isAbsolute, join as join3 } from "node:path";
-var PROFILE_CATALOG_PATH = join3(homedir(), ".parle", "profiles");
+import { dirname as dirname3, isAbsolute, join as join4 } from "node:path";
+var PROFILE_CATALOG_PATH = join4(homedir(), ".parle", "profiles");
 function profileCatalogPath(env = process.env) {
   const home = env.HOME || env.USERPROFILE || homedir();
-  return join3(home, ".parle", "profiles");
+  return join4(home, ".parle", "profiles");
 }
 function resolveProfileCatalogPath(override, cwd = process.cwd(), env = process.env) {
   if (override)
-    return isAbsolute(override) ? override : join3(cwd, override);
+    return isAbsolute(override) ? override : join4(cwd, override);
   return profileCatalogPath(env);
 }
 function catalogGitExposureWarning(path) {
-  if (!existsSync2(path))
+  if (!existsSync3(path))
     return void 0;
   try {
-    execFileSync("git", ["check-ignore", "-q", "--", path], { cwd: dirname2(path), stdio: "ignore" });
+    execFileSync("git", ["check-ignore", "-q", "--", path], { cwd: dirname3(path), stdio: "ignore" });
     return void 0;
   } catch (error51) {
     if (error51?.status === 1) {
@@ -35505,7 +35638,7 @@ var ProfileNotFoundError = class extends ProfileConfigError {
     this.availableProfiles = availableProfiles;
   }
 };
-var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var ALLOWED_KEYS = /* @__PURE__ */ new Set(["room_id", "agent_token", "agent_token_id", "api_base", "wake_base"]);
 function profileSectionRange(text, label) {
   const headers = [];
@@ -35586,13 +35719,13 @@ function parseProfiles(text, path = PROFILE_CATALOG_PATH) {
   for (const [name, fields] of sections) {
     if (!fields.room_id)
       throw new ProfileConfigError(`${path}: profile ${name} is missing room_id`);
-    if (!UUID_RE.test(fields.room_id))
+    if (!UUID_RE2.test(fields.room_id))
       throw new ProfileConfigError(`${path}: profile ${name} has an invalid room_id`);
     if (!fields.agent_token)
       throw new ProfileConfigError(`${path}: profile ${name} is missing agent_token`);
     if (!/^parle_agt_\S+$/.test(fields.agent_token))
       throw new ProfileConfigError(`${path}: profile ${name} has an invalid agent_token`);
-    if (fields.agent_token_id && !UUID_RE.test(fields.agent_token_id))
+    if (fields.agent_token_id && !UUID_RE2.test(fields.agent_token_id))
       throw new ProfileConfigError(`${path}: profile ${name} has an invalid agent_token_id`);
     profiles.set(name, { name, roomId: fields.room_id, agentToken: fields.agent_token, agentTokenId: fields.agent_token_id, apiBase: fields.api_base, wakeBase: fields.wake_base });
   }
@@ -35922,8 +36055,8 @@ function compactStatusCardFromStatus(status) {
 }
 
 // ../client/dist/known-address-registry.js
-import { existsSync as existsSync3 } from "node:fs";
-import { dirname as dirname3, join as join4 } from "node:path";
+import { existsSync as existsSync4 } from "node:fs";
+import { dirname as dirname4, join as join5 } from "node:path";
 var KNOWN_ADDRESS_CONTEXT_MARKER = "[Parle known-address context]";
 var KNOWN_ADDRESS_REGISTRY_MAX_BYTES = 1024 * 1024;
 var KNOWN_ADDRESS_REGISTRY_CAPACITY = 256;
@@ -35931,7 +36064,7 @@ var KNOWN_ADDRESS_RENDER_CAP = 10;
 var KNOWN_ADDRESS_EPHEMERAL_TTL_MS = 12 * 60 * 60 * 1e3;
 var KNOWN_ADDRESS_DURABLE_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
 var KNOWN_ADDRESS_FAILURE_TTL_MS = 60 * 60 * 1e3;
-var LABEL = "Parle known-address registry";
+var LABEL2 = "Parle known-address registry";
 var ADDRESS_PART = "[a-z0-9](?:[a-z0-9-]*[a-z0-9])?";
 var ADDRESS_RE = new RegExp(`^@${ADDRESS_PART}\\.${ADDRESS_PART}(?:\\.${ADDRESS_PART})?$`);
 var ROOM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -36013,14 +36146,14 @@ function parseRegistry(raw) {
   }
 }
 function knownAddressRegistryPath(catalogPath) {
-  return join4(dirname3(catalogPath), "registry");
+  return join5(dirname4(catalogPath), "registry");
 }
 function readRegistryFile(path) {
-  if (!existsSync3(path))
+  if (!existsSync4(path))
     return { available: true, entries: [], reason: "missing" };
   let raw;
   try {
-    raw = readOwnerOnlyTextFile(path, { label: LABEL, maxBytes: KNOWN_ADDRESS_REGISTRY_MAX_BYTES });
+    raw = readOwnerOnlyTextFile(path, { label: LABEL2, maxBytes: KNOWN_ADDRESS_REGISTRY_MAX_BYTES });
   } catch {
     return { available: false, entries: [], reason: "unsafe" };
   }
@@ -36033,7 +36166,7 @@ function serialize(entries) {
 }
 function writeRegistry(path, entries) {
   atomicReplaceOwnerOnlyFile(path, serialize(entries), {
-    label: LABEL,
+    label: LABEL2,
     maxBytes: KNOWN_ADDRESS_REGISTRY_MAX_BYTES,
     durability: "best-effort"
   });
@@ -36050,8 +36183,8 @@ function expiryAscending(left, right) {
 function mutate(catalogPath, operation, now) {
   const path = knownAddressRegistryPath(catalogPath);
   try {
-    ensureOwnerOnlyDirectory(dirname3(path), { label: `${LABEL} directory` });
-    return withOwnerOnlyFileLock(path, { label: LABEL, durability: "best-effort", now: () => now }, () => {
+    ensureOwnerOnlyDirectory(dirname4(path), { label: `${LABEL2} directory` });
+    return withOwnerOnlyFileLock(path, { label: LABEL2, durability: "best-effort", now: () => now }, () => {
       const current = readRegistryFile(path);
       if (!current.available)
         return false;
@@ -36136,7 +36269,7 @@ function knownAddressContextFor(catalogPath, input, now = /* @__PURE__ */ new Da
 
 // ../client/dist/responsive-delivery.js
 import { chmodSync as chmodSync2, closeSync as closeSync2, constants as constants2, fstatSync as fstatSync2, linkSync as linkSync2, lstatSync as lstatSync3, mkdirSync as mkdirSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, renameSync as renameSync2, rmSync as rmSync2, unlinkSync as unlinkSync2, writeFileSync } from "node:fs";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 var RESPONSIVE_DELIVERY_SKEW_MS = 3e4;
 var RESPONSIVE_DELIVERY_MAX_LEASE_MS = 10 * 6e4;
 var RESPONSIVE_DELIVERY_TOMBSTONE_MS = 5 * 6e4;
@@ -36210,16 +36343,16 @@ function buildResponsiveDeliverySnapshot(base, state, event = {}, now = /* @__PU
   });
 }
 function responsiveDeliveryRuntimeDirPath(cwd) {
-  return join5(cwd, ".parle", "runtime", "responsive");
+  return join6(cwd, ".parle", "runtime", "responsive");
 }
 function responsiveDeliveryRuntimeFilePath(cwd, pid) {
-  return join5(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
+  return join6(responsiveDeliveryRuntimeDirPath(cwd), `${pid}.json`);
 }
 function writeResponsiveDeliverySnapshot(cwd, snapshot) {
   const dir = responsiveDeliveryRuntimeDirPath(cwd);
   mkdirSync2(dir, { recursive: true, mode: 448 });
   chmodSync2(dir, 448);
-  const tmp = join5(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
+  const tmp = join6(dir, `.tmp-${snapshot.pid}-${Math.random().toString(36).slice(2)}`);
   writeFileSync(tmp, JSON.stringify(cleanSnapshot(snapshot), null, 2) + "\n", { mode: 384 });
   chmodSync2(tmp, 384);
   renameSync2(tmp, responsiveDeliveryRuntimeFilePath(cwd, snapshot.pid));
@@ -36275,7 +36408,7 @@ function readResponsiveDeliverySnapshots(cwd) {
     if (!/^\d+\.json$/.test(name))
       continue;
     try {
-      const raw = readBoundedText(join5(responsiveDeliveryRuntimeDirPath(cwd), name), RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
+      const raw = readBoundedText(join6(responsiveDeliveryRuntimeDirPath(cwd), name), RESPONSIVE_DELIVERY_MAX_FILE_BYTES);
       const snapshot = parseResponsiveDeliverySnapshot(JSON.parse(raw));
       if (snapshot)
         result2.push(snapshot);
@@ -36432,7 +36565,7 @@ function pruneResponsiveDeliverySnapshots(cwd, options = {}) {
   for (const name of rotatedCandidates2(dir, names, maxInspections)) {
     if (removed >= maxRemovals)
       break;
-    const path = join5(dir, name);
+    const path = join6(dir, name);
     if (removeResponsiveCandidateIf(path, (snapshot) => snapshot.pid !== options.excludePid && Date.parse(snapshot.expiresAt) <= now.getTime() && isDefinitelyGone(snapshot, options.inspectPid)))
       removed += 1;
   }
@@ -36484,13 +36617,13 @@ var ResponsiveDeliveryRecorder = class {
 // ../client/dist/account.js
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { chmodSync as chmodSync3, existsSync as existsSync5, lstatSync as lstatSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync3, realpathSync, statSync as statSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
-import { basename as basename2, dirname as dirname5, isAbsolute as isAbsolute2, join as join7, parse as parse3, relative, resolve, sep } from "node:path";
+import { chmodSync as chmodSync3, existsSync as existsSync6, lstatSync as lstatSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync3, realpathSync, statSync as statSync2, unlinkSync as unlinkSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename as basename2, dirname as dirname6, isAbsolute as isAbsolute2, join as join8, parse as parse3, relative, resolve, sep } from "node:path";
 
 // ../client/dist/hardening.js
-import { createHash } from "node:crypto";
-import { closeSync as closeSync3, existsSync as existsSync4, fsyncSync as fsyncSync2, fstatSync as fstatSync3, ftruncateSync, lstatSync as lstatSync4, mkdirSync as mkdirSync3, openSync as openSync3, readFileSync as readFileSync2, unlinkSync as unlinkSync3, writeSync as writeSync2 } from "node:fs";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { closeSync as closeSync3, existsSync as existsSync5, fsyncSync as fsyncSync2, fstatSync as fstatSync3, ftruncateSync, lstatSync as lstatSync4, mkdirSync as mkdirSync3, openSync as openSync3, readFileSync as readFileSync2, unlinkSync as unlinkSync3, writeSync as writeSync2 } from "node:fs";
+import { dirname as dirname5, join as join7 } from "node:path";
 var DEFAULT_API_BASE = "https://api.parle.sh";
 var MAX_SECRET_BYTES = 8 * 1024;
 var MAX_RESPONSE_BYTES = 64 * 1024;
@@ -36583,7 +36716,7 @@ function assertSecureFile(path, label, maxBytes = MAX_SECRET_BYTES) {
   return entry;
 }
 function createSecureDirectory(path, label) {
-  if (!existsSync4(path)) {
+  if (!existsSync5(path)) {
     try {
       mkdirSync3(path, { mode: 448 });
     } catch {
@@ -36613,7 +36746,7 @@ function clearBuffer(value) {
     value.fill(0);
 }
 function secureUnlink(path, label) {
-  if (!existsSync4(path))
+  if (!existsSync5(path))
     return;
   assertSecureFile(path, label);
   try {
@@ -36676,31 +36809,31 @@ function isAmbiguous(error51) {
   return error51 instanceof HardeningTransportError || error51 instanceof HardeningHttpError && error51.ambiguous;
 }
 function ceremonyPath(config2) {
-  return join6(config2.stateDir, "hardening", CEREMONY_DIR);
+  return join7(config2.stateDir, "hardening", CEREMONY_DIR);
 }
 function rootPath(config2) {
-  return join6(config2.stateDir, "hardening");
+  return join7(config2.stateDir, "hardening");
 }
 function outputPath(config2, file2) {
-  return join6(ceremonyPath(config2), file2);
+  return join7(ceremonyPath(config2), file2);
 }
 function resolveHardeningConfig(cwd, env) {
-  const dotEnvPath = join6(cwd, ".env");
-  const dotEnv = existsSync4(dotEnvPath) ? parseDotEnv(readFileSync2(dotEnvPath, "utf8")) : {};
+  const dotEnvPath = join7(cwd, ".env");
+  const dotEnv = existsSync5(dotEnvPath) ? parseDotEnv(readFileSync2(dotEnvPath, "utf8")) : {};
   const catalogPath = resolveProfileCatalogPath(firstValue("PARLE_PROFILES_PATH", env, dotEnv), cwd, env);
-  const stateDir = dirname4(catalogPath);
+  const stateDir = dirname5(catalogPath);
   const parent = lstatSync4(stateDir);
   if (parent.isSymbolicLink() || !parent.isDirectory())
     throw new HardeningError("Parle state directory must be a real directory.");
   if (process.platform !== "win32" && parent.uid !== process.getuid?.())
     throw new HardeningError("Parle state directory must be owned by the current user.");
-  const sessionPath = join6(stateDir, "session");
+  const sessionPath = join7(stateDir, "session");
   assertSecureFile(sessionPath, "Parle human session file", 8192);
   const sessionCookie = readFileSync2(sessionPath, "utf8").trim();
   if (!sessionCookie || /[\r\n]/.test(sessionCookie))
     throw new HardeningError("Parle human session file is invalid.");
   let configuredApiBase = firstValue("PARLE_API_BASE", env, dotEnv);
-  if (!configuredApiBase && existsSync4(catalogPath)) {
+  if (!configuredApiBase && existsSync5(catalogPath)) {
     const selected = firstValue("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
     if (selected)
       configuredApiBase = loadProfile(selected, catalogPath).apiBase;
@@ -36727,27 +36860,27 @@ var ParleHardeningClient = class {
     return resolveHardeningConfig(this.cwd, this.env);
   }
   fingerprint(config2) {
-    return createHash("sha256").update(config2.sessionCookie, "utf8").digest("hex");
+    return createHash2("sha256").update(config2.sessionCookie, "utf8").digest("hex");
   }
   ensureRoot(config2) {
     createSecureDirectory(rootPath(config2), "Parle hardening root");
   }
   readState(config2, required2 = true) {
     const root = rootPath(config2);
-    if (!existsSync4(root)) {
+    if (!existsSync5(root)) {
       if (required2)
         throw new HardeningError("No active Parle hardening ceremony exists. Run parle_harden_account status first.");
       return void 0;
     }
     assertSecureDirectory(root, "Parle hardening root");
     const dir = ceremonyPath(config2);
-    if (!existsSync4(dir)) {
+    if (!existsSync5(dir)) {
       if (required2)
         throw new HardeningError("No active Parle hardening ceremony exists. Run parle_harden_account status first.");
       return void 0;
     }
     assertSecureDirectory(dir, "Parle hardening ceremony directory");
-    const path = join6(dir, STATE_FILE);
+    const path = join7(dir, STATE_FILE);
     assertSecureFile(path, "Parle hardening state", MAX_SECRET_BYTES);
     const raw = parseJson(readFileSync2(path, "utf8"));
     const state = raw && typeof raw === "object" ? raw : void 0;
@@ -36767,8 +36900,8 @@ var ParleHardeningClient = class {
     const dir = ceremonyPath(config2);
     assertSecureDirectory(rootPath(config2), "Parle hardening root");
     assertSecureDirectory(dir, "Parle hardening ceremony directory");
-    const statePath = join6(dir, STATE_FILE);
-    if (expectedGeneration !== void 0 && existsSync4(statePath)) {
+    const statePath = join7(dir, STATE_FILE);
+    if (expectedGeneration !== void 0 && existsSync5(statePath)) {
       const current = this.readState(config2);
       if (current.generation !== expectedGeneration)
         throw new HardeningError("Parle hardening state changed concurrently.");
@@ -36851,7 +36984,7 @@ var ParleHardeningClient = class {
       } catch {
       }
       try {
-        if (created && existsSync4(path))
+        if (created && existsSync5(path))
           unlinkSync3(path);
       } catch {
       }
@@ -36889,7 +37022,7 @@ var ParleHardeningClient = class {
     } catch {
     }
     try {
-      if (existsSync4(sink.path))
+      if (existsSync5(sink.path))
         secureUnlink(sink.path, "protected hardening output");
     } catch {
       throw new HardeningError("Could not discard protected hardening output.");
@@ -36919,7 +37052,7 @@ var ParleHardeningClient = class {
         } catch {
         }
         try {
-          if (existsSync4(sink.path))
+          if (existsSync5(sink.path))
             secureUnlink(sink.path, "protected hardening output");
         } catch {
         }
@@ -37090,7 +37223,7 @@ var ParleHardeningClient = class {
     if (state.phase !== "hardened_recovery_captured" || !state.recoveryCaptured)
       throw new HardeningError("Recovery storage acknowledgement is not expected yet.");
     assertSecureFile(outputPath(config2, "recovery-codes.txt"), "protected recovery codes");
-    const path = join6(ceremonyPath(config2), ACK_FILE);
+    const path = join7(ceremonyPath(config2), ACK_FILE);
     const value = Buffer.from(JSON.stringify({ schemaVersion: 1, acknowledgedAt: this.now().toISOString() }) + "\n", "utf8");
     try {
       this.createSecret(config2, ACK_FILE, value);
@@ -37139,7 +37272,7 @@ var ParleHardeningClient = class {
       return { action: "status", assurance: "hardened", state: "finalized", complete: true, next: "Hardening ceremony complete." };
     }
     if (whoami.assurance === "hardened") {
-      if (state.phase === "hardened_recovery_captured" && state.recoveryCaptured && state.assuranceVerified && existsSync4(outputPath(config2, "recovery-codes.txt"))) {
+      if (state.phase === "hardened_recovery_captured" && state.recoveryCaptured && state.assuranceVerified && existsSync5(outputPath(config2, "recovery-codes.txt"))) {
         try {
           assertSecureFile(outputPath(config2, "recovery-codes.txt"), "protected recovery codes");
           return { action: "status", assurance: "hardened", state: state.phase, complete: true, recoveryPath: outputPath(config2, "recovery-codes.txt"), next: "Move recovery codes to protected storage, acknowledge that step with parle-hardening-secret ack-recovery-stored, then finalize." };
@@ -37338,7 +37471,7 @@ var ParleHardeningClient = class {
       return { action: "recover_confirm", state: state.phase, hardened: false, next: "Keep the captured provisioning URI. Stage a fresh human-only TOTP code with parle-hardening-secret totp-code, then run parle_harden_account confirm_totp with explicit confirmation." };
     }
     const existing = outputPath(config2, "recovery-codes.txt");
-    if (state.recoveryCaptured && existsSync4(existing)) {
+    if (state.recoveryCaptured && existsSync5(existing)) {
       assertSecureFile(existing, "protected recovery codes");
       state = this.transition(config2, state, [state.phase], { phase: "hardened_recovery_captured", assuranceVerified: true });
       return { action: "recover_confirm", state: state.phase, hardened: true, recoveryPath: existing, next: "Move recovery codes to protected storage, acknowledge with parle-hardening-secret ack-recovery-stored, then finalize." };
@@ -37385,7 +37518,7 @@ var ParleHardeningClient = class {
     this.assertBound(config2, state);
     if (state.phase !== "hardened_recovery_captured" || !state.recoveryCaptured || !state.assuranceVerified)
       throw new HardeningError("Hardening cannot finalize until hardened assurance and durable recovery capture are verified.");
-    const ack = join6(ceremonyPath(config2), ACK_FILE);
+    const ack = join7(ceremonyPath(config2), ACK_FILE);
     assertSecureFile(ack, "recovery storage acknowledgement");
     const parsed = parseJson(readFileSync2(ack, "utf8"));
     if (!parsed || typeof parsed !== "object" || parsed.schemaVersion !== 1 || typeof parsed.acknowledgedAt !== "string")
@@ -37399,7 +37532,7 @@ var ParleHardeningClient = class {
 };
 
 // ../client/dist/room-inventory.js
-var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var RoomInventoryResponseError = class extends Error {
   constructor(message) {
     super(message);
@@ -37412,7 +37545,7 @@ function record2(raw, label) {
   return raw;
 }
 function uuid3(raw, label) {
-  if (typeof raw !== "string" || !UUID_RE2.test(raw) || raw === "00000000-0000-0000-0000-000000000000") {
+  if (typeof raw !== "string" || !UUID_RE3.test(raw) || raw === "00000000-0000-0000-0000-000000000000") {
     throw new RoomInventoryResponseError(`${label} must be a non-zero UUID.`);
   }
   return raw.toLowerCase();
@@ -37609,7 +37742,7 @@ var MAX_ACCOUNT_ROOM_ROWS = 2e3;
 var MAX_ACCOUNT_ROOM_PAGES = 10;
 var EMAIL_START_SAFETY_FLOOR = "Request accepted. This does not confirm that an account, invitation, or email delivery exists. If a code arrives, complete only the flow you selected. Do not retry automatically or start the other flow.";
 var ROOM_CAPACITY_PREVIEW_TTL_MS = 15 * 60 * 1e3;
-var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var UUID_RE4 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var INVITE_SECRET_RE = /^parle_inv_\S{16,256}$/;
 var INVITE_CODE_RE = /^[A-Z0-9]{6,32}$/;
 var SESSION_COOKIE_RE = /^__Host-parle_session=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
@@ -37685,12 +37818,12 @@ function safeDirectory(path, label) {
   return realpathSync(path);
 }
 function inviteDirectory(config2, create) {
-  const directory = join7(config2.stateDir, "invites");
+  const directory = join8(config2.stateDir, "invites");
   if (create) {
     mkdirSync4(directory, { recursive: true, mode: 448 });
     if (process.platform !== "win32")
       chmodSync3(directory, 448);
-  } else if (!existsSync5(directory)) {
+  } else if (!existsSync6(directory)) {
     throw new Error(`Private Parle invite directory does not exist: ${directory}`);
   }
   safeDirectory(directory, "Parle invite directory");
@@ -37713,13 +37846,13 @@ function validateSessionCookie(raw) {
   return value;
 }
 function resolveAccountBaseConfig(cwd, env, options = {}) {
-  const dotEnvPath = join7(cwd, ".env");
-  const dotEnv = existsSync5(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
+  const dotEnvPath = join8(cwd, ".env");
+  const dotEnv = existsSync6(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const profilesOverride = firstValue2("PARLE_PROFILES_PATH", env, dotEnv);
   const catalogPath = resolveProfileCatalogPath(profilesOverride, cwd, env);
-  const sessionPath = join7(dirname5(catalogPath), "session");
+  const sessionPath = join8(dirname6(catalogPath), "session");
   let sessionCookie = firstValue2("PARLE_SESSION_COOKIE", env, dotEnv);
-  if (!sessionCookie && existsSync5(sessionPath)) {
+  if (!sessionCookie && existsSync6(sessionPath)) {
     assertNoSymlinkPathComponents(sessionPath);
     safeFile(sessionPath, "Parle human session file", false);
     sessionCookie = readBounded(sessionPath, 8192, "Parle human session file");
@@ -37728,7 +37861,7 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     sessionCookie = validateSessionCookie(sessionCookie);
   let configuredApiBase = firstValue2("PARLE_API_BASE", env, dotEnv);
   let selectedProfile;
-  if (existsSync5(catalogPath)) {
+  if (existsSync6(catalogPath)) {
     const profileName = firstValue2("PARLE_PROFILE", env, dotEnv) || (profileCatalogHasProfile("default", catalogPath) ? "default" : void 0);
     if (profileName && (!options.allowMissingProfile || profileCatalogHasProfile(profileName, catalogPath)))
       selectedProfile = loadProfile(profileName, catalogPath);
@@ -37748,7 +37881,7 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
     apiBase,
     version: version2,
     sessionCookie,
-    stateDir: dirname5(catalogPath),
+    stateDir: dirname6(catalogPath),
     catalogPath,
     roomId: selectedProfile?.roomId || firstValue2("PARLE_ROOM_ID", env, dotEnv),
     roomHandle: firstValue2("PARLE_ROOM_HANDLE", env, dotEnv),
@@ -37758,8 +37891,8 @@ function resolveAccountBaseConfig(cwd, env, options = {}) {
   };
 }
 function resolveInventoryLocalConfig(cwd, env) {
-  const dotEnvPath = join7(cwd, ".env");
-  const dotEnv = existsSync5(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
+  const dotEnvPath = join8(cwd, ".env");
+  const dotEnv = existsSync6(dotEnvPath) ? parseDotEnv2(readBounded(dotEnvPath, MAX_HANDOFF_BYTES, "Parle project environment")) : {};
   const directRoomId = firstValue2("PARLE_ROOM_ID", env, dotEnv);
   return {
     catalogPath: resolveProfileCatalogPath(firstValue2("PARLE_PROFILES_PATH", env, dotEnv), cwd, env),
@@ -37769,12 +37902,12 @@ function resolveInventoryLocalConfig(cwd, env) {
 function resolveAccountConfig(cwd, env) {
   const config2 = resolveAccountBaseConfig(cwd, env);
   if (!config2.sessionCookie)
-    throw new Error(`Parle human session is not configured. Run parle_login complete or mint-from-session so ${join7(dirname5(config2.catalogPath), "session")} exists.`);
+    throw new Error(`Parle human session is not configured. Run parle_login complete or mint-from-session so ${join8(dirname6(config2.catalogPath), "session")} exists.`);
   return config2;
 }
 function validateUUID(raw, label) {
   const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!UUID_RE3.test(value) || value === "00000000-0000-0000-0000-000000000000")
+  if (!UUID_RE4.test(value) || value === "00000000-0000-0000-0000-000000000000")
     throw new Error(`${label} must be a non-zero UUID.`);
   return value;
 }
@@ -37906,7 +38039,7 @@ function parseRoomParticipants(raw, expectedRoomId) {
 }
 function parseInvitationReference(raw) {
   const value = raw.trim();
-  if (UUID_RE3.test(value))
+  if (UUID_RE4.test(value))
     return validateUUID(value, "invitation");
   let locator;
   try {
@@ -37930,18 +38063,18 @@ function validateProfileLabel(raw) {
   return value;
 }
 function sessionCookieFilePath(catalogPath) {
-  return join7(dirname5(catalogPath), "session");
+  return join8(dirname6(catalogPath), "session");
 }
 function pendingLoginCookieFilePath(catalogPath) {
-  return join7(dirname5(catalogPath), "login");
+  return join8(dirname6(catalogPath), "login");
 }
 function assertNoSymlinkPathComponents(path) {
   const absolute = resolve(path);
   const root = parse3(absolute).root;
   let current = root;
   for (const component of relative(root, absolute).split(sep).filter(Boolean)) {
-    current = join7(current, component);
-    if (existsSync5(current)) {
+    current = join8(current, component);
+    if (existsSync6(current)) {
       const componentStat = lstatSync5(current);
       if (componentStat.isSymbolicLink() && (process.platform === "win32" || componentStat.uid === process.getuid?.())) {
         throw new Error(`Refusing to write Parle credentials through a user-owned symlinked path component: ${current}`);
@@ -37951,8 +38084,8 @@ function assertNoSymlinkPathComponents(path) {
   return absolute;
 }
 function ensureProfileDirectory(path) {
-  const directory = assertNoSymlinkPathComponents(dirname5(path));
-  if (!existsSync5(directory))
+  const directory = assertNoSymlinkPathComponents(dirname6(path));
+  if (!existsSync6(directory))
     mkdirSync4(directory, { recursive: true, mode: 448 });
   assertNoSymlinkPathComponents(directory);
   const link = lstatSync5(directory);
@@ -37971,7 +38104,7 @@ function ensureProfileDirectory(path) {
   return writeDirectory;
 }
 function safeProfileWritePath(path) {
-  if (!existsSync5(path))
+  if (!existsSync6(path))
     return path;
   const link = lstatSync5(path);
   if (process.platform !== "win32" && link.uid !== process.getuid?.())
@@ -37990,8 +38123,8 @@ function safeProfileWritePath(path) {
 }
 function writeCookieFile(catalogPath, filename, cookie) {
   const directory = ensureProfileDirectory(catalogPath);
-  const path = join7(dirname5(catalogPath), filename);
-  const writePath = safeProfileWritePath(join7(directory, basename2(path)));
+  const path = join8(dirname6(catalogPath), filename);
+  const writePath = safeProfileWritePath(join8(directory, basename2(path)));
   atomicReplaceOwnerOnlyFile(writePath, `${cookie}
 `, {
     label: `Parle ${filename} credential`,
@@ -38016,7 +38149,7 @@ function readPendingLoginCookieFile(catalogPath) {
 }
 function removePendingLoginCookieFile(catalogPath) {
   const path = pendingLoginCookieFilePath(catalogPath);
-  if (!existsSync5(path))
+  if (!existsSync6(path))
     return;
   safeFile(path, "Parle pending login credential", false);
   unlinkSync4(path);
@@ -38035,13 +38168,13 @@ function preflightProfileWrite(profileName, force, catalogPath) {
   if (!PROFILE_LABEL_RE.test(profileName))
     throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
-  const writePath = safeProfileWritePath(join7(directory, basename2(catalogPath)));
-  const original = existsSync5(writePath) ? readFileSync3(writePath, "utf8") : "";
+  const writePath = safeProfileWritePath(join8(directory, basename2(catalogPath)));
+  const original = existsSync6(writePath) ? readFileSync3(writePath, "utf8") : "";
   if (original)
     parseProfiles(original, catalogPath);
   if (profileSectionRange(original, profileName) && !force)
     throw new Error(`Parle profile ${profileName} already exists in ${catalogPath}. Pass force=true to replace only that profile.`);
-  const probe = join7(dirname5(writePath), `.profiles-write-test-${process.pid}`);
+  const probe = join8(dirname6(writePath), `.profiles-write-test-${process.pid}`);
   try {
     writeFileSync2(probe, "ok\n", { mode: 384, flag: "wx" });
   } finally {
@@ -38055,9 +38188,9 @@ function writeProfile(profile, force, catalogPath) {
   if (!PROFILE_LABEL_RE.test(profile.name))
     throw new Error("Parle profile must be 1 to 64 characters and contain only letters, numbers, dot, underscore, or hyphen, starting with a letter or number.");
   const directory = ensureProfileDirectory(catalogPath);
-  const writePath = safeProfileWritePath(join7(directory, basename2(catalogPath)));
+  const writePath = safeProfileWritePath(join8(directory, basename2(catalogPath)));
   return withOwnerOnlyFileLock(writePath, { label: "Parle profile catalog", durability: "none" }, () => {
-    const original = existsSync5(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
+    const original = existsSync6(writePath) ? readOwnerOnlyTextFile(writePath, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
     const profiles = original ? parseProfiles(original, catalogPath) : /* @__PURE__ */ new Map();
     const range = profileSectionRange(original, profile.name);
     if (range && !force)
@@ -38074,8 +38207,8 @@ function writeProfile(profile, force, catalogPath) {
 }
 function preflightNewProfile(path, profileName) {
   const directory = ensureProfileDirectory(path);
-  const writePath = safeProfileWritePath(join7(directory, basename2(path)));
-  const original = existsSync5(writePath) ? readFileSync3(writePath, "utf8") : "";
+  const writePath = safeProfileWritePath(join8(directory, basename2(path)));
+  const original = existsSync6(writePath) ? readFileSync3(writePath, "utf8") : "";
   const profiles = original ? parseProfiles(original, path) : /* @__PURE__ */ new Map();
   if (profiles.has(profileName))
     throw new Error(`Parle profile ${profileName} already exists. No existing profile is replaced by this workflow.`);
@@ -38083,7 +38216,7 @@ function preflightNewProfile(path, profileName) {
 }
 function publishNewProfile(path, original, profile) {
   withOwnerOnlyFileLock(path, { label: "Parle profile catalog", durability: "none" }, () => {
-    const current = existsSync5(path) ? readOwnerOnlyTextFile(path, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
+    const current = existsSync6(path) ? readOwnerOnlyTextFile(path, { label: "Parle profile catalog", maxBytes: MAX_PROFILE_CATALOG_BYTES2, modePolicy: "ignore" }) : "";
     if (current !== original)
       throw new Error("Parle profile catalog changed after preflight. No credential was published.");
     const profiles = current ? parseProfiles(current, path) : /* @__PURE__ */ new Map();
@@ -38628,6 +38761,44 @@ var ParleAccountClient = class {
       next: `Set PARLE_PROFILE=${profileName} for this project, remove any direct room-binding configuration, restart the host, and run parle_status.`
     };
   }
+  // Narrow capability for maintained hosts only. It cannot carry arbitrary
+  // human requests, headers, cookies, or destinations.
+  ownedAliasCreationTransport(expectedOrigin) {
+    const origin = new URL(expectedOrigin).origin;
+    return {
+      request: async (path, options) => {
+        const match = /^\/v\/agents\/([^/?#]+)\/session-aliases\/([^/?#]+)$/.exec(path);
+        if (!match)
+          throw new Error("Parle human alias creation accepts only the fixed owned-agent alias endpoint.");
+        let agentId;
+        let alias;
+        try {
+          agentId = validateUUID(decodeURIComponent(match[1]), "agentId");
+          alias = validateAlias(decodeURIComponent(match[2]));
+        } catch {
+          throw new Error("Parle human alias creation requires an exact owned agent UUID and valid alias.");
+        }
+        const config2 = this.config();
+        if (config2.apiBase !== origin)
+          throw new Error("Parle human alias creation origin does not match the active agent configuration.");
+        const fixedPath = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}`;
+        const method = (options.method || "GET").toUpperCase();
+        if (method === "GET") {
+          if (options.body !== void 0)
+            throw new Error("Parle human alias inspection does not accept a request body.");
+          return this.request(config2, fixedPath, { signal: options.signal });
+        }
+        if (method !== "PUT")
+          throw new Error("Parle human alias creation accepts only GET or PUT.");
+        const body = options.body;
+        const expectedCreationGeneration = body?.expected_creation_generation;
+        if (!body || Object.keys(body).length !== 1 || typeof expectedCreationGeneration !== "number" || !Number.isSafeInteger(expectedCreationGeneration) || expectedCreationGeneration < 0) {
+          throw new Error("Parle human alias creation requires one non-negative expected_creation_generation.");
+        }
+        return this.request(config2, fixedPath, { method: "PUT", body: { expected_creation_generation: expectedCreationGeneration }, signal: options.signal });
+      }
+    };
+  }
   async ownedAliasDelivery(params, signal) {
     const config2 = this.config();
     const agentId = validateUUID(params.agentId, "agentId");
@@ -39019,12 +39190,12 @@ var ParleAccountClient = class {
     if (!isAbsolute2(path))
       throw new Error("handoffPath must be an absolute path.");
     const directory = inviteDirectory(config2, false);
-    if (!existsSync5(path))
+    if (!existsSync6(path))
       throw new Error(`Parle invite handoff does not exist in the private invite directory: ${path}`);
     safeFile(path, "Parle invite handoff", false);
-    if (realpathSync(dirname5(path)) !== directory || dirname5(realpathSync(path)) !== directory)
+    if (realpathSync(dirname6(path)) !== directory || dirname6(realpathSync(path)) !== directory)
       throw new Error("handoffPath must resolve directly inside the private Parle invite directory.");
-    if (!UUID_RE3.test(basename2(path, ".json")) || !path.endsWith(".json"))
+    if (!UUID_RE4.test(basename2(path, ".json")) || !path.endsWith(".json"))
       throw new Error("Parle invite handoff filename must be <invite-id>.json.");
     const parsed = parseJson2(readBounded(path, MAX_HANDOFF_BYTES, "Parle invite handoff"));
     if (!parsed || typeof parsed !== "object" || parsed.schemaVersion !== 1 || parsed.kind !== "parle-principal-invite")
@@ -39194,7 +39365,7 @@ var ParleAccountClient = class {
       const activeSeat = agentSeats2.find((item) => item?.agent_id === selected.agentId);
       const tokensResponse2 = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { signal });
       const tokens2 = Array.isArray(tokensResponse2.tokens) ? tokensResponse2.tokens : [];
-      const profiles2 = existsSync5(config2.catalogPath) ? parseProfiles(readFileSync3(config2.catalogPath, "utf8"), config2.catalogPath) : /* @__PURE__ */ new Map();
+      const profiles2 = existsSync6(config2.catalogPath) ? parseProfiles(readFileSync3(config2.catalogPath, "utf8"), config2.catalogPath) : /* @__PURE__ */ new Map();
       const activeTokenIds2 = new Set(tokens2.filter((token) => token?.agent_id === selected.agentId && token?.room_id === invitation.roomId && token?.revoked_at == null && Array.isArray(token?.scopes) && token.scopes.includes("participate")).map((token) => token.agent_token_id));
       const compatible2 = [...profiles2.values()].find((profile) => profile.roomId === invitation.roomId && profile.agentTokenId && activeTokenIds2.has(profile.agentTokenId));
       return {
@@ -39234,7 +39405,7 @@ var ParleAccountClient = class {
     const tokensResponse = await this.request(config2, `/v/agents/${encodeURIComponent(selected.agentId)}/tokens`, { signal });
     const tokens = Array.isArray(tokensResponse.tokens) ? tokensResponse.tokens : [];
     const catalogPath = config2.catalogPath;
-    const profiles = existsSync5(catalogPath) ? parseProfiles(readFileSync3(catalogPath, "utf8"), catalogPath) : /* @__PURE__ */ new Map();
+    const profiles = existsSync6(catalogPath) ? parseProfiles(readFileSync3(catalogPath, "utf8"), catalogPath) : /* @__PURE__ */ new Map();
     const activeTokenIds = new Set(tokens.filter((token) => token?.agent_id === selected.agentId && token?.room_id === invitation.roomId && token?.revoked_at == null && Array.isArray(token?.scopes) && token.scopes.includes("participate")).map((token) => token.agent_token_id));
     const compatible = [...profiles.values()].find((profile) => profile.roomId === invitation.roomId && profile.agentTokenId && activeTokenIds.has(profile.agentTokenId));
     if (compatible) {
@@ -39344,8 +39515,8 @@ var DEFAULT_RECONNECT_JITTER_MS = 3e4;
 var MAX_TIMER_MS = 2147483647;
 var MAX_REMEMBERED_KEYS = 5e3;
 var MAX_PROGRESS_EVENTS = 64;
-function deliveryKey(roomId, message) {
-  return `${roomId}:${message.event_id}`;
+function deliveryKey(roomId, message, sourceId) {
+  return `${sourceId || "current"}:${roomId}:${message.event_id}`;
 }
 function defaultSleep(ms, signal) {
   return new Promise((resolve2, reject) => {
@@ -39483,18 +39654,29 @@ var ResponsiveDeliveryController = class {
   // acknowledged, and a failed acknowledgement is retried without re-running
   // the host handler.
   async completeDeferred(roomId, message, outcome = "handled", fence) {
-    const key = deliveryKey(roomId, message);
+    let key = deliveryKey(roomId, message, fence?.sourceId);
+    let deferred = this.deferred.get(key);
+    if (!deferred && !fence) {
+      const found = [...this.deferred.entries()].find(([, entry]) => entry.roomId === roomId && entry.message.event_id === message.event_id);
+      if (found)
+        [key, deferred] = found;
+    }
     if (this.seen.has(key))
       return true;
     const stat = this.stat(roomId);
-    const deferred = this.deferred.get(key);
     if (deferred && !deferred.completionReported) {
       deferred.completionReported = true;
       this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
       this.reportProgress("ack_started", { roomId, eventId: message.event_id, seq: message.seq });
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence);
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence || (deferred?.sourceFence ? {
+        sessionRevision: deferred.sourceFence.sessionRevision,
+        agentSessionId: deferred.sourceFence.agentSessionId,
+        sourceId: deferred.sourceFence.sourceId,
+        cursorScope: deferred.sourceFence.cursorScope,
+        ...deferred.sourceFence.aliasContext ? { aliasContext: deferred.sourceFence.aliasContext } : {}
+      } : void 0));
     } catch (error51) {
       this.setRoomError(roomId, "ack", error51);
       return false;
@@ -39520,14 +39702,19 @@ var ResponsiveDeliveryController = class {
   }
   // Test seam for drain coalescing and acknowledgement retry, which are not
   // observable through the wake stream alone.
-  drainForTest(roomId) {
-    const room = this.configuredRooms().find((entry) => entry.roomId === roomId);
-    if (!room)
+  drainForTest(roomId, sourceId) {
+    const source = this.deliverySources().find((entry) => entry.sourceId === sourceId) || this.deliverySources().find((entry) => entry.sourceId === this.client.runtime.agentSessionId);
+    const room = source?.rooms.find((entry) => entry.roomId === roomId);
+    if (!room || !source)
       return Promise.resolve();
-    return this.drainRoom(room, "test");
+    return this.drainRoom(room, "test", source);
+  }
+  deliverySources() {
+    const sources = this.client.responsiveDeliverySources?.();
+    return Array.isArray(sources) ? sources : [{ sourceId: this.client.runtime.agentSessionId || "current", rooms: this.client.runtime.rooms || [], scopes: this.client.responsiveDeliveryScopes?.() || ["session"] }];
   }
   configuredRooms() {
-    return this.client.runtime.rooms || [];
+    return this.deliverySources().flatMap((source) => source.rooms);
   }
   readyRooms() {
     return this.configuredRooms().filter((room) => room.state === "ready");
@@ -39652,23 +39839,23 @@ var ResponsiveDeliveryController = class {
     }
     if (!hinted)
       return this.drainAll("wake_open");
-    const room = this.configuredRooms().find((entry) => entry.roomId === hinted);
-    if (!room) {
+    const sources = this.deliverySources().filter((source) => source.rooms.some((room) => room.roomId === hinted));
+    if (sources.length === 0) {
       this.ignoredWakeHints += 1;
       this.lastIgnoredWakeRoomId = hinted;
       return;
     }
     this.reportProgress("wake_hint", { roomId: hinted });
-    await this.drainDeliverable(room, "wake_hint");
+    await Promise.all(sources.map((source) => this.drainDeliverable(source.rooms.find((room) => room.roomId === hinted), "wake_hint", source)));
   }
   async drainAll(trigger) {
-    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room, trigger).catch(() => void 0)));
+    await Promise.all(this.deliverySources().flatMap((source) => source.rooms.map((room) => this.drainDeliverable(room, trigger, source).catch(() => void 0))));
   }
   // A degraded room is recovered before it is drained. Recovery reconciles
   // room entry and re-reads the watermark; a room that cannot be recovered is
   // left degraded with its error recorded rather than silently skipped.
-  async drainDeliverable(room, trigger) {
-    if (room.state !== "ready") {
+  async drainDeliverable(room, trigger, source) {
+    if (room.state !== "ready" && source.sourceId === this.client.runtime.agentSessionId) {
       const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
       if (!recovered) {
         const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
@@ -39677,33 +39864,33 @@ var ResponsiveDeliveryController = class {
       }
     }
     this.clearRoomError(room.roomId, "recover");
-    const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
-    await this.drainRoom(current, trigger);
+    const current = source.sourceId === this.client.runtime.agentSessionId ? this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room : room;
+    await this.drainRoom(current, trigger, source);
   }
   // Coalescing must not swallow a requested drain. Joining an in-flight drain
   // would lose a wake, reconnect, revision, or fallback pass because the
   // in-flight drain may already have read past the new rows. One rerun is queued
   // per room instead.
-  drainRoom(room, trigger) {
-    const existing = this.drainInFlight.get(room.roomId);
+  drainRoom(room, trigger, source) {
+    const drainKey = `${source.sourceId}:${room.roomId}`;
+    const existing = this.drainInFlight.get(drainKey);
     if (existing) {
-      this.rerunRequested.set(room.roomId, trigger);
+      this.rerunRequested.set(drainKey, trigger);
       return existing;
     }
     const run = (async () => {
       try {
-        await this.doDrainRoom(room, trigger);
+        for (const cursorScope of source.scopes)
+          await this.doDrainRoom(room, trigger, cursorScope, source);
       } finally {
-        this.drainInFlight.delete(room.roomId);
+        this.drainInFlight.delete(drainKey);
       }
-      const rerunTrigger = this.rerunRequested.get(room.roomId);
-      this.rerunRequested.delete(room.roomId);
-      if (rerunTrigger && !this.abort.signal.aborted) {
-        const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
-        await this.drainRoom(current, rerunTrigger);
-      }
+      const rerunTrigger = this.rerunRequested.get(drainKey);
+      this.rerunRequested.delete(drainKey);
+      if (rerunTrigger && !this.abort.signal.aborted)
+        await this.drainRoom(room, rerunTrigger, source);
     })();
-    this.drainInFlight.set(room.roomId, run);
+    this.drainInFlight.set(drainKey, run);
     return run;
   }
   stat(roomId) {
@@ -39743,7 +39930,7 @@ var ResponsiveDeliveryController = class {
     } catch {
     }
   }
-  async doDrainRoom(room, trigger) {
+  async doDrainRoom(room, trigger, requestedScope = "session", source) {
     let previousEmptyScan = -1;
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted)
@@ -39758,16 +39945,18 @@ var ResponsiveDeliveryController = class {
         stat.lastFetchAttemptAt = this.heartbeatAt;
         stat.lastFetchTrigger = trigger;
         if (typeof this.client.drainResponsiveDeliveryWithFence === "function") {
-          const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId);
+          const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId, requestedScope, source.sourceId);
           delivery = read.delivery;
           sourceFence = read.fence;
           release = read.release;
         } else {
           sourceFence = {
             sessionRevision: this.client.runtime.sessionRevision || 0,
+            cursorScope: "session",
             roomId: room.roomId,
-            sessionAlias: this.client.runtime.sessionAlias,
-            agentSessionId: this.client.runtime.agentSessionId || ""
+            ...this.client.runtime.sessionAlias ? { sessionAlias: this.client.runtime.sessionAlias } : {},
+            agentSessionId: source.sourceId,
+            sourceId: source.sourceId
           };
           delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
         }
@@ -39801,6 +39990,8 @@ var ResponsiveDeliveryController = class {
         }
         previousEmptyScan = -1;
         const cursorScope = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias" ? delivery.delivery.cursor_scope : void 0;
+        if (cursorScope !== requestedScope)
+          throw new Error("responsive delivery scope changed during a scoped drain");
         sourceFence.cursorScope = cursorScope;
         const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : void 0;
         let progressed = 0;
@@ -39808,10 +39999,10 @@ var ResponsiveDeliveryController = class {
           if (this.abort.signal.aborted)
             return;
           this.reportProgress("row_fetched", { roomId: room.roomId, trigger, eventId: message.event_id, seq: message.seq });
-          const key = deliveryKey(room.roomId, message);
+          const key = deliveryKey(room.roomId, message, sourceFence.sourceId);
           if (this.seen.has(key))
             continue;
-          const current = cursorScope === "alias" ? Boolean(sourceFence.sessionAlias && sourceFence.sessionAlias === this.client.runtime.sessionAlias) : sourceFence.sessionRevision === this.client.runtime.sessionRevision && sourceFence.agentSessionId === this.client.runtime.agentSessionId;
+          const current = typeof this.client.responsiveDeliveryFenceCurrent === "function" ? this.client.responsiveDeliveryFenceCurrent(sourceFence) : cursorScope === "alias" ? Boolean(sourceFence.aliasContext && sourceFence.aliasContext.aliasIdentityId === this.client.runtime.aliasIdentityId && sourceFence.aliasContext.aliasGeneration === this.client.runtime.sessionGeneration) : sourceFence.sessionRevision === this.client.runtime.sessionRevision && sourceFence.agentSessionId === this.client.runtime.agentSessionId;
           if (!current) {
             this.remember(key);
             continue;
@@ -39854,7 +40045,7 @@ var ResponsiveDeliveryController = class {
         this.handled.set(key, { outcome, cursorScope, sourceFence });
         this.attempts.delete(key);
         if (outcome === "deferred") {
-          this.deferred.set(key, { roomId: room.roomId, message });
+          this.deferred.set(key, { roomId: room.roomId, message, cursorScope, sourceFence });
           return true;
         }
         this.reportProgress("handling_complete", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
@@ -39873,9 +40064,11 @@ var ResponsiveDeliveryController = class {
     }
     try {
       this.reportProgress("ack_started", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId, ackCursorScope === "alias" || !ackSourceFence ? void 0 : {
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, room.roomId, !ackSourceFence ? void 0 : {
         sessionRevision: ackSourceFence.sessionRevision,
-        agentSessionId: ackSourceFence.agentSessionId
+        agentSessionId: ackSourceFence.agentSessionId,
+        cursorScope: ackCursorScope || "session",
+        ...ackSourceFence.aliasContext ? { aliasContext: ackSourceFence.aliasContext } : {}
       });
     } catch (error51) {
       this.setRoomError(room.roomId, "ack", error51);
@@ -39908,12 +40101,12 @@ var ResponsiveDeliveryController = class {
 };
 
 // ../client/dist/launches.js
-import { existsSync as existsSync6, lstatSync as lstatSync6, readFileSync as readFileSync4 } from "node:fs";
-import { dirname as dirname6, join as join8 } from "node:path";
+import { existsSync as existsSync7, lstatSync as lstatSync6, readFileSync as readFileSync4 } from "node:fs";
+import { dirname as dirname7, join as join9 } from "node:path";
 var SAVED_START_CATALOG_MAX_BYTES = 256 * 1024;
 var SAVED_START_NEXT_MAX_BYTES = 16 * 1024;
-var SAVED_START_CATALOG_PATH = join8(dirname6(PROFILE_CATALOG_PATH), "launches");
-var LABEL2 = "Parle saved-start catalog";
+var SAVED_START_CATALOG_PATH = join9(dirname7(PROFILE_CATALOG_PATH), "launches");
+var LABEL3 = "Parle saved-start catalog";
 var NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 var ALLOWED_KEYS2 = /* @__PURE__ */ new Set(["profile", "alias", "next"]);
 var RESERVED_SAVED_START_NAMES = /* @__PURE__ */ new Set(["list", "show", "save", "delete"]);
@@ -39939,12 +40132,12 @@ ${guidance}`, "saved_start_not_found");
   }
 };
 function savedStartCatalogPath(profileCatalogPath2 = PROFILE_CATALOG_PATH) {
-  return join8(dirname6(profileCatalogPath2), "launches");
+  return join9(dirname7(profileCatalogPath2), "launches");
 }
 function resolveSavedStartCatalogPath(cwd = process.cwd(), env = process.env) {
   let projectOverride;
-  const dotEnvPath = join8(cwd, ".env");
-  if (existsSync6(dotEnvPath)) {
+  const dotEnvPath = join9(cwd, ".env");
+  if (existsSync7(dotEnvPath)) {
     for (const raw of readFileSync4(dotEnvPath, "utf8").split(/\r?\n/)) {
       const line2 = raw.trim();
       if (!line2 || line2.startsWith("#"))
@@ -40063,7 +40256,7 @@ function savedStartCatalogExists(path) {
 function readSavedStarts(path = SAVED_START_CATALOG_PATH) {
   if (!savedStartCatalogExists(path))
     return /* @__PURE__ */ new Map();
-  const text = readOwnerOnlyTextFile(path, { label: LABEL2, maxBytes: SAVED_START_CATALOG_MAX_BYTES });
+  const text = readOwnerOnlyTextFile(path, { label: LABEL3, maxBytes: SAVED_START_CATALOG_MAX_BYTES });
   return parseSavedStarts(text, path);
 }
 function loadSavedStart(name, path = SAVED_START_CATALOG_PATH) {
@@ -40076,12 +40269,12 @@ function loadSavedStart(name, path = SAVED_START_CATALOG_PATH) {
 }
 function saveSavedStart(start, path = SAVED_START_CATALOG_PATH) {
   const normalized = validateSavedStart(start);
-  ensureOwnerOnlyDirectory(dirname6(path), { label: `${LABEL2} directory` });
-  return withOwnerOnlyFileLock(path, { label: LABEL2, durability: "best-effort" }, () => {
+  ensureOwnerOnlyDirectory(dirname7(path), { label: `${LABEL3} directory` });
+  return withOwnerOnlyFileLock(path, { label: LABEL3, durability: "best-effort" }, () => {
     const starts = readSavedStarts(path);
     starts.set(normalized.name, normalized);
     atomicReplaceOwnerOnlyFile(path, serializeSavedStarts(starts.values()), {
-      label: LABEL2,
+      label: LABEL3,
       maxBytes: SAVED_START_CATALOG_MAX_BYTES,
       durability: "best-effort"
     });
@@ -40092,13 +40285,13 @@ function deleteSavedStart(name, path = SAVED_START_CATALOG_PATH) {
   assertName(name, "Parle saved-start name");
   if (!savedStartCatalogExists(path))
     return false;
-  ensureOwnerOnlyDirectory(dirname6(path), { label: `${LABEL2} directory`, create: false });
-  return withOwnerOnlyFileLock(path, { label: LABEL2, durability: "best-effort" }, () => {
+  ensureOwnerOnlyDirectory(dirname7(path), { label: `${LABEL3} directory`, create: false });
+  return withOwnerOnlyFileLock(path, { label: LABEL3, durability: "best-effort" }, () => {
     const starts = readSavedStarts(path);
     if (!starts.delete(name))
       return false;
     atomicReplaceOwnerOnlyFile(path, serializeSavedStarts(starts.values()), {
-      label: LABEL2,
+      label: LABEL3,
       maxBytes: SAVED_START_CATALOG_MAX_BYTES,
       durability: "best-effort"
     });
@@ -40113,6 +40306,7 @@ var DEFAULT_READ_MESSAGE_LIMIT = 50;
 var READ_LIMIT_BYTES = 256 * 1024;
 var MIN_READ_LIMIT_BYTES = 1024;
 var DEFAULT_MAX_DRAIN_PAGES = 10;
+var UUID_RE5 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function cleanupLocalAdapterState(cwd, now = /* @__PURE__ */ new Date()) {
   for (const cleanup of [
     () => pruneRuntimeFiles(cwd, now),
@@ -40230,8 +40424,9 @@ var ROLLOVER_MAX_FAILURES = 3;
 var ROLLOVER_RETRY_MS = 5e3;
 var ROLLOVER_COOLDOWN_MS = 6e4;
 var MAX_TIMER_DELAY_MS = 2147e6;
+var MAX_RETAINED_PREDECESSORS = 2;
 function deterministicSessionJitterMs(agentSessionId) {
-  const digest = createHash2("sha256").update(agentSessionId).digest();
+  const digest = createHash3("sha256").update(agentSessionId).digest();
   return digest.readUInt32BE(0) % ROLLOVER_JITTER_RANGE_MS;
 }
 function sessionRolloverAtMs(session) {
@@ -40271,7 +40466,7 @@ function parseKeyValueFile(text) {
   return out;
 }
 function readKeyValueFile(path) {
-  if (!existsSync7(path))
+  if (!existsSync8(path))
     return {};
   return parseKeyValueFile(readFileSync5(path, "utf8"));
 }
@@ -40283,12 +40478,8 @@ function firstConfigValue(name, sources, fallback) {
   }
   return { value: fallback, source: fallback === void 0 ? "missing" : "default" };
 }
-function aliasConfig(sources, warnings) {
-  const alias = firstConfigValue("PARLE_SESSION_ALIAS", sources);
-  if (alias.value && alias.source !== "env") {
-    warnings.push(`PARLE_SESSION_ALIAS is set to ${alias.value} in ${alias.source}, so every process started here takes over that named route and supersedes the previous session. Set it in the process environment for a deliberate singleton role instead.`);
-  }
-  return alias;
+function aliasConfig(sources, _warnings) {
+  return firstConfigValue("PARLE_SESSION_ALIAS", sources);
 }
 function versionConfig(env, dotEnv, warnings) {
   if (env.PARLE_VERSION) {
@@ -40302,11 +40493,11 @@ function versionConfig(env, dotEnv, warnings) {
   return { value: DEFAULT_VERSION, source: "default" };
 }
 function resolveProfileCatalogPathForProcess(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join9(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join10(cwd, ".env"));
   return resolveProfileCatalogPath(env.PARLE_PROFILES_PATH || dotEnv.PARLE_PROFILES_PATH, cwd, env);
 }
 function resolveConfig(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join9(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join10(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -40369,7 +40560,7 @@ function requestOrigin(value) {
   }
 }
 function resolveRoomSet(cwd = process.cwd(), env = process.env) {
-  const dotEnv = readKeyValueFile(join9(cwd, ".env"));
+  const dotEnv = readKeyValueFile(join10(cwd, ".env"));
   const sources = [
     { name: "env", values: env },
     { name: ".env", values: dotEnv }
@@ -40545,23 +40736,23 @@ function entryBaselineSeq(entry) {
 }
 var MAX_RETIRED_GENERATIONS = 8;
 function adoptStreamGeneration(room, source) {
-  const generation = source?.generation;
-  if (typeof generation !== "string" || !generation || generation === room.streamGeneration)
+  const generation2 = source?.generation;
+  if (typeof generation2 !== "string" || !generation2 || generation2 === room.streamGeneration)
     return;
   if (room.streamGeneration) {
     const retired = (room.retiredGenerations ?? []).filter((entry) => entry !== room.streamGeneration);
     retired.push(room.streamGeneration);
     room.retiredGenerations = retired.slice(-MAX_RETIRED_GENERATIONS);
   }
-  room.streamGeneration = generation;
+  room.streamGeneration = generation2;
 }
 function isStaleGeneration(room, source) {
-  const generation = source?.generation;
-  return typeof generation === "string" && Boolean(generation) && generation !== room.streamGeneration && (room.retiredGenerations ?? []).includes(generation);
+  const generation2 = source?.generation;
+  return typeof generation2 === "string" && Boolean(generation2) && generation2 !== room.streamGeneration && (room.retiredGenerations ?? []).includes(generation2);
 }
 function retiresCursor(room, source) {
-  const generation = source?.generation;
-  return typeof generation === "string" && Boolean(generation) && Boolean(room.streamGeneration) && generation !== room.streamGeneration;
+  const generation2 = source?.generation;
+  return typeof generation2 === "string" && Boolean(generation2) && Boolean(room.streamGeneration) && generation2 !== room.streamGeneration;
 }
 function adoptDiscardedPageGeneration(room, page) {
   if (retiresCursor(room, page)) {
@@ -40732,6 +40923,7 @@ var ParleAgentClient = class _ParleAgentClient {
   sessionRevisionListeners = /* @__PURE__ */ new Set();
   sessionCommitGuards = /* @__PURE__ */ new Set();
   activeResponsiveReads = /* @__PURE__ */ new Set();
+  retainedDeliverySources = /* @__PURE__ */ new Map();
   // Set while a lifecycle transition is between its pre-claim guard and its
   // local publication. Responsive fences are registered outside the lifecycle
   // exclusion, so without this barrier the pre-claim guard would be advisory:
@@ -40755,6 +40947,9 @@ var ParleAgentClient = class _ParleAgentClient {
   automaticTerminalBinding;
   recordedTerminalErrors = /* @__PURE__ */ new WeakSet();
   missingAliasWarning;
+  aliasLifecycleState;
+  aliasLifecycleStateAvailable = true;
+  humanAliasTransport;
   registryCatalogPath;
   constructor(options = {}) {
     this.env = options.env || process.env;
@@ -40763,6 +40958,9 @@ var ParleAgentClient = class _ParleAgentClient {
     const roomSet = resolveRoomSet(this.cwd, this.env);
     this.roomConfigs = roomSet.rooms;
     this.cfg = roomSet.rooms[0];
+    const aliasLifecycle = readAliasLifecycleState(this.aliasStatePath());
+    this.aliasLifecycleState = aliasLifecycle.state;
+    this.aliasLifecycleStateAvailable = aliasLifecycle.available;
     this.multiRoom = roomSet.mode === "multi";
     this.activeProfile = this.multiRoom ? void 0 : this.cfg.profile?.value;
     this.fetchImpl = options.fetch || fetch;
@@ -40773,6 +40971,7 @@ var ParleAgentClient = class _ParleAgentClient {
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
     this.deriveSessionAddress = options.synthesizeSessionAddress || ((_route, serverAddress) => serverAddress);
+    this.humanAliasTransport = options.humanAliasTransport;
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : void 0;
@@ -40783,7 +40982,64 @@ var ParleAgentClient = class _ParleAgentClient {
     this.clientInstanceId = assertClientInstanceId(options.clientInstanceId || processClientInstanceId());
     cleanupLocalAdapterState(this.cwd, this.now());
   }
+  pruneRetainedDeliverySources() {
+    const now = this.now().getTime();
+    for (const [id, source] of this.retainedDeliverySources) {
+      if (!Number.isFinite(Date.parse(source.state.expiresAt)) || Date.parse(source.state.expiresAt) <= now) {
+        this.retainedDeliverySources.delete(id);
+      }
+    }
+    const ids = [...this.retainedDeliverySources.keys()];
+    this.runtime.predecessorDrainingCount = ids.length || void 0;
+    this.runtime.predecessorDrainingIds = ids.length ? ids : void 0;
+  }
+  retainLivePredecessor(previous) {
+    this.pruneRetainedDeliverySources();
+    if (!previous.sessionHandle || !previous.agentSessionId || !previous.rooms.length || Date.parse(previous.expiresAt) <= this.now().getTime())
+      return;
+    this.retainedDeliverySources.set(previous.agentSessionId, {
+      state: { ...previous, rooms: previous.rooms.map((room) => ({ ...room })) },
+      roomConfigs: this.roomConfigs.map((room) => ({ ...room }))
+    });
+    this.pruneRetainedDeliverySources();
+  }
+  assertPredecessorCapacity() {
+    this.pruneRetainedDeliverySources();
+    if (this.retainedDeliverySources.size >= MAX_RETAINED_PREDECESSORS) {
+      throw new ParleApiError(`Parle proactive rollover is refused while ${MAX_RETAINED_PREDECESSORS} live predecessors remain retained. Retry after a predecessor expires; see predecessorDrainingIds in status. An empty drain does not free a slot, and this client has no manual predecessor-closure operation.`, {
+        code: "predecessor_drain_capacity",
+        action: "backoff",
+        scope: "agent_session",
+        retryable: true
+      });
+    }
+  }
+  responsiveDeliverySources() {
+    this.pruneRetainedDeliverySources();
+    const current = this.runtime.agentSessionId ? [{
+      sourceId: this.runtime.agentSessionId,
+      rooms: this.runtime.rooms.map((room) => ({ ...room })),
+      scopes: this.responsiveDeliveryScopes()
+    }] : [];
+    return [...current, ...[...this.retainedDeliverySources.entries()].map(([sourceId, source]) => ({
+      sourceId,
+      rooms: source.state.rooms.map((room) => ({ ...room })),
+      scopes: ["session"]
+    }))];
+  }
+  responsiveDeliveryFenceCurrent(fence) {
+    this.pruneRetainedDeliverySources();
+    if (fence.agentSessionId === this.runtime.agentSessionId && fence.sessionRevision === this.runtime.sessionRevision)
+      return true;
+    const source = this.retainedDeliverySources.get(fence.sourceId || fence.agentSessionId);
+    return Boolean(source && source.state.agentSessionId === fence.agentSessionId && source.state.sessionRevision === fence.sessionRevision);
+  }
+  shutdownWarnings() {
+    this.pruneRetainedDeliverySources();
+    return this.retainedDeliverySources.size ? [`Parle shutdown abandons exact-session delivery for live predecessor ${[...this.retainedDeliverySources.keys()].join(", ")}; credentials are memory-only and work remains server-side until expiry.`] : [];
+  }
   status() {
+    this.pruneRetainedDeliverySources();
     return {
       config: {
         enabledInput: redactedValue(this.cfg.enabledInput),
@@ -40798,6 +41054,13 @@ var ParleAgentClient = class _ParleAgentClient {
       },
       // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
       runtime: { ...projectRuntimeStatus(this.runtime), sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
+      alias: {
+        ...this.cfg.sessionAlias?.value ? { configured: this.cfg.sessionAlias.value } : {},
+        ...this.aliasLifecycleState?.state === "requested" ? { requested: this.aliasLifecycleState.alias } : {},
+        ...this.aliasLifecycleState?.state === "lost" ? { claimLost: true } : {},
+        ...this.aliasLifecycleState?.state === "outcome_unknown" ? { claimOutcomeUnknown: true } : {},
+        ...this.runtime.sessionAlias ? { active: this.runtime.sessionAlias } : {}
+      },
       rooms: this.roomConfigs.map((cfg) => {
         const roomId = cfg.roomId?.value || "";
         const room = this.roomRuntimes.get(roomId);
@@ -40812,7 +41075,7 @@ var ParleAgentClient = class _ParleAgentClient {
           ...room?.lastError ? { lastError: room.lastError } : {}
         };
       }),
-      warnings: [...this.cfg.warnings, ...this.staleTokenHint() ? [this.staleTokenHint()] : [], ...this.unreadIntervalHint() ? [this.unreadIntervalHint()] : [], ...this.missingAliasWarning ? [this.missingAliasWarning] : []]
+      warnings: [...this.cfg.warnings, ...!this.aliasLifecycleStateAvailable ? ["Parle alias lifecycle state is unavailable, so no stored alias policy will be used."] : [], ...this.staleTokenHint() ? [this.staleTokenHint()] : [], ...this.unreadIntervalHint() ? [this.unreadIntervalHint()] : [], ...this.missingAliasWarning ? [this.missingAliasWarning] : [], ...this.shutdownWarnings()]
     };
   }
   setup() {
@@ -40834,7 +41097,7 @@ var ParleAgentClient = class _ParleAgentClient {
     if (!current)
       return void 0;
     try {
-      const onDisk = readKeyValueFile(join9(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
+      const onDisk = readKeyValueFile(join10(this.cwd, ".env"))["PARLE_ROOM_AGENT_TOKEN"];
       if (onDisk === void 0 || onDisk === "")
         return void 0;
       if (onDisk === current)
@@ -41042,12 +41305,15 @@ var ParleAgentClient = class _ParleAgentClient {
     this.runtime.rooms = this.roomConfigs.map((room) => this.roomRuntimes.get(room.roomId?.value || "")).filter((room) => Boolean(room)).map((room) => ({ ...room }));
   }
   async requestJson(pathOrUrl, options = {}) {
+    return this.requestJsonWithBindings(pathOrUrl, options, this.cfg, this.roomConfigs);
+  }
+  async requestJsonWithBindings(pathOrUrl, options, cfg, roomConfigs) {
     const method = options.method || (options.body === void 0 ? "GET" : "POST");
     const retryableRequest = options.retry !== false && (method === "GET" || method === "HEAD" || Boolean(options.headers?.["Idempotency-Key"]));
     const startedMs = this.now().getTime();
     for (let attempt = 1; ; attempt += 1) {
       try {
-        return await this.requestJsonOnce(pathOrUrl, options, method);
+        return await this.requestJsonOnce(pathOrUrl, options, method, cfg, roomConfigs);
       } catch (error51) {
         if (!(error51 instanceof ParleApiError) || error51.code === "unsupported_parle_version" || !retryableRequest || !error51.retryable || attempt >= REQUEST_RETRY_ATTEMPTS)
           throw error51;
@@ -41059,14 +41325,14 @@ var ParleAgentClient = class _ParleAgentClient {
       }
     }
   }
-  async requestJsonOnce(pathOrUrl, options, method) {
-    const url2 = requestUrl(this.cfg, pathOrUrl);
+  async requestJsonOnce(pathOrUrl, options, method, cfg = this.cfg, roomConfigs = this.roomConfigs) {
+    const url2 = requestUrl(cfg, pathOrUrl);
     assertSafeBase(url2.origin, this.env);
     assertNoReservedProtocolHeaders(options.headers);
     const headers = {
       Accept: "application/json",
       ...options.headers,
-      "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+      "Parle-Version": cfg.version.value || DEFAULT_VERSION,
       "Parle-Client-Name": this.clientName,
       ...this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {},
       "Parle-Client-Instance": this.clientInstanceId,
@@ -41078,8 +41344,10 @@ var ParleAgentClient = class _ParleAgentClient {
     if (options.authMode === "human_session")
       throw new ParleApiError("human_session auth is not implemented in @parlehq/agent-client yet", { code: "not_implemented" });
     if (options.authMode !== "none") {
-      const binding = options.roomId ? this.roomTarget(options.roomId) : this.cfg;
-      if (!binding.agentToken?.value)
+      const binding = options.roomId ? roomConfigs.find((room) => room.roomId?.value === options.roomId) : cfg;
+      if (options.roomId && !binding)
+        throw new ParleApiError(`Parle room ${options.roomId} is not configured for this delivery source.`, { code: "unknown_room", action: "fix_client", scope: "request" });
+      if (!binding?.agentToken?.value)
         throw new ParleApiError("Parle setup needed: PARLE_ROOM_AGENT_TOKEN is missing", { code: "setup_needed" });
       headers.Authorization = `Bearer ${binding.agentToken.value}`;
     }
@@ -41108,7 +41376,7 @@ var ParleAgentClient = class _ParleAgentClient {
       const { code, action, scope, retryAfterMs } = envelope;
       const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
       const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
+      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
       if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
@@ -41145,7 +41413,7 @@ var ParleAgentClient = class _ParleAgentClient {
     try {
       this.assertConfigured();
       this.assertDeclaredIdentityConfiguration();
-      const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
+      const prepared = await this.prepareCandidate(void 0, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
         this.assertSessionCommitAllowed(previous, prepared.state, reason);
@@ -41155,7 +41423,7 @@ var ParleAgentClient = class _ParleAgentClient {
           await this.retireSession(prepared.state).catch(() => void 0);
         throw error51;
       }
-      const unusedPreviousWake = this.commitCandidate(prepared, epoch);
+      const unusedPreviousWake = this.commitCandidate(prepared, epoch, reason !== "rebootstrap");
       await this.completeCandidateHandoff(previous, prepared.state, reason, signal, unusedPreviousWake, oldWasLive);
       this.assertExpectedAliasRecovered();
       this.clearAutomaticTerminalLatch();
@@ -41182,19 +41450,24 @@ var ParleAgentClient = class _ParleAgentClient {
       throw error51;
     }
   }
-  // A replacement process that comes back without its configured durable route
-  // looks healthy while peers address a session that no longer exists, so the
-  // gap is reported rather than left silent (issue #49).
+  // Configuration names a requested alias but never grants claim authority.
+  // A restart therefore establishes an anonymous session unless an explicit
+  // assumption occurs in this process.
   assertExpectedAliasRecovered() {
     const expected = this.cfg.sessionAlias?.value;
-    if (!expected || this.runtime.sessionAlias === expected) {
+    if (this.aliasLifecycleState?.state === "lost") {
+      this.missingAliasWarning = `Parle alias ${this.aliasLifecycleState.alias} lost authority. Its stored operator policy is suppressed until an explicit new assume instruction.`;
+    } else if (this.aliasLifecycleState?.state === "outcome_unknown") {
+      this.missingAliasWarning = `Parle explicit assume of ${this.aliasLifecycleState.alias} has an unknown outcome. The original session credential was not persisted; inspect and resolve manually before another assume.`;
+    } else if (expected && this.runtime.sessionAlias !== expected) {
+      this.missingAliasWarning = `Parle alias ${expected} is requested but inactive. Configuration alone does not claim an alias; use an explicit assume instruction.`;
+    } else {
       this.missingAliasWarning = void 0;
-      return;
     }
-    const held = this.runtime.sessionAlias ? ` The session holds ${this.runtime.sessionAlias} instead.` : "";
-    this.missingAliasWarning = `Parle session did not reclaim its configured durable alias ${expected}; peers addressing that route will not reach this session.${held} Check whether another live session holds the alias, then reconnect.`;
-    this.runtime.lastError = this.missingAliasWarning;
-    this.publishRuntimeState();
+    if (this.missingAliasWarning) {
+      this.runtime.lastError = this.missingAliasWarning;
+      this.publishRuntimeState();
+    }
   }
   declaredIdentityError(code, message) {
     return new ParleApiError(message, { code, action: "fix_client", scope: "agent_session", retryable: false });
@@ -41251,7 +41524,7 @@ var ParleAgentClient = class _ParleAgentClient {
     for (const room of this.roomRuntimes.values())
       this.assertDeclaredRoom(room);
   }
-  async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness) {
+  async prepareCandidate(alias, signal, preserveCursor, requireWakeReadiness, exactClaim) {
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
     const authenticatedAddress = parseSessionAddress(typeof session.address === "string" ? session.address : null);
     const candidate = {
@@ -41346,13 +41619,15 @@ var ParleAgentClient = class _ParleAgentClient {
       if (alias || requireWakeReadiness)
         candidateWake = await this.establishCandidateWakeReadiness(candidate.sessionHandle, signal);
       if (alias) {
-        const aliasFacts = await this.ownAliasFacts(alias, signal);
-        const expectedGeneration = aliasFacts.generation;
-        priorAliasOwnerSessionId = aliasFacts.currentAgentSessionId;
-        this.preClaimGuard?.({ ...candidate, sessionAlias: alias, responsiveContinuity: "alias" });
-        const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal);
+        const aliasFacts = exactClaim ? void 0 : await this.ownAliasFacts(alias, signal);
+        const expectedGeneration = exactClaim?.expectedGeneration ?? aliasFacts.generation;
+        const aliasIdentityId = exactClaim?.aliasIdentityId ?? aliasFacts?.aliasIdentityId;
+        priorAliasOwnerSessionId = aliasFacts?.currentAgentSessionId;
+        this.preClaimGuard?.({ ...candidate, sessionAlias: alias, aliasIdentityId, responsiveContinuity: "alias" });
+        const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal, aliasIdentityId);
         aliasClaimed = true;
         candidate.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
+        candidate.aliasIdentityId = typeof claimed.alias_identity_id === "string" ? claimed.alias_identity_id : aliasIdentityId;
         candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
         candidate.sessionAddress = this.deriveSessionAddress({ alias: candidate.sessionAlias, sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof claimed.address === "string" ? claimed.address : candidate.sessionAddress);
         candidate.createdAt = String(claimed.created_at || candidate.createdAt);
@@ -41379,8 +41654,95 @@ var ParleAgentClient = class _ParleAgentClient {
   async ownAliasFacts(alias, signal) {
     return ownAliasFacts(this.aliasTransport(), alias, signal);
   }
-  async claimAliasWithRecovery(candidate, alias, expectedGeneration, signal) {
-    return claimAliasWithRecovery(this.aliasTransport(), candidate, alias, expectedGeneration, signal);
+  async ensureAliasIdentity(alias, options, signal) {
+    const facts = await this.ownAliasFacts(alias, signal);
+    if (facts.aliasIdentityId)
+      return facts;
+    if (!options.agentId || !UUID_RE5.test(options.agentId) || !this.humanAliasTransport) {
+      throw new ParleApiError("Parle alias is absent and requires human owner sign-in plus an exact agent UUID before it can be assumed", {
+        code: "alias_human_auth_required",
+        action: "stop",
+        scope: "agent_session",
+        retryable: false
+      });
+    }
+    const path = `/v/agents/${encodeURIComponent(options.agentId)}/session-aliases/${encodeURIComponent(alias)}`;
+    const creation = await this.humanAliasTransport.request(path, { signal });
+    if (creation?.alias !== alias || typeof creation?.exists !== "boolean" || !Number.isInteger(creation?.creation_generation) || creation.creation_generation < 0) {
+      throw new ParleApiError("Parle human alias inspection returned invalid creation facts", { code: "invalid_response", action: "fix_client", scope: "server" });
+    }
+    if (!creation.exists) {
+      const created = await this.humanAliasTransport.request(path, {
+        method: "PUT",
+        body: { expected_creation_generation: creation.creation_generation },
+        signal
+      });
+      if (created?.alias !== alias || created?.exists !== true || !Number.isInteger(created?.creation_generation) || created.creation_generation !== creation.creation_generation) {
+        throw new ParleApiError("Parle human alias creation did not confirm the requested fixed creation epoch", { code: "invalid_response", action: "fix_client", scope: "server" });
+      }
+    }
+    const confirmed = await this.ownAliasFacts(alias, signal);
+    if (!confirmed.aliasIdentityId) {
+      throw new ParleApiError("Parle alias creation completed without an immutable identity visible to this agent", { code: "invalid_response", action: "stop", scope: "agent_session" });
+    }
+    return confirmed;
+  }
+  aliasStatePath() {
+    return aliasLifecycleStatePath(this.registryCatalogPath, this.cfg.apiBase.value || DEFAULT_API_BASE3, this.roomConfigs.map((room) => room.roomId?.value || ""), this.roomConfigs.map((room) => room.agentTokenId?.value || createHash3("sha256").update(room.agentToken?.value || "").digest("hex")));
+  }
+  recordAliasAssumption(alias, facts) {
+    const recorded = recordAliasAssumption(this.aliasStatePath(), alias, facts.aliasIdentityId, facts.generation, this.randomUUID(), this.now().toISOString());
+    if (!recorded)
+      throw new ParleApiError("Parle could not safely record the explicit alias assumption", { code: "alias_lifecycle_state_unavailable", action: "stop", scope: "agent_session" });
+    this.aliasLifecycleState = recorded;
+    this.aliasLifecycleStateAvailable = true;
+  }
+  recordAliasLoss(alias) {
+    const prior = this.aliasLifecycleState;
+    if (prior && prior.aliasIdentityId === this.runtime.aliasIdentityId) {
+      const next = transitionAliasState(this.aliasStatePath(), prior, "lost", this.now().toISOString());
+      this.aliasLifecycleState = next || { ...prior, state: "lost", lostGeneration: prior.heldGeneration ?? prior.requestedGeneration };
+      this.aliasLifecycleStateAvailable = Boolean(next);
+    }
+    if (this.runtime.sessionAlias !== alias)
+      return;
+    this.runtime = {
+      ...this.runtime,
+      sessionAlias: void 0,
+      aliasIdentityId: void 0,
+      sessionGeneration: 0,
+      sessionAddress: null,
+      responsiveCursorScope: this.runtime.responsiveCursorScope === "alias" ? "session" : this.runtime.responsiveCursorScope
+    };
+    this.assertExpectedAliasRecovered();
+  }
+  async claimAliasWithRecovery(candidate, alias, expectedGeneration, signal, aliasIdentityId) {
+    const prior = this.aliasLifecycleState;
+    if (!prior || prior.aliasIdentityId !== aliasIdentityId || !["requested", "held"].includes(prior.state) || (prior.state === "held" ? prior.heldGeneration : prior.requestedGeneration) !== expectedGeneration) {
+      throw new ParleApiError("Alias claim requires its original explicit authorization", { code: "alias_authorization_required", action: "stop", scope: "agent_session" });
+    }
+    const pending = transitionAliasState(this.aliasStatePath(), prior, "outcome_unknown", this.now().toISOString(), prior.heldGeneration, this.randomUUID());
+    if (!pending)
+      throw new ParleApiError("Alias operation state could not be persisted", { code: "alias_lifecycle_state_unavailable", action: "stop", scope: "agent_session" });
+    this.aliasLifecycleState = pending;
+    try {
+      const result2 = await claimAliasWithRecovery(this.aliasTransport(), candidate, alias, expectedGeneration, signal, aliasIdentityId);
+      const held = transitionAliasState(this.aliasStatePath(), pending, "held", this.now().toISOString(), result2.generation);
+      if (!held)
+        throw new ParleApiError("Claim committed but local confirmation could not be recorded; resolve manually", { code: "alias_lifecycle_state_unavailable", action: "stop", scope: "agent_session" });
+      this.aliasLifecycleState = held;
+      return result2;
+    } catch (error51) {
+      if (error51?.status === 409) {
+        const state = prior.state === "held" ? "lost" : "refused";
+        const refused = transitionAliasState(this.aliasStatePath(), pending, state, this.now().toISOString());
+        this.aliasLifecycleState = refused || { ...pending, state };
+        this.aliasLifecycleStateAvailable = Boolean(refused);
+        if (prior.state === "held")
+          this.recordAliasLoss(alias);
+      }
+      throw error51;
+    }
   }
   async establishCandidateWakeReadiness(sessionCredential, signal) {
     const controller = new AbortController();
@@ -41440,14 +41802,17 @@ var ParleAgentClient = class _ParleAgentClient {
     for (const guard of this.sessionCommitGuards)
       guard(plan);
   }
-  commitCandidate(prepared, epoch) {
+  commitCandidate(prepared, epoch, retainPredecessor = true) {
     this.assertLifecycleActive(epoch);
+    if (retainPredecessor)
+      this.retainLivePredecessor(this.runtime);
     this.stopUnreadPolling();
     const unusedPreviousWake = this.prefetchedWake;
     this.prefetchedWake = prepared.wake;
     const revision = this.runtime.sessionRevision + 1;
     this.lifecycleEpoch += 1;
     this.runtime = { ...prepared.state, sessionRevision: revision, rolloverFailures: 0, rolloverLatched: false, lastBootstrapError: void 0 };
+    this.pruneRetainedDeliverySources();
     this.adoptRoomRuntimes(prepared.rooms);
     this.bootstrapGeneration += 1;
     this.publishRuntimeState();
@@ -41455,19 +41820,11 @@ var ParleAgentClient = class _ParleAgentClient {
     this.scheduleRollover();
     return unusedPreviousWake;
   }
-  async completeCandidateHandoff(previous, candidate, reason, signal, unusedPreviousWake, drainImmediately) {
+  async completeCandidateHandoff(previous, candidate, reason, signal, unusedPreviousWake, _drainImmediately) {
+    void previous;
+    if (_drainImmediately && !this.runtime.responsiveCursorScope)
+      this.runtime.responsiveCursorScope = "session";
     const readyRooms = candidate.rooms.filter((room) => room.state === "ready");
-    if (drainImmediately) {
-      for (const room of readyRooms) {
-        try {
-          const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(room.roomId)}/responsive-delivery?wait=0`, { roomId: room.roomId, sessionCredential: candidate.sessionHandle, signal, retry: false });
-          this.recordResponsiveCursorScope(delivery);
-        } catch (error51) {
-          this.runtime.lastError = redactString(error51 instanceof Error ? error51.message : String(error51));
-          this.publishRuntimeState();
-        }
-      }
-    }
     if (candidate.sessionAlias) {
       try {
         for (const room of readyRooms) {
@@ -41486,9 +41843,6 @@ var ParleAgentClient = class _ParleAgentClient {
     }
     this.publishSessionRevision(reason);
     await this.cancelCandidateWake(unusedPreviousWake);
-    if (!previous.sessionAlias && previous.agentSessionId && previous.agentSessionId !== candidate.agentSessionId) {
-      await this.retireSession(previous).catch(() => void 0);
-    }
   }
   publishSessionRevision(reason) {
     const event = {
@@ -41704,27 +42058,10 @@ var ParleAgentClient = class _ParleAgentClient {
               this.scheduleRollover();
               committed = true;
             },
+            // A new binding cannot establish that the predecessor has drained
+            // exact-session work, so profile switching leaves it for explicit
+            // operator cleanup or expiry.
             retireOldSession: async () => {
-              if (!previousRuntime.agentSessionId || !previousRuntime.sessionHandle)
-                return;
-              if (scratch && this.aliasSupersededSource(previousRuntime, scratch))
-                return;
-              const prior = new _ParleAgentClient({
-                cwd: this.cwd,
-                env: this.env,
-                fetch: this.fetchImpl,
-                now: this.now,
-                sleep: this.sleepImpl,
-                randomUUID: this.randomUUID,
-                clientName: this.clientName,
-                clientVersion: this.clientVersion,
-                clientInstanceId: this.clientInstanceId,
-                integrationName: this.integrationName,
-                integrationVersion: this.integrationVersion
-              });
-              prior.cfg = previousCfg;
-              prior.runtime = previousRuntime;
-              await prior.endSession(signal);
             }
           }));
           return {
@@ -41817,10 +42154,12 @@ var ParleAgentClient = class _ParleAgentClient {
     if (this.runtime.rolloverLatched)
       throw new ParleApiError("Parle proactive rollover is cooling down after a bounded failure storm", { code: "rollover_cooling_down", action: "backoff", scope: "agent_session", retryable: true, retryAfterMs: ROLLOVER_COOLDOWN_MS });
     const epoch = this.lifecycleEpoch;
+    this.assertPredecessorCapacity();
     this.assertConfigured();
     this.assertDeclaredIdentityConfiguration();
     this.assertRuntimeDeclaredIdentity();
     const old = { ...this.runtime };
+    const exactClaim = old.sessionAlias && old.aliasIdentityId && old.sessionGeneration > 0 ? { alias: old.sessionAlias, expectedGeneration: old.sessionGeneration, aliasIdentityId: old.aliasIdentityId } : void 0;
     let prepared;
     let guardRejected = false;
     this.preClaimGuard = (candidate) => {
@@ -41833,7 +42172,7 @@ var ParleAgentClient = class _ParleAgentClient {
       }
     };
     try {
-      prepared = await this.withPublicationBarrier("rollover", () => this.prepareCandidate(old.sessionAlias || this.cfg.sessionAlias?.value, signal, true, true));
+      prepared = await this.withPublicationBarrier("rollover", () => this.prepareCandidate(exactClaim?.alias, signal, true, true, exactClaim));
     } catch (error51) {
       this.recordRolloverFailure(error51, guardRejected);
       throw error51;
@@ -41860,7 +42199,9 @@ var ParleAgentClient = class _ParleAgentClient {
   // pre-claim guard, publication barrier, and supersession semantics hold; a
   // later proactive rollover re-claims the switched alias because rollover
   // prefers the runtime alias over the configured one.
-  async switchSessionAlias(alias, signal) {
+  async switchSessionAlias(alias, optionsOrSignal, maybeSignal) {
+    const options = optionsOrSignal instanceof AbortSignal ? {} : optionsOrSignal || {};
+    const signal = optionsOrSignal instanceof AbortSignal ? optionsOrSignal : maybeSignal;
     if (!isValidSessionAlias(alias)) {
       throw new ParleApiError("Parle session alias must be an unreserved 2-32 character durable alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.", { code: "validation_failed", action: "fix_client", scope: "request" });
     }
@@ -41873,8 +42214,10 @@ var ParleAgentClient = class _ParleAgentClient {
       this.assertConfigured();
       this.assertDeclaredIdentityConfiguration();
       this.assertRuntimeDeclaredIdentity();
+      const aliasFacts = await this.ensureAliasIdentity(alias, options, signal);
+      this.recordAliasAssumption(alias, aliasFacts);
       if (!priorAlias && old.bootstrapped && old.agentSessionId && old.sessionHandle) {
-        return this.claimAliasInPlace(alias, old, epoch, signal);
+        return this.claimAliasInPlace(alias, old, epoch, signal, aliasFacts);
       }
       let prepared;
       this.preClaimGuard = (candidate) => {
@@ -41882,12 +42225,17 @@ var ParleAgentClient = class _ParleAgentClient {
         this.assertSessionCommitAllowed(old, candidate, "alias_switch");
       };
       try {
-        prepared = await this.withPublicationBarrier("alias switch", () => this.prepareCandidate(alias, signal, true, true));
+        prepared = await this.withPublicationBarrier("alias switch", () => this.prepareCandidate(alias, signal, true, true, {
+          alias,
+          expectedGeneration: aliasFacts.generation,
+          aliasIdentityId: aliasFacts.aliasIdentityId
+        }));
       } finally {
         this.preClaimGuard = void 0;
       }
       const unusedPreviousWake = this.commitCandidate(prepared, epoch);
       await this.completeCandidateHandoff(old, prepared.state, "alias_switch", signal, unusedPreviousWake, true);
+      this.assertExpectedAliasRecovered();
       const replaced = Boolean(priorAlias && priorAlias !== this.runtime.sessionAlias);
       return {
         status: "alias_active",
@@ -41913,19 +42261,20 @@ var ParleAgentClient = class _ParleAgentClient {
   // the live session untouched -- there is no candidate to retire and the
   // session itself is never ended. Lost-response recovery stays authoritative
   // via claimAliasWithRecovery's alias-fence confirmation.
-  async claimAliasInPlace(alias, old, epoch, signal) {
-    const { claimed, expectedGeneration } = await this.withPublicationBarrier("alias switch", async () => {
-      const aliasFacts = await this.ownAliasFacts(alias, signal);
+  async claimAliasInPlace(alias, old, epoch, signal, knownFacts) {
+    const { claimed, expectedGeneration, aliasIdentityId } = await this.withPublicationBarrier("alias switch", async () => {
+      const aliasFacts = knownFacts || await this.ownAliasFacts(alias, signal);
       this.assertLifecycleActive(epoch);
       this.assertSessionCommitAllowed(old, { ...old, sessionAlias: alias, responsiveContinuity: "alias" }, "alias_switch");
-      const result2 = await this.claimAliasWithRecovery(old, alias, aliasFacts.generation, signal);
-      return { claimed: result2, expectedGeneration: aliasFacts.generation };
+      const result2 = await this.claimAliasWithRecovery(old, alias, aliasFacts.generation, signal, aliasFacts.aliasIdentityId);
+      return { claimed: result2, expectedGeneration: aliasFacts.generation, aliasIdentityId: aliasFacts.aliasIdentityId };
     });
     this.assertLifecycleActive(epoch);
     const claimedAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
     this.runtime = {
       ...this.runtime,
       sessionAlias: claimedAlias,
+      aliasIdentityId: typeof claimed.alias_identity_id === "string" ? claimed.alias_identity_id : aliasIdentityId,
       sessionGeneration: Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1,
       sessionAddress: this.deriveSessionAddress({ alias: claimedAlias }, typeof claimed.address === "string" ? claimed.address : old.sessionAddress ?? null),
       createdAt: String(claimed.created_at || this.runtime.createdAt),
@@ -41934,6 +42283,7 @@ var ParleAgentClient = class _ParleAgentClient {
       sessionRevision: this.runtime.sessionRevision + 1
     };
     this.publishRuntimeState();
+    this.assertExpectedAliasRecovered();
     this.scheduleRollover();
     this.publishSessionRevision("alias_switch");
     return {
@@ -42181,6 +42531,8 @@ var ParleAgentClient = class _ParleAgentClient {
       this.clearRolloverStormProtection(true);
       return result2;
     } catch (error51) {
+      if (error51 instanceof ParleApiError && error51.code === "alias_context_stale" && this.runtime.sessionAlias)
+        this.recordAliasLoss(this.runtime.sessionAlias);
       if (!(error51 instanceof ParleApiError) || error51.action !== "rebootstrap") {
         if (terminalOwner === "automatic")
           this.recordTerminalCause(error51);
@@ -42286,33 +42638,60 @@ var ParleAgentClient = class _ParleAgentClient {
       this.runtime.responsiveCursorScope = scope;
     return scope;
   }
-  async drainResponsiveDeliveryWithFence(signal, roomIdParam) {
-    const roomId = this.roomTarget(roomIdParam).roomId.value;
-    return this.withRebootstrap(async () => {
+  responsiveDeliveryScopes() {
+    return this.runtime.sessionAlias && this.runtime.aliasIdentityId && this.runtime.sessionGeneration > 0 ? ["session", "alias"] : ["session"];
+  }
+  async drainResponsiveDeliveryWithFence(signal, roomIdParam, cursorScope = "session", sourceId) {
+    this.pruneRetainedDeliverySources();
+    const predecessor = sourceId && sourceId !== this.runtime.agentSessionId ? this.retainedDeliverySources.get(sourceId) : void 0;
+    if (sourceId && sourceId !== this.runtime.agentSessionId && !predecessor)
+      throw new ParleApiError("Parle exact-session delivery source is unavailable, possibly expired; it cannot be replaced by the current session", { code: "predecessor_delivery_unavailable", action: "stop", scope: "agent_session" });
+    const state = predecessor?.state || this.runtime;
+    const roomConfigs = predecessor?.roomConfigs || this.roomConfigs;
+    const roomId = roomIdParam || (roomConfigs.length === 1 ? roomConfigs[0].roomId?.value : void 0);
+    if (!roomId || !roomConfigs.some((room) => room.roomId?.value === roomId))
+      throw new ParleApiError("Parle responsive delivery requires a configured room for its captured source", { code: "room_required", action: "fix_client", scope: "request" });
+    if (predecessor && cursorScope !== "session")
+      throw new ParleApiError("Parle predecessor delivery is exact-session scoped", { code: "validation_failed", action: "fix_client", scope: "request" });
+    const read = async () => {
+      const sourceState = predecessor?.state || this.runtime;
       this.assertResponsiveFenceAllowed();
+      const aliasContext = cursorScope === "alias" && sourceState.aliasIdentityId && sourceState.sessionGeneration > 0 ? { aliasIdentityId: sourceState.aliasIdentityId, aliasGeneration: sourceState.sessionGeneration } : void 0;
+      if (cursorScope === "alias" && !aliasContext)
+        throw new ParleApiError("Parle alias delivery requires a held immutable alias context", { code: "alias_context_unavailable", action: "stop", scope: "agent_session" });
       const fence = {
-        sessionRevision: this.runtime.sessionRevision || 0,
-        cursorScope: this.runtime.responsiveCursorScope,
+        sessionRevision: sourceState.sessionRevision || 0,
+        cursorScope,
         roomId,
-        sessionAlias: this.runtime.sessionAlias,
-        agentSessionId: this.runtime.agentSessionId
+        ...sourceState.sessionAlias ? { sessionAlias: sourceState.sessionAlias } : {},
+        ...aliasContext ? { aliasContext } : {},
+        agentSessionId: sourceState.agentSessionId,
+        sourceId: sourceState.agentSessionId
       };
       this.activeResponsiveReads.add(fence);
       let retained = false;
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?wait=0`, { session: true, roomId, signal, timeoutMs: 1e4, retry: false });
-        fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
+        const query = new URLSearchParams({ cursor_scope: cursorScope, wait: "0" });
+        if (aliasContext) {
+          query.set("alias_identity_id", aliasContext.aliasIdentityId);
+          query.set("alias_generation", String(aliasContext.aliasGeneration));
+        }
+        const delivery = predecessor ? await this.requestJsonWithBindings(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?${query}`, { roomId, sessionCredential: sourceState.sessionHandle, signal, timeoutMs: 1e4, retry: false }, predecessor.roomConfigs[0], roomConfigs) : await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?${query}`, { session: true, roomId, signal, timeoutMs: 1e4, retry: false });
+        if ((predecessor ? responsiveCursorScope(delivery) : this.recordResponsiveCursorScope(delivery)) !== cursorScope || cursorScope === "alias" && (delivery?.delivery?.alias_context?.alias_identity_id !== aliasContext.aliasIdentityId || delivery?.delivery?.alias_context?.alias_generation !== aliasContext.aliasGeneration)) {
+          throw new ParleApiError("Parle responsive delivery response did not preserve its requested scope and alias context", { code: "invalid_response", action: "fix_client", scope: "server" });
+        }
         retained = true;
         return { delivery, fence, release };
       } finally {
         if (!retained)
           release();
       }
-    }, signal);
+    };
+    return predecessor ? read() : this.withRebootstrap(read, signal);
   }
   async drainResponsiveDelivery(signal, roomId) {
-    const read = await this.drainResponsiveDeliveryWithFence(signal, roomId);
+    const read = await this.drainResponsiveDeliveryWithFence(signal, roomId, "session");
     try {
       return read.delivery;
     } finally {
@@ -42322,22 +42701,37 @@ var ParleAgentClient = class _ParleAgentClient {
   async ackResponsiveDelivery(message, signal, roomIdParam, fence) {
     if (!responsiveDeliveryKey(message))
       throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
-    const roomId = this.roomTarget(roomIdParam ?? (typeof message.room_id === "string" ? message.room_id : void 0)).roomId.value;
-    const result2 = await this.withRebootstrap(() => {
-      if (fence && (fence.sessionRevision !== this.runtime.sessionRevision || fence.agentSessionId !== this.runtime.agentSessionId)) {
+    this.pruneRetainedDeliverySources();
+    const predecessor = fence && fence.agentSessionId !== this.runtime.agentSessionId ? this.retainedDeliverySources.get(fence.sourceId || fence.agentSessionId) : void 0;
+    if (fence && !this.responsiveDeliveryFenceCurrent(fence))
+      throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
+    const roomConfigs = predecessor?.roomConfigs || this.roomConfigs;
+    const roomId = roomIdParam ?? (typeof message.room_id === "string" ? message.room_id : roomConfigs.length === 1 ? roomConfigs[0].roomId?.value : void 0);
+    if (!roomId || !roomConfigs.some((room2) => room2.roomId?.value === roomId))
+      throw new ParleApiError("Parle responsive delivery acknowledgement requires its captured room", { code: "room_required", action: "fix_client", scope: "request" });
+    const ack = () => {
+      if (fence && !this.responsiveDeliveryFenceCurrent(fence)) {
         throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
       }
-      return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
+      const cursorScope = fence?.cursorScope || "session";
+      const aliasContext = fence?.aliasContext;
+      if (predecessor && cursorScope !== "session")
+        throw new ParleApiError("Parle predecessor delivery is exact-session scoped", { code: "validation_failed", action: "fix_client", scope: "request" });
+      if (cursorScope === "alias" && !aliasContext)
+        throw new ParleApiError("Parle alias delivery ack requires its captured immutable alias context", { code: "validation_failed", action: "fix_client", scope: "request" });
+      const options = {
         method: "POST",
-        session: true,
+        ...predecessor ? { sessionCredential: predecessor.state.sessionHandle } : { session: true },
         roomId,
         signal,
         retry: false,
-        body: { seq: message.seq, event_id: message.event_id }
-      });
-    }, signal);
+        body: { cursor_scope: cursorScope, seq: message.seq, ...cursorScope === "alias" ? { event_id: message.event_id, alias_context: { alias_identity_id: aliasContext.aliasIdentityId, alias_generation: aliasContext.aliasGeneration } } : { event_id: message.event_id } }
+      };
+      return predecessor ? this.requestJsonWithBindings(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, options, predecessor.roomConfigs[0], roomConfigs) : this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, options);
+    };
+    const result2 = await (predecessor ? ack() : this.withRebootstrap(ack, signal));
     const room = this.roomRuntimes.get(roomId);
-    if (room) {
+    if (room && !predecessor) {
       room.lastAckedSeq = Math.max(room.lastAckedSeq || 0, message.seq);
       room.lastAckEventId = message.event_id;
       this.publishRoomRuntimes();
@@ -42487,7 +42881,7 @@ var ParleAgentClient = class _ParleAgentClient {
     };
   }
   async readSurface(surface, params, signal) {
-    const generation = this.bootstrapGeneration;
+    const generation2 = this.bootstrapGeneration;
     return this.withDataPlane(() => this.withRebootstrap(async () => {
       const roomId = this.roomTarget(params.roomId).roomId.value;
       const room = this.roomRuntime(roomId);
@@ -42529,28 +42923,28 @@ var ParleAgentClient = class _ParleAgentClient {
       const reset = streamReset ? "The room's stream generation changed, so the process cursor was reset to the position the server reports for the new stream." : "";
       const stale = staleGeneration ? "This response was minted before a stream reset this process has already adopted. Its rows belong to the retired stream and nothing in it moved the cursor; read again to see the current stream." : "";
       const note = [baseNote, completeness, reset, stale, surface === "inbound" ? INBOX_REPLY_GUIDANCE : ""].filter(Boolean).join(" ");
-      return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, droppedRows, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, nextCursor: pageCursor, hasMore, ...streamReset ? { streamReset: true } : {}, ...responseReset ? { cursorRetired: true } : {}, ...staleGeneration ? { staleGeneration: true } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}, note };
+      return { ...projection, surface, roomId, messages: capped.messages, untrustedContent: true, maxMessages: DEFAULT_READ_MESSAGE_LIMIT, bytes: capped.bytes, returnedBytes: capped.returnedBytes, truncated: capped.truncated, droppedRows, cursorBefore, cursorAfter: room.cursor, advancedCursor: cursorBefore !== room.cursor, nextCursor: pageCursor, hasMore, ...streamReset ? { streamReset: true } : {}, ...responseReset ? { cursorRetired: true } : {}, ...staleGeneration ? { staleGeneration: true } : {}, ...this.bootstrapGeneration !== generation2 ? { session: this.sessionEstablishedBlock() } : {}, note };
     }, signal));
   }
   async roomDetails(params = {}, signal) {
-    const generation = this.bootstrapGeneration;
+    const generation2 = this.bootstrapGeneration;
     let roomId = "";
     const result2 = await this.withDataPlane(() => this.withRebootstrap(() => {
       roomId = this.roomTarget(params.roomId).roomId.value;
       return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}`, { session: true, roomId, signal });
     }, signal));
-    return this.bootstrapGeneration !== generation && result2 && typeof result2 === "object" ? { ...result2, roomId, session: this.sessionEstablishedBlock() } : result2;
+    return this.bootstrapGeneration !== generation2 && result2 && typeof result2 === "object" ? { ...result2, roomId, session: this.sessionEstablishedBlock() } : result2;
   }
   async affordances(signalOrParams, maybeSignal) {
     const params = signalOrParams && !(signalOrParams instanceof AbortSignal) ? signalOrParams : {};
     const signal = signalOrParams instanceof AbortSignal ? signalOrParams : maybeSignal;
-    const generation = this.bootstrapGeneration;
+    const generation2 = this.bootstrapGeneration;
     let roomId = "";
     const result2 = await this.withDataPlane(() => this.withRebootstrap(() => {
       roomId = this.roomTarget(params.roomId).roomId.value;
       return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/affordances`, { session: true, roomId, signal });
     }, signal));
-    return this.bootstrapGeneration !== generation && result2 && typeof result2 === "object" ? { ...result2, roomId, session: this.sessionEstablishedBlock() } : result2;
+    return this.bootstrapGeneration !== generation2 && result2 && typeof result2 === "object" ? { ...result2, roomId, session: this.sessionEstablishedBlock() } : result2;
   }
   async getOwnAliasOfflineDelivery(alias, signal) {
     return this.withRebootstrap(() => getOwnAliasOfflineDelivery(this.aliasTransport(), alias, signal), signal);
@@ -42568,9 +42962,13 @@ var ParleAgentClient = class _ParleAgentClient {
   }
   async send(params, signal) {
     const idempotencyKey = params.idempotencyKey || this.randomUUID();
-    const generation = this.bootstrapGeneration;
+    const generation2 = this.bootstrapGeneration;
     let roomId = "";
-    const body = { type: "message_submitted", payload: { body: params.body } };
+    const body = {
+      type: "message_submitted",
+      payload: { body: params.body },
+      alias_context: this.runtime.aliasIdentityId && this.runtime.sessionGeneration > 0 ? { alias_identity_id: this.runtime.aliasIdentityId, alias_generation: this.runtime.sessionGeneration } : null
+    };
     if (params.to)
       body.addressing = { audience: "direct", to: params.to };
     try {
@@ -42579,7 +42977,7 @@ var ParleAgentClient = class _ParleAgentClient {
         const result2 = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/messages`, { method: "POST", session: true, roomId, signal, headers: { "Idempotency-Key": idempotencyKey }, body });
         const deliveryStatus = summarizeSendDelivery(result2);
         const clientWarnings = sendAttentionWarnings(result2);
-        return { ...result2, roomId, idempotencyKey, ...clientWarnings ? { clientWarnings } : {}, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
+        return { ...result2, roomId, idempotencyKey, ...clientWarnings ? { clientWarnings } : {}, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation2 ? { session: this.sessionEstablishedBlock() } : {} };
       }, signal, "request"));
       if (params.to && details?.routing?.mode === "direct" && details.routing.target_level !== "none" && details.routing.continuity !== "none") {
         try {
@@ -42616,7 +43014,7 @@ var ParleAgentClient = class _ParleAgentClient {
       throw new ParleApiError("Parle reply requires a valid opaque reply route UUID", { code: "validation_failed", action: "fix_client", scope: "request", retryable: false });
     }
     const idempotencyKey = params.idempotencyKey || this.randomUUID();
-    const generation = this.bootstrapGeneration;
+    const generation2 = this.bootstrapGeneration;
     let roomId = "";
     try {
       return await this.withDataPlane(() => this.withRebootstrap(async () => {
@@ -42628,10 +43026,14 @@ var ParleAgentClient = class _ParleAgentClient {
           signal,
           retry: false,
           headers: { "Idempotency-Key": idempotencyKey },
-          body: { reply_route_id: params.replyRouteId, payload: { body: params.body } }
+          body: {
+            reply_route_id: params.replyRouteId,
+            payload: { body: params.body },
+            alias_context: this.runtime.aliasIdentityId && this.runtime.sessionGeneration > 0 ? { alias_identity_id: this.runtime.aliasIdentityId, alias_generation: this.runtime.sessionGeneration } : null
+          }
         });
         const deliveryStatus = summarizeSendDelivery(result2);
-        return { ...result2, roomId, idempotencyKey, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {} };
+        return { ...result2, roomId, idempotencyKey, ...deliveryStatus ? { deliveryStatus } : {}, ...this.bootstrapGeneration !== generation2 ? { session: this.sessionEstablishedBlock() } : {} };
       }, signal, "request"));
     } catch (error51) {
       if (error51 instanceof ParleApiError) {
@@ -43246,7 +43648,7 @@ var CodexQueueWake = class {
 };
 
 // src/hook-delivery-bridge.ts
-import { createHash as createHash3, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID5 } from "node:crypto";
 import {
   accessSync,
   chmodSync as chmodSync4,
@@ -43263,7 +43665,7 @@ import {
 } from "node:fs";
 import { createServer as createServer2 } from "node:net";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname7, isAbsolute as isAbsolute4, join as join10 } from "node:path";
+import { dirname as dirname8, isAbsolute as isAbsolute4, join as join11 } from "node:path";
 var MAX_PENDING = 100;
 var MAX_HOOK_BATCH = 20;
 var MAX_HOOK_BYTES = 512 * 1024;
@@ -43277,21 +43679,21 @@ function deliveryKey2(roomId, message) {
   return `${roomId}:${message.seq}:${message.event_id}`;
 }
 function hookBridgeStateDir(scope) {
-  const key = createHash3("sha256").update(scope).digest("hex").slice(0, 16);
-  return join10(homedir2(), ".local", "state", "parle", "hook-bridge", key);
+  const key = createHash4("sha256").update(scope).digest("hex").slice(0, 16);
+  return join11(homedir2(), ".local", "state", "parle", "hook-bridge", key);
 }
 function hookBridgeHostDir(scope, hostParentPid = process.ppid) {
   if (!Number.isSafeInteger(hostParentPid) || hostParentPid <= 1) throw new Error("Parle hook bridge host parent pid must be greater than 1");
-  return join10(hookBridgeStateDir(scope), String(hostParentPid));
+  return join11(hookBridgeStateDir(scope), String(hostParentPid));
 }
 function hookBridgeSocketPath(scope, pid = process.pid, hostParentPid) {
-  return join10(hostParentPid === void 0 ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.sock`);
+  return join11(hostParentPid === void 0 ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.sock`);
 }
 function hookBridgeRuntimeDescriptorPath(scope, pid = process.pid, hostParentPid) {
-  return join10(hostParentPid === void 0 ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.runtime.json`);
+  return join11(hostParentPid === void 0 ? hookBridgeStateDir(scope) : hookBridgeHostDir(scope, hostParentPid), `${pid}.runtime.json`);
 }
 function hookBridgeRuntimeHandlePath(scope, pid = process.pid) {
-  return join10(hookBridgeStateDir(scope), `${pid}.node`);
+  return join11(hookBridgeStateDir(scope), `${pid}.node`);
 }
 function processIsAlive(pid) {
   try {
@@ -43371,7 +43773,7 @@ function cleanupHookBridgeArtifacts(stateDir, deps = {}) {
     if (inspected >= CLEANUP_INSPECTION_LIMIT) return;
     if (artifactPid(name, nested) === void 0) return;
     inspected += 1;
-    removeDeadHookBridgeArtifact(join10(dir, name), name, nested, hostParentPid, deps);
+    removeDeadHookBridgeArtifact(join11(dir, name), name, nested, hostParentPid, deps);
   };
   for (const name of cleanupCandidates(stateDir, names, CLEANUP_INSPECTION_LIMIT)) {
     if (inspected >= CLEANUP_INSPECTION_LIMIT) break;
@@ -43381,7 +43783,7 @@ function cleanupHookBridgeArtifacts(stateDir, deps = {}) {
       continue;
     }
     inspected += 1;
-    const hostDir = join10(stateDir, name);
+    const hostDir = join11(stateDir, name);
     try {
       if (!safeDirectory2(inspect(hostDir))) continue;
       const children = read(hostDir);
@@ -43629,15 +44031,22 @@ var HookDeliveryBridge = class {
     if (this.queuedKeys.has(key)) return;
     if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
     const runtime = this.client.runtime || {};
+    const sourceFence = input.sourceFence ?? (input.cursorScope === "alias" ? void 0 : {
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: input.cursorScope || "session",
+      roomId: input.roomId,
+      ...typeof runtime.sessionAlias === "string" ? { sessionAlias: runtime.sessionAlias } : {},
+      agentSessionId: String(runtime.agentSessionId || "")
+    });
+    if (!sourceFence || sourceFence.roomId !== input.roomId || input.cursorScope && sourceFence.cursorScope !== input.cursorScope || sourceFence.cursorScope === "alias" && !sourceFence.aliasContext) {
+      throw new Error("Parle hook bridge delivery lacks its exact scoped read fence");
+    }
     this.pending.push({
       ...input.message,
       clientReplyPresentation: responsiveReplyPresentation(input.message),
       key,
-      sessionRevision: input.sourceFence?.sessionRevision ?? Number(runtime.sessionRevision || 0),
-      cursorScope: input.cursorScope,
       roomId: input.roomId,
-      sessionAlias: input.sourceFence?.sessionAlias ?? (typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : void 0),
-      agentSessionId: input.sourceFence?.agentSessionId ?? String(runtime.agentSessionId || "")
+      sourceFence
     });
     this.queuedKeys.add(key);
     console.error(JSON.stringify({
@@ -43655,7 +44064,7 @@ var HookDeliveryBridge = class {
     cleanupHookBridgeArtifacts(hookBridgeStateDir(this.scope));
     const path = hookBridgeSocketPath(this.scope, process.pid, this.hostParentPid);
     const stateDir = hookBridgeStateDir(this.scope);
-    const dir = dirname7(path);
+    const dir = dirname8(path);
     for (const candidate of [stateDir, dir]) {
       mkdirSync5(candidate, { recursive: true, mode: 448 });
       const before = lstatSync7(candidate);
@@ -43833,7 +44242,7 @@ var HookDeliveryBridge = class {
     return {
       ok: true,
       leaseId: this.lease.id,
-      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
+      messages: messages.map(({ key: _key, roomId: _room, sourceFence: _fence, ...message }) => message),
       status: this.status(),
       ...this.idleWakeUrl()
     };
@@ -43854,10 +44263,7 @@ var HookDeliveryBridge = class {
         message.roomId,
         message,
         "handled",
-        message.cursorScope === "alias" ? void 0 : {
-          sessionRevision: message.sessionRevision,
-          agentSessionId: message.agentSessionId
-        }
+        message.sourceFence
       );
       if (!acked) {
         const roomError = this.controller.status().rooms.find((room) => room.roomId === message.roomId)?.lastError;
@@ -43924,7 +44330,8 @@ var HookDeliveryBridge = class {
     const dropped = /* @__PURE__ */ new Set();
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
       const item = this.pending[index];
-      if (item.cursorScope === "alias" || item.sessionRevision !== Number(previous.sessionRevision || 0) || item.agentSessionId !== String(previous.agentSessionId || "")) continue;
+      const fence = item.sourceFence;
+      if (fence.cursorScope === "alias" || fence.sessionRevision !== Number(previous.sessionRevision || 0) || fence.agentSessionId !== String(previous.agentSessionId || "")) continue;
       this.pending.splice(index, 1);
       this.queuedKeys.delete(item.key);
       this.controller.abandonDeferred(item.roomId, item);
@@ -43942,7 +44349,7 @@ var HookDeliveryBridge = class {
     if (plan.reason === "profile_switch") {
       throw new Error("Parle profile switch is deferred while hook delivery is pending or leased");
     }
-    const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
+    const aliasTransfers = Boolean(plan.previous.sessionAlias && plan.candidate.sessionAlias === plan.previous.sessionAlias && plan.candidate.aliasIdentityId === plan.previous.aliasIdentityId && plan.candidate.sessionGeneration === plan.previous.sessionGeneration && plan.candidate.responsiveContinuity === "alias" && work.every((item) => item.sourceFence.cursorScope === "alias" && item.sourceFence.sessionAlias === plan.previous.sessionAlias && item.sourceFence.aliasContext?.aliasIdentityId === plan.previous.aliasIdentityId && item.sourceFence.aliasContext?.aliasGeneration === plan.previous.sessionGeneration && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
     if (!aliasTransfers) {
       throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
     }
@@ -43951,17 +44358,22 @@ var HookDeliveryBridge = class {
     const runtime = this.client.runtime || {};
     const configured = Array.isArray(runtime.rooms) && runtime.rooms.some((room) => room?.roomId === message.roomId);
     if (!configured) throw new Error("Parle hook delivery belongs to a prior room binding");
-    if (message.cursorScope === "alias") {
-      if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
+    const fence = message.sourceFence;
+    if (fence.cursorScope === "alias") {
+      if (!fence.sessionAlias || fence.sessionAlias !== runtime.sessionAlias || fence.aliasContext?.aliasIdentityId !== runtime.aliasIdentityId || fence.aliasContext?.aliasGeneration !== runtime.sessionGeneration) {
+        throw new Error("Parle alias hook delivery belongs to a prior immutable alias context");
+      }
       return;
     }
-    if (message.sessionRevision !== Number(runtime.sessionRevision || 0) || message.agentSessionId !== String(runtime.agentSessionId || "")) {
+    if (fence.sessionRevision !== Number(runtime.sessionRevision || 0) || fence.agentSessionId !== String(runtime.agentSessionId || "")) {
       throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
     }
   }
 };
 
 // src/tool-runtime.ts
+import { readFileSync as readFileSync7 } from "node:fs";
+import { join as join12 } from "node:path";
 var WAIT_TEXT = "waitSeconds performs one server-side bounded wait of 0\u201330 seconds for this call. Do not use it as an unattended watcher. Only when a live operator explicitly authorizes it and the host skill defines the exception may successive parle_inbox(waitSeconds:30) calls form one capped hold; otherwise call once. Responsive delivery remains event-driven.";
 var ROOM_TEXT = "Room UUID selects the room. Optional with one configured room; required when PARLE_PROFILES configures several, in which case omission fails closed and lists the configured rooms.";
 var CURSOR_TEXT = "parle_read and parle_inbox share one process cursor. Supplying sinceSeq makes the call an audit read by default and does not advance that cursor. To commit an explicit sinceSeq read, set advanceCursor:true; it advances only through returned capped rows, never the response watermark. advanceCursor:false never advances. A read returns ONE bounded page of the delta after the cursor: when has_more is true more rows remain and another read from the returned cursor is required.";
@@ -44070,6 +44482,24 @@ var savedStartSchema = {
   confirmMutation: external_exports.boolean().optional()
 };
 var HOST_IDLE_WAKE_READY_MS = 2e3;
+var UUID_RE6 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function aliasAssumptionCapability(accountClient, cwd = process.cwd(), env = process.env) {
+  let agentId = env.PARLE_AGENT_ID;
+  if (!agentId) {
+    try {
+      agentId = parseKeyValueFile(readFileSync7(join12(cwd, ".env"), "utf8")).PARLE_AGENT_ID;
+    } catch {
+    }
+  }
+  if (!agentId || !UUID_RE6.test(agentId) || typeof accountClient.ownedAliasCreationTransport !== "function") return void 0;
+  try {
+    const apiBase = resolveConfig(cwd, env).apiBase.value;
+    if (!apiBase) return void 0;
+    return { agentId, humanAliasTransport: accountClient.ownedAliasCreationTransport(new URL(apiBase).origin) };
+  } catch {
+    return void 0;
+  }
+}
 var HOST_IDLE_WAKE_STATES = /* @__PURE__ */ new Set(["queue-only", "daemon-attached", "unavailable", "degraded"]);
 function hostIdleWakeEvidence(host, bridgeStatus) {
   if (host.idleWake === "none") return { state: "unavailable" };
@@ -44324,7 +44754,7 @@ function registerParleTools(registerTool, client, accountClient = new ParleAccou
   }, async (params, extra) => safeTool(async () => {
     observeRequest(extra);
     if (typeof client.switchSessionAlias !== "function") throw new Error("This Parle client does not support live session aliases.");
-    const result2 = await client.switchSessionAlias(params.alias);
+    const result2 = await client.switchSessionAlias(params.alias, client.aliasAssumptionAgentId ? { agentId: client.aliasAssumptionAgentId } : void 0);
     if (deliveryBridge?.start) void deliveryBridge.start().catch(() => void 0);
     return result2;
   }));
@@ -44708,7 +45138,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.74";
+var MCP_CLIENT_VERSION = "0.7.75";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;
@@ -44781,7 +45211,14 @@ async function runStdio() {
   } : scheduleHostParentCheck(hostParentPid, () => process.exit(0));
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-    const client = createMcpAgentClient({ cwd: configCwd.cwd, env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
+    const accountClient = new ParleAccountClient({ cwd: configCwd.cwd, env: clientEnv });
+    const aliasAssumption = aliasAssumptionCapability(accountClient, configCwd.cwd, clientEnv);
+    const client = Object.assign(createMcpAgentClient({
+      cwd: configCwd.cwd,
+      env: clientEnv,
+      ...aliasAssumption ? { humanAliasTransport: aliasAssumption.humanAliasTransport } : {},
+      publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION }
+    }), aliasAssumption ? { aliasAssumptionAgentId: aliasAssumption.agentId } : {});
     if (hookBridgeEnabled) {
       client.switchProfile = async () => {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -44804,7 +45241,7 @@ async function runStdio() {
       configCwdSource: configCwd.source,
       ...deliveryBridge ? { responsiveDeliveryBridge: deliveryBridge.status() } : {}
     });
-    return { client, accountClient: new ParleAccountClient({ cwd: configCwd.cwd }), deliveryBridge };
+    return { client, accountClient, deliveryBridge };
   };
   let activated = false;
   const activateRuntime = (runtime2) => {
@@ -44958,7 +45395,7 @@ async function runKnownAddressContext(cwd) {
   let profilesPathOverride = process.env.PARLE_PROFILES_PATH;
   if (!profilesPathOverride) {
     try {
-      profilesPathOverride = parseKeyValueFile(readFileSync7(join11(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
+      profilesPathOverride = parseKeyValueFile(readFileSync8(join13(cwd, ".env"), "utf8")).PARLE_PROFILES_PATH;
     } catch {
     }
   }
@@ -44983,6 +45420,7 @@ export {
   MCP_CLIENT_NAME,
   MCP_CLIENT_VERSION,
   MIN_CODEX_QUEUE_VERSION,
+  aliasAssumptionCapability,
   createHostIdleWake,
   createMcpAgentClient,
   createParleMcpServer,

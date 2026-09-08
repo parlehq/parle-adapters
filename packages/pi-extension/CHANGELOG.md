@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.67 (unreleased)
+
+- Use the pending alias-transfer wire with explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Coordinated protocol activation and consumer validation are required before release.
+
 ## 0.7.66
 
 - Verify declared identity expectations before alias claim or responsive delivery in every Pi mode. Refuse prompts until verification succeeds, retain terminal failures, and reject changed expectations until process restart. RPC supervisors use the startup extension error as their failure signal; Pi 0.85.1 does not provide a nonzero graceful RPC exit.

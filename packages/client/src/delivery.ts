@@ -1,4 +1,4 @@
-import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, type ResponsiveCursorScope, type ResponsiveDeliveryAckFence, type ResponsiveDeliveryMessage, type ResponsiveDeliveryReadFence, type RoomRuntime } from "./index.js";
+import { ParleApiError, parseSSEBlocks, redactString, type ParleAgentClient, type ResponsiveCursorScope, type ResponsiveDeliveryAckFence, type ResponsiveDeliveryMessage, type ResponsiveDeliveryReadFence, type ResponsiveDeliverySource, type RoomRuntime } from "./index.js";
 
 // Shared responsive delivery controller (issue #63 S4, ADR-0059).
 //
@@ -130,8 +130,8 @@ type WakeTiming = {
   reconnectJitterMs: number;
 };
 
-function deliveryKey(roomId: string, message: ResponsiveDeliveryMessage): string {
-  return `${roomId}:${message.event_id}`;
+function deliveryKey(roomId: string, message: ResponsiveDeliveryMessage, sourceId?: string): string {
+  return `${sourceId || "current"}:${roomId}:${message.event_id}`;
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -172,7 +172,7 @@ export class ResponsiveDeliveryController {
   // Rows a host accepted for later effective handling. They are never
   // re-offered to the handler and never acknowledged until the host reports
   // completion, so a crash before injection leaves the row redeliverable.
-  private readonly deferred = new Map<string, { roomId: string; message: ResponsiveDeliveryMessage; completionReported?: boolean }>();
+  private readonly deferred = new Map<string, { roomId: string; message: ResponsiveDeliveryMessage; cursorScope?: ResponsiveCursorScope; sourceFence?: ResponsiveDeliveryReadFence; completionReported?: boolean }>();
   private readonly drainInFlight = new Map<string, Promise<void>>();
   private loop?: Promise<void>;
   private unsubscribeRevision?: () => void;
@@ -276,17 +276,29 @@ export class ResponsiveDeliveryController {
   // acknowledged, and a failed acknowledgement is retried without re-running
   // the host handler.
   async completeDeferred(roomId: string, message: ResponsiveDeliveryMessage, outcome: Exclude<DeliveryHandlerResult, "deferred"> = "handled", fence?: ResponsiveDeliveryAckFence): Promise<boolean> {
-    const key = deliveryKey(roomId, message);
+    let key = deliveryKey(roomId, message, fence?.sourceId);
+    let deferred = this.deferred.get(key);
+    // Legacy hosts may omit the fence on completion. Resolve one matching
+    // deferred row, then still use its captured source rather than current.
+    if (!deferred && !fence) {
+      const found = [...this.deferred.entries()].find(([, entry]) => entry.roomId === roomId && entry.message.event_id === message.event_id);
+      if (found) [key, deferred] = found;
+    }
     if (this.seen.has(key)) return true;
     const stat = this.stat(roomId);
-    const deferred = this.deferred.get(key);
     if (deferred && !deferred.completionReported) {
       deferred.completionReported = true;
       this.reportProgress("handling_complete", { roomId, eventId: message.event_id, seq: message.seq });
     }
     try {
       this.reportProgress("ack_started", { roomId, eventId: message.event_id, seq: message.seq });
-      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence);
+      await this.client.ackResponsiveDelivery(message, this.abort.signal, roomId, fence || (deferred?.sourceFence ? {
+        sessionRevision: deferred.sourceFence.sessionRevision,
+        agentSessionId: deferred.sourceFence.agentSessionId,
+        sourceId: deferred.sourceFence.sourceId,
+        cursorScope: deferred.sourceFence.cursorScope,
+        ...(deferred.sourceFence.aliasContext ? { aliasContext: deferred.sourceFence.aliasContext } : {}),
+      } : undefined));
     } catch (error) {
       this.setRoomError(roomId, "ack", error);
       return false;
@@ -312,14 +324,20 @@ export class ResponsiveDeliveryController {
 
   // Test seam for drain coalescing and acknowledgement retry, which are not
   // observable through the wake stream alone.
-  drainForTest(roomId: string): Promise<void> {
-    const room = this.configuredRooms().find((entry) => entry.roomId === roomId);
-    if (!room) return Promise.resolve();
-    return this.drainRoom(room, "test");
+  drainForTest(roomId: string, sourceId?: string): Promise<void> {
+    const source = this.deliverySources().find((entry) => entry.sourceId === sourceId) || this.deliverySources().find((entry) => entry.sourceId === this.client.runtime.agentSessionId);
+    const room = source?.rooms.find((entry) => entry.roomId === roomId);
+    if (!room || !source) return Promise.resolve();
+    return this.drainRoom(room, "test", source);
+  }
+
+  private deliverySources(): ResponsiveDeliverySource[] {
+    const sources = (this.client as any).responsiveDeliverySources?.();
+    return Array.isArray(sources) ? sources : [{ sourceId: this.client.runtime.agentSessionId || "current", rooms: this.client.runtime.rooms || [], scopes: (this.client as any).responsiveDeliveryScopes?.() || ["session"] }];
   }
 
   private configuredRooms(): RoomRuntime[] {
-    return this.client.runtime.rooms || [];
+    return this.deliverySources().flatMap((source) => source.rooms);
   }
 
   private readyRooms(): RoomRuntime[] {
@@ -446,26 +464,26 @@ export class ResponsiveDeliveryController {
     // "Configured" is the test, not "ready": a room whose entry succeeded and
     // whose projection initialization failed is genuinely entered, so the
     // server delivers and wakes on it. Ignoring its hint would strand it.
-    const room = this.configuredRooms().find((entry) => entry.roomId === hinted);
-    if (!room) {
+    const sources = this.deliverySources().filter((source) => source.rooms.some((room) => room.roomId === hinted));
+    if (sources.length === 0) {
       this.ignoredWakeHints += 1;
       this.lastIgnoredWakeRoomId = hinted;
       return;
     }
     this.reportProgress("wake_hint", { roomId: hinted });
-    await this.drainDeliverable(room, "wake_hint");
+    await Promise.all(sources.map((source) => this.drainDeliverable(source.rooms.find((room) => room.roomId === hinted)!, "wake_hint", source)));
   }
 
   private async drainAll(trigger: DeliveryFetchTrigger): Promise<void> {
     // Ordering is guaranteed within a room only, so rooms drain concurrently.
-    await Promise.all(this.configuredRooms().map((room) => this.drainDeliverable(room, trigger).catch(() => undefined)));
+    await Promise.all(this.deliverySources().flatMap((source) => source.rooms.map((room) => this.drainDeliverable(room, trigger, source).catch(() => undefined))));
   }
 
   // A degraded room is recovered before it is drained. Recovery reconciles
   // room entry and re-reads the watermark; a room that cannot be recovered is
   // left degraded with its error recorded rather than silently skipped.
-  private async drainDeliverable(room: RoomRuntime, trigger: DeliveryFetchTrigger): Promise<void> {
-    if (room.state !== "ready") {
+  private async drainDeliverable(room: RoomRuntime, trigger: DeliveryFetchTrigger, source: ResponsiveDeliverySource): Promise<void> {
+    if (room.state !== "ready" && source.sourceId === this.client.runtime.agentSessionId) {
       const recovered = await this.client.recoverRoom(room.roomId, this.abort.signal);
       if (!recovered) {
         const live = this.configuredRooms().find((entry) => entry.roomId === room.roomId);
@@ -474,34 +492,34 @@ export class ResponsiveDeliveryController {
       }
     }
     this.clearRoomError(room.roomId, "recover");
-    const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
-    await this.drainRoom(current, trigger);
+    const current = source.sourceId === this.client.runtime.agentSessionId ? this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room : room;
+    await this.drainRoom(current, trigger, source);
   }
 
   // Coalescing must not swallow a requested drain. Joining an in-flight drain
   // would lose a wake, reconnect, revision, or fallback pass because the
   // in-flight drain may already have read past the new rows. One rerun is queued
   // per room instead.
-  private drainRoom(room: RoomRuntime, trigger: DeliveryFetchTrigger): Promise<void> {
-    const existing = this.drainInFlight.get(room.roomId);
+  private drainRoom(room: RoomRuntime, trigger: DeliveryFetchTrigger, source: ResponsiveDeliverySource): Promise<void> {
+    const drainKey = `${source.sourceId}:${room.roomId}`;
+    const existing = this.drainInFlight.get(drainKey);
     if (existing) {
-      this.rerunRequested.set(room.roomId, trigger);
+      this.rerunRequested.set(drainKey, trigger);
       return existing;
     }
     const run = (async () => {
       try {
-        await this.doDrainRoom(room, trigger);
+        // Each source and scope owns independent server progress and must never
+        // be joined. Retained predecessors expose exact session scope only.
+        for (const cursorScope of source.scopes) await this.doDrainRoom(room, trigger, cursorScope, source);
       } finally {
-        this.drainInFlight.delete(room.roomId);
+        this.drainInFlight.delete(drainKey);
       }
-      const rerunTrigger = this.rerunRequested.get(room.roomId);
-      this.rerunRequested.delete(room.roomId);
-      if (rerunTrigger && !this.abort.signal.aborted) {
-        const current = this.configuredRooms().find((entry) => entry.roomId === room.roomId) || room;
-        await this.drainRoom(current, rerunTrigger);
-      }
+      const rerunTrigger = this.rerunRequested.get(drainKey);
+      this.rerunRequested.delete(drainKey);
+      if (rerunTrigger && !this.abort.signal.aborted) await this.drainRoom(room, rerunTrigger, source);
     })();
-    this.drainInFlight.set(room.roomId, run);
+    this.drainInFlight.set(drainKey, run);
     return run;
   }
 
@@ -541,7 +559,7 @@ export class ResponsiveDeliveryController {
     try { this.onProgress?.(kind, stamped); } catch { /* diagnostics never interrupt delivery */ }
   }
 
-  private async doDrainRoom(room: RoomRuntime, trigger: DeliveryFetchTrigger): Promise<void> {
+  private async doDrainRoom(room: RoomRuntime, trigger: DeliveryFetchTrigger, requestedScope: ResponsiveCursorScope = "session", source: ResponsiveDeliverySource): Promise<void> {
     let previousEmptyScan = -1;
     for (let batch = 0; batch < this.maxDrainBatches; batch += 1) {
       if (this.abort.signal.aborted) return;
@@ -554,16 +572,18 @@ export class ResponsiveDeliveryController {
         stat.lastFetchAttemptAt = this.heartbeatAt;
         stat.lastFetchTrigger = trigger;
         if (typeof (this.client as any).drainResponsiveDeliveryWithFence === "function") {
-          const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId);
+          const read = await this.client.drainResponsiveDeliveryWithFence(this.abort.signal, room.roomId, requestedScope, source.sourceId);
           delivery = read.delivery;
           sourceFence = read.fence;
           release = read.release;
         } else {
           sourceFence = {
             sessionRevision: this.client.runtime.sessionRevision || 0,
+            cursorScope: "session",
             roomId: room.roomId,
-            sessionAlias: this.client.runtime.sessionAlias,
-            agentSessionId: this.client.runtime.agentSessionId || "",
+            ...(this.client.runtime.sessionAlias ? { sessionAlias: this.client.runtime.sessionAlias } : {}),
+            agentSessionId: source.sourceId,
+            sourceId: source.sourceId,
           };
           delivery = await this.client.drainResponsiveDelivery(this.abort.signal, room.roomId);
         }
@@ -600,17 +620,20 @@ export class ResponsiveDeliveryController {
         const cursorScope: ResponsiveCursorScope | undefined = delivery?.delivery?.cursor_scope === "session" || delivery?.delivery?.cursor_scope === "alias"
           ? delivery.delivery.cursor_scope
           : undefined;
+        if (cursorScope !== requestedScope) throw new Error("responsive delivery scope changed during a scoped drain");
         sourceFence.cursorScope = cursorScope;
         const preamble = typeof delivery?.preamble === "string" && delivery.preamble ? delivery.preamble : undefined;
         let progressed = 0;
         for (const message of messages) {
           if (this.abort.signal.aborted) return;
           this.reportProgress("row_fetched", { roomId: room.roomId, trigger, eventId: message.event_id, seq: message.seq });
-          const key = deliveryKey(room.roomId, message);
+          const key = deliveryKey(room.roomId, message, sourceFence.sourceId);
           if (this.seen.has(key)) continue;
-          const current = cursorScope === "alias"
-            ? Boolean(sourceFence.sessionAlias && sourceFence.sessionAlias === this.client.runtime.sessionAlias)
-            : sourceFence.sessionRevision === this.client.runtime.sessionRevision && sourceFence.agentSessionId === this.client.runtime.agentSessionId;
+          const current = typeof (this.client as any).responsiveDeliveryFenceCurrent === "function"
+            ? (this.client as any).responsiveDeliveryFenceCurrent(sourceFence)
+            : cursorScope === "alias"
+              ? Boolean(sourceFence.aliasContext && sourceFence.aliasContext.aliasIdentityId === this.client.runtime.aliasIdentityId && sourceFence.aliasContext.aliasGeneration === this.client.runtime.sessionGeneration)
+              : sourceFence.sessionRevision === this.client.runtime.sessionRevision && sourceFence.agentSessionId === this.client.runtime.agentSessionId;
           if (!current) {
             this.remember(key);
             continue;
@@ -657,7 +680,7 @@ export class ResponsiveDeliveryController {
         this.handled.set(key, { outcome, cursorScope, sourceFence });
         this.attempts.delete(key);
         if (outcome === "deferred") {
-          this.deferred.set(key, { roomId: room.roomId, message });
+          this.deferred.set(key, { roomId: room.roomId, message, cursorScope, sourceFence });
           return true;
         }
         this.reportProgress("handling_complete", { roomId: room.roomId, eventId: message.event_id, seq: message.seq });
@@ -682,9 +705,11 @@ export class ResponsiveDeliveryController {
         message,
         this.abort.signal,
         room.roomId,
-        ackCursorScope === "alias" || !ackSourceFence ? undefined : {
+        !ackSourceFence ? undefined : {
           sessionRevision: ackSourceFence.sessionRevision,
           agentSessionId: ackSourceFence.agentSessionId,
+          cursorScope: ackCursorScope || "session",
+          ...(ackSourceFence.aliasContext ? { aliasContext: ackSourceFence.aliasContext } : {}),
         },
       );
     } catch (error) {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.61 (unreleased)
+
+- Use the pending alias-transfer wire with explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Coordinated protocol activation and consumer validation are required before release.
+
 ## 0.8.60
 
 - Add optional fail-closed declared identity expectations before alias lookup, claim, or responsive-delivery setup. `PARLE_EXPECT_AGENT` compares only the server session address principal and agent; `PARLE_EXPECT_ROOM_ID` selects an already configured exact room and `PARLE_EXPECT_ROOM_HANDLE` compares only the server room-entry handle.

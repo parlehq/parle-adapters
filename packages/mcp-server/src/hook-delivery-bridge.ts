@@ -23,7 +23,7 @@ import {
   type DeliveryHandlerInput,
   type DeliveryHandlerResult,
   type ParleAgentClient,
-  type ResponsiveCursorScope,
+  type ResponsiveDeliveryReadFence,
   responsiveReplyPresentation,
   type ResponsiveDeliveryMessage,
   type ResponsiveReplyPresentation,
@@ -119,11 +119,10 @@ export type HostIdleWake = {
 type PendingMessage = ResponsiveDeliveryMessage & {
   clientReplyPresentation: ResponsiveReplyPresentation;
   key: string;
-  sessionRevision: number;
-  cursorScope?: ResponsiveCursorScope;
   roomId: string;
-  sessionAlias?: string;
-  agentSessionId: string;
+  // The controller captured this at the scoped read. It is the only authority
+  // carried into a deferred acknowledgement, never reconstructed from runtime.
+  sourceFence: ResponsiveDeliveryReadFence;
 };
 type Lease = { id: string; messages: PendingMessage[]; expiresAt: number };
 type SuspensionClaim = { id: string; expiresAt: number };
@@ -557,15 +556,25 @@ export class HookDeliveryBridge {
     if (this.queuedKeys.has(key)) return;
     if (this.pending.length >= MAX_PENDING) throw new Error(`Parle hook bridge pending queue reached ${MAX_PENDING} messages`);
     const runtime = (this.client as any).runtime || {};
+    // The controller always supplies a fence. The narrow session fallback only
+    // keeps pre-scoped test/host shims honest; alias work is never guessed.
+    const sourceFence = input.sourceFence ?? (input.cursorScope === "alias" ? undefined : {
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: input.cursorScope || "session",
+      roomId: input.roomId,
+      ...(typeof runtime.sessionAlias === "string" ? { sessionAlias: runtime.sessionAlias } : {}),
+      agentSessionId: String(runtime.agentSessionId || ""),
+    });
+    if (!sourceFence || sourceFence.roomId !== input.roomId || (input.cursorScope && sourceFence.cursorScope !== input.cursorScope)
+      || (sourceFence.cursorScope === "alias" && !sourceFence.aliasContext)) {
+      throw new Error("Parle hook bridge delivery lacks its exact scoped read fence");
+    }
     this.pending.push({
       ...input.message,
       clientReplyPresentation: responsiveReplyPresentation(input.message),
       key,
-      sessionRevision: input.sourceFence?.sessionRevision ?? Number(runtime.sessionRevision || 0),
-      cursorScope: input.cursorScope,
       roomId: input.roomId,
-      sessionAlias: input.sourceFence?.sessionAlias ?? (typeof runtime.sessionAlias === "string" ? runtime.sessionAlias : undefined),
-      agentSessionId: input.sourceFence?.agentSessionId ?? String(runtime.agentSessionId || ""),
+      sourceFence,
     });
     this.queuedKeys.add(key);
     console.error(JSON.stringify({
@@ -780,7 +789,7 @@ export class HookDeliveryBridge {
     return {
       ok: true,
       leaseId: this.lease.id,
-      messages: messages.map(({ key: _key, sessionRevision: _revision, cursorScope: _scope, roomId: _room, sessionAlias: _alias, agentSessionId: _session, ...message }) => message),
+      messages: messages.map(({ key: _key, roomId: _room, sourceFence: _fence, ...message }) => message),
       status: this.status(),
       ...this.idleWakeUrl(),
     };
@@ -806,10 +815,7 @@ export class HookDeliveryBridge {
         message.roomId,
         message,
         "handled",
-        message.cursorScope === "alias" ? undefined : {
-          sessionRevision: message.sessionRevision,
-          agentSessionId: message.agentSessionId,
-        },
+        message.sourceFence,
       );
       if (!acked) {
         const roomError = this.controller.status().rooms.find((room) => room.roomId === message.roomId)?.lastError;
@@ -885,7 +891,8 @@ export class HookDeliveryBridge {
     const dropped = new Set<string>();
     for (let index = this.pending.length - 1; index >= 0; index -= 1) {
       const item = this.pending[index];
-      if (item.cursorScope === "alias" || item.sessionRevision !== Number(previous.sessionRevision || 0) || item.agentSessionId !== String(previous.agentSessionId || "")) continue;
+      const fence = item.sourceFence;
+      if (fence.cursorScope === "alias" || fence.sessionRevision !== Number(previous.sessionRevision || 0) || fence.agentSessionId !== String(previous.agentSessionId || "")) continue;
       this.pending.splice(index, 1);
       this.queuedKeys.delete(item.key);
       this.controller.abandonDeferred(item.roomId, item);
@@ -906,8 +913,14 @@ export class HookDeliveryBridge {
     }
     const aliasTransfers = Boolean(plan.previous.sessionAlias
       && plan.candidate.sessionAlias === plan.previous.sessionAlias
+      && plan.candidate.aliasIdentityId === plan.previous.aliasIdentityId
+      && plan.candidate.sessionGeneration === plan.previous.sessionGeneration
       && plan.candidate.responsiveContinuity === "alias"
-      && work.every((item) => item.cursorScope === "alias" && item.sessionAlias === plan.previous.sessionAlias && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
+      && work.every((item) => item.sourceFence.cursorScope === "alias"
+        && item.sourceFence.sessionAlias === plan.previous.sessionAlias
+        && item.sourceFence.aliasContext?.aliasIdentityId === plan.previous.aliasIdentityId
+        && item.sourceFence.aliasContext?.aliasGeneration === plan.previous.sessionGeneration
+        && plan.previous.rooms.some((room) => room.roomId === item.roomId)));
     if (!aliasTransfers) {
       throw new Error("Parle anonymous session rollover is deferred while exact-session hook delivery is pending or leased");
     }
@@ -917,11 +930,16 @@ export class HookDeliveryBridge {
     const runtime = (this.client as any).runtime || {};
     const configured = Array.isArray(runtime.rooms) && runtime.rooms.some((room: any) => room?.roomId === message.roomId);
     if (!configured) throw new Error("Parle hook delivery belongs to a prior room binding");
-    if (message.cursorScope === "alias") {
-      if (!message.sessionAlias || message.sessionAlias !== runtime.sessionAlias) throw new Error("Parle alias hook delivery belongs to a prior alias binding");
+    const fence = message.sourceFence;
+    if (fence.cursorScope === "alias") {
+      if (!fence.sessionAlias || fence.sessionAlias !== runtime.sessionAlias
+        || fence.aliasContext?.aliasIdentityId !== runtime.aliasIdentityId
+        || fence.aliasContext?.aliasGeneration !== runtime.sessionGeneration) {
+        throw new Error("Parle alias hook delivery belongs to a prior immutable alias context");
+      }
       return;
     }
-    if (message.sessionRevision !== Number(runtime.sessionRevision || 0) || message.agentSessionId !== String(runtime.agentSessionId || "")) {
+    if (fence.sessionRevision !== Number(runtime.sessionRevision || 0) || fence.agentSessionId !== String(runtime.agentSessionId || "")) {
       throw new Error("Parle exact-session hook delivery belongs to a prior session revision");
     }
   }

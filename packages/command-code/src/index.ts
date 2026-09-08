@@ -1,11 +1,28 @@
-import { ParleAccountClient, ParleAgentClient, ProfileConfigError, ResponsiveDeliveryController, ResponsiveDeliveryRecorder, processClientInstanceId, processStartedAtIso, responsiveReplyPresentation, type SessionCommitPlan } from "@parlehq/agent-client";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { ParleAccountClient, ParleAgentClient, ProfileConfigError, ResponsiveDeliveryController, ResponsiveDeliveryRecorder, parseKeyValueFile, processClientInstanceId, processStartedAtIso, responsiveReplyPresentation, resolveConfig, type ResponsiveDeliveryReadFence, type SessionCommitPlan } from "@parlehq/agent-client";
 import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type RegisterParleTool } from "@parlehq/mcp-server/tool-runtime";
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.49";
+const ADAPTER_VERSION = "0.7.50";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function aliasAssumptionCapability(accountClient: ParleAccountClient, cwd: string, env: Record<string, string | undefined>) {
+  let agentId = env.PARLE_AGENT_ID;
+  if (!agentId) {
+    try { agentId = parseKeyValueFile(readFileSync(join(cwd, ".env"), "utf8")).PARLE_AGENT_ID; } catch {}
+  }
+  if (!agentId || !UUID_RE.test(agentId)) return undefined;
+  try {
+    const apiBase = resolveConfig(cwd, env).apiBase.value;
+    return apiBase ? { agentId, humanAliasTransport: accountClient.ownedAliasCreationTransport(new URL(apiBase).origin) } : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const SYSTEM_GUIDANCE = [
   "Parle is installed as native Command Code tools named parle_status, parle_rooms, parle_setup, parle_connect, parle_guidance, parle_read, parle_inbox, parle_room_details, parle_affordances, parle_saved_start, parle_session_alias, parle_alias_delivery, parle_send, and parle_reply, plus guarded account tools.",
@@ -19,7 +36,9 @@ const SYSTEM_GUIDANCE = [
 type PendingMessage = {
   roomId: string;
   message: any;
-  sourceFence?: { sessionRevision: number; cursorScope?: "session" | "alias"; sessionAlias?: string; agentSessionId: string };
+  // Captured by the shared controller at the scoped read. Deferred ACK must
+  // retain this immutable alias context rather than consult current runtime.
+  sourceFence: ResponsiveDeliveryReadFence;
   projected: unknown;
   folded: boolean;
 };
@@ -89,6 +108,20 @@ export class NativeResponsiveDelivery {
   }
 
   async handleDelivery(input: any) {
+    const runtime = this.client.runtime || {};
+    // The controller supplies this in production. A legacy session-only test
+    // shim may be reconstructed from its explicit session scope, never alias.
+    const sourceFence = input.sourceFence ?? (input.cursorScope === "alias" ? undefined : {
+      sessionRevision: Number(runtime.sessionRevision || 0),
+      cursorScope: input.cursorScope || "session",
+      roomId: input.roomId,
+      ...(typeof runtime.sessionAlias === "string" ? { sessionAlias: runtime.sessionAlias } : {}),
+      agentSessionId: String(runtime.agentSessionId || ""),
+    });
+    if (!sourceFence || sourceFence.roomId !== input.roomId || (input.cursorScope && sourceFence.cursorScope !== input.cursorScope)
+      || (sourceFence.cursorScope === "alias" && !sourceFence.aliasContext)) {
+      throw new Error("Parle Command Code delivery lacks its exact scoped read fence");
+    }
     if (this.baselineActive && input.cursorScope !== "alias") {
       this.baselineSkipped += 1;
       this.refreshStatus();
@@ -112,7 +145,7 @@ export class NativeResponsiveDelivery {
         eventId: input.message.event_id,
       },
     });
-    this.pending.push({ roomId: input.roomId, message: input.message, sourceFence: input.sourceFence, projected: appended.message, folded: false });
+    this.pending.push({ roomId: input.roomId, message: input.message, sourceFence, projected: appended.message, folded: false });
     this.refreshStatus();
     return "deferred" as const;
   }
@@ -170,10 +203,7 @@ export class NativeResponsiveDelivery {
         entry.roomId,
         entry.message,
         "handled",
-        entry.sourceFence?.cursorScope === "alias" || !entry.sourceFence ? undefined : {
-          sessionRevision: entry.sourceFence.sessionRevision,
-          agentSessionId: entry.sourceFence.agentSessionId,
-        },
+        entry.sourceFence,
       );
       if (completed) this.pending.splice(this.pending.indexOf(entry), 1);
     }
@@ -192,22 +222,16 @@ export class NativeResponsiveDelivery {
   }
 
   private guardSessionCommit(plan: SessionCommitPlan): void {
-    if (plan.reason === "rebootstrap") {
-      for (let index = this.pending.length - 1; index >= 0; index -= 1) {
-        const entry = this.pending[index];
-        const fence = entry.sourceFence;
-        if (fence?.cursorScope === "alias" || (fence && (fence.sessionRevision !== (plan.previous.sessionRevision || 0) || fence.agentSessionId !== plan.previous.agentSessionId))) continue;
-        this.pending.splice(index, 1);
-        this.controller.abandonDeferred(entry.roomId, entry.message);
-      }
-      this.refreshStatus();
-    }
-    if (this.pending.length === 0) return;
+    if (this.pending.length === 0 || plan.reason === "rollover") return;
     const aliasTransfers = Boolean(plan.previous.sessionAlias
       && plan.candidate.sessionAlias === plan.previous.sessionAlias
+      && plan.candidate.aliasIdentityId === plan.previous.aliasIdentityId
+      && plan.candidate.sessionGeneration === plan.previous.sessionGeneration
       && plan.candidate.responsiveContinuity === "alias"
-      && this.pending.every((entry) => entry.sourceFence?.cursorScope === "alias"
+      && this.pending.every((entry) => entry.sourceFence.cursorScope === "alias"
         && entry.sourceFence.sessionAlias === plan.previous.sessionAlias
+        && entry.sourceFence.aliasContext?.aliasIdentityId === plan.previous.aliasIdentityId
+        && entry.sourceFence.aliasContext?.aliasGeneration === plan.previous.sessionGeneration
         && plan.previous.rooms.some((room) => room.roomId === entry.roomId)));
     if (!aliasTransfers) throw new Error("Parle exact-session lifecycle replacement is deferred while Command Code delivery is pending");
   }
@@ -269,19 +293,22 @@ export async function registerCommandCodeMod(cmd: any, env: NodeJS.ProcessEnv = 
 
   const refreshStatus = () => cmd.ui.setStatus(renderStatus(client?.status(), delivery?.status().pending || 0));
   const createRuntime = () => {
-    const nextClient = new ParleAgentClient({
+    const accountClient = new ParleAccountClient({ env });
+    const aliasAssumption = aliasAssumptionCapability(accountClient, process.cwd(), env);
+    const nextClient = Object.assign(new ParleAgentClient({
       env: { ...env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" },
+      ...(aliasAssumption ? { humanAliasTransport: aliasAssumption.humanAliasTransport } : {}),
       clientName: ADAPTER_NAME,
       clientVersion: ADAPTER_VERSION,
       clientInstanceId: processClientInstanceId(),
       publishRuntime: { adapterName: ADAPTER_NAME, adapterVersion: ADAPTER_VERSION },
-    });
+    }), aliasAssumption ? { aliasAssumptionAgentId: aliasAssumption.agentId } : {});
     nextClient.switchProfile = async () => {
       throw new Error("Live Parle profile switching is unavailable while the Command Code mod owns responsive delivery. Restart Command Code with the target PARLE_PROFILE.");
     };
     client = nextClient;
     delivery = new NativeResponsiveDelivery(cmd, nextClient, refreshStatus);
-    return { client: nextClient, accountClient: new ParleAccountClient({ env }), deliveryBridge: delivery };
+    return { client: nextClient, accountClient, deliveryBridge: delivery };
   };
 
   let runtime: ReturnType<typeof createRuntime> | undefined;

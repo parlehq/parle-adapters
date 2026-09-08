@@ -1309,6 +1309,38 @@ test("owned alias delivery and release use guarded exact human-session operation
   } finally { f.cleanup(); }
 });
 
+test("owned alias creation transport permits only the fixed same-origin human endpoint", async () => {
+  const f = fixture();
+  const calls = [];
+  try {
+    const client = new ParleAccountClient({
+      cwd: f.cwd,
+      env: f.env,
+      fetch: async (url, init = {}) => {
+        calls.push({ origin: new URL(url).origin, path: new URL(url).pathname, method: init.method, body: init.body && JSON.parse(init.body), cookie: init.headers.Cookie });
+        return response({ alias: "durable", exists: init.method === "PUT", creation_generation: 4 }, init.method === "PUT" ? 201 : 200);
+      },
+    });
+    const transport = client.ownedAliasCreationTransport("http://127.0.0.1:8787");
+    await transport.request(`/v/agents/${AGENT_ID}/session-aliases/durable`, {});
+    await transport.request(`/v/agents/${AGENT_ID}/session-aliases/durable`, { method: "PUT", body: { expected_creation_generation: 4 } });
+    assert.deepEqual(calls, [
+      { origin: "http://127.0.0.1:8787", path: `/v/agents/${AGENT_ID}/session-aliases/durable`, method: "GET", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+      { origin: "http://127.0.0.1:8787", path: `/v/agents/${AGENT_ID}/session-aliases/durable`, method: "PUT", body: { expected_creation_generation: 4 }, cookie: "__Host-parle_session=human-cookie" },
+    ]);
+    await assert.rejects(transport.request("/v/rooms", {}), /fixed owned-agent alias endpoint/);
+    await assert.rejects(transport.request(`/v/agents/${AGENT_ID}/session-aliases/durable`, { method: "POST" }), /only GET or PUT/);
+    await assert.rejects(transport.request(`/v/agents/${AGENT_ID}/session-aliases/durable`, { method: "PUT", body: {} }), /expected_creation_generation/);
+    assert.equal(calls.length, 2);
+
+    const wrongOrigin = client.ownedAliasCreationTransport("https://api.parle.sh");
+    await assert.rejects(wrongOrigin.request(`/v/agents/${AGENT_ID}/session-aliases/durable`, {}), /origin does not match/);
+    unlinkSync(join(f.home, ".parle", "session"));
+    await assert.rejects(transport.request(`/v/agents/${AGENT_ID}/session-aliases/durable`, {}), /human session is not configured/);
+    assert.equal(calls.length, 2);
+  } finally { f.cleanup(); }
+});
+
 test("owned alias controls reject reserved and anonymous-shape aliases locally", async () => {
   const f = fixture();
   try {

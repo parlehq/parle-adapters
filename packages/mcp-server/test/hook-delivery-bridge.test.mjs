@@ -29,6 +29,18 @@ import {
 } from "../dist/hook-delivery-bridge.js";
 
 const ROOM = "room-1";
+const ALIAS_ID = "019f2946-aef5-77ad-a41d-747ce0fd6a1e";
+
+function aliasFence(alias = "durable", generation = 3) {
+  return {
+    sessionRevision: 1,
+    cursorScope: "alias",
+    roomId: ROOM,
+    sessionAlias: alias,
+    aliasContext: { aliasIdentityId: ALIAS_ID, aliasGeneration: generation },
+    agentSessionId: "alias-session",
+  };
+}
 
 function cleanupFixture(cwd) {
   rmSync(cwd, { recursive: true, force: true });
@@ -108,8 +120,8 @@ test("hook delivery bridge queues SSE delivery and acks only after lease commit"
     ensureBootstrapped: async () => {},
     drainResponsiveDelivery: async () => {
       drainCalls += 1;
-      if (drainCalls === 1) return { messages: [] };
-      return { messages: [{
+      if (drainCalls === 1) return { delivery: { cursor_scope: "session" }, messages: [] };
+      return { delivery: { cursor_scope: "session" }, messages: [{
         seq: 7,
         event_id: "evt-7",
         content: "server-framed content",
@@ -357,12 +369,17 @@ test("hook delivery bridge preserves alias-scoped unacked baseline delivery", as
   let drains = 0;
   const acknowledgements = [];
   const fakeClient = {
-    runtime: bridgeRuntime({ sessionAlias: "bridge-alias" }),
+    runtime: bridgeRuntime({ sessionAlias: "bridge-alias", aliasIdentityId: ALIAS_ID, sessionGeneration: 3 }),
+    responsiveDeliveryScopes: () => ["alias"],
     ensureBootstrapped: async () => {},
     onSessionRevision: () => () => {},
-    drainResponsiveDelivery: async () => {
+    drainResponsiveDeliveryWithFence: async () => {
       drains += 1;
-      return { delivery: { cursor_scope: "alias" }, messages: [{ seq: 12, event_id: "alias-unacked", content: "redeliver" }] };
+      return {
+        delivery: { delivery: { cursor_scope: "alias", alias_context: { alias_identity_id: ALIAS_ID, alias_generation: 3 } }, messages: [{ seq: 12, event_id: "alias-unacked", content: "redeliver" }] },
+        fence: aliasFence("bridge-alias"),
+        release() {},
+      };
     },
     ackResponsiveDelivery: async (message) => acknowledgements.push(message),
     openWakeStream: async (signal) => new Response(new ReadableStream({ start(controller) { signal.addEventListener("abort", () => { try { controller.close(); } catch {} }, { once: true }); } })),
@@ -649,18 +666,18 @@ test("hook delivery bridge drops an old in-flight drain that resolves after rebo
   }
 });
 
-test("hook delivery bridge carries alias leases across same-alias rollover", async () => {
+test("hook delivery bridge preserves the immutable alias fence and defers transfer until queued work settles", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-hook-alias-rollover-"));
   let commitGuard;
   const acknowledgements = [];
   const fakeClient = {
-    runtime: bridgeRuntime({ agentSessionId: "alias-old", sessionAlias: "durable", responsiveContinuity: "alias" }),
+    runtime: bridgeRuntime({ agentSessionId: "alias-old", sessionAlias: "durable", aliasIdentityId: ALIAS_ID, sessionGeneration: 3, responsiveContinuity: "alias" }),
     ensureBootstrapped: async () => {},
     onBeforeSessionCommit: (guard) => { commitGuard = guard; return () => { commitGuard = undefined; }; },
     onSessionRevision: () => () => {},
     drainResponsiveDelivery: async () => ({ delivery: { cursor_scope: "alias" }, messages: [] }),
     ackResponsiveDelivery: async (message, _signal, _roomId, fence) => {
-      assert.equal(fence, undefined, "alias work is fenced by alias continuity, not predecessor session identity");
+      assert.deepEqual(fence, aliasFence(), "deferred ACK receives the read's immutable alias context");
       acknowledgements.push(message.event_id);
     },
     openWakeStream: async (signal) => heldWakeStream({}, signal),
@@ -669,12 +686,11 @@ test("hook delivery bridge carries alias leases across same-alias rollover", asy
   try {
     await bridge.start();
     await request(bridge.status().socketPath, { action: "bind", sessionId: "host-1" });
-    bridge.enqueue({ roomId: ROOM, cursorScope: "alias", message: { seq: 9, event_id: "alias-work", content: "durable work" } });
+    bridge.enqueue({ roomId: ROOM, cursorScope: "alias", sourceFence: aliasFence(), message: { seq: 9, event_id: "alias-work", content: "durable work" } });
     const leased = await request(bridge.status().socketPath, { action: "take", sessionId: "host-1" });
     const previous = { ...fakeClient.runtime };
-    const candidate = { ...previous, sessionRevision: 2, agentSessionId: "alias-new", responsiveContinuity: "alias" };
-    assert.doesNotThrow(() => commitGuard({ reason: "rollover", previous, candidate }));
-    fakeClient.runtime = candidate;
+    const candidate = { ...previous, sessionRevision: 2, agentSessionId: "alias-new", sessionGeneration: 4, responsiveContinuity: "alias" };
+    assert.throws(() => commitGuard({ reason: "rollover", previous, candidate }), /deferred/);
     assert.deepEqual(await request(bridge.status().socketPath, { action: "commit", sessionId: "host-1", leaseId: leased.leaseId }), { ok: true, committed: 1 });
     assert.deepEqual(acknowledgements, ["alias-work"]);
   } finally {
@@ -842,9 +858,9 @@ test("hook bridge arms host idle wake only for the hook-bound thread that MCP me
     ensureBootstrapped: async () => {},
     drainResponsiveDelivery: async () => {
       drainCalls += 1;
-      if (drainCalls === 1) return { messages: [] };
-      if (drainCalls === 2) return { messages: bodies.map((content, index) => ({ seq: index + 1, event_id: `evt-${index + 1}`, content })) };
-      return { messages: [] };
+      if (drainCalls === 1) return { delivery: { cursor_scope: "session" }, messages: [] };
+      if (drainCalls === 2) return { delivery: { cursor_scope: "session" }, messages: bodies.map((content, index) => ({ seq: index + 1, event_id: `evt-${index + 1}`, content })) };
+      return { delivery: { cursor_scope: "session" }, messages: [] };
     },
     ackResponsiveDelivery: async () => {},
     openWakeStream: async (signal) => {

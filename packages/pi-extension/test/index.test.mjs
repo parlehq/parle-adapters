@@ -11,6 +11,7 @@ const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 const mod = jiti("../src/index.ts");
 const { __testing } = mod;
 const LOGIN_AGENT_ID = "019f2946-aef5-77ad-a41d-747ce0fd6a20";
+const ALIAS_ID = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
 
 function installHarness(cwd) {
   __testing.resetRuntime();
@@ -221,7 +222,7 @@ test("a retryable startup failure keeps the guard pending, starts the watcher re
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-recovered", room_id: IDENTITY_ROOM, room_handle: "recovered-room", agent_session_id: "recovered", generation: "g0", baseline_seq: 1 }), { status: 201 });
     if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 1, messages: [] }), { status: 200 });
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
-    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 1, messages: [], has_more: false, scanned_max: 1 }), { status: 200 });
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 1, delivery: { cursor_scope: "session" }, messages: [], has_more: false, scanned_max: 1 }), { status: 200 });
     if (path.includes("/inbound")) return new Response(JSON.stringify({ watermark: 1, messages: [] }), { status: 200 });
     throw new Error(`unexpected ${path}`);
   };
@@ -805,7 +806,7 @@ test("watcher autonomously retries a retryable startup bootstrap failure", async
       return new Response(JSON.stringify({ agent_session_id: "as-auto-retry", session_credential: "parle_ses_auto_retry", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.auto-retry" }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-auto-retry" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) return new Response(new ReadableStream({ start() {} }), { status: 200 });
     throw new Error(`unexpected ${u}`);
@@ -868,8 +869,8 @@ function installWatcherFailureHarness(wakeResponse) {
       return new Response(JSON.stringify({ agent_session_id: "as-watch", session_credential: "parle_ses_watch", expires_at: "2026-07-22T00:00:00Z", address: "@p.a.watch" }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-watch" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) {
       wakeAt.push(Date.now());
       return wakeResponse(wakeAt.length);
@@ -1002,9 +1003,9 @@ test("elapsed 429 containment parks on a monotonic timer and joins the watcher b
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
     if (u.includes("/projection")) {
       if (wakeCalls > 0) recoveryReadObservedJoin = sleepAborted;
-      return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+      return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     }
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) {
       wakeCalls += 1;
       if (wakeCalls === 1) return new Response(JSON.stringify({ error: { code: "rate_limited", message: "wait", action: "backoff", retryable: true, scope: "rate_limit", retry_after_ms: 20 * 60 * 1000 } }), { status: 429 });
@@ -1063,6 +1064,7 @@ test("only the named explicit recovery paths establish a healthy parked-session 
   ]) {
     const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_WATCH_ENABLED=0\n");
     let sessionCreates = 0;
+    let recoveredAliasClaimed = false;
     globalThis.fetch = async (url, init = {}) => {
       const u = String(url);
       if (u.endsWith("/v/agent/sessions") && (init.method || "GET") === "POST") {
@@ -1070,15 +1072,20 @@ test("only the named explicit recovery paths establish a healthy parked-session 
         assert.deepEqual(JSON.parse(init.body), {});
         return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "later", address: `@p.a.session-${sessionCreates}`, generation: 0 }), { status: 201 });
       }
-      if (u.endsWith("/v/agent/session-aliases/recovered")) return new Response(JSON.stringify({ alias: "recovered", generation: 0, current_agent_session_id: null }), { status: 200 });
+      if (u.endsWith("/v/agent/session-aliases/recovered")) return new Response(JSON.stringify(recoveredAliasClaimed
+        ? { alias: "recovered", alias_identity_id: ALIAS_ID, generation: 1, current_agent_session_id: `as-${sessionCreates}` }
+        : { alias: "recovered", alias_identity_id: ALIAS_ID, generation: 0, current_agent_session_id: null }), { status: 200 });
       if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
       if (u.endsWith("/claim-alias")) {
         const body = JSON.parse(init.body);
+        recoveredAliasClaimed = true;
+        // Core SessionFacts deliberately omits alias identity. The client must
+        // confirm this exact candidate against the immutable mapping above.
         return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias: body.alias, generation: 1, address: `@p.a.${body.alias}`, expires_at: "later" }), { status: 200 });
       }
       if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
-      if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
-      if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+      if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
+      if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
       if (u.endsWith("/end")) return new Response(JSON.stringify({ ended: true }), { status: 200 });
       throw new Error("unexpected " + u);
     };
@@ -1115,9 +1122,9 @@ test("non-recovery send rebootstrap cannot clear parked containment", async () =
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "later", address: `@p.a.session-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/messages")) {
       sends += 1;
       if (sends === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session" } }), { status: 401 });
@@ -1152,7 +1159,7 @@ test("a failed second named recovery restores the pending watcher restart", asyn
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-rate", session_credential: "parle_ses_rate", expires_at: "later", address: "@p.a.rate" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-rate" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) throw new TypeError("recovery read failed");
     throw new Error("unexpected " + u);
   };
@@ -1238,11 +1245,11 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.66" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.67" });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
-test("footer prefers alias route when session uses an alias", async () => {
+test("configured alias remains requested until an explicit assumption", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_SESSION_ALIAS=parle-landing\nPARLE_WATCH_ENABLED=0\n");
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
@@ -1262,11 +1269,11 @@ test("footer prefers alias route when session uses an alias", async () => {
   };
   const harness = installHarness(cwd);
   const status = await harness.call("parle_status");
-  assert.equal(status.details.runtime.sessionAddress, "@p.a.parle-landing");
-  assert.equal(status.details.runtime.sessionAlias, "parle-landing");
-  assert.equal(status.details.runtime.sessionGeneration, 2);
+  assert.equal(status.details.runtime.sessionAddress, "@p.a.raw-session");
+  assert.equal(status.details.runtime.sessionAlias, undefined);
+  assert.equal(status.details.runtime.sessionGeneration, 0);
   assert.equal(status.details.runtime.rooms[0].roomHandle, "actual-room");
-  assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
+  assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.raw-session");
 });
 
 // parle-adapters#115: an anonymous live session claims its alias IN PLACE.
@@ -1275,6 +1282,7 @@ test("footer prefers alias route when session uses an alias", async () => {
 test("parle_session_alias claims in place on the anonymous live session", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_WATCH_ENABLED=0\n");
   let sessionCreates = 0;
+  let landingClaimed = false;
   const order = [];
   globalThis.fetch = async (url, init) => {
     const u = String(url);
@@ -1284,11 +1292,14 @@ test("parle_session_alias claims in place on the anonymous live session", async 
       order.push("create:unaliased");
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `raw-${sessionCreates}`, generation: 0, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
     }
-    if (u.endsWith("/v/agent/session-aliases/parle-landing")) return new Response(JSON.stringify({ alias: "parle-landing", generation: 2, current_agent_session_id: "prior" }), { status: 200 });
+    if (u.endsWith("/v/agent/session-aliases/parle-landing")) return new Response(JSON.stringify(landingClaimed
+      ? { alias: "parle-landing", alias_identity_id: ALIAS_ID, generation: 3, current_agent_session_id: `as-${sessionCreates}` }
+      : { alias: "parle-landing", alias_identity_id: ALIAS_ID, generation: 2, current_agent_session_id: "prior" }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
     if (u.endsWith("/claim-alias")) {
       order.push("claim:parle-landing");
       assert.deepEqual(JSON.parse(String(init.body)), { alias: "parle-landing", expected_generation: 2 });
+      landingClaimed = true;
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias: "parle-landing", generation: 3, expires_at: "2026-07-04T00:00:00Z", address: "@p.a.parle-landing" }), { status: 200 });
     }
     if (u.endsWith("/end")) {
@@ -1314,7 +1325,45 @@ test("parle_session_alias claims in place on the anonymous live session", async 
   assert.equal(harness.statuses.at(-1).label, "#actual-room ✓ @p.a.parle-landing");
 });
 
-test("Pi proactively swaps a configured alias and immediately drains alias-scoped delivery", async () => {
+test("parle_session_alias uses the narrow human capability only to create an absent alias", async () => {
+  const agentId = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
+  const cwd = tempProject(`PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n`);
+  mkdirSync(join(process.env.HOME, ".parle"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(process.env.HOME, ".parle", "session"), "__Host-parle_session=human-cookie\n", { mode: 0o600 });
+  const calls = [];
+  let created = false;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    const method = init.method || "GET";
+    calls.push({ path, method, body: init.body && JSON.parse(String(init.body)), cookie: init.headers?.Cookie });
+    if (path === "/v/agent/sessions") return new Response(JSON.stringify({ agent_session_id: "as-human", session_credential: "parle_ses_human", expires_at: "2099-01-01T00:00:00Z" }), { status: 201 });
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-human", room_handle: "human-room" }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
+    if (path === "/v/agent/session-aliases/new-alias") return new Response(JSON.stringify(created
+      ? { alias: "new-alias", alias_identity_id: agentId, generation: 0, current_agent_session_id: null }
+      : { alias: "new-alias", alias_identity_id: null, generation: 0, current_agent_session_id: null }));
+    if (path === `/v/agents/${agentId}/session-aliases/new-alias`) {
+      if (method === "PUT") created = true;
+      return new Response(JSON.stringify(method === "PUT"
+        ? { alias: "new-alias", exists: true, creation_generation: 0 }
+        : { alias: "new-alias", exists: false, creation_generation: 0 }), { status: method === "PUT" ? 201 : 200 });
+    }
+    if (path.endsWith("/claim-alias")) return new Response(JSON.stringify({ agent_session_id: "as-human", alias: "new-alias", alias_identity_id: agentId, generation: 1 }));
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${method} ${path}`);
+  };
+  const harness = installHarness(cwd);
+  await harness.call("parle_status");
+  const result = await harness.call("parle_session_alias", { alias: "new-alias", agentId });
+  assert.equal(result.details.alias, "new-alias");
+  assert.ok(calls.findIndex((call) => call.path === "/v/agent/session-aliases/new-alias") < calls.findIndex((call) => call.path === `/v/agents/${agentId}/session-aliases/new-alias`));
+  assert.deepEqual(calls.filter((call) => call.path === `/v/agents/${agentId}/session-aliases/new-alias`).map(({ method, body, cookie }) => ({ method, body, cookie })), [
+    { method: "GET", body: undefined, cookie: "__Host-parle_session=human-cookie" },
+    { method: "PUT", body: { expected_creation_generation: 0 }, cookie: "__Host-parle_session=human-cookie" },
+  ]);
+});
+
+test("Pi explicitly assumes an alias then prepares an independent alias successor", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_PRINCIPAL_HANDLE=p\nPARLE_AGENT_HANDLE=a\nPARLE_SESSION_ALIAS=main\nPARLE_WATCH_ENABLED=0\n");
   let creates = 0;
   let generation = 4;
@@ -1328,7 +1377,7 @@ test("Pi proactively swaps a configured alias and immediately drains alias-scope
       assert.deepEqual(JSON.parse(init.body), {});
       return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, session_credential: `parle_ses_${creates}`, generation: 0, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z", address: `@p.a.raw-${creates}` }), { status: 201 });
     }
-    if (u.endsWith("/v/agent/session-aliases/main")) return new Response(JSON.stringify({ alias: "main", generation, current_agent_session_id: generation ? `as-${Math.max(1, creates - 1)}` : null }), { status: 200 });
+    if (u.endsWith("/v/agent/session-aliases/main")) return new Response(JSON.stringify({ alias: "main", alias_identity_id: ALIAS_ID, generation, current_agent_session_id: generation >= 6 ? `as-${creates}` : (generation ? "as-1" : null) }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) { wakeReadiness += 1; return new Response(": ready\n\n"); }
     if (u.endsWith("/claim-alias")) {
       const body = JSON.parse(init.body);
@@ -1338,25 +1387,34 @@ test("Pi proactively swaps a configured alias and immediately drains alias-scope
     }
     if (u.endsWith("/participants")) { participantEntries += 1; return new Response(JSON.stringify({ participant_id: `p-${creates}`, room_handle: "room" }), { status: 201 }); }
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 8, messages: [] }), { status: 200 });
-    if (u.includes("/responsive-delivery")) { drains += 1; return new Response(JSON.stringify({ delivery: { cursor_scope: "alias", last_acked_seq: 3 }, messages: [] }), { status: 200 }); }
+    if (u.includes("/responsive-delivery")) {
+      drains += 1;
+      const scope = new URL(u).searchParams.get("cursor_scope") || "alias";
+      return new Response(JSON.stringify({ delivery: {
+        cursor_scope: scope,
+        ...(scope === "alias" ? { alias_context: { alias_identity_id: ALIAS_ID, alias_generation: generation } } : {}),
+        last_acked_seq: 3,
+      }, messages: [] }), { status: 200 });
+    }
     if (u.endsWith("/end")) return new Response(null, { status: 204 });
     throw new Error(`unexpected ${u}`);
   };
   const harness = installHarness(cwd);
   await harness.call("parle_status");
+  await harness.call("parle_session_alias", { alias: "main" });
   const oldId = __testing.runtimeState().agentSessionId;
   await __testing.performSessionRollover();
   const state = __testing.runtimeState();
   assert.notEqual(state.agentSessionId, oldId);
   assert.equal(state.sessionGeneration, 6);
-  assert.equal(state.responsiveCursorScope, "alias");
+  assert.equal(state.responsiveCursorScope, "session", "handoff never probes and discards responsive work");
   assert.equal(state.responsiveContinuity, "alias");
-  assert.equal(wakeReadiness, 2);
+  assert.equal(wakeReadiness, 1);
   const handedOffWake = await __testing.agentClient().openWakeStream(new AbortController().signal);
   assert.match(await handedOffWake.text(), /ready/);
-  assert.equal(wakeReadiness, 2, "the successor watcher consumes the response opened before claim without another stream open");
-  assert.equal(drains, 1);
-  assert.equal(participantEntries, 4, "each alias claim is followed by the documented idempotent room-entry reconciliation");
+  assert.equal(wakeReadiness, 1, "the successor watcher consumes the response opened before claim without another stream open");
+  assert.equal(drains, 0, "the controller, not handoff, drains session and alias scopes");
+  assert.equal(participantEntries, 3, "the explicit in-place claim preserves its room entry; rollover reconciles the successor");
   __testing.resetRuntime();
 });
 
@@ -1365,6 +1423,7 @@ test("Pi recovers a committed alias claim after its response is dropped", async 
   let claims = 0;
   let inventoryReads = 0;
   let committed;
+  let explicitAssume = false;
   const ended = [];
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url);
@@ -1374,20 +1433,21 @@ test("Pi recovers a committed alias claim after its response is dropped", async 
     }
     if (path === "/v/agent/session-aliases/main") {
       return new Response(JSON.stringify(committed
-        ? { alias: "main", generation: 8, current_agent_session_id: "pi-lost" }
-        : { alias: "main", generation: 7, current_agent_session_id: "prior" }));
+        ? { alias: "main", alias_identity_id: ALIAS_ID, generation: 8, current_agent_session_id: "pi-lost" }
+        : { alias: "main", alias_identity_id: ALIAS_ID, generation: 7, current_agent_session_id: "prior" }));
     }
     if (path === "/v/agent/sessions") {
       inventoryReads += 1;
       return new Response(JSON.stringify({ sessions: committed ? [committed] : [], next: null }));
     }
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p" }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response("event: wake\ndata: {}\n\n");
     if (path.endsWith("/claim-alias")) {
       claims += 1;
       const body = JSON.parse(init.body);
       committed = { agent_session_id: "pi-lost", alias: "main", generation: body.expected_generation + 1, address: "@p.a.main", created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" };
+      explicitAssume = true;
       if (claims === 1) throw new TypeError("response dropped after commit");
       return new Response(JSON.stringify(committed));
     }
@@ -1396,6 +1456,8 @@ test("Pi recovers a committed alias claim after its response is dropped", async 
   };
   const harness = installHarness(cwd);
   await harness.call("parle_status");
+  await harness.call("parle_session_alias", { alias: "main" });
+  assert.equal(explicitAssume, true);
   assert.equal(__testing.runtimeState().agentSessionId, "pi-lost");
   assert.equal(__testing.runtimeState().sessionGeneration, 8);
   assert.equal(claims, 1, "durable alias confirmation avoids an unnecessary exact replay");
@@ -1408,6 +1470,7 @@ test("Pi reports a committed alias claim whose candidate vanished, then recovers
   let creates = 0;
   let claims = 0;
   let committedId;
+  let explicitAssume = false;
   const ended = [];
   globalThis.fetch = async (url, init = {}) => {
     const path = new URL(String(url)).pathname;
@@ -1416,11 +1479,11 @@ test("Pi reports a committed alias claim whose candidate vanished, then recovers
       return new Response(JSON.stringify({ agent_session_id: `pi-vanished-${creates}`, session_credential: `parle_ses_pi_vanished_${creates}`, generation: 0, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
     }
     if (path === "/v/agent/session-aliases/main") return new Response(JSON.stringify(committedId
-      ? { alias: "main", generation: 5, current_agent_session_id: committedId }
-      : { alias: "main", generation: 4, current_agent_session_id: "prior" }));
+      ? { alias: "main", alias_identity_id: ALIAS_ID, generation: 5, current_agent_session_id: committedId }
+      : { alias: "main", alias_identity_id: ALIAS_ID, generation: 4, current_agent_session_id: "prior" }));
     if (path === "/v/agent/sessions") return new Response(JSON.stringify({ sessions: [], next: null }));
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response(": ready\n\n");
     if (path.endsWith("/claim-alias")) {
       claims += 1;
@@ -1428,6 +1491,7 @@ test("Pi reports a committed alias claim whose candidate vanished, then recovers
       const body = JSON.parse(init.body);
       if (claims === 1) {
         committedId = candidateId;
+        explicitAssume = true;
         throw new TypeError("response dropped after commit and candidate expiry");
       }
       return new Response(JSON.stringify({ agent_session_id: candidateId, alias: "main", generation: body.expected_generation + 1, address: "@p.a.main", created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }));
@@ -1439,17 +1503,18 @@ test("Pi reports a committed alias claim whose candidate vanished, then recovers
   };
   const harness = installHarness(cwd);
   await harness.call("parle_status");
-  assert.equal(__testing.runtimeState().bootstrapped, false);
-  assert.match(__testing.runtimeState().lastError, /claim committed but the candidate session is no longer live/);
+  await assert.rejects(harness.call("parle_session_alias", { alias: "main" }), /claim committed but its exact candidate is no longer live/);
+  assert.equal(explicitAssume, true);
+  assert.equal(__testing.runtimeState().bootstrapped, true);
   assert.equal(claims, 1);
-  assert.deepEqual(ended, ["pi-vanished-1"]);
+  assert.deepEqual(ended, [], "a failed in-place assumption never retires the active anonymous session");
   await harness.call("parle_affordances");
-  assert.equal(__testing.runtimeState().agentSessionId, "pi-vanished-2");
-  assert.equal(__testing.runtimeState().sessionGeneration, 6);
+  assert.equal(__testing.runtimeState().agentSessionId, "pi-vanished-1");
+  assert.equal(__testing.runtimeState().sessionGeneration, 0);
   __testing.resetRuntime();
 });
 
-test("Pi defers anonymous rollover while old exact-session injection is pending", async () => {
+test("Pi retains anonymous exact-session injection across live rollover", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
   let creates = 0;
   const acknowledgements = [];
@@ -1458,7 +1523,7 @@ test("Pi defers anonymous rollover while old exact-session injection is pending"
     const path = new URL(String(url)).pathname;
     if (path === "/v/agent/sessions") return new Response(JSON.stringify({ agent_session_id: `exact-${++creates}`, session_credential: `parle_ses_exact_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response(": ready\n\n");
     if (path.endsWith("/responsive-delivery/ack")) { acknowledgements.push(init.headers["Parle-Agent-Session"]); return new Response(JSON.stringify({ acked: true })); }
     if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
@@ -1469,12 +1534,12 @@ test("Pi defers anonymous rollover while old exact-session injection is pending"
   __testing.patchRuntime({ responsiveCursorScope: "session" });
   const cfg = __testing.resolveConfig(cwd);
   await __testing.queueResponsiveMessages(harness.ctx, cfg, [{ seq: 11, event_id: "old-exact", content: "pending" }]);
-  const oldId = __testing.runtimeState().agentSessionId;
-  await assert.rejects(__testing.performSessionRollover(), /deferred/);
-  assert.equal(__testing.runtimeState().agentSessionId, oldId);
+  await __testing.performSessionRollover();
+  assert.equal(__testing.runtimeState().agentSessionId, "exact-2");
   assert.equal(__testing.runtimeState().pendingResponsiveCount, 1);
-  assert.deepEqual(acknowledgements, [], "pending exact work was not acknowledged with the prepared successor credential");
-  assert.deepEqual(ended, ["exact-2"], "the unused anonymous candidate is retired after guard deferral");
+  assert.equal(__testing.runtimeState().predecessorDrainingCount, 1);
+  assert.deepEqual(acknowledgements, [], "pending exact work is not acknowledged with the prepared successor credential");
+  assert.deepEqual(ended, [], "the live predecessor remains memory-owned for its original scoped acknowledgement");
   __testing.resetRuntime();
 });
 
@@ -1494,7 +1559,7 @@ test("Pi blocks exact-session rollover while a responsive read is in flight", as
       return new Response(JSON.stringify({ agent_session_id: `inflight-${creates}`, session_credential: `parle_ses_inflight_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-01T01:00:00Z" }), { status: 201 });
     }
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response(": ready\n\n");
     if (path.endsWith("/responsive-delivery/ack")) {
       acknowledgements.push(init.headers["Parle-Agent-Session"]);
@@ -1540,7 +1605,7 @@ test("Pi shutdown joins an in-flight rollover and cannot be resurrected afterwar
       return new Response(JSON.stringify({ agent_session_id: `shutdown-${creates}`, session_credential: `parle_ses_shutdown_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
     }
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response(": ready\n\n");
     if (path.endsWith("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: [] }));
     if (path.endsWith("/end")) { ended.push(path.split("/").at(-2)); return new Response(null, { status: 204 }); }
@@ -1575,7 +1640,7 @@ test("Pi rollover storm protection recovers on an unrefed quiet cooldown without
       return new Response(JSON.stringify({ agent_session_id: `pi-cool-${creates}`, session_credential: `parle_ses_pi_cool_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-01T01:00:00Z" }), { status: 201 });
     }
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p" }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response(": ready\n\n");
     if (path.endsWith("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session" }, messages: [] }));
     if (path.endsWith("/end")) return new Response(null, { status: 204 });
@@ -1629,7 +1694,7 @@ test("failed parle_session_alias preserves the active session and watcher", asyn
       assert.deepEqual(JSON.parse(String(init.body)), {});
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, session_handle: `raw-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
     }
-    if (u.endsWith("/v/agent/session-aliases/reserved-alias")) return new Response(JSON.stringify({ alias: "reserved-alias", generation: 0, current_agent_session_id: null }), { status: 200 });
+    if (u.endsWith("/v/agent/session-aliases/reserved-alias")) return new Response(JSON.stringify({ alias: "reserved-alias", alias_identity_id: ALIAS_ID, generation: 0, current_agent_session_id: null }), { status: 200 });
     if (u.endsWith("/claim-alias")) return new Response(JSON.stringify({ error: { code: "session_alias_reserved", message: "session alias is reserved", action: "stop", retryable: false } }), { status: 409 });
     if (u.endsWith("/end")) {
       endCalls += 1;
@@ -1637,7 +1702,7 @@ test("failed parle_session_alias preserves the active session and watcher", asyn
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-active", room_id: "room-1", room_handle: "actual-room" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 9, messages: [] }), { status: 200 });
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { last_acked_seq: 9 }, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session", last_acked_seq: 9 }, messages: [] }), { status: 200 });
     if (u.endsWith("/heartbeat")) return new Response(JSON.stringify({ ok: true }), { status: 200 });
     throw new Error("unexpected " + u);
   };
@@ -1695,7 +1760,7 @@ test("parle_switch_profile prepares the target before atomically replacing room 
       return new Response(JSON.stringify({ watermark: 42, messages: [] }), { status: 200 });
     }
     if (u.endsWith(`/v/rooms/${newRoom}/affordances`)) return new Response(JSON.stringify({ affordances: [{ action: "post_message", allowed: true }] }), { status: 200 });
-    if (u.includes(`/v/rooms/${newRoom}/responsive-delivery?`)) return new Response(JSON.stringify({ watermark: 42, messages: [{ seq: 7, event_id: "same-event", participant_id: "new-peer", provenance_author: "new-peer", provenance_kind: "participant", content: "new room" }] }), { status: 200 });
+    if (u.includes(`/v/rooms/${newRoom}/responsive-delivery?`)) return new Response(JSON.stringify({ watermark: 42, delivery: { cursor_scope: "session" }, messages: [{ seq: 7, event_id: "same-event", participant_id: "new-peer", provenance_author: "new-peer", provenance_kind: "participant", content: "new room" }] }), { status: 200 });
     if (u.endsWith(`/v/rooms/${newRoom}/responsive-delivery/ack`)) return new Response(JSON.stringify({ acked: true }), { status: 200 });
     if (u.endsWith("/v/agent/sessions/as-old/end")) {
       order.push("old-ended");
@@ -1718,7 +1783,8 @@ test("parle_switch_profile prepares the target before atomically replacing room 
   assert.equal(switched.details.sessionAddress, "@p.a.target");
   assert.equal(switched.details.roomHandle, "target-room");
   assert.equal(switched.details.ephemeral, true);
-  assert.ok(order.indexOf("target-ready") < order.indexOf("old-ended"));
+  assert.notEqual(order.indexOf("target-ready"), -1);
+  assert.equal(order.indexOf("old-ended"), -1, "profile switch does not terminate the predecessor");
   const status = await harness.call("parle_status");
   assert.equal(status.details.profile.value, "target");
   assert.equal(status.details.profile.source, "runtime_profile");
@@ -1777,36 +1843,35 @@ function aliasSwitchProject(options = {}) {
   };
 }
 
-test("parle_switch_profile claims a configured alias on the target agent and retires the source explicitly", async () => {
+test("parle_switch_profile leaves a configured alias requested on the target", async () => {
   const project = aliasSwitchProject();
   const harness = installHarness(project.cwd);
   await harness.call("parle_status");
   const switched = await harness.call("parle_switch_profile", { profile: "target" });
   assert.equal(switched.details.switched, true);
   assert.equal(switched.details.cursor, 42, "a cursor is never preserved across rooms");
-  assert.equal(switched.details.sessionAddress, "@p.a.main-target");
-  assert.equal(project.claimed().length, 1);
-  // The target claim cannot supersede another durable agent's alias owner.
-  assert.deepEqual(project.ended().at(-1), ["/v/agent/sessions/as-old/end", "source"]);
+  assert.equal(switched.details.sessionAddress, "@p.a.target");
+  assert.equal(project.claimed().length, 0, "configuration never claims an alias");
+  assert.deepEqual(project.ended(), [], "profile handoff leaves the predecessor for explicit cleanup or expiry");
 });
 
-test("parle_switch_profile treats an authoritative same-session alias owner as supersession", async () => {
+test("parle_switch_profile does not inspect configured alias ownership", async () => {
   const project = aliasSwitchProject({ targetAliasOwner: "as-old" });
   const harness = installHarness(project.cwd);
   await harness.call("parle_status");
   const switched = await harness.call("parle_switch_profile", { profile: "target" });
   assert.equal(switched.details.switched, true);
-  assert.equal(project.ended().length, 0, "claim supersession already moved authority off the source session");
+  assert.equal(project.claimed().length, 0);
+  assert.equal(project.ended().length, 0, "no configured alias transfer is attempted");
 });
 
-test("parle_switch_profile reports a possible external alias winner on claim conflict", async () => {
+test("parle_switch_profile ignores configured alias claim conflicts", async () => {
   const project = aliasSwitchProject({ claimStatus: 409 });
   const harness = installHarness(project.cwd);
   await harness.call("parle_status");
-  await assert.rejects(harness.call("parle_switch_profile", { profile: "target" }), /external winner may already hold alias authority/);
-  const status = await harness.call("parle_status");
-  assert.equal(status.details.profile.value, "default");
-  assert.equal(status.details.runtime.agentSessionId, "as-old");
+  const switched = await harness.call("parle_switch_profile", { profile: "target" });
+  assert.equal(switched.details.switched, true);
+  assert.equal(project.claimed().length, 0);
 });
 
 test("live Pi binding refuses naive PARLE_PROFILE edits until parle_switch_profile runs", async () => {
@@ -1878,7 +1943,7 @@ test("status starts watcher after late lazy bootstrap", async () => {
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-late", session_credential: "parle_ses_late-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.late-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-late", room_id: "room-1", agent_session_id: "as-late" }), { status: 201 });
     if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { last_acked_seq: 7 }, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session", last_acked_seq: 7 }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) return new Response(": keepalive\n\n", { status: 200, headers: { "Content-Type": "text/event-stream" } });
     throw new Error("unexpected " + u);
   };
@@ -1924,7 +1989,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.66");
+    assert.equal(call.headers["Parle-Client-Version"], "0.7.67");
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -2575,7 +2640,7 @@ test("parle_send includes direct addressing when to is present", async () => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-send", session_credential: "parle_ses_send-session", session_handle: "send-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.send-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-send" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send/messages")) {
       messageRequest = JSON.parse(init.body);
       return new Response(JSON.stringify({ seq: 1, event_id: "event-1", routing: { mode: "direct", target_level: "session", continuity: "ephemeral" }, attention: { inbound_scope: "target", responsive_scope: "target" }, moderation: { delivery_state: "accepted_scan_skipped", held: true, delivered: false, scan: "skipped", steps: [], verdict: "pending", reason: "awaiting moderation completion" } }), { status: 201 });
@@ -2603,7 +2668,7 @@ test("parle_reply redeems only the delivered opaque route", async () => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-reply", session_credential: "parle_ses_reply-session", session_handle: "reply-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.reply-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-reply" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send/replies")) {
       replyRequest = JSON.parse(init.body);
       replyHeaders = init.headers;
@@ -2621,6 +2686,7 @@ test("parle_reply redeems only the delivered opaque route", async () => {
   assert.deepEqual(replyRequest, {
     reply_route_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
     payload: { body: "Reply through the route" },
+    alias_context: null,
   });
   assert.equal(replyHeaders["Idempotency-Key"], "idem-reply");
   assert.equal(result.details.interaction.reply_hop, 3);
@@ -2639,7 +2705,7 @@ test("parle_send without to preserves canonical attention and warns for all non-
       const responsive_scope = scopes[messageRequests.length - 1];
       return new Response(JSON.stringify({ seq: messageRequests.length + 1, event_id: `event-${messageRequests.length + 1}`, routing: { mode: "unaddressed", target_level: "none", continuity: "none" }, attention: { inbound_scope: "room", responsive_scope } }), { status: 201 });
     }
-    return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
   });
 
   const ordinary = await harness.call("parle_send", { body: "Substantive room update without a direct target", idempotencyKey: "idem-2" });
@@ -2807,7 +2873,7 @@ test("parle_room_details returns stable room seat membership", async () => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-details", session_credential: "parle_ses_details", session_handle: "details", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.details" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-details" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send")) return new Response(JSON.stringify({ room_id: "room-send", roster: { principal_seats: [], agent_seats: [{ agent_handle: "agent-one" }] } }), { status: 200 });
     throw new Error("unexpected " + u);
   });
@@ -2832,7 +2898,7 @@ test("parle_affordances wraps the room affordances endpoint", async () => {
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-aff", session_credential: "parle_ses_" + String("aff-session"), session_handle: "aff-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.aff-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-aff" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/rooms/room-send/affordances")) {
       sawAffordances = true;
       return new Response(JSON.stringify({ affordances: [{ action: "post_message", allowed: true }] }), { status: 200 });
@@ -2865,7 +2931,7 @@ test("wake hint drains responsive delivery without long polling", async () => {
     requested.push(u);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-wake", session_credential: "parle_ses_" + String("wake-session"), session_handle: "wake-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.wake-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-wake" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/responsive-delivery/ack")) {
       assert.equal(init.method, "POST");
       return new Response(JSON.stringify({ last_acked_seq: 7, last_ack_event_id: "evt-wake" }), { status: 200 });
@@ -2873,7 +2939,7 @@ test("wake hint drains responsive delivery without long polling", async () => {
     if (u.includes("/responsive-delivery")) {
       return new Response(JSON.stringify({
         watermark: 7,
-        delivery: { last_acked_seq: 0 },
+        delivery: { cursor_scope: "session", last_acked_seq: 0 },
         messages: [{ seq: 7, event_id: "evt-wake", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "hello" }],
       }), { status: 200 });
     }
@@ -2887,8 +2953,8 @@ test("wake hint drains responsive delivery without long polling", async () => {
 
   assert.equal(injected.length, 1);
   assert.equal(__testing.runtimeState().lastAckedSeq, 7);
-  assert.equal(requested.some((u) => u.includes("/responsive-delivery?wait=0")), true);
-  assert.equal(requested.some((u) => /responsive-delivery\?wait=(?!0)/.test(u)), false);
+  assert.equal(requested.some((u) => u.includes("/responsive-delivery?cursor_scope=session&wait=0")), true);
+  assert.equal(requested.some((u) => /responsive-delivery\?[^#]*wait=(?!0)/.test(u)), false);
 });
 
 test("a Pi responsive read can rebootstrap its own expired anonymous session without self-blocking", async () => {
@@ -2902,7 +2968,7 @@ test("a Pi responsive read can rebootstrap its own expired anonymous session wit
       return new Response(JSON.stringify({ agent_session_id: `read-rebootstrap-${creates}`, session_credential: `parle_ses_read_rebootstrap_${creates}`, created_at: "2099-01-01T00:00:00Z", expires_at: "2099-01-02T00:00:00Z" }), { status: 201 });
     }
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${creates}` }), { status: 201 });
-    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path.endsWith("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }));
     if (path === "/v/agent/wake") return new Response(": ready\n\n");
     if (path.endsWith("/responsive-delivery")) {
       drains += 1;
@@ -2927,7 +2993,7 @@ test("wake hint coalesces responsive delivery backlog into one follow-up", async
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-batch", session_credential: "parle_ses_batch-session", session_handle: "batch-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.batch-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-batch" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/responsive-delivery/ack")) {
       acked.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ last_acked_seq: acked.at(-1).seq, last_ack_event_id: acked.at(-1).event_id }), { status: 200 });
@@ -2935,7 +3001,7 @@ test("wake hint coalesces responsive delivery backlog into one follow-up", async
     if (u.includes("/responsive-delivery")) {
       return new Response(JSON.stringify({
         watermark: 8,
-        delivery: { last_acked_seq: 0 },
+        delivery: { cursor_scope: "session", last_acked_seq: 0 },
         messages: [
           { seq: 7, event_id: "evt-batch-7", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "first" },
           { seq: 8, event_id: "evt-batch-8", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "second" },
@@ -2955,7 +3021,7 @@ test("wake hint coalesces responsive delivery backlog into one follow-up", async
   assert.match(injected[0], /responsive delivery 2\/2/);
   // The shared controller acknowledges per row in queue order after the
   // injection, so a crash mid-batch leaves the un-acked suffix redeliverable.
-  assert.deepEqual(acked, [{ seq: 7, event_id: "evt-batch-7" }, { seq: 8, event_id: "evt-batch-8" }]);
+  assert.deepEqual(acked, [{ cursor_scope: "session", seq: 7, event_id: "evt-batch-7" }, { cursor_scope: "session", seq: 8, event_id: "evt-batch-8" }]);
   assert.equal(__testing.runtimeState().lastInjectedSeq, 8);
 });
 
@@ -2966,12 +3032,12 @@ test("busy Pi admits responsive rows through steer without waiting for settled",
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-settled", session_credential: "parle_ses_settled-session", session_handle: "settled-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.settled-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-settled" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/responsive-delivery/ack")) {
       acked.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ last_acked_seq: acked.at(-1).seq }), { status: 200 });
     }
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { last_acked_seq: 0 }, messages: [] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "session", last_acked_seq: 0 }, messages: [] }), { status: 200 });
     throw new Error("unexpected " + u);
   });
   await harness.call("parle_status");
@@ -2988,7 +3054,7 @@ test("busy Pi admits responsive rows through steer without waiting for settled",
   assert.equal(injected.length, 1);
   assert.match(injected[0].message, /received 2 server-authenticated peer messages/);
   assert.deepEqual(injected[0].options, { deliverAs: "steer" });
-  assert.deepEqual(acked, [{ seq: 7, event_id: "evt-settled-7" }, { seq: 8, event_id: "evt-settled-8" }]);
+  assert.deepEqual(acked, [{ cursor_scope: "session", seq: 7, event_id: "evt-settled-7" }, { cursor_scope: "session", seq: 8, event_id: "evt-settled-8" }]);
   assert.equal(__testing.runtimeState().pendingResponsiveCount, 0);
   assert.equal(__testing.runtimeState().lastHostQueueAt !== undefined, true);
   assert.equal(__testing.runtimeState().lastInjectionSuccessAt !== undefined, true);
@@ -3007,7 +3073,7 @@ test("wake hint silently acks rows already surfaced by manual inbox reads", asyn
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-seen", session_credential: "parle_ses_seen-session", session_handle: "seen-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.seen-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-seen" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) {
       return new Response(JSON.stringify({ watermark: 9, messages: [{ seq: 9, event_id: "evt-seen", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "already read" }] }), { status: 200 });
     }
@@ -3018,7 +3084,7 @@ test("wake hint silently acks rows already surfaced by manual inbox reads", asyn
     if (u.includes("/responsive-delivery")) {
       return new Response(JSON.stringify({
         watermark: 9,
-        delivery: { last_acked_seq: 0 },
+        delivery: { cursor_scope: "session", last_acked_seq: 0 },
         messages: [{ seq: 9, event_id: "evt-seen", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "already read" }],
       }), { status: 200 });
     }
@@ -3032,7 +3098,7 @@ test("wake hint silently acks rows already surfaced by manual inbox reads", asyn
   await __testing.handleWakeHint({ sendUserMessage: async (message) => injected.push(message) }, harness.ctx, cfg);
 
   assert.equal(injected.length, 0);
-  assert.deepEqual(acked, [{ seq: 9, event_id: "evt-seen" }]);
+  assert.deepEqual(acked, [{ cursor_scope: "session", seq: 9, event_id: "evt-seen" }]);
   assert.equal(__testing.runtimeState().seenSuppressed, 1);
   assert.equal(__testing.runtimeState().lastAckedSeq, 9);
 });
@@ -3043,13 +3109,13 @@ test("wake hint acks seen and injected prefix only after successful injection", 
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-prefix", session_credential: "parle_ses_prefix-session", session_handle: "prefix-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.prefix-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-prefix" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 6, messages: [{ seq: 6, event_id: "evt-prefix-6", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "seen" }] }), { status: 200 });
     if (u.includes("/responsive-delivery/ack")) {
       order.push(`ack:${JSON.parse(String(init.body)).seq}`);
       return new Response(JSON.stringify({ last_acked_seq: 6, last_ack_event_id: "evt-prefix-6" }), { status: 200 });
     }
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 6, delivery: { last_acked_seq: 0 }, messages: [
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 6, delivery: { cursor_scope: "session", last_acked_seq: 0 }, messages: [
       { seq: 5, event_id: "evt-prefix-5", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "inject me" },
       { seq: 6, event_id: "evt-prefix-6", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "seen" },
     ] }), { status: 200 });
@@ -3076,13 +3142,13 @@ test("non-committing manual reads do not consume responsive delivery", async () 
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-peek", session_credential: "parle_ses_peek-session", session_handle: "peek-session", expires_at: "2026-07-04T00:00:00Z", address: "@p.a.peek-session" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-peek" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/inbound")) return new Response(JSON.stringify({ watermark: 9, messages: [{ seq: 9, event_id: "evt-peek", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "peeked" }] }), { status: 200 });
     if (u.includes("/responsive-delivery/ack")) {
       acked.push(JSON.parse(String(init.body)));
       return new Response(JSON.stringify({ last_acked_seq: 9, last_ack_event_id: "evt-peek" }), { status: 200 });
     }
-    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 9, delivery: { last_acked_seq: 0 }, messages: [{ seq: 9, event_id: "evt-peek", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "peeked" }] }), { status: 200 });
+    if (u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 9, delivery: { cursor_scope: "session", last_acked_seq: 0 }, messages: [{ seq: 9, event_id: "evt-peek", participant_id: "p-peer", provenance_author: "peer", provenance_kind: "participant", content: "peeked" }] }), { status: 200 });
     throw new Error("unexpected " + u);
   });
 
@@ -3093,7 +3159,7 @@ test("non-committing manual reads do not consume responsive delivery", async () 
   await __testing.handleWakeHint({ sendUserMessage: async (message) => injected.push(message) }, harness.ctx, cfg);
 
   assert.equal(injected.length, 1);
-  assert.deepEqual(acked, [{ seq: 9, event_id: "evt-peek" }]);
+  assert.deepEqual(acked, [{ cursor_scope: "session", seq: 9, event_id: "evt-peek" }]);
   assert.equal(__testing.runtimeState().seenSuppressed, undefined);
 });
 
@@ -3118,12 +3184,12 @@ test("room tool calls rebootstrap on the server action", async () => {
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_session-${sessionCreates}`, session_handle: `session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.session-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-reboot" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
     if (u.includes("/inbound")) {
       inboxCalls += 1;
       if (inboxCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
-      return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+      return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     }
     throw new Error("unexpected " + u);
   });
@@ -3147,7 +3213,7 @@ test("mid-run unpinned rebootstrap baselines the new session before the next del
       return new Response(JSON.stringify({ agent_session_id: `as-baseline-${sessionCreates}`, session_credential: `parle_ses_baseline-session-${sessionCreates}`, session_handle: `baseline-session-${sessionCreates}`, expires_at: "2026-07-04T00:00:00Z", address: `@p.a.baseline-session-${sessionCreates}` }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-baseline" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/v/agent/wake")) return new Response(": ready\n\n", { status: 200 });
     if (u.endsWith("/responsive-delivery/ack")) {
       const body = JSON.parse(init.body);
@@ -3161,7 +3227,7 @@ test("mid-run unpinned rebootstrap baselines the new session before the next del
     if (u.includes("/inbound")) {
       inboxCalls += 1;
       if (inboxCalls === 1) return new Response(JSON.stringify({ error: { code: "agent_session_expired", message: "expired", action: "rebootstrap", retryable: false, scope: "agent_session", retry_after_ms: null } }), { status: 401 });
-      return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+      return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     }
     throw new Error("unexpected " + u);
   });
@@ -3244,7 +3310,7 @@ test("wake-stream terminal errors preserve the envelope and close automatic Pi a
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-wake", session_credential: "parle_ses_wake", expires_at: "later" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-wake" }), { status: 201 });
-    if (u.includes("/projection") || u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection") || u.includes("/responsive-delivery")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.includes("/heartbeat")) return new Response(null, { status: 204 });
     if (u.endsWith("/v/agent/wake")) {
       wakeCalls += 1;
@@ -3290,7 +3356,7 @@ test("explicit Pi reads retry a terminal binding and a changed disk binding reop
       return new Response(JSON.stringify({ agent_session_id: "as-new", session_credential: "parle_ses_new", expires_at: "later" }), { status: 201 });
     }
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-new" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     throw new Error(`unexpected ${u}`);
   };
   const harness = installHarness(cwd);
@@ -3336,13 +3402,15 @@ test("profile switch publication keys off claim authority, not the alias field",
   // target session and local publication has to be non-throwing.
   const switched = await harness.call("parle_switch_profile", { profile: "target" });
   assert.equal(switched.details.switched, true);
-  assert.equal(project.claimed().length, 1);
-  assert.equal(harness.statuses.at(-1).label.includes("@p.a.main-target"), true);
+  assert.equal(project.claimed().length, 0);
+  assert.equal(harness.statuses.at(-1).label.includes("@p.a.target"), true);
 });
 
 test("replacing an active alias reports the route left behind and how to reclaim it", async () => {
   const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
   let sessionCreates = 0;
+  let claimedAlias = false;
+  let claimedGeneration = 1;
   globalThis.fetch = async (url, init) => {
     const u = String(url);
     const path = new URL(u).pathname;
@@ -3351,15 +3419,20 @@ test("replacing an active alias reports the route left behind and how to reclaim
       return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, session_credential: `parle_ses_${sessionCreates}`, expires_at: "2099-01-01T00:00:00Z", address: `@p.a.raw-${sessionCreates}` }), { status: 201 });
     }
     if (path.startsWith("/v/agent/session-aliases/")) {
-      return new Response(JSON.stringify({ alias: path.split("/").at(-1), generation: 1, current_agent_session_id: "prior" }), { status: 200 });
+      const alias = path.split("/").at(-1);
+      return new Response(JSON.stringify({ alias, alias_identity_id: ALIAS_ID, generation: claimedGeneration, current_agent_session_id: claimedAlias ? `as-${sessionCreates}` : "prior" }), { status: 200 });
     }
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
     if (path.endsWith("/claim-alias")) {
       const alias = JSON.parse(String(init.body)).alias;
-      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias, generation: 2, expires_at: "2099-01-01T00:00:00Z", address: `@p.a.${alias}` }), { status: 200 });
+      claimedAlias = true;
+      claimedGeneration += 1;
+      // SessionFacts omits alias_identity_id; mapping confirmation above binds
+      // the successful candidate to the immutable identity.
+      return new Response(JSON.stringify({ agent_session_id: `as-${sessionCreates}`, alias, generation: claimedGeneration, expires_at: "2099-01-01T00:00:00Z", address: `@p.a.${alias}` }), { status: 200 });
     }
     if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: `p-${sessionCreates}` }), { status: 201 });
-    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
     if (path.endsWith("/end")) return new Response(JSON.stringify({ ended: true }), { status: 200 });
     throw new Error(`unexpected ${u}`);
@@ -3371,8 +3444,8 @@ test("replacing an active alias reports the route left behind and how to reclaim
   const second = await harness.call("parle_session_alias", { alias: "standup" });
   assert.equal(second.details.alias, "standup");
   assert.equal(second.details.priorAlias, "workshop");
-  assert.match(second.details.warning, /left the alias workshop/);
-  assert.match(second.details.warning, /reach a retired route/);
+  assert.match(second.details.warning, /no longer holds alias workshop/);
+  assert.match(second.details.warning, /does not terminate unrelated sessions/);
   assert.equal(second.details.recovery, "parle_session_alias alias=workshop");
 });
 
@@ -3502,7 +3575,7 @@ test("a wake-delivered row injects autonomously while Pi is idle, with no host e
     const u = String(url);
     if (u.endsWith("/v/agent/sessions")) return new Response(JSON.stringify({ agent_session_id: "as-idle", session_credential: "parle_ses_idle", session_handle: "idle", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.idle" }), { status: 201 });
     if (u.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-idle" }), { status: 201 });
-    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }), { status: 200 });
+    if (u.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, delivery: { cursor_scope: "session" }, messages: [] }), { status: 200 });
     if (u.endsWith("/responsive-delivery/ack")) {
       const body = JSON.parse(String(init.body));
       acked.push([body.seq, body.event_id]);

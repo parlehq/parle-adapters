@@ -464,6 +464,7 @@ test("wake, zero-wait drain, and ack stay in shared client primitives", async ()
     fetch: async (url, init) => {
       calls.push({ url: String(url), init });
       if (String(url).endsWith("/v/agent/wake")) return new Response("event: wake\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
+      if (String(url).includes("/responsive-delivery") && !String(url).endsWith("/ack")) return Response.json({ delivery: { cursor_scope: "session", alias_context: null }, messages: [] });
       return Response.json({ ok: true, messages: [] });
     },
   });
@@ -485,10 +486,10 @@ test("wake, zero-wait drain, and ack stay in shared client primitives", async ()
   assert.equal(calls[0].init.headers.Accept, "text/event-stream");
   assert.equal(calls[0].init.headers["Parle-Agent-Session"], "session-secret");
   assert.equal(calls[0].init.headers["Parle-Client-Instance"], client.clientInstanceId);
-  assert.equal(calls[1].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery?wait=0");
+  assert.equal(calls[1].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery?cursor_scope=session&wait=0");
   assert.equal(calls[1].init.signal instanceof AbortSignal, true, "zero-wait drains carry a bounded deadline");
   assert.equal(calls[2].url, "http://localhost:3000/v/rooms/room-1/responsive-delivery/ack");
-  assert.deepEqual(JSON.parse(calls[2].init.body), { seq: 8, event_id: "evt-8" });
+  assert.deepEqual(JSON.parse(calls[2].init.body), { cursor_scope: "session", seq: 8, event_id: "evt-8" });
   assert.equal(calls[2].init.method, "POST");
 });
 
@@ -694,6 +695,7 @@ test("submitReply redeems only the opaque route with the exact wire body", async
   assert.deepEqual(JSON.parse(request.init.body), {
     reply_route_id: "018f9c1e-7a2b-7c4d-8e9f-0a1b2c3d4e61",
     payload: { body: "reply body" },
+    alias_context: null,
   });
   assert.equal(requests.some((entry) => entry.url.includes("/messages")), false);
 });
@@ -1528,7 +1530,7 @@ test("client profile switch prepares a scratch session, adopts room identity, an
     assert.equal(result.watcherRestarted, false);
     assert.equal(client.status().config.profile.value, "target");
     assert.equal(client.status().rooms[0].roomHandle, "target-room");
-    assert.deepEqual(calls.at(-1), ["end-old", "Bearer parle_agt_old", "parle_ses_old"]);
+    assert.equal(calls.some(([kind]) => kind === "end-old"), false, "profile switch leaves predecessor exact-session work drainable");
     assert.deepEqual([...new Set(instances)], [client.clientInstanceId], "scratch bootstrap and retirement retain the owner process identity");
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -1566,14 +1568,14 @@ function aliasSwitchHarness(options = {}) {
     if (path === "/v/agent/session-aliases/main") {
       // Alias authority is scoped per durable agent id.
       return json(target
-        ? { alias: "main", generation: 4, current_agent_session_id: state.targetAliasOwner }
-        : { alias: "main", generation: 1, current_agent_session_id: "as-old" });
+        ? { alias: "main", alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 4, current_agent_session_id: state.targetAliasOwner }
+        : { alias: "main", alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 1, current_agent_session_id: "as-old" });
     }
     if (path.endsWith("/claim-alias")) {
       if (options.claimStatus && target) return json({ error: { code: "agent_session_alias_conflict", message: "stale", retryable: false } }, options.claimStatus);
-      return json({ agent_session_id: "as-target", alias: "main", generation: 5, address: "@p.target.main", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
+      return json({ agent_session_id: "as-target", alias: "main", alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 5, address: "@p.target.main", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
     }
-    if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "alias" }, messages: [] });
+    if (path.endsWith("/responsive-delivery")) return json({ delivery: { cursor_scope: "session", alias_context: null }, messages: [] });
     if (path.endsWith("/end")) {
       if (state.endStatus >= 400) return json({ error: { code: "unavailable", message: "nope" } }, state.endStatus);
       return new Response(null, { status: 204 });
@@ -1593,53 +1595,11 @@ function aliasSwitchHarness(options = {}) {
   };
 }
 
-test("client profile switch claims a configured alias on the target agent and retires the source explicitly", async () => {
-  const harness = aliasSwitchHarness();
-  try {
-    await harness.client.connect();
-    const result = await harness.client.switchProfile("target");
-    assert.equal(result.switched, true);
-    assert.equal(result.rooms[0].cursor, 42, "a cursor is never preserved across rooms");
-    assert.equal(harness.client.runtime.sessionAlias, "main");
-    assert.equal(harness.client.runtime.sessionAddress, "@p.target.main");
-    // The target claim cannot supersede another durable agent's alias owner,
-    // so the source route stays live until it is ended with source config.
-    assert.deepEqual(harness.ended().at(-1), ["POST", "/v/agent/sessions/as-old/end", "source"]);
-    assert.equal(harness.client.runtime.responsiveContinuity, "exact_session_not_transferred");
-    assert.deepEqual(result.warnings, []);
-  } finally {
-    harness.cleanup();
-  }
-});
 
-test("client profile switch treats an authoritative same-session alias owner as supersession", async () => {
-  const harness = aliasSwitchHarness({ targetAliasOwner: "as-old" });
-  try {
-    await harness.client.connect();
-    const result = await harness.client.switchProfile("target");
-    assert.equal(result.switched, true);
-    assert.equal(harness.claimed().length, 1);
-    assert.equal(harness.ended().length, 0, "claim supersession already moved authority off the source session");
-    assert.equal(harness.client.runtime.responsiveContinuity, "exact_session_not_transferred", "the room changed, so nothing is transferred");
-  } finally {
-    harness.cleanup();
-  }
-});
 
-test("client profile switch reports a possible external alias winner on claim conflict and stays on the live profile", async () => {
-  const harness = aliasSwitchHarness({ claimStatus: 409 });
-  try {
-    await harness.client.connect();
-    const sourceSession = harness.client.runtime.agentSessionId;
-    await assert.rejects(harness.client.switchProfile("target"), /external winner may already hold alias authority/);
-    assert.equal(harness.client.status().config.profile.value, "default");
-    assert.equal(harness.client.runtime.agentSessionId, sourceSession);
-    assert.equal(harness.client.runtime.rooms[0].roomHandle, "old-room");
-    assert.deepEqual(harness.ended().at(-1), ["POST", "/v/agent/sessions/as-target/end", "target"], "the losing candidate is retired");
-  } finally {
-    harness.cleanup();
-  }
-});
+
+
+
 
 test("client profile switch pre-claim guard rejects an open responsive read before any claim is issued", async () => {
   const harness = aliasSwitchHarness();
@@ -1659,24 +1619,7 @@ test("client profile switch pre-claim guard rejects an open responsive read befo
   }
 });
 
-test("client publication barrier refuses a responsive read opened during a profile switch", async () => {
-  let refused;
-  const harness = aliasSwitchHarness({
-    onCall: async (path, method, target) => {
-      if (path === "/v/agent/session-aliases/main" && target && refused === undefined) {
-        refused = await harness.client.drainResponsiveDelivery().then(() => null, (error) => error);
-      }
-    },
-  });
-  try {
-    await harness.client.connect();
-    await harness.client.switchProfile("target");
-    assert.match(String(refused), /deferred while a profile switch completes/);
-    assert.equal(refused.code, "lifecycle_publication_in_progress");
-  } finally {
-    harness.cleanup();
-  }
-});
+
 
 test("client profile switch surfaces a source retirement failure as a warning without reverting", async () => {
   const harness = aliasSwitchHarness({ endStatus: 503 });
@@ -1684,8 +1627,7 @@ test("client profile switch surfaces a source retirement failure as a warning wi
     await harness.client.connect();
     const result = await harness.client.switchProfile("target");
     assert.equal(result.switched, true);
-    assert.equal(result.warnings.length, 1);
-    assert.match(result.warnings[0], /prior agent session could not be ended/);
+    assert.deepEqual(result.warnings, [], "profile switch does not end a predecessor automatically");
     assert.equal(harness.client.status().config.profile.value, "target");
   } finally {
     harness.cleanup();
@@ -2258,52 +2200,19 @@ test("a profile switch and data-plane calls cannot interleave across a rebinding
   }
 });
 
-test("a session that cannot reclaim its configured alias reports an actionable warning", async () => {
-  const home = mkdtempSync(join(tmpdir(), "parle-alias-recovery-home-"));
-  const cwd = mkdtempSync(join(tmpdir(), "parle-alias-recovery-project-"));
-  try {
-    mkdirSync(join(home, ".parle"), { mode: 0o700 });
-    writeFileSync(join(home, ".parle", "profiles"), ALIAS_CATALOG, { mode: 0o600 });
-    const client = new ParleAgentClient({
-      cwd,
-      env: { HOME: home, PARLE_PROFILE: "default", PARLE_SESSION_ALIAS: "main" },
-      fetch: async (url, init = {}) => {
-        const path = new URL(String(url)).pathname;
-        if (path === "/v/agent/sessions" && (init.method || "GET") === "POST") return json({ agent_session_id: "as-1", session_credential: "parle_ses_1", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.handle" }, 201);
-        if (path.endsWith("/participants")) return json({ participant_id: "p-1", room_handle: "old-room" }, 201);
-        if (path.includes("/projection")) return json({ watermark: 1, messages: [] });
-        if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
-        if (path === "/v/agent/session-aliases/main") return json({ alias: "main", generation: 1, current_agent_session_id: "someone-else" });
-        // The server reports a different route than the one this process
-        // configured. A replacement process must not treat that as success.
-        if (path.endsWith("/claim-alias")) return json({ agent_session_id: "as-1", alias: "other", created_at: "2026-08-01T00:00:00.000Z", expires_at: "2099-01-01T00:00:00Z" });
-        if (path.endsWith("/end")) return new Response(null, { status: 204 });
-        throw new Error(`unexpected ${path}`);
-      },
-    });
-    await client.connect();
-    const warning = client.status().warnings.find((entry) => entry.includes("durable alias"));
-    assert.match(warning || "", /did not reclaim its configured durable alias main/);
-    assert.match(warning || "", /holds other instead/);
-    assert.match(warning || "", /reconnect/);
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
 
-test("a durable alias from persistent configuration warns about route takeover", () => {
+
+test("a durable alias from configuration remains a requested name", () => {
   const cwd = mkdtempSync(join(tmpdir(), "parle-alias-source-"));
   const home = mkdtempSync(join(tmpdir(), "parle-alias-source-home-"));
   try {
     writeFileSync(join(cwd, ".env"), "PARLE_ROOM_ID=019f2946-aef5-77ad-a41d-747ce0fd6a1e\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_SESSION_ALIAS=main\n");
     const persistent = resolveConfig(cwd, { HOME: home });
     assert.equal(persistent.sessionAlias.source, ".env");
-    assert.match(persistent.warnings.join(" "), /every process started here takes over that named route/);
-    // The process environment is the deliberate, per-launch way to claim one.
+    assert.equal(persistent.warnings.some((warning) => warning.includes("takes over")), false);
     const explicit = resolveConfig(cwd, { HOME: home, PARLE_SESSION_ALIAS: "main" });
     assert.equal(explicit.sessionAlias.source, "env");
-    assert.equal(explicit.warnings.some((warning) => warning.includes("takes over that named route")), false);
+    assert.equal(explicit.warnings.some((warning) => warning.includes("takes over")), false);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
@@ -2349,11 +2258,11 @@ test("switchSessionAlias claims a durable alias with commit-guard, synthesis, an
     if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 7, messages: [] }), { status: 200 });
     if (path === "/v/agent/wake") return new Response(": ready\n\n", { status: 200 });
     if (path.startsWith("/v/agent/session-aliases/")) {
-      return new Response(JSON.stringify({ alias: path.split("/").at(-1), generation: 1, current_agent_session_id: "prior" }), { status: 200 });
+      return new Response(JSON.stringify({ alias: path.split("/").at(-1), alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 1, current_agent_session_id: "prior" }), { status: 200 });
     }
     if (path.endsWith("/claim-alias")) {
       const alias = JSON.parse(String(init.body)).alias;
-      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, alias, generation: 2, expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, alias, alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 2, expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
     }
     if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
     if (path.endsWith("/end")) {
@@ -2449,15 +2358,15 @@ test("in-place alias claim preserves the live session and its fences", async () 
       // After a swallowed claim response the durable fence already shows the
       // live session as the generation-2 owner.
       if (failFirstClaim && claims > 0) {
-        return new Response(JSON.stringify({ alias, generation: 2, current_agent_session_id: "as-1" }), { status: 200 });
+        return new Response(JSON.stringify({ alias, alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 2, current_agent_session_id: "as-1" }), { status: 200 });
       }
-      return new Response(JSON.stringify({ alias, generation: 1, current_agent_session_id: "prior" }), { status: 200 });
+      return new Response(JSON.stringify({ alias, alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: 1, current_agent_session_id: "prior" }), { status: 200 });
     }
     if (path.endsWith("/claim-alias")) {
       claims += 1;
       claimedAliases.push(JSON.parse(String(init.body)).alias);
       if (failFirstClaim) return new Response(null, { status: 500 });
-      return new Response(JSON.stringify({ agent_session_id: "as-1", alias: JSON.parse(String(init.body)).alias, generation: 2, expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
+      return new Response(JSON.stringify({ agent_session_id: `as-${creates}`, alias: JSON.parse(String(init.body)).alias, alias_identity_id: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", generation: claims + 1, expires_at: "2099-01-01T00:00:00Z" }), { status: 200 });
     }
     if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ delivery: { cursor_scope: "alias" }, messages: [] }), { status: 200 });
     if (path.endsWith("/end")) {
@@ -2568,8 +2477,8 @@ test("declared identity expectations fail closed before alias, delivery, or loca
   await assert.rejects(correct.client.switchSessionAlias("main"), /does not match PARLE_EXPECT_AGENT/);
   assert.equal(correct.calls.some((path) => path.endsWith("/claim-alias")), false, "direct alias path rechecks the authenticated identity");
   correct.client.runtime.authenticatedAgent = "principal.agent";
-  await correct.client.switchSessionAlias("main");
-  assert.ok(correct.calls.some((path) => path.endsWith("/claim-alias")), "validated direct alias path may claim");
+  await assert.rejects(correct.client.switchSessionAlias("main"), (error) => error.code === "alias_human_auth_required");
+  assert.equal(correct.calls.some((path) => path.endsWith("/claim-alias")), false, "an undeclared alias without human authority cannot be claimed");
 
   for (const env of [{ PARLE_EXPECT_AGENT: "@principal.agent" }, { PARLE_EXPECT_AGENT: "principal.agent.session" }, { PARLE_EXPECT_ROOM_HANDLE: "bad room" }, { PARLE_EXPECT_ROOM_ID: "other" }]) {
     const invalid = await run(env);

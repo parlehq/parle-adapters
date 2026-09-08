@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.75 (unreleased)
+
+- Use the pending alias-transfer wire with explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Coordinated protocol activation and consumer validation are required before release.
+
 ## 0.7.74
 
 - Carry shared fail-closed declared identity expectations before alias and responsive-delivery work.

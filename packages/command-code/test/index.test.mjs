@@ -9,6 +9,15 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url);
 const source = await jiti.import(pathToFileURL(resolve("src/index.ts")).href);
 
+const ALIAS_FENCE = {
+  sessionRevision: 1,
+  cursorScope: "alias",
+  roomId: "room-1",
+  sessionAlias: "durable",
+  aliasContext: { aliasIdentityId: "019f2946-aef5-77ad-a41d-747ce0fd6a1e", aliasGeneration: 3 },
+  agentSessionId: "session-1",
+};
+
 function isolatedEnv(overrides = {}) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("PARLE_")) delete env[key];
@@ -133,11 +142,30 @@ test("baseline skips replaced exact-session backlog but preserves alias delivery
   const delivery = new source.NativeResponsiveDelivery(cmd, { runtime: {}, clientInstanceId: "test-client" }, () => {});
   delivery.baselineActive = true;
   const sessionOutcome = await delivery.handleDelivery({ roomId: "room-1", cursorScope: "session", message: { seq: 1, event_id: "session-1", content: "old" } });
-  const aliasOutcome = await delivery.handleDelivery({ roomId: "room-1", cursorScope: "alias", message: { seq: 2, event_id: "alias-1", content: "durable" } });
+  const aliasOutcome = await delivery.handleDelivery({ roomId: "room-1", cursorScope: "alias", sourceFence: ALIAS_FENCE, message: { seq: 2, event_id: "alias-1", content: "durable" } });
   assert.equal(sessionOutcome, "intentionally_skipped");
   assert.equal(aliasOutcome, "deferred");
   assert.equal(writes.length, 1);
   assert.equal(delivery.status().baselineSkipped, 1);
+});
+
+test("Command Code deferred ACK retains the alias read fence", async () => {
+  const cmd = {
+    cwd: "/tmp/parle-command-code-alias-fence",
+    session: { appendCustomMessageEntry() { return { entryId: "alias", message: { role: "user", content: [] } }; } },
+  };
+  const delivery = new source.NativeResponsiveDelivery(cmd, { runtime: {}, clientInstanceId: "test-client" }, () => {});
+  let acknowledged;
+  delivery.controller.completeDeferred = async (_roomId, _message, _outcome, fence) => {
+    acknowledged = fence;
+    return true;
+  };
+
+  await delivery.handleDelivery({ roomId: "room-1", cursorScope: "alias", sourceFence: ALIAS_FENCE, message: { seq: 2, event_id: "alias-2", content: "durable" } });
+  delivery.foldPending({ messages: [] });
+  await delivery.completeFolded();
+
+  assert.deepEqual(acknowledged, ALIAS_FENCE);
 });
 
 test("delivery retry does not reopen the completed baseline window", async () => {

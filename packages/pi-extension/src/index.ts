@@ -6,7 +6,7 @@ import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INB
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.66";
+const PI_EXTENSION_VERSION = "0.7.67";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -141,6 +141,7 @@ type RuntimeState = PiWatchRuntime & {
   sessionHandle?: string;
   sessionAddress?: string | null;
   sessionAlias?: string;
+  aliasIdentityId?: string;
   sessionGeneration?: number;
   sessionRevision?: number;
   createdAt?: string;
@@ -154,6 +155,8 @@ type RuntimeState = PiWatchRuntime & {
   responsiveContinuity?: "alias" | "exact_session_not_transferred";
   rolloverFailures?: number;
   rolloverLatched?: boolean;
+  predecessorDrainingCount?: number;
+  predecessorDrainingIds?: string[];
 };
 
 type ParleOnboardParams = OnboardParams;
@@ -206,6 +209,7 @@ type ParleInboxParams = {
 
 type ParleSessionAliasParams = {
   alias: string;
+  agentId?: string;
 };
 
 type ParleSwitchProfileParams = {
@@ -374,7 +378,9 @@ type DeliveryFence = {
   cursorScope?: ResponsiveCursorScope;
   roomId?: string;
   sessionAlias?: string;
+  aliasContext?: { aliasIdentityId: string; aliasGeneration: number };
   agentSessionId?: string;
+  sourceId?: string;
 };
 type PendingResponsiveMessage = { key: string; message: any; responsePreamble?: string; fence: DeliveryFence; injected?: boolean; skip?: boolean };
 const pendingResponsiveMessages: PendingResponsiveMessage[] = [];
@@ -453,6 +459,7 @@ function agentClient(ctx: any, cfg: ParleConfig): ParleAgentClient {
       if (path && cfg.principalHandle?.value && cfg.agentHandle?.value) return `@${cfg.principalHandle.value}.${cfg.agentHandle.value}.${path}`;
       return serverAddress;
     },
+    humanAliasTransport: accountClient(ctx?.cwd || process.cwd()).ownedAliasCreationTransport(cfg.apiBase.value),
   });
   clientBinding = binding;
   unsubscribeCommitGuard = client.onBeforeSessionCommit((plan) => guardPiCommit(plan));
@@ -490,20 +497,11 @@ function detachClient() {
 // the client itself.
 function guardPiCommit(plan: SessionCommitPlan) {
   if (lifecycleEnded) throw new Error("Parle Pi lifecycle has ended");
-  if (plan.reason === "rebootstrap") {
-    for (let index = pendingResponsiveMessages.length - 1; index >= 0; index -= 1) {
-      const item = pendingResponsiveMessages[index];
-      if (item.fence.cursorScope === "alias" || item.fence.sessionRevision !== (plan.previous.sessionRevision || 0) || item.fence.agentSessionId !== plan.previous.agentSessionId) continue;
-      pendingResponsiveMessages.splice(index, 1);
-      if (item.fence.roomId) deliveryController?.abandonDeferred(item.fence.roomId, item.message);
-    }
-    updatePendingResponsiveState();
-  }
   const work = pendingResponsiveMessages.map((item) => item.fence);
   if (plan.reason === "profile_switch" && (work.length > 0 || responsiveFlushRunning)) {
     throw new Error("Parle profile switch is deferred while responsive delivery is pending, injecting, or being read");
   }
-  if (work.length === 0 && (!responsiveFlushRunning || plan.reason === "rebootstrap")) return;
+  if (work.length === 0 || plan.reason === "rollover") return;
   const aliasTransfers = Boolean(plan.previous.sessionAlias
     && plan.candidate.sessionAlias === plan.previous.sessionAlias
     && plan.candidate.responsiveContinuity === "alias"
@@ -524,6 +522,7 @@ function sessionView(): RuntimeState {
     sessionHandle: c?.sessionHandle || undefined,
     sessionAddress: c ? c.sessionAddress : undefined,
     sessionAlias: c?.sessionAlias,
+    aliasIdentityId: c?.aliasIdentityId,
     sessionGeneration: c?.sessionGeneration,
     sessionRevision: c?.sessionRevision,
     createdAt: c?.createdAt || undefined,
@@ -537,6 +536,8 @@ function sessionView(): RuntimeState {
     responsiveContinuity: c?.responsiveContinuity,
     rolloverFailures: c?.rolloverFailures,
     rolloverLatched: c?.rolloverLatched,
+    predecessorDrainingCount: c?.predecessorDrainingCount,
+    predecessorDrainingIds: c?.predecessorDrainingIds,
     lastError: runtime.lastError ?? (c?.lastError || c?.lastBootstrapError || undefined),
     lastHttpStatus: runtime.lastHttpStatus ?? c?.lastHttpStatus,
     lastAckedSeq: room?.lastAckedSeq ?? runtime.lastAckedSeq,
@@ -988,7 +989,7 @@ function piDeliveryHandler(pi: any, ctx: any, cfg: ParleConfig, input: DeliveryH
     setStatus(ctx, cfg);
     return "intentionally_skipped";
   }
-  if (baselineNeeded && input.cursorScope !== "alias") {
+  if (baselineNeeded && input.cursorScope !== "alias" && input.sourceFence?.agentSessionId === client?.runtime.agentSessionId) {
     runtime.baselineSkipped = (runtime.baselineSkipped || 0) + 1;
     return "intentionally_skipped";
   }
@@ -1043,6 +1044,7 @@ function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: 
       roomId: input.roomId,
       sessionAlias: view.sessionAlias,
       agentSessionId: view.agentSessionId,
+      sourceId: view.agentSessionId,
     },
     ...(skip ? { skip: true } : {}),
   });
@@ -1079,7 +1081,11 @@ function injectionFence(): DeliveryFence {
     cursorScope: view.responsiveCursorScope,
     roomId: view.roomId,
     sessionAlias: view.sessionAlias,
+    ...(view.aliasIdentityId && typeof view.sessionGeneration === "number"
+      ? { aliasContext: { aliasIdentityId: view.aliasIdentityId, aliasGeneration: view.sessionGeneration } }
+      : {}),
     agentSessionId: view.agentSessionId,
+    sourceId: view.agentSessionId,
   };
 }
 
@@ -1203,13 +1209,13 @@ async function runSavedStart(pi: any, ctx: any, start: SavedStart, signal?: Abor
   };
 }
 
-async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal) {
+async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal, toolAgentId?: string) {
   assertLifecycleActive();
   const live = agentClient(ctx, cfg);
   const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
   const recovering = await prepareRateLimitRecovery(ctx);
   try {
-    const details = await live.switchSessionAlias(alias, signal);
+    const details = await live.switchSessionAlias(alias, { agentId: toolAgentId || cfg.agentId?.value }, signal);
     liveConfig = cfg;
     if (!recovering) clearAutomaticFailureLatch();
     runtime.watcherState = "off";
@@ -1225,7 +1231,7 @@ async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: strin
       ...details,
       ...(details.priorAlias && details.warning
         ? {
-            warning: `This session left the alias ${details.priorAlias}. Peers still addressing @...${details.priorAlias} reach a retired route; tell them the new address, or run parle_session_alias with ${details.priorAlias} to reclaim it.`,
+            warning: `This Pi session no longer holds alias ${details.priorAlias}. Server state determines that alias's availability; this action does not terminate unrelated sessions.`,
             recovery: `parle_session_alias alias=${details.priorAlias}`,
           }
         : {}),
@@ -1336,15 +1342,8 @@ function promptFitsResponsiveBatch(messages: any[], responsePreamble?: string): 
 }
 
 function assertDeliveryFenceCurrent(fence: DeliveryFence) {
-  const view = sessionView();
-  const configured = (client?.runtime.rooms || []).some((room) => room.roomId === fence.roomId);
-  if (!configured) throw new Error("Parle responsive delivery belongs to a prior room binding");
-  if (fence.cursorScope === "alias") {
-    if (!fence.sessionAlias || fence.sessionAlias !== view.sessionAlias) throw new Error("Parle responsive delivery belongs to a prior alias binding");
-    return;
-  }
-  if (fence.sessionRevision !== (view.sessionRevision || 0) || fence.agentSessionId !== view.agentSessionId) {
-    throw new Error("Parle exact-session responsive delivery belongs to a prior session revision");
+  if (!(client as any)?.responsiveDeliveryFenceCurrent?.(fence)) {
+    throw new Error("Parle responsive delivery belongs to an expired or prior session binding");
   }
 }
 
@@ -1361,9 +1360,17 @@ async function completePendingResponsive(pi: any, ctx: any, cfg: ParleConfig, it
     roomId,
     { seq: item.message.seq, event_id: item.message.event_id },
     item.skip ? "intentionally_skipped" : "handled",
-    item.fence.cursorScope === "alias" ? undefined : {
+    item.fence.cursorScope === "alias" ? {
       sessionRevision: item.fence.sessionRevision,
       agentSessionId: item.fence.agentSessionId || "",
+      sourceId: item.fence.sourceId,
+      cursorScope: "alias",
+      aliasContext: item.fence.aliasContext,
+    } : {
+      sessionRevision: item.fence.sessionRevision,
+      agentSessionId: item.fence.agentSessionId || "",
+      sourceId: item.fence.sourceId,
+      cursorScope: "session",
     },
   );
   if (!acked) {
@@ -1546,7 +1553,7 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
       const first = pendingResponsiveMessages[0];
       const batch: PendingResponsiveMessage[] = [];
       for (const item of pendingResponsiveMessages) {
-        if (item.responsePreamble !== first.responsePreamble || item.fence.roomId !== first.fence.roomId) break;
+        if (item.responsePreamble !== first.responsePreamble || item.fence.roomId !== first.fence.roomId || item.fence.sourceId !== first.fence.sourceId) break;
         const candidate = [...batch.filter((entry) => !entry.skip).map((entry) => entry.message), ...(item.skip ? [] : [item.message])];
         if (batch.length > 0 && candidate.length > 1 && !promptFitsResponsiveBatch(candidate, first.responsePreamble)) break;
         batch.push(item);
@@ -2050,6 +2057,11 @@ async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
   watcherLoopRunning = false;
   if (client) {
     try {
+      const shutdownWarning = client.shutdownWarnings().at(0);
+      if (shutdownWarning) {
+        runtime.lastError = shutdownWarning;
+        try { ctx.ui?.notify?.(shutdownWarning, "warning"); } catch {}
+      }
       // endSession retires the live agent session with a bounded timeout and
       // drops the client's runtime snapshot.
       await client.endSession();
@@ -2294,14 +2306,15 @@ export default function parleExtension(pi: any) {
   pi.registerTool({
     name: "parle_session_alias",
     label: "Parle Session Alias",
-    description: "Move this live Pi session to a durable Parle session alias without writing persistent config.",
+    description: "Explicitly assume a durable alias for this live Pi session without writing persistent config. If the alias is absent, available human owner sign-in can ensure it then this session claims it; no extra confirmation is needed.",
     parameters: Type.Object({
       alias: Type.String({ description: "Alias for this live session, e.g. parle-landing. Lowercase letters, digits, and hyphens only." }),
+      agentId: Type.Optional(Type.String({ description: "Exact owned durable-agent UUID when PARLE_AGENT_ID is not configured. Required only if this explicit assumption must create an absent alias." })),
     }),
     async execute(_id, params: ParleSessionAliasParams, signal, _update, ctx) {
       lastCtx = ctx;
       const cfg = configForLiveRuntime(resolveConfig(ctx.cwd || process.cwd()));
-      const details = await useSessionAlias(pi, ctx, cfg, params.alias, signal);
+      const details = await useSessionAlias(pi, ctx, cfg, params.alias, signal, params.agentId);
       return formatResult(details);
     },
   });

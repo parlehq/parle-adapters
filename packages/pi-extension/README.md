@@ -136,6 +136,14 @@ specific coordinator or gate process, and set it only in that process's launch
 environment. For routine Pi sessions, leave it unset and decide inside the session
 whether a named route is needed.
 
+`parle_session_alias` is an explicit user assumption. It first inspects the alias
+with the active agent credential. If it is absent, Pi uses only the local
+human-session custody path to ensure it, then claims it with the live agent
+session. Set exact `PARLE_AGENT_ID` or pass the tool's exact owned `agentId` for
+that absent-alias step. If no human session is available, it stops for owner
+sign-in. It never creates an alias at startup and does not ask for a second
+confirmation after the explicit assumption.
+
 ## Tools
 
 The extension registers these Pi tools:
@@ -162,6 +170,7 @@ The extension registers these Pi tools:
 - `parle_request` - make guarded allowlisted unauthenticated or agent-token API requests. Generic human-session requests are intentionally unsupported.
 - `parle_read` - read projection rows from the current room.
 - `parle_inbox` - read the self-excluding inbound attention surface.
+- `parle_session_alias` - explicitly assume an existing durable alias or, with available human sign-in and an exact owned agent ID, ensure an absent alias before claiming it. This does not create aliases at startup.
 - `parle_room_details` - read stable room facts and the seated principal and agent roster without live-session metadata.
 - `parle_affordances` - list advisory room actions.
 - `parle_send` - send a raw Parle-native room message or deliberately start a new addressed interaction.
@@ -217,7 +226,7 @@ Manage starts without hand-editing the catalog:
 
 Bare `/parle` lists available starts and these canonical command forms. `/parle start save` asks for the optional profile, alias, and next instruction. The catalog is credential-free but still uses owner-only directory and file custody. `PARLE_PROFILES_PATH` relocates saved starts with the rest of the Parle account state.
 
-The extension also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery?wait=0` after wake hints, stream establishment, reconnects, and fallback deadlines. Pi injects each ordered batch immediately when idle or admits it through Pi's supported `steer` queue while busy, then acknowledges it to Parle. `parle_status` exposes body-free fallback, fetch, host admission, injection, and acknowledgement evidence without treating an empty responsive fetch as proof that no message exists.
+The extension also registers `/parle-watch` to check, start, or stop the responsive delivery watcher. The watcher uses the `/v/agent/wake` SSE stream and fetches `responsive-delivery` with an explicit `cursor_scope=session`; after an explicit held alias assumption it independently fetches `cursor_scope=alias` with that alias's immutable identity and generation. During a live rollover it also drains each retained predecessor's exact-session source with the original in-memory credential and fence, never the successor alias or credential. Pi injects each ordered batch immediately when idle or admits it through Pi's supported `steer` queue while busy, then acknowledges it to Parle with the captured cursor context. `parle_status` exposes the safe predecessor draining count and IDs, never credentials. Shutdown warns when memory-only predecessor work remains. Empty responsive fetches never prove that a live predecessor is permanently quiescent.
 
 After room entry succeeds, the footer uses the canonical handle returned by Parle, for example `#galexc-kyleops ✓ @principal.agent.session`, instead of the generic `parle` label. A connected handleless room uses an honest short-ID fallback such as `#room-019f7b46`; setup and pre-connection states retain the explicit Parle label.
 

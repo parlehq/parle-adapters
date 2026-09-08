@@ -9,13 +9,13 @@ import { INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDA
 import { ClaudeMonitorWake } from "./claude-monitor-wake.js";
 import { CodexQueueWake } from "./codex-host.js";
 import { HookDeliveryBridge, type HostIdleWake } from "./hook-delivery-bridge.js";
-import { registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
-export { hostSessionIdFromMeta, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type IdleWakeState, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+import { aliasAssumptionCapability, registerParleTools, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
+export { aliasAssumptionCapability, hostSessionIdFromMeta, registerParleTools, type AliasAssumptionCapability, type ConfigCwdSource, type DegradedMcpBoot, type HookDeliveryBridgeLike, type IdleWakeState, type McpHostCapabilities, type ParleAccountClientLike, type ParleMcpClientLike, type RegisterParleTool } from "./tool-runtime.js";
 export { CODEX_QUEUE_WAKE_TRIGGER, CodexQueueWake, MIN_CODEX_QUEUE_VERSION, resolveCodexHostExecutable } from "./codex-host.js";
 export { CLAUDE_MONITOR_WAKE_FRAME, ClaudeMonitorWake } from "./claude-monitor-wake.js";
 
 export const MCP_CLIENT_NAME = "@parlehq/mcp-server";
-export const MCP_CLIENT_VERSION = "0.7.74";
+export const MCP_CLIENT_VERSION = "0.7.75";
 export const MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 
 export function resolveIntegrationMetadata(env: Record<string, string | undefined> = process.env): Pick<ClientOptions, "integrationName" | "integrationVersion"> {
@@ -122,7 +122,14 @@ export async function runStdio() {
     : scheduleHostParentCheck(hostParentPid, () => process.exit(0));
   const createRuntime = () => {
     const clientEnv = hookBridgeEnabled ? { ...process.env, PARLE_UNREAD_POLL_INTERVAL_SECONDS: "0" } : process.env;
-    const client = createMcpAgentClient({ cwd: configCwd.cwd, env: clientEnv, publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION } });
+    const accountClient = new ParleAccountClient({ cwd: configCwd.cwd, env: clientEnv });
+    const aliasAssumption = aliasAssumptionCapability(accountClient, configCwd.cwd, clientEnv);
+    const client = Object.assign(createMcpAgentClient({
+      cwd: configCwd.cwd,
+      env: clientEnv,
+      ...(aliasAssumption ? { humanAliasTransport: aliasAssumption.humanAliasTransport } : {}),
+      publishRuntime: { adapterName: MCP_CLIENT_NAME, adapterVersion: MCP_CLIENT_VERSION },
+    }), aliasAssumption ? { aliasAssumptionAgentId: aliasAssumption.agentId } : {});
     if (hookBridgeEnabled) {
       client.switchProfile = async () => {
         throw new Error("Live Parle profile switching is unavailable while the hook bridge owns responsive delivery. Restart the host with the target PARLE_PROFILE so the MCP session, wake stream, queue, and hook binding change atomically.");
@@ -147,7 +154,7 @@ export async function runStdio() {
       configCwdSource: configCwd.source,
       ...(deliveryBridge ? { responsiveDeliveryBridge: deliveryBridge.status() } : {}),
     });
-    return { client, accountClient: new ParleAccountClient({ cwd: configCwd.cwd }), deliveryBridge };
+    return { client, accountClient, deliveryBridge };
   };
   let activated = false;
   const activateRuntime = (runtime: ReturnType<typeof createRuntime>) => {

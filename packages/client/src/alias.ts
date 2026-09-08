@@ -10,8 +10,10 @@ import { ParleApiError, isValidSessionAlias, redactString } from "./protocol.js"
 
 export const SESSION_INVENTORY_MAX_PAGES = 100;
 export const CLAIM_RECOVERY_ATTEMPTS = 3;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export type AliasFacts = { alias: string; generation: number; currentAgentSessionId?: string };
+export type AliasContext = { aliasIdentityId: string; aliasGeneration: number };
+export type AliasFacts = { alias: string; generation: number; aliasIdentityId?: string; currentAgentSessionId?: string };
 
 // Injected transport so this module stays free of any client's request layer,
 // credential handling, or runtime state.
@@ -94,10 +96,14 @@ export class AliasClaimOutcomeUnknownError extends ParleApiError {
 export async function ownAliasFacts(transport: AliasTransport, alias: string, signal?: AbortSignal): Promise<AliasFacts> {
   const facts = await transport.request(`/v/agent/session-aliases/${encodeURIComponent(alias)}`, { signal, retry: true });
   const current = facts?.current_agent_session_id;
-  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0 || (current !== null && current !== undefined && typeof current !== "string")) {
+  const identity = facts?.alias_identity_id;
+  if (facts?.alias !== alias || !Number.isInteger(facts?.generation) || facts.generation < 0
+    || (identity !== null && identity !== undefined && (typeof identity !== "string" || !UUID_RE.test(identity)))
+    || ((identity === null || identity === undefined) && facts.generation !== 0)
+    || (current !== null && current !== undefined && typeof current !== "string")) {
     throw new ParleApiError("Parle session alias lookup returned invalid facts", { code: "invalid_response", action: "fix_client", scope: "server" });
   }
-  return { alias, generation: facts.generation, ...(typeof current === "string" ? { currentAgentSessionId: current } : {}) };
+  return { alias, generation: facts.generation, ...(typeof identity === "string" ? { aliasIdentityId: identity } : {}), ...(typeof current === "string" ? { currentAgentSessionId: current } : {}) };
 }
 
 export async function findInventorySession(transport: AliasTransport, predicate: (item: any) => boolean, signal?: AbortSignal): Promise<any | undefined> {
@@ -127,14 +133,39 @@ export async function claimAliasWithRecovery(
   alias: string,
   expectedGeneration: number,
   signal?: AbortSignal,
+  expectedAliasIdentityId?: string,
 ): Promise<any> {
   const path = `/v/agent/sessions/${encodeURIComponent(candidate.agentSessionId)}/claim-alias`;
   const body = { alias, expected_generation: expectedGeneration };
   let lastError: unknown;
   for (let attempt = 1; attempt <= CLAIM_RECOVERY_ATTEMPTS; attempt += 1) {
     try {
-      return await transport.request(path, { method: "POST", body, sessionCredential: candidate.sessionHandle, signal, rawResponse: true, retry: false });
+      const claimed = await transport.request(path, { method: "POST", body, sessionCredential: candidate.sessionHandle, signal, rawResponse: true, retry: false });
+      // Core SessionFacts does not carry alias_identity_id. Confirm the exact
+      // candidate against the mapping; never substitute a newer fence.
+      if (claimed?.alias_identity_id === undefined) {
+        const facts = await ownAliasFacts(transport, alias, signal);
+        if (!facts.aliasIdentityId || facts.currentAgentSessionId !== candidate.agentSessionId
+          || facts.generation !== expectedGeneration + 1 || (expectedAliasIdentityId && facts.aliasIdentityId !== expectedAliasIdentityId)) {
+          throw new ParleApiError("Claim mapping no longer confirms this exact candidate", { code: "alias_claim_identity_changed", action: "stop", scope: "agent_session", retryable: false });
+        }
+        claimed.alias_identity_id = facts.aliasIdentityId;
+      }
+      if (claimed?.agent_session_id !== candidate.agentSessionId || claimed?.alias !== alias || typeof claimed?.alias_identity_id !== "string" || !UUID_RE.test(claimed.alias_identity_id)
+        || !Number.isInteger(claimed?.generation) || claimed.generation !== expectedGeneration + 1) {
+        throw new ParleApiError("Parle alias claim response did not confirm the exact immutable identity and generation", {
+          code: "invalid_response", action: "fix_client", scope: "server", retryable: false,
+        });
+      }
+      if (expectedAliasIdentityId && claimed.alias_identity_id !== expectedAliasIdentityId) {
+        throw new ParleApiError("Parle alias claim response changed immutable alias identity", {
+          code: "alias_claim_identity_changed", action: "stop", scope: "agent_session", retryable: false,
+        });
+      }
+      return claimed;
     } catch (error: any) {
+      // A bad success body is a wire incompatibility, not a lost response.
+      if (error instanceof ParleApiError && ["invalid_response", "alias_claim_identity_changed"].includes(error.code || "")) throw error;
       // Status-based, not instanceof-based: every adapter transport carries a
       // status, and a claim conflict must stay terminal no matter which error
       // shape a host constructs.
@@ -149,6 +180,11 @@ export async function claimAliasWithRecovery(
       } catch {
         // Alias lookup failure does not broaden the exact replay budget.
       }
+      if (expectedAliasIdentityId && facts?.aliasIdentityId && facts.aliasIdentityId !== expectedAliasIdentityId) {
+        throw new ParleApiError("Parle alias identity changed while confirming this exact claim", {
+          code: "alias_claim_identity_changed", action: "stop", scope: "agent_session", retryable: false,
+        });
+      }
       if (facts?.currentAgentSessionId === candidate.agentSessionId && facts.generation === expectedGeneration + 1) {
         const confirmedGeneration = facts.generation;
         let committed: any;
@@ -162,8 +198,8 @@ export async function claimAliasWithRecovery(
           });
         }
         if (committed) return committed;
-        throw new ParleApiError("Parle alias claim committed but the candidate session is no longer live; start a fresh preparation cycle", {
-          code: "alias_claim_committed_session_unavailable", action: "rebootstrap", scope: "agent_session", retryable: false,
+        throw new ParleApiError("Parle alias claim committed but its exact candidate is no longer live; explicit resolution is required", {
+          code: "alias_claim_committed_session_unavailable", action: "stop", scope: "agent_session", retryable: false,
         });
       }
       if (signal?.aborted) break;

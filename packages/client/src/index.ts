@@ -5,7 +5,8 @@ import { RUNTIME_SCHEMA_VERSION, processStartedAtIso, pruneRuntimeFiles, removeR
 import { assertClientInstanceId, assertClientName, assertClientVersion, processClientInstanceId } from "./process-instance.js";
 import { parseErrorEnvelope, type ErrorAction, type ErrorScope } from "./error-envelope.js";
 import { DEFAULT_VERSION, ParleApiError, isParleCredential, isValidSessionAlias, parleApiErrorFields, redactString } from "./protocol.js";
-import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasFacts, type AliasTransport } from "./alias.js";
+import { AliasClaimOutcomeUnknownError, claimAliasWithRecovery as claimAliasShared, disableOwnAliasOfflineDelivery as disableOwnAliasOfflineDeliveryShared, disableOwnAliasRoomOfflineDelivery as disableOwnAliasRoomOfflineDeliveryShared, getOwnAliasOfflineDelivery as getOwnAliasOfflineDeliveryShared, getOwnAliasRoomOfflineDelivery as getOwnAliasRoomOfflineDeliveryShared, ownAliasFacts as ownAliasFactsShared, type AliasContext, type AliasFacts, type AliasTransport } from "./alias.js";
+import { aliasLifecycleStatePath, readAliasLifecycleState, recordAliasAssumption, transitionAliasState, type AliasLifecycleState } from "./alias-lifecycle-state.js";
 import { ProfileConfigError, ProfileDeletionError, catalogGitExposureWarning, deleteProfile as deleteProfileFromCatalog, loadProfile, profileCatalogHasProfile, resolveProfileCatalogPath, type CredentialProfile, type DeleteProfileParams } from "./profiles.js";
 import { FENCE_SUFFIX, assertSafeBase, compactServerWrappedContent, truncateText } from "./helpers.js";
 import { isOpaqueReplyRouteId } from "./reply.js";
@@ -25,6 +26,7 @@ export * from "./process-instance.js";
 export * from "./delivery.js";
 export * from "./known-address-registry.js";
 export * from "./alias.js";
+export * from "./alias-lifecycle-state.js";
 export * from "./helpers.js";
 export * from "./reply.js";
 export * from "./launches.js";
@@ -48,6 +50,7 @@ export const MIN_READ_LIMIT_BYTES = 1024;
 // process or model context. Exhausting the cap is an error, never a silently
 // truncated prefix.
 export const DEFAULT_MAX_DRAIN_PAGES = 10;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function cleanupLocalAdapterState(cwd: string, now = new Date()): void {
   for (const cleanup of [
@@ -133,7 +136,10 @@ export type RuntimeState = {
   bootstrapState: BootstrapState;
   sessionHandle: string;
   sessionAddress: string | null;
+  // Active alias authority only. A configured or previously requested alias is
+  // intentionally separate and never authorizes a claim.
   sessionAlias?: string;
+  aliasIdentityId?: string;
   // Taken only from the server session address, never host synthesis.
   authenticatedAgent?: string;
   sessionGeneration: number;
@@ -157,6 +163,10 @@ export type RuntimeState = {
   responsiveContinuity?: "alias" | "exact_session_not_transferred";
   rolloverFailures?: number;
   rolloverLatched?: boolean;
+  // Safe operational metadata only. Predecessor credentials remain process
+  // memory and are never included in runtime snapshots or status output.
+  predecessorDrainingCount?: number;
+  predecessorDrainingIds?: string[];
 };
 
 export type ClientOptions = {
@@ -184,6 +194,9 @@ export type ClientOptions = {
   // callback receives the route (alias or public session handle) and the
   // server-provided address; returning null leaves the address unset.
   synthesizeSessionAddress?: (route: { alias?: string; sessionHandle?: string }, serverAddress: string | null) => string | null;
+  // Deliberately injected, never stored: absent aliases require human owner
+  // creation and this client has no authority to mint them with agent creds.
+  humanAliasTransport?: HumanAliasTransport;
 };
 
 export type RequestOptions = {
@@ -449,6 +462,12 @@ export type ResponsiveDeliveryMessage = {
 export type ResponsiveDeliveryAckFence = {
   sessionRevision: number;
   agentSessionId: string;
+  // Non-secret identifier for the in-memory source that performed the read.
+  // It is safe to expose in status and lets deferred host work return to its
+  // original credential after a live rollover.
+  sourceId?: string;
+  cursorScope: ResponsiveCursorScope;
+  aliasContext?: AliasContext;
 };
 
 export type SessionRevisionEvent = {
@@ -467,11 +486,31 @@ export type SessionCommitPlan = {
 
 export type ResponsiveDeliveryReadFence = {
   sessionRevision: number;
-  cursorScope?: ResponsiveCursorScope;
+  cursorScope: ResponsiveCursorScope;
   roomId: string;
   sessionAlias?: string;
+  aliasContext?: AliasContext;
   agentSessionId: string;
+  sourceId?: string;
 };
+
+export type ResponsiveDeliverySource = {
+  sourceId: string;
+  rooms: RoomRuntime[];
+  scopes: ResponsiveCursorScope[];
+};
+
+export type AliasAssumptionOptions = {
+  // Human authorization is caller-owned. It is invoked only after an
+  // agent-authenticated inspection proved this immutable identity absent.
+  agentId?: string;
+};
+
+export type HumanAliasTransport = {
+  request(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<any>;
+};
+
+type ExactAliasClaim = { alias: string; expectedGeneration: number; aliasIdentityId?: string };
 
 type CandidateWakeSlot = {
   sessionCredential: string;
@@ -497,6 +536,9 @@ const ROLLOVER_MAX_FAILURES = 3;
 const ROLLOVER_RETRY_MS = 5_000;
 const ROLLOVER_COOLDOWN_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+// Two retained live predecessors bound credential custody and unresolved work.
+// Refuse a third rollover before its alias claim; never evict exact work.
+const MAX_RETAINED_PREDECESSORS = 2;
 
 export function deterministicSessionJitterMs(agentSessionId: string): number {
   const digest = createHash("sha256").update(agentSessionId).digest();
@@ -551,16 +593,10 @@ function firstConfigValue(name: string, sources: Array<{ name: string; values: R
   return { value: fallback, source: fallback === undefined ? "missing" : "default" };
 }
 
-// A durable alias in persistent configuration is an alias-theft footgun
-// (issue #44): every future process started in that project silently
-// supersedes the named route. Process environment is the deliberate,
-// per-launch way to claim one.
-function aliasConfig(sources: Array<{ name: string; values: Record<string, string | undefined> }>, warnings: string[]): ConfigValue {
-  const alias = firstConfigValue("PARLE_SESSION_ALIAS", sources);
-  if (alias.value && alias.source !== "env") {
-    warnings.push(`PARLE_SESSION_ALIAS is set to ${alias.value} in ${alias.source}, so every process started here takes over that named route and supersedes the previous session. Set it in the process environment for a deliberate singleton role instead.`);
-  }
-  return alias;
+// A configured alias is a requested name only. It is useful to surface the
+// desired route, but never grants authority to create or claim it.
+function aliasConfig(sources: Array<{ name: string; values: Record<string, string | undefined> }>, _warnings: string[]): ConfigValue {
+  return firstConfigValue("PARLE_SESSION_ALIAS", sources);
 }
 
 function versionConfig(env: Record<string, string | undefined>, dotEnv: Record<string, string>, warnings: string[]): ConfigValue {
@@ -1138,6 +1174,7 @@ export class ParleAgentClient {
   private readonly sessionRevisionListeners = new Set<(event: SessionRevisionEvent) => void>();
   private readonly sessionCommitGuards = new Set<(plan: SessionCommitPlan) => void>();
   private readonly activeResponsiveReads = new Set<ResponsiveDeliveryReadFence>();
+  private readonly retainedDeliverySources = new Map<string, { state: RuntimeState; roomConfigs: ParleConfig[] }>();
   // Set while a lifecycle transition is between its pre-claim guard and its
   // local publication. Responsive fences are registered outside the lifecycle
   // exclusion, so without this barrier the pre-claim guard would be advisory:
@@ -1161,6 +1198,9 @@ export class ParleAgentClient {
   private automaticTerminalBinding?: string;
   private readonly recordedTerminalErrors = new WeakSet<object>();
   private missingAliasWarning?: string;
+  private aliasLifecycleState?: AliasLifecycleState;
+  private aliasLifecycleStateAvailable = true;
+  private readonly humanAliasTransport?: HumanAliasTransport;
   readonly registryCatalogPath: string;
 
   constructor(options: ClientOptions = {}) {
@@ -1172,6 +1212,9 @@ export class ParleAgentClient {
     // The first configured room supplies the session-auth bearer and, in
     // single-room mode, is simply the room.
     this.cfg = roomSet.rooms[0];
+    const aliasLifecycle = readAliasLifecycleState(this.aliasStatePath());
+    this.aliasLifecycleState = aliasLifecycle.state;
+    this.aliasLifecycleStateAvailable = aliasLifecycle.available;
     this.multiRoom = roomSet.mode === "multi";
     // activeProfile drives single-room profile selection and switching only.
     // In multi-room mode the environment's PARLE_PROFILES selector is already
@@ -1186,6 +1229,7 @@ export class ParleAgentClient {
     this.clearTimer = options.clearTimer || ((timer) => clearTimeout(timer));
     this.publishRuntime = options.publishRuntime;
     this.deriveSessionAddress = options.synthesizeSessionAddress || ((_route, serverAddress) => serverAddress);
+    this.humanAliasTransport = options.humanAliasTransport;
     this.clientName = assertClientName(options.clientName || options.publishRuntime?.adapterName || "@parlehq/agent-client");
     const clientVersion = options.clientVersion || options.publishRuntime?.adapterVersion;
     this.clientVersion = clientVersion ? assertClientVersion(clientVersion) : undefined;
@@ -1196,7 +1240,67 @@ export class ParleAgentClient {
     cleanupLocalAdapterState(this.cwd, this.now());
   }
 
+  private pruneRetainedDeliverySources(): void {
+    const now = this.now().getTime();
+    for (const [id, source] of this.retainedDeliverySources) {
+      if (!Number.isFinite(Date.parse(source.state.expiresAt)) || Date.parse(source.state.expiresAt) <= now) {
+        this.retainedDeliverySources.delete(id);
+      }
+    }
+    const ids = [...this.retainedDeliverySources.keys()];
+    this.runtime.predecessorDrainingCount = ids.length || undefined;
+    this.runtime.predecessorDrainingIds = ids.length ? ids : undefined;
+  }
+
+  private retainLivePredecessor(previous: RuntimeState): void {
+    this.pruneRetainedDeliverySources();
+    if (!previous.sessionHandle || !previous.agentSessionId || !previous.rooms.length || Date.parse(previous.expiresAt) <= this.now().getTime()) return;
+    this.retainedDeliverySources.set(previous.agentSessionId, {
+      state: { ...previous, rooms: previous.rooms.map((room) => ({ ...room })) },
+      roomConfigs: this.roomConfigs.map((room) => ({ ...room })),
+    });
+    this.pruneRetainedDeliverySources();
+  }
+
+  private assertPredecessorCapacity(): void {
+    this.pruneRetainedDeliverySources();
+    if (this.retainedDeliverySources.size >= MAX_RETAINED_PREDECESSORS) {
+      throw new ParleApiError(`Parle proactive rollover is refused while ${MAX_RETAINED_PREDECESSORS} live predecessors remain retained. Retry after a predecessor expires; see predecessorDrainingIds in status. An empty drain does not free a slot, and this client has no manual predecessor-closure operation.`, {
+        code: "predecessor_drain_capacity", action: "backoff", scope: "agent_session", retryable: true,
+      });
+    }
+  }
+
+  responsiveDeliverySources(): ResponsiveDeliverySource[] {
+    this.pruneRetainedDeliverySources();
+    const current = this.runtime.agentSessionId ? [{
+      sourceId: this.runtime.agentSessionId,
+      rooms: this.runtime.rooms.map((room) => ({ ...room })),
+      scopes: this.responsiveDeliveryScopes(),
+    }] : [];
+    return [...current, ...[...this.retainedDeliverySources.entries()].map(([sourceId, source]) => ({
+      sourceId,
+      rooms: source.state.rooms.map((room) => ({ ...room })),
+      scopes: ["session"] as ResponsiveCursorScope[],
+    }))];
+  }
+
+  responsiveDeliveryFenceCurrent(fence: ResponsiveDeliveryAckFence | ResponsiveDeliveryReadFence): boolean {
+    this.pruneRetainedDeliverySources();
+    if (fence.agentSessionId === this.runtime.agentSessionId && fence.sessionRevision === this.runtime.sessionRevision) return true;
+    const source = this.retainedDeliverySources.get(fence.sourceId || fence.agentSessionId);
+    return Boolean(source && source.state.agentSessionId === fence.agentSessionId && source.state.sessionRevision === fence.sessionRevision);
+  }
+
+  shutdownWarnings(): string[] {
+    this.pruneRetainedDeliverySources();
+    return this.retainedDeliverySources.size
+      ? [`Parle shutdown abandons exact-session delivery for live predecessor ${[...this.retainedDeliverySources.keys()].join(", ")}; credentials are memory-only and work remains server-side until expiry.`]
+      : [];
+  }
+
   status() {
+    this.pruneRetainedDeliverySources();
     return {
       config: {
         enabledInput: redactedValue(this.cfg.enabledInput),
@@ -1211,6 +1315,13 @@ export class ParleAgentClient {
       },
       // agent_session_id is room-visible operational metadata (canonical classification tracked in parlehq/parle#435); session_credential is the credential and stays redacted.
       runtime: { ...projectRuntimeStatus(this.runtime), sessionHandle: this.runtime.sessionHandle ? "<redacted>" : "" },
+      alias: {
+        ...(this.cfg.sessionAlias?.value ? { configured: this.cfg.sessionAlias.value } : {}),
+        ...(this.aliasLifecycleState?.state === "requested" ? { requested: this.aliasLifecycleState.alias } : {}),
+        ...(this.aliasLifecycleState?.state === "lost" ? { claimLost: true } : {}),
+        ...(this.aliasLifecycleState?.state === "outcome_unknown" ? { claimOutcomeUnknown: true } : {}),
+        ...(this.runtime.sessionAlias ? { active: this.runtime.sessionAlias } : {}),
+      },
       rooms: this.roomConfigs.map((cfg) => {
         const roomId = cfg.roomId?.value || "";
         const room = this.roomRuntimes.get(roomId);
@@ -1225,7 +1336,7 @@ export class ParleAgentClient {
           ...(room?.lastError ? { lastError: room.lastError } : {}),
         };
       }),
-      warnings: [...this.cfg.warnings, ...(this.staleTokenHint() ? [this.staleTokenHint()!] : []), ...(this.unreadIntervalHint() ? [this.unreadIntervalHint()!] : []), ...(this.missingAliasWarning ? [this.missingAliasWarning] : [])],
+      warnings: [...this.cfg.warnings, ...(!this.aliasLifecycleStateAvailable ? ["Parle alias lifecycle state is unavailable, so no stored alias policy will be used."] : []), ...(this.staleTokenHint() ? [this.staleTokenHint()!] : []), ...(this.unreadIntervalHint() ? [this.unreadIntervalHint()!] : []), ...(this.missingAliasWarning ? [this.missingAliasWarning] : []), ...this.shutdownWarnings()],
     };
   }
 
@@ -1460,12 +1571,16 @@ export class ParleAgentClient {
   }
 
   async requestJson(pathOrUrl: string, options: RequestOptions = {}): Promise<any> {
+    return this.requestJsonWithBindings(pathOrUrl, options, this.cfg, this.roomConfigs);
+  }
+
+  private async requestJsonWithBindings(pathOrUrl: string, options: RequestOptions, cfg: ParleConfig, roomConfigs: ParleConfig[]): Promise<any> {
     const method = options.method || (options.body === undefined ? "GET" : "POST");
     const retryableRequest = options.retry !== false && (method === "GET" || method === "HEAD" || Boolean(options.headers?.["Idempotency-Key"]));
     const startedMs = this.now().getTime();
     for (let attempt = 1; ; attempt += 1) {
       try {
-        return await this.requestJsonOnce(pathOrUrl, options, method);
+        return await this.requestJsonOnce(pathOrUrl, options, method, cfg, roomConfigs);
       } catch (error: any) {
         if (!(error instanceof ParleApiError) || error.code === "unsupported_parle_version" || !retryableRequest || !error.retryable || attempt >= REQUEST_RETRY_ATTEMPTS) throw error;
         const elapsed = Math.max(0, this.now().getTime() - startedMs);
@@ -1476,14 +1591,14 @@ export class ParleAgentClient {
     }
   }
 
-  private async requestJsonOnce(pathOrUrl: string, options: RequestOptions, method: string): Promise<any> {
-    const url = requestUrl(this.cfg, pathOrUrl);
+  private async requestJsonOnce(pathOrUrl: string, options: RequestOptions, method: string, cfg = this.cfg, roomConfigs = this.roomConfigs): Promise<any> {
+    const url = requestUrl(cfg, pathOrUrl);
     assertSafeBase(url.origin, this.env);
     assertNoReservedProtocolHeaders(options.headers);
     const headers: Record<string, string> = {
       Accept: "application/json",
       ...options.headers,
-      "Parle-Version": this.cfg.version.value || DEFAULT_VERSION,
+      "Parle-Version": cfg.version.value || DEFAULT_VERSION,
       "Parle-Client-Name": this.clientName,
       ...(this.clientVersion ? { "Parle-Client-Version": this.clientVersion } : {}),
       "Parle-Client-Instance": this.clientInstanceId,
@@ -1495,8 +1610,9 @@ export class ParleAgentClient {
     if (options.authMode !== "none") {
       // A room request authenticates with that room's own bearer; session-level
       // work uses the selected session binding.
-      const binding = options.roomId ? this.roomTarget(options.roomId) : this.cfg;
-      if (!binding.agentToken?.value) throw new ParleApiError("Parle setup needed: PARLE_ROOM_AGENT_TOKEN is missing", { code: "setup_needed" });
+      const binding = options.roomId ? roomConfigs.find((room) => room.roomId?.value === options.roomId) : cfg;
+      if (options.roomId && !binding) throw new ParleApiError(`Parle room ${options.roomId} is not configured for this delivery source.`, { code: "unknown_room", action: "fix_client", scope: "request" });
+      if (!binding?.agentToken?.value) throw new ParleApiError("Parle setup needed: PARLE_ROOM_AGENT_TOKEN is missing", { code: "setup_needed" });
       headers.Authorization = `Bearer ${binding.agentToken.value}`;
     }
     const sessionCredential = options.sessionCredential || (options.session ? this.runtime.sessionHandle : "");
@@ -1523,7 +1639,7 @@ export class ParleAgentClient {
       const { code, action, scope, retryAfterMs } = envelope;
       const retryable = retryableFromEnvelopeOrStatus(envelope.retryable, response.status);
       const msg = redactString(envelope.message || truncateText(text, 4096).text || response.statusText || `HTTP ${response.status}`);
-      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(this.cfg, envelope.raw) : "";
+      const versionHint = code === "unsupported_parle_version" ? formatVersionErrorHint(cfg, envelope.raw) : "";
       let message = `Parle API ${response.status}: ${msg}${versionHint}`;
       if (response.status === 401 && action === "reauthorize") {
         const hint = this.staleTokenHint();
@@ -1560,7 +1676,7 @@ export class ParleAgentClient {
     try {
       this.assertConfigured();
       this.assertDeclaredIdentityConfiguration();
-      const prepared = await this.prepareCandidate(this.cfg.sessionAlias?.value, signal, preserveCursor, oldWasLive);
+      const prepared = await this.prepareCandidate(undefined, signal, preserveCursor, oldWasLive);
       try {
         this.assertLifecycleActive(epoch);
         this.assertSessionCommitAllowed(previous, prepared.state, reason);
@@ -1569,7 +1685,7 @@ export class ParleAgentClient {
         if (!prepared.state.sessionAlias) await this.retireSession(prepared.state).catch(() => undefined);
         throw error;
       }
-      const unusedPreviousWake = this.commitCandidate(prepared, epoch);
+      const unusedPreviousWake = this.commitCandidate(prepared, epoch, reason !== "rebootstrap");
       await this.completeCandidateHandoff(previous, prepared.state, reason, signal, unusedPreviousWake, oldWasLive);
       this.assertExpectedAliasRecovered();
       this.clearAutomaticTerminalLatch();
@@ -1595,19 +1711,24 @@ export class ParleAgentClient {
     }
   }
 
-  // A replacement process that comes back without its configured durable route
-  // looks healthy while peers address a session that no longer exists, so the
-  // gap is reported rather than left silent (issue #49).
+  // Configuration names a requested alias but never grants claim authority.
+  // A restart therefore establishes an anonymous session unless an explicit
+  // assumption occurs in this process.
   private assertExpectedAliasRecovered(): void {
     const expected = this.cfg.sessionAlias?.value;
-    if (!expected || this.runtime.sessionAlias === expected) {
+    if (this.aliasLifecycleState?.state === "lost") {
+      this.missingAliasWarning = `Parle alias ${this.aliasLifecycleState.alias} lost authority. Its stored operator policy is suppressed until an explicit new assume instruction.`;
+    } else if (this.aliasLifecycleState?.state === "outcome_unknown") {
+      this.missingAliasWarning = `Parle explicit assume of ${this.aliasLifecycleState.alias} has an unknown outcome. The original session credential was not persisted; inspect and resolve manually before another assume.`;
+    } else if (expected && this.runtime.sessionAlias !== expected) {
+      this.missingAliasWarning = `Parle alias ${expected} is requested but inactive. Configuration alone does not claim an alias; use an explicit assume instruction.`;
+    } else {
       this.missingAliasWarning = undefined;
-      return;
     }
-    const held = this.runtime.sessionAlias ? ` The session holds ${this.runtime.sessionAlias} instead.` : "";
-    this.missingAliasWarning = `Parle session did not reclaim its configured durable alias ${expected}; peers addressing that route will not reach this session.${held} Check whether another live session holds the alias, then reconnect.`;
-    this.runtime.lastError = this.missingAliasWarning;
-    this.publishRuntimeState();
+    if (this.missingAliasWarning) {
+      this.runtime.lastError = this.missingAliasWarning;
+      this.publishRuntimeState();
+    }
   }
 
   private declaredIdentityError(code: string, message: string): ParleApiError {
@@ -1661,7 +1782,7 @@ export class ParleAgentClient {
     for (const room of this.roomRuntimes.values()) this.assertDeclaredRoom(room);
   }
 
-  private async prepareCandidate(alias: string | undefined, signal: AbortSignal | undefined, preserveCursor: boolean, requireWakeReadiness: boolean): Promise<PreparedCandidate> {
+  private async prepareCandidate(alias: string | undefined, signal: AbortSignal | undefined, preserveCursor: boolean, requireWakeReadiness: boolean, exactClaim?: ExactAliasClaim): Promise<PreparedCandidate> {
     const session = await this.requestJson("/v/agent/sessions", { method: "POST", body: {}, signal, rawResponse: true, retry: false });
     const authenticatedAddress = parseSessionAddress(typeof session.address === "string" ? session.address : null);
     const candidate: RuntimeState = {
@@ -1774,15 +1895,19 @@ export class ParleAgentClient {
       }
       if (alias || requireWakeReadiness) candidateWake = await this.establishCandidateWakeReadiness(candidate.sessionHandle, signal);
       if (alias) {
-        const aliasFacts = await this.ownAliasFacts(alias, signal);
-        const expectedGeneration = aliasFacts.generation;
-        priorAliasOwnerSessionId = aliasFacts.currentAgentSessionId;
+        // Explicit assumption may inspect current facts. Automatic continuation
+        // supplies its held tuple and never refreshes the generation.
+        const aliasFacts = exactClaim ? undefined : await this.ownAliasFacts(alias, signal);
+        const expectedGeneration = exactClaim?.expectedGeneration ?? aliasFacts!.generation;
+        const aliasIdentityId = exactClaim?.aliasIdentityId ?? aliasFacts?.aliasIdentityId;
+        priorAliasOwnerSessionId = aliasFacts?.currentAgentSessionId;
         // Last fail-closed edge. Everything after this line either transfers
         // alias authority or is local and non-throwing.
-        this.preClaimGuard?.({ ...candidate, sessionAlias: alias, responsiveContinuity: "alias" });
-        const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal);
+        this.preClaimGuard?.({ ...candidate, sessionAlias: alias, aliasIdentityId, responsiveContinuity: "alias" });
+        const claimed = await this.claimAliasWithRecovery(candidate, alias, expectedGeneration, signal, aliasIdentityId);
         aliasClaimed = true;
         candidate.sessionAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
+        candidate.aliasIdentityId = typeof claimed.alias_identity_id === "string" ? claimed.alias_identity_id : aliasIdentityId;
         candidate.sessionGeneration = Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1;
         candidate.sessionAddress = this.deriveSessionAddress(
           { alias: candidate.sessionAlias, sessionHandle: typeof session.session_handle === "string" ? session.session_handle : undefined },
@@ -1814,8 +1939,85 @@ export class ParleAgentClient {
     return ownAliasFactsShared(this.aliasTransport(), alias, signal);
   }
 
-  private async claimAliasWithRecovery(candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal): Promise<any> {
-    return claimAliasShared(this.aliasTransport(), candidate, alias, expectedGeneration, signal);
+  private async ensureAliasIdentity(alias: string, options: AliasAssumptionOptions, signal?: AbortSignal): Promise<AliasFacts> {
+    const facts = await this.ownAliasFacts(alias, signal);
+    if (facts.aliasIdentityId) return facts;
+    if (!options.agentId || !UUID_RE.test(options.agentId) || !this.humanAliasTransport) {
+      throw new ParleApiError("Parle alias is absent and requires human owner sign-in plus an exact agent UUID before it can be assumed", {
+        code: "alias_human_auth_required", action: "stop", scope: "agent_session", retryable: false,
+      });
+    }
+    const path = `/v/agents/${encodeURIComponent(options.agentId)}/session-aliases/${encodeURIComponent(alias)}`;
+    const creation = await this.humanAliasTransport.request(path, { signal });
+    if (creation?.alias !== alias || typeof creation?.exists !== "boolean" || !Number.isInteger(creation?.creation_generation) || creation.creation_generation < 0) {
+      throw new ParleApiError("Parle human alias inspection returned invalid creation facts", { code: "invalid_response", action: "fix_client", scope: "server" });
+    }
+    if (!creation.exists) {
+      const created = await this.humanAliasTransport.request(path, {
+        method: "PUT", body: { expected_creation_generation: creation.creation_generation }, signal,
+      });
+      if (created?.alias !== alias || created?.exists !== true || !Number.isInteger(created?.creation_generation)
+        || created.creation_generation !== creation.creation_generation) {
+        throw new ParleApiError("Parle human alias creation did not confirm the requested fixed creation epoch", { code: "invalid_response", action: "fix_client", scope: "server" });
+      }
+    }
+    const confirmed = await this.ownAliasFacts(alias, signal);
+    if (!confirmed.aliasIdentityId) {
+      throw new ParleApiError("Parle alias creation completed without an immutable identity visible to this agent", { code: "invalid_response", action: "stop", scope: "agent_session" });
+    }
+    return confirmed;
+  }
+
+  private aliasStatePath(): string {
+    return aliasLifecycleStatePath(this.registryCatalogPath, this.cfg.apiBase.value || DEFAULT_API_BASE, this.roomConfigs.map((room) => room.roomId?.value || ""), this.roomConfigs.map((room) => room.agentTokenId?.value || createHash("sha256").update(room.agentToken?.value || "").digest("hex")));
+  }
+
+  private recordAliasAssumption(alias: string, facts: AliasFacts): void {
+    const recorded = recordAliasAssumption(this.aliasStatePath(), alias, facts.aliasIdentityId!, facts.generation, this.randomUUID(), this.now().toISOString());
+    if (!recorded) throw new ParleApiError("Parle could not safely record the explicit alias assumption", { code: "alias_lifecycle_state_unavailable", action: "stop", scope: "agent_session" });
+    this.aliasLifecycleState = recorded;
+    this.aliasLifecycleStateAvailable = true;
+  }
+
+  private recordAliasLoss(alias: string): void {
+    const prior = this.aliasLifecycleState;
+    if (prior && prior.aliasIdentityId === this.runtime.aliasIdentityId) {
+      const next = transitionAliasState(this.aliasStatePath(), prior, "lost", this.now().toISOString());
+      this.aliasLifecycleState = next || { ...prior, state: "lost", lostGeneration: prior.heldGeneration ?? prior.requestedGeneration };
+      this.aliasLifecycleStateAvailable = Boolean(next);
+    }
+    if (this.runtime.sessionAlias !== alias) return;
+    this.runtime = { ...this.runtime, sessionAlias: undefined, aliasIdentityId: undefined, sessionGeneration: 0, sessionAddress: null,
+      responsiveCursorScope: this.runtime.responsiveCursorScope === "alias" ? "session" : this.runtime.responsiveCursorScope };
+    this.assertExpectedAliasRecovered();
+  }
+
+  private async claimAliasWithRecovery(candidate: RuntimeState, alias: string, expectedGeneration: number, signal?: AbortSignal, aliasIdentityId?: string): Promise<any> {
+    const prior = this.aliasLifecycleState;
+    if (!prior || prior.aliasIdentityId !== aliasIdentityId || !["requested", "held"].includes(prior.state)
+      || (prior.state === "held" ? prior.heldGeneration : prior.requestedGeneration) !== expectedGeneration) {
+      throw new ParleApiError("Alias claim requires its original explicit authorization", { code: "alias_authorization_required", action: "stop", scope: "agent_session" });
+    }
+    // Persist before POST: a crash cannot leave a falsely settled diagnostic.
+    const pending = transitionAliasState(this.aliasStatePath(), prior, "outcome_unknown", this.now().toISOString(), prior.heldGeneration, this.randomUUID());
+    if (!pending) throw new ParleApiError("Alias operation state could not be persisted", { code: "alias_lifecycle_state_unavailable", action: "stop", scope: "agent_session" });
+    this.aliasLifecycleState = pending;
+    try {
+      const result = await claimAliasShared(this.aliasTransport(), candidate, alias, expectedGeneration, signal, aliasIdentityId);
+      const held = transitionAliasState(this.aliasStatePath(), pending, "held", this.now().toISOString(), result.generation);
+      if (!held) throw new ParleApiError("Claim committed but local confirmation could not be recorded; resolve manually", { code: "alias_lifecycle_state_unavailable", action: "stop", scope: "agent_session" });
+      this.aliasLifecycleState = held;
+      return result;
+    } catch (error: any) {
+      if (error?.status === 409) {
+        const state = prior.state === "held" ? "lost" : "refused";
+        const refused = transitionAliasState(this.aliasStatePath(), pending, state, this.now().toISOString());
+        this.aliasLifecycleState = refused || { ...pending, state };
+        this.aliasLifecycleStateAvailable = Boolean(refused);
+        if (prior.state === "held") this.recordAliasLoss(alias);
+      }
+      throw error;
+    }
   }
 
   private async establishCandidateWakeReadiness(sessionCredential: string, signal?: AbortSignal): Promise<CandidateWakeSlot> {
@@ -1880,14 +2082,18 @@ export class ParleAgentClient {
     for (const guard of this.sessionCommitGuards) guard(plan);
   }
 
-  private commitCandidate(prepared: PreparedCandidate, epoch: number): CandidateWakeSlot | undefined {
+  private commitCandidate(prepared: PreparedCandidate, epoch: number, retainPredecessor = true): CandidateWakeSlot | undefined {
     this.assertLifecycleActive(epoch);
+    // Capture a planned live predecessor synchronously before current state
+    // moves. A server-declared rebootstrap source is not retained or retried.
+    if (retainPredecessor) this.retainLivePredecessor(this.runtime);
     this.stopUnreadPolling();
     const unusedPreviousWake = this.prefetchedWake;
     this.prefetchedWake = prepared.wake;
     const revision = this.runtime.sessionRevision + 1;
     this.lifecycleEpoch += 1;
     this.runtime = { ...prepared.state, sessionRevision: revision, rolloverFailures: 0, rolloverLatched: false, lastBootstrapError: undefined };
+    this.pruneRetainedDeliverySources();
     this.adoptRoomRuntimes(prepared.rooms);
     this.bootstrapGeneration += 1;
     this.publishRuntimeState();
@@ -1896,19 +2102,13 @@ export class ParleAgentClient {
     return unusedPreviousWake;
   }
 
-  private async completeCandidateHandoff(previous: RuntimeState, candidate: RuntimeState, reason: SessionRevisionEvent["reason"], signal: AbortSignal | undefined, unusedPreviousWake: CandidateWakeSlot | undefined, drainImmediately: boolean): Promise<void> {
+  private async completeCandidateHandoff(previous: RuntimeState, candidate: RuntimeState, reason: SessionRevisionEvent["reason"], signal: AbortSignal | undefined, unusedPreviousWake: CandidateWakeSlot | undefined, _drainImmediately: boolean): Promise<void> {
+    // Do not probe-and-discard responsive pages here. The delivery controller
+    // drains each retained exact-session source with its captured credential;
+    // an empty page is never proof that a live predecessor is permanently idle.
+    void previous;
+    if (_drainImmediately && !this.runtime.responsiveCursorScope) this.runtime.responsiveCursorScope = "session";
     const readyRooms = candidate.rooms.filter((room) => room.state === "ready");
-    if (drainImmediately) {
-      for (const room of readyRooms) {
-        try {
-          const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(room.roomId)}/responsive-delivery?wait=0`, { roomId: room.roomId, sessionCredential: candidate.sessionHandle, signal, retry: false });
-          this.recordResponsiveCursorScope(delivery);
-        } catch (error) {
-          this.runtime.lastError = redactString(error instanceof Error ? error.message : String(error));
-          this.publishRuntimeState();
-        }
-      }
-    }
     if (candidate.sessionAlias) {
       try {
         for (const room of readyRooms) {
@@ -1926,9 +2126,6 @@ export class ParleAgentClient {
     // then consumed by the replacement watcher without an open-stream gap.
     this.publishSessionRevision(reason);
     await this.cancelCandidateWake(unusedPreviousWake);
-    if (!previous.sessionAlias && previous.agentSessionId && previous.agentSessionId !== candidate.agentSessionId) {
-      await this.retireSession(previous).catch(() => undefined);
-    }
   }
 
   private publishSessionRevision(reason: SessionRevisionEvent["reason"]): void {
@@ -2157,32 +2354,10 @@ export class ParleAgentClient {
               this.scheduleRollover();
               committed = true;
             },
-            retireOldSession: async () => {
-              if (!previousRuntime.agentSessionId || !previousRuntime.sessionHandle) return;
-              // Alias authority is scoped by durable agent id, so a target
-              // claim only supersedes the source when the authoritative
-              // pre-claim lookup named the source session itself. In every
-              // other case (different alias, another owner, no owner, another
-              // durable agent) the source route stays live until it is ended
-              // explicitly with the source profile credential.
-              if (scratch && this.aliasSupersededSource(previousRuntime, scratch)) return;
-              const prior = new ParleAgentClient({
-                cwd: this.cwd,
-                env: this.env,
-                fetch: this.fetchImpl,
-                now: this.now,
-                sleep: this.sleepImpl,
-                randomUUID: this.randomUUID,
-                clientName: this.clientName,
-                clientVersion: this.clientVersion,
-                clientInstanceId: this.clientInstanceId,
-                integrationName: this.integrationName,
-                integrationVersion: this.integrationVersion,
-              });
-              prior.cfg = previousCfg;
-              prior.runtime = previousRuntime;
-              await prior.endSession(signal);
-            },
+            // A new binding cannot establish that the predecessor has drained
+            // exact-session work, so profile switching leaves it for explicit
+            // operator cleanup or expiry.
+            retireOldSession: async () => {},
           }));
 
           return {
@@ -2272,10 +2447,14 @@ export class ParleAgentClient {
     if (!this.runtime.bootstrapped || !this.runtime.sessionHandle) throw new ParleApiError("Parle rollover requires a live current session", { code: "session_unavailable", action: "rebootstrap", scope: "agent_session" });
     if (this.runtime.rolloverLatched) throw new ParleApiError("Parle proactive rollover is cooling down after a bounded failure storm", { code: "rollover_cooling_down", action: "backoff", scope: "agent_session", retryable: true, retryAfterMs: ROLLOVER_COOLDOWN_MS });
     const epoch = this.lifecycleEpoch;
+    this.assertPredecessorCapacity();
     this.assertConfigured();
     this.assertDeclaredIdentityConfiguration();
     this.assertRuntimeDeclaredIdentity();
     const old = { ...this.runtime };
+    const exactClaim = old.sessionAlias && old.aliasIdentityId && old.sessionGeneration > 0
+      ? { alias: old.sessionAlias, expectedGeneration: old.sessionGeneration, aliasIdentityId: old.aliasIdentityId }
+      : undefined;
     let prepared: PreparedCandidate;
     // Bridge-owned guards run synchronously after all candidate I/O. When an
     // alias is in play they must run BEFORE the claim: a guard that throws
@@ -2294,7 +2473,7 @@ export class ParleAgentClient {
     };
     try {
       prepared = await this.withPublicationBarrier("rollover", () =>
-        this.prepareCandidate(old.sessionAlias || this.cfg.sessionAlias?.value, signal, true, true));
+        this.prepareCandidate(exactClaim?.alias, signal, true, true, exactClaim));
     } catch (error) {
       // A guard rejection is a local deferral, not a transport failure, so it
       // keeps the original cooldown behavior instead of a fast retry.
@@ -2330,7 +2509,7 @@ export class ParleAgentClient {
   // pre-claim guard, publication barrier, and supersession semantics hold; a
   // later proactive rollover re-claims the switched alias because rollover
   // prefers the runtime alias over the configured one.
-  async switchSessionAlias(alias: string, signal?: AbortSignal): Promise<{
+  async switchSessionAlias(alias: string, optionsOrSignal?: AliasAssumptionOptions | AbortSignal, maybeSignal?: AbortSignal): Promise<{
     status: "alias_active";
     alias?: string;
     generation?: number;
@@ -2341,6 +2520,8 @@ export class ParleAgentClient {
     warning?: string;
     recovery?: string;
   }> {
+    const options = optionsOrSignal instanceof AbortSignal ? {} : optionsOrSignal || {};
+    const signal = optionsOrSignal instanceof AbortSignal ? optionsOrSignal : maybeSignal;
     if (!isValidSessionAlias(alias)) {
       throw new ParleApiError("Parle session alias must be an unreserved 2-32 character durable alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.", { code: "validation_failed", action: "fix_client", scope: "request" });
     }
@@ -2353,6 +2534,10 @@ export class ParleAgentClient {
       this.assertConfigured();
       this.assertDeclaredIdentityConfiguration();
       this.assertRuntimeDeclaredIdentity();
+      // This public method is the explicit user assume instruction. Its
+      // non-secret policy record is required before any claim is sent.
+      const aliasFacts = await this.ensureAliasIdentity(alias, options, signal);
+      this.recordAliasAssumption(alias, aliasFacts);
       // An anonymous live session claims the alias IN PLACE (parle-adapters#115,
       // parlehq/parle#797): core's claim precondition (alias-free, generation 0)
       // admits exactly this session, and replacing it would end the exact-session
@@ -2363,7 +2548,7 @@ export class ParleAgentClient {
       // below -- core forbids re-claim on an aliased session, and alias-scoped
       // continuity is owned by generation fencing plus reissue.
       if (!priorAlias && old.bootstrapped && old.agentSessionId && old.sessionHandle) {
-        return this.claimAliasInPlace(alias, old, epoch, signal);
+        return this.claimAliasInPlace(alias, old, epoch, signal, aliasFacts);
       }
       let prepared: PreparedCandidate;
       this.preClaimGuard = (candidate) => {
@@ -2372,12 +2557,15 @@ export class ParleAgentClient {
       };
       try {
         prepared = await this.withPublicationBarrier("alias switch", () =>
-          this.prepareCandidate(alias, signal, true, true));
+          this.prepareCandidate(alias, signal, true, true, {
+            alias, expectedGeneration: aliasFacts.generation, aliasIdentityId: aliasFacts.aliasIdentityId,
+          }));
       } finally {
         this.preClaimGuard = undefined;
       }
       const unusedPreviousWake = this.commitCandidate(prepared, epoch);
       await this.completeCandidateHandoff(old, prepared.state, "alias_switch", signal, unusedPreviousWake, true);
+      this.assertExpectedAliasRecovered();
       const replaced = Boolean(priorAlias && priorAlias !== this.runtime.sessionAlias);
       return {
         status: "alias_active" as const,
@@ -2406,27 +2594,28 @@ export class ParleAgentClient {
   // the live session untouched -- there is no candidate to retire and the
   // session itself is never ended. Lost-response recovery stays authoritative
   // via claimAliasWithRecovery's alias-fence confirmation.
-  private async claimAliasInPlace(alias: string, old: RuntimeState, epoch: number, signal?: AbortSignal): Promise<{
+  private async claimAliasInPlace(alias: string, old: RuntimeState, epoch: number, signal?: AbortSignal, knownFacts?: AliasFacts): Promise<{
     status: "alias_active";
     alias?: string;
     generation?: number;
     sessionAddress: string | null;
     expiresAt: string;
   }> {
-    const { claimed, expectedGeneration } = await this.withPublicationBarrier("alias switch", async () => {
-      const aliasFacts = await this.ownAliasFacts(alias, signal);
+    const { claimed, expectedGeneration, aliasIdentityId } = await this.withPublicationBarrier("alias switch", async () => {
+      const aliasFacts = knownFacts || await this.ownAliasFacts(alias, signal);
       // Last fail-closed edge, identical in position to the candidate path's
       // preClaimGuard: everything after this line transfers alias authority.
       this.assertLifecycleActive(epoch);
       this.assertSessionCommitAllowed(old, { ...old, sessionAlias: alias, responsiveContinuity: "alias" }, "alias_switch");
-      const result = await this.claimAliasWithRecovery(old, alias, aliasFacts.generation, signal);
-      return { claimed: result, expectedGeneration: aliasFacts.generation };
+      const result = await this.claimAliasWithRecovery(old, alias, aliasFacts.generation, signal, aliasFacts.aliasIdentityId);
+      return { claimed: result, expectedGeneration: aliasFacts.generation, aliasIdentityId: aliasFacts.aliasIdentityId };
     });
     this.assertLifecycleActive(epoch);
     const claimedAlias = typeof claimed.alias === "string" && claimed.alias ? claimed.alias : alias;
     this.runtime = {
       ...this.runtime,
       sessionAlias: claimedAlias,
+      aliasIdentityId: typeof claimed.alias_identity_id === "string" ? claimed.alias_identity_id : aliasIdentityId,
       sessionGeneration: Number.isInteger(claimed.generation) ? claimed.generation : expectedGeneration + 1,
       sessionAddress: this.deriveSessionAddress(
         { alias: claimedAlias },
@@ -2442,6 +2631,7 @@ export class ParleAgentClient {
     // once; rollover reschedules against the possibly-extended expiry and will
     // re-claim the runtime alias on its next incarnation replacement.
     this.publishRuntimeState();
+    this.assertExpectedAliasRecovered();
     this.scheduleRollover();
     this.publishSessionRevision("alias_switch");
     return {
@@ -2694,6 +2884,7 @@ export class ParleAgentClient {
       this.clearRolloverStormProtection(true);
       return result;
     } catch (error: any) {
+      if (error instanceof ParleApiError && error.code === "alias_context_stale" && this.runtime.sessionAlias) this.recordAliasLoss(this.runtime.sessionAlias);
       if (!(error instanceof ParleApiError) || error.action !== "rebootstrap") {
         if (terminalOwner === "automatic") this.recordTerminalCause(error);
         throw error;
@@ -2798,33 +2989,67 @@ export class ParleAgentClient {
     return scope;
   }
 
-  async drainResponsiveDeliveryWithFence(signal?: AbortSignal, roomIdParam?: string): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
-    const roomId = this.roomTarget(roomIdParam).roomId!.value!;
-    return this.withRebootstrap(async () => {
+  responsiveDeliveryScopes(): ResponsiveCursorScope[] {
+    return this.runtime.sessionAlias && this.runtime.aliasIdentityId && this.runtime.sessionGeneration > 0 ? ["session", "alias"] : ["session"];
+  }
+
+  async drainResponsiveDeliveryWithFence(signal?: AbortSignal, roomIdParam?: string, cursorScope: ResponsiveCursorScope = "session", sourceId?: string): Promise<{ delivery: any; fence: ResponsiveDeliveryReadFence; release: () => void }> {
+    this.pruneRetainedDeliverySources();
+    const predecessor = sourceId && sourceId !== this.runtime.agentSessionId ? this.retainedDeliverySources.get(sourceId) : undefined;
+    if (sourceId && sourceId !== this.runtime.agentSessionId && !predecessor) throw new ParleApiError("Parle exact-session delivery source is unavailable, possibly expired; it cannot be replaced by the current session", { code: "predecessor_delivery_unavailable", action: "stop", scope: "agent_session" });
+    const state = predecessor?.state || this.runtime;
+    const roomConfigs = predecessor?.roomConfigs || this.roomConfigs;
+    const roomId = roomIdParam || (roomConfigs.length === 1 ? roomConfigs[0].roomId?.value : undefined);
+    if (!roomId || !roomConfigs.some((room) => room.roomId?.value === roomId)) throw new ParleApiError("Parle responsive delivery requires a configured room for its captured source", { code: "room_required", action: "fix_client", scope: "request" });
+    if (predecessor && cursorScope !== "session") throw new ParleApiError("Parle predecessor delivery is exact-session scoped", { code: "validation_failed", action: "fix_client", scope: "request" });
+    const read = async () => {
+      // A server-driven rebootstrap retries this closure. Re-read current state
+      // then, while an explicit predecessor remains pinned to its source.
+      const sourceState = predecessor?.state || this.runtime;
       this.assertResponsiveFenceAllowed();
+      const aliasContext = cursorScope === "alias" && sourceState.aliasIdentityId && sourceState.sessionGeneration > 0
+        ? { aliasIdentityId: sourceState.aliasIdentityId, aliasGeneration: sourceState.sessionGeneration }
+        : undefined;
+      if (cursorScope === "alias" && !aliasContext) throw new ParleApiError("Parle alias delivery requires a held immutable alias context", { code: "alias_context_unavailable", action: "stop", scope: "agent_session" });
       const fence: ResponsiveDeliveryReadFence = {
-        sessionRevision: this.runtime.sessionRevision || 0,
-        cursorScope: this.runtime.responsiveCursorScope,
+        sessionRevision: sourceState.sessionRevision || 0,
+        cursorScope,
         roomId,
-        sessionAlias: this.runtime.sessionAlias,
-        agentSessionId: this.runtime.agentSessionId,
+        ...(sourceState.sessionAlias ? { sessionAlias: sourceState.sessionAlias } : {}),
+        ...(aliasContext ? { aliasContext } : {}),
+        agentSessionId: sourceState.agentSessionId,
+        sourceId: sourceState.agentSessionId,
       };
       this.activeResponsiveReads.add(fence);
       let retained = false;
       const release = () => this.activeResponsiveReads.delete(fence);
       try {
-        const delivery = await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?wait=0`, { session: true, roomId, signal, timeoutMs: 10_000, retry: false });
-        fence.cursorScope = this.recordResponsiveCursorScope(delivery) || fence.cursorScope;
+        const query = new URLSearchParams({ cursor_scope: cursorScope, wait: "0" });
+        if (aliasContext) {
+          query.set("alias_identity_id", aliasContext.aliasIdentityId);
+          query.set("alias_generation", String(aliasContext.aliasGeneration));
+        }
+        const delivery = predecessor
+          ? await this.requestJsonWithBindings(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?${query}`, { roomId, sessionCredential: sourceState.sessionHandle, signal, timeoutMs: 10_000, retry: false }, predecessor.roomConfigs[0], roomConfigs)
+          : await this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery?${query}`, { session: true, roomId, signal, timeoutMs: 10_000, retry: false });
+        if ((predecessor ? responsiveCursorScope(delivery) : this.recordResponsiveCursorScope(delivery)) !== cursorScope
+          || (cursorScope === "alias" && (delivery?.delivery?.alias_context?.alias_identity_id !== aliasContext!.aliasIdentityId
+            || delivery?.delivery?.alias_context?.alias_generation !== aliasContext!.aliasGeneration))) {
+          throw new ParleApiError("Parle responsive delivery response did not preserve its requested scope and alias context", { code: "invalid_response", action: "fix_client", scope: "server" });
+        }
         retained = true;
         return { delivery, fence, release };
       } finally {
         if (!retained) release();
       }
-    }, signal);
+    };
+    // A predecessor must never rebootstrap into the successor. Its credential
+    // is used exactly until expiry, then only that source disappears.
+    return predecessor ? read() : this.withRebootstrap(read, signal);
   }
 
   async drainResponsiveDelivery(signal?: AbortSignal, roomId?: string): Promise<any> {
-    const read = await this.drainResponsiveDeliveryWithFence(signal, roomId);
+    const read = await this.drainResponsiveDeliveryWithFence(signal, roomId, "session");
     try {
       return read.delivery;
     } finally {
@@ -2834,27 +3059,35 @@ export class ParleAgentClient {
 
   async ackResponsiveDelivery(message: ResponsiveDeliveryMessage, signal?: AbortSignal, roomIdParam?: string, fence?: ResponsiveDeliveryAckFence): Promise<any> {
     if (!responsiveDeliveryKey(message)) throw new ParleApiError("Responsive delivery ack requires a non-negative integer seq and non-empty event_id", { code: "validation_failed", action: "fix_client", scope: "request" });
-    const roomId = this.roomTarget(roomIdParam ?? (typeof (message as any).room_id === "string" ? (message as any).room_id : undefined)).roomId!.value!;
-    const result = await this.withRebootstrap(
-      () => {
-        if (fence && (fence.sessionRevision !== this.runtime.sessionRevision || fence.agentSessionId !== this.runtime.agentSessionId)) {
-          throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
-        }
-        return this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, {
-        method: "POST",
-        session: true,
-        roomId,
-        signal,
-        retry: false,
-          body: { seq: message.seq, event_id: message.event_id },
-        });
-      },
-      signal,
-    );
+    this.pruneRetainedDeliverySources();
+    const predecessor = fence && fence.agentSessionId !== this.runtime.agentSessionId
+      ? this.retainedDeliverySources.get(fence.sourceId || fence.agentSessionId)
+      : undefined;
+    if (fence && !this.responsiveDeliveryFenceCurrent(fence)) throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
+    const roomConfigs = predecessor?.roomConfigs || this.roomConfigs;
+    const roomId = roomIdParam ?? (typeof (message as any).room_id === "string" ? (message as any).room_id : roomConfigs.length === 1 ? roomConfigs[0].roomId?.value : undefined);
+    if (!roomId || !roomConfigs.some((room) => room.roomId?.value === roomId)) throw new ParleApiError("Parle responsive delivery acknowledgement requires its captured room", { code: "room_required", action: "fix_client", scope: "request" });
+    const ack = () => {
+      if (fence && !this.responsiveDeliveryFenceCurrent(fence)) {
+        throw new ParleApiError("Parle responsive delivery belongs to a prior session revision", { code: "responsive_delivery_session_changed", action: "fix_client", scope: "request" });
+      }
+      const cursorScope = fence?.cursorScope || "session";
+      const aliasContext = fence?.aliasContext;
+      if (predecessor && cursorScope !== "session") throw new ParleApiError("Parle predecessor delivery is exact-session scoped", { code: "validation_failed", action: "fix_client", scope: "request" });
+      if (cursorScope === "alias" && !aliasContext) throw new ParleApiError("Parle alias delivery ack requires its captured immutable alias context", { code: "validation_failed", action: "fix_client", scope: "request" });
+      const options: RequestOptions = {
+        method: "POST", ...(predecessor ? { sessionCredential: predecessor.state.sessionHandle } : { session: true }), roomId, signal, retry: false,
+        body: { cursor_scope: cursorScope, seq: message.seq, ...(cursorScope === "alias" ? { event_id: message.event_id, alias_context: { alias_identity_id: aliasContext!.aliasIdentityId, alias_generation: aliasContext!.aliasGeneration } } : { event_id: message.event_id }) },
+      };
+      return predecessor
+        ? this.requestJsonWithBindings(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, options, predecessor.roomConfigs[0], roomConfigs)
+        : this.requestJson(`/v/rooms/${encodeURIComponent(roomId)}/responsive-delivery/ack`, options);
+    };
+    const result = await (predecessor ? ack() : this.withRebootstrap(ack, signal));
     // The room runtime is the display authority for delivery progress; record
     // the acknowledged watermark so host status surfaces stay truthful.
     const room = this.roomRuntimes.get(roomId);
-    if (room) {
+    if (room && !predecessor) {
       room.lastAckedSeq = Math.max(room.lastAckedSeq || 0, message.seq);
       room.lastAckEventId = message.event_id;
       this.publishRoomRuntimes();
@@ -3174,7 +3407,13 @@ export class ParleAgentClient {
     const idempotencyKey = params.idempotencyKey || this.randomUUID();
     const generation = this.bootstrapGeneration;
     let roomId = "";
-    const body: any = { type: "message_submitted", payload: { body: params.body } };
+    const body: any = {
+      type: "message_submitted",
+      payload: { body: params.body },
+      alias_context: this.runtime.aliasIdentityId && this.runtime.sessionGeneration > 0
+        ? { alias_identity_id: this.runtime.aliasIdentityId, alias_generation: this.runtime.sessionGeneration }
+        : null,
+    };
     if (params.to) body.addressing = { audience: "direct", to: params.to };
     try {
       const details = await this.withDataPlane(() => this.withRebootstrap(async () => {
@@ -3230,7 +3469,13 @@ export class ParleAgentClient {
           signal,
           retry: false,
           headers: { "Idempotency-Key": idempotencyKey },
-          body: { reply_route_id: params.replyRouteId, payload: { body: params.body } },
+          body: {
+            reply_route_id: params.replyRouteId,
+            payload: { body: params.body },
+            alias_context: this.runtime.aliasIdentityId && this.runtime.sessionGeneration > 0
+              ? { alias_identity_id: this.runtime.aliasIdentityId, alias_generation: this.runtime.sessionGeneration }
+              : null,
+          },
         });
         const deliveryStatus = summarizeSendDelivery(result);
         return { ...result, roomId, idempotencyKey, ...(deliveryStatus ? { deliveryStatus } : {}), ...(this.bootstrapGeneration !== generation ? { session: this.sessionEstablishedBlock() } : {}) };

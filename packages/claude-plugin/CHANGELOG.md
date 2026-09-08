@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.80 (unreleased)
+
+- Use the pending alias-transfer wire with explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Coordinated protocol activation and consumer validation are required before release.
+
 ## 0.9.79
 
 - Refresh the bundled MCP server to 0.7.74 with declared identity expectations.

@@ -181,6 +181,10 @@ export type OwnedAliasReleaseParams = {
   reason?: string;
 };
 
+export type OwnedAliasCreationTransport = {
+  request(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal }): Promise<any>;
+};
+
 type AccountBaseConfig = {
   apiBase: string;
   version: string;
@@ -1207,6 +1211,41 @@ export class ParleAccountClient {
       agent_token_id: agentTokenId,
       secrets: "redacted; PARLE_SESSION_COOKIE and PARLE_ROOM_AGENT_TOKEN were not returned in tool output",
       next: `Set PARLE_PROFILE=${profileName} for this project, remove any direct room-binding configuration, restart the host, and run parle_status.`,
+    };
+  }
+
+  // Narrow capability for maintained hosts only. It cannot carry arbitrary
+  // human requests, headers, cookies, or destinations.
+  ownedAliasCreationTransport(expectedOrigin: string): OwnedAliasCreationTransport {
+    const origin = new URL(expectedOrigin).origin;
+    return {
+      request: async (path, options) => {
+        const match = /^\/v\/agents\/([^/?#]+)\/session-aliases\/([^/?#]+)$/.exec(path);
+        if (!match) throw new Error("Parle human alias creation accepts only the fixed owned-agent alias endpoint.");
+        let agentId: string;
+        let alias: string;
+        try {
+          agentId = validateUUID(decodeURIComponent(match[1]), "agentId");
+          alias = validateAlias(decodeURIComponent(match[2]));
+        } catch {
+          throw new Error("Parle human alias creation requires an exact owned agent UUID and valid alias.");
+        }
+        const config = this.config();
+        if (config.apiBase !== origin) throw new Error("Parle human alias creation origin does not match the active agent configuration.");
+        const fixedPath = `/v/agents/${encodeURIComponent(agentId)}/session-aliases/${encodeURIComponent(alias)}`;
+        const method = (options.method || "GET").toUpperCase();
+        if (method === "GET") {
+          if (options.body !== undefined) throw new Error("Parle human alias inspection does not accept a request body.");
+          return this.request(config, fixedPath, { signal: options.signal });
+        }
+        if (method !== "PUT") throw new Error("Parle human alias creation accepts only GET or PUT.");
+        const body = options.body as Record<string, unknown> | undefined;
+        const expectedCreationGeneration = body?.expected_creation_generation;
+        if (!body || Object.keys(body).length !== 1 || typeof expectedCreationGeneration !== "number" || !Number.isSafeInteger(expectedCreationGeneration) || expectedCreationGeneration < 0) {
+          throw new Error("Parle human alias creation requires one non-negative expected_creation_generation.");
+        }
+        return this.request(config, fixedPath, { method: "PUT", body: { expected_creation_generation: expectedCreationGeneration }, signal: options.signal });
+      },
     };
   }
 

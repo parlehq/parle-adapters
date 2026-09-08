@@ -38,6 +38,8 @@ The mod targets Command Code 1.11.0 or newer and verifies the specific ModApi ca
 
 The tool names are native and unprefixed, such as `parle_connect`, `parle_send`, and `parle_reply`.
 
+`PARLE_SESSION_ALIAS` is a requested alias only. Session bootstrap, recovery, and Command Code restart never claim it. A human explicitly invokes `parle_session_alias` to assume an alias. An absent alias can be created only with an existing human-owner session, an exact `PARLE_AGENT_ID` in the environment or project `.env`, and same-origin account and agent configuration. The mod uses the account client's fixed owned-agent creation capability only under those conditions. It never launches sign-in, mints credentials, or persists credentials; missing custody or an exact agent ID fails closed.
+
 The mod uses the same host-neutral tool registration function as the MCP server. Schemas, descriptions, handlers, degraded recovery, and safety behavior therefore have one source of truth.
 
 ## Responsive delivery
@@ -50,7 +52,7 @@ The mod opens the Parle wake stream through the shared client. A wake hint trigg
 4. folds that exact projected object into `onTurnStart`
 5. acknowledges the Parle row through `completeDeferred` only after the run commits and reaches `onRunEnd`
 
-A process exit or session replacement before that completion leaves the row unacknowledged. Deferred work is retained for a replacement Command Code session, and Parle can redeliver after a process loss. This favors at-least-once delivery over silent loss.
+A process exit or session replacement before that completion leaves the row unacknowledged. Deferred work is retained for a replacement Command Code session, and Parle can redeliver after a process loss. Session and alias cursors remain independent: every pending row retains its delivered scope and alias identity/generation fence, and acknowledgement reuses that captured fence rather than current alias state. A queued alias receipt defers a generation-changing handoff rather than acknowledging under successor authority. This favors at-least-once delivery over silent loss.
 
 A message arriving during a run is folded into the next round. `onStop` keeps a naturally finishing run alive when pending delivery exists. Command Code 1.11.0 still has no supported API that starts a new model run in a fully idle TUI. An idle delivery is persisted and shown in the footer as pending, then reaches the model on the next run. The mod does not emulate idle wake with terminal automation, transcript edits, cron, polling, or another Command Code process.
 
