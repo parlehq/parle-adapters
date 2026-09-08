@@ -98,9 +98,13 @@ function seedStaleClientDist(root) {
   );
   if (changed === compiled) throw new Error("Could not seed the stale client dist fixture because the compiled protocol version shape changed.");
   writeFileSync(fixturePath, changed);
+  writeFileSync(resolve(root, `packages/client/dist/${staleSentinel}.js`), "export const obsolete = true;\n");
 }
 
 function assertStaleFixtureWasRebuilt(root) {
+  if (existsSync(resolve(root, `packages/client/dist/${staleSentinel}.js`))) {
+    throw new Error("The client build retained an orphaned dist module.");
+  }
   const canonicalBytes = readFileSync(resolve(root, canonicalArtifact), "utf8");
   if (canonicalBytes.includes(staleSentinel)) {
     throw new Error("The canonical MCP build consumed stale ignored client dist output instead of rebuilding @parlehq/agent-client first.");
