@@ -2,7 +2,7 @@
 
 ## 0.7.67 (unreleased)
 
-- Use the pending alias-transfer wire with explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Coordinated protocol activation and consumer validation are required before release.
+- Complete the coordinated unreleased `Parle-Version: 2026-09-08` wire cut in this already-bumped candidate, not a second version bump. It carries explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Release requires coordinated core activation and consumer validation.
 
 ## 0.7.66
 

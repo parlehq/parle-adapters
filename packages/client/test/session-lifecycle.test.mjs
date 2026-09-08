@@ -48,8 +48,8 @@ test("anonymous session creation sends a closed empty object and the current ver
   });
   await client.connect();
   assert.deepEqual(JSON.parse(seen[0][2]), {});
-  assert.equal(seen[0][3], "2026-08-17");
-  assert.equal(DEFAULT_VERSION, "2026-08-17");
+  assert.equal(seen[0][3], "2026-09-08");
+  assert.equal(DEFAULT_VERSION, "2026-09-08");
   await client.endSession().catch(() => undefined);
 });
 

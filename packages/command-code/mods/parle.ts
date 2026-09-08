@@ -625,7 +625,7 @@ function parseErrorEnvelope(value) {
 }
 
 // ../client/dist/protocol.js
-var DEFAULT_VERSION = "2026-08-17";
+var DEFAULT_VERSION = "2026-09-08";
 var ParleApiError = class extends Error {
   status;
   code;
