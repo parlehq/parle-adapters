@@ -10,6 +10,7 @@ const jitiFactory = req("jiti");
 const jiti = jitiFactory(import.meta.url, { interopDefault: true });
 const mod = jiti("../src/index.ts");
 const { __testing } = mod;
+const PI_EXTENSION_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const LOGIN_AGENT_ID = "019f2946-aef5-77ad-a41d-747ce0fd6a20";
 const ALIAS_ID = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
 
@@ -1245,7 +1246,7 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.sessionAddress, "@p.a.raw-session");
   assert.deepEqual(snapshot.rooms, [{ roomId: "room-1", roomHandle: "galexc-intercom", participantId: "p-1", state: "ready" }]);
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
-  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: "0.7.67" });
+  assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: PI_EXTENSION_VERSION });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
 });
 
@@ -1989,7 +1990,7 @@ test("Pi JSON, generic agent request, and wake use one protected process identit
   assert.equal(calls.length, 3);
   for (const call of calls) {
     assert.equal(call.headers["Parle-Client-Name"], "@parlehq/pi-extension");
-    assert.equal(call.headers["Parle-Client-Version"], "0.7.67");
+    assert.equal(call.headers["Parle-Client-Version"], PI_EXTENSION_VERSION);
     assert.equal(call.headers["Parle-Client-Instance"], __testing.clientInstanceId);
   }
   assert.equal(calls[1].headers["X-Test"], "safe");
@@ -3652,4 +3653,34 @@ test("Pi replaces one known-address block and leaves legacy peer files unreferen
   assert.equal(Object.hasOwn(status.details, "peerContext"), false);
   assert.doesNotThrow(() => harness.handlers.session_compact({}, harness.ctx));
   assert.deepEqual(readFileSync(legacyPath), legacyBytes);
+});
+
+test("footer restores the retained exact session address after alias loss", async () => {
+  let creates = 0;
+  let claims = 0;
+  const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+  const harness = installSendHarness(async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      creates++;
+      return json({ agent_session_id: "as-retained", session_credential: "parle_ses_secret-retained", address: "@p.a.exact-retained", expires_at: "2099-01-01T00:00:00Z" }, 201);
+    }
+    if (path.endsWith("/participants")) return json({ participant_id: "p-retained", baseline_seq: 0 }, 201);
+    if (path.includes("/projection")) return json({ messages: [] });
+    if (path === "/v/agent/wake") return new Response(new ReadableStream({ start() {} }));
+    if (path === "/v/agent/session-aliases/worker") return json({ alias: "worker", alias_identity_id: ALIAS_ID, generation: claims, current_agent_session_id: null });
+    if (path.endsWith("/claim-alias")) return json({ agent_session_id: "as-retained", alias: "worker", alias_identity_id: ALIAS_ID, generation: ++claims, address: "@p.a.worker" });
+    if (path.endsWith("/messages")) return json({ error: { code: "alias_context_stale", action: "resync", scope: "alias" } }, 409);
+    if (path.endsWith("/end")) return new Response(null, { status: 204 });
+    throw new Error(`unexpected ${path}`);
+  });
+  await harness.call("parle_session_alias", { alias: "worker" });
+  assert.match(harness.statuses.at(-1).label, /@p\.a\.worker/);
+  const result = await harness.call("parle_send", { body: "stale authority probe" });
+  assert.equal(result.details.code, "alias_context_stale");
+  assert.match(harness.statuses.at(-1).label, /@p\.a\.exact-retained/);
+  assert.doesNotMatch(harness.statuses.at(-1).label, /@p\.a\.worker|parle_ses_/);
+  assert.equal(__testing.runtimeState().agentSessionId, "as-retained");
+  assert.equal(creates, 1);
+  assert.equal(claims, 1);
 });

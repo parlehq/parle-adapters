@@ -110,3 +110,57 @@ test("absent aliases require injected human authority and alias stale leaves exa
     assert.deepEqual(client.responsiveDeliveryScopes(), ["session"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("alias loss restores only the current incarnation's server-issued exact address", async () => {
+  for (const rolloverAddress of ["@p.a.exact-2", undefined]) {
+    const root = mkdtempSync(join(tmpdir(), "parle-alias-address-"));
+    const calls = [];
+    let sessions = 0;
+    let generation = 0;
+    const client = new ParleAgentClient({
+      cwd: root,
+      env: { HOME: root, PARLE_ROOM_ID: ROOM, PARLE_ROOM_AGENT_TOKEN: "token" },
+      setTimer: () => 0,
+      clearTimer: () => {},
+      fetch: async (url, init = {}) => {
+        const path = new URL(String(url)).pathname;
+        calls.push(path);
+        if (path === "/v/agent/sessions") {
+          sessions++;
+          return json({ agent_session_id: `s${sessions}`, session_credential: `parle_ses_secret-${sessions}`,
+            address: sessions === 1 ? "@p.a.exact-1" : rolloverAddress, expires_at: "2099-01-01T00:00:00Z" }, 201);
+        }
+        if (path.endsWith("/participants")) return json({ participant_id: "p", baseline_seq: 0 }, 201);
+        if (path.includes("/projection")) return json({ messages: [] });
+        if (path === "/v/agent/wake") return new Response(new ReadableStream({ start() {} }));
+        if (path === "/v/agent/session-aliases/worker") return json({ alias: "worker", alias_identity_id: ID, generation, current_agent_session_id: null });
+        if (path.endsWith("/claim-alias")) return json({ agent_session_id: `s${sessions}`, alias: "worker", alias_identity_id: ID, generation: ++generation, address: "@p.a.worker" });
+        if (path.endsWith("/messages")) return json({ error: { code: "alias_context_stale", action: "resync", scope: "alias" } }, 409);
+        if (path.endsWith("/end")) return new Response(null, { status: 204 });
+        throw new Error(`unexpected ${path}`);
+      },
+    });
+    try {
+      await client.connect();
+      await client.switchSessionAlias("worker");
+      assert.equal(client.runtime.sessionAddress, "@p.a.worker");
+      const beforeLoss = calls.length;
+      assert.equal((await client.send({ body: "stale" })).code, "alias_context_stale");
+      assert.equal(client.runtime.sessionAddress, "@p.a.exact-1");
+      assert.equal(client.runtime.agentSessionId, "s1");
+      assert.deepEqual(calls.slice(beforeLoss), [`/v/rooms/${ROOM}/messages`]);
+      assert.deepEqual(client.responsiveDeliveryScopes(), ["session"]);
+      await client.switchSessionAlias("worker");
+      await client.performProactiveRollover();
+      assert.equal(client.runtime.agentSessionId, "s2");
+      assert.equal(client.runtime.sessionAddress, "@p.a.worker");
+      assert.equal((await client.send({ body: "stale again" })).code, "alias_context_stale");
+      assert.equal(client.runtime.sessionAddress, rolloverAddress ?? null);
+      assert.equal(client.runtime.sessionHandle, "parle_ses_secret-2");
+      assert.equal(sessions, 2, "loss must not reconnect");
+      assert.equal(calls.filter(path => path.endsWith("/claim-alias")).length, 3, "loss must not reclaim");
+      await client.endSession();
+      assert.equal(client.runtime.exactSessionAddress, undefined);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});

@@ -41532,6 +41532,7 @@ var ParleAgentClient = class _ParleAgentClient {
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
       sessionAddress: this.deriveSessionAddress({ sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof session.address === "string" ? session.address : null),
+      exactSessionAddress: authenticatedAddress ? session.address : null,
       ...authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {},
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
@@ -41711,7 +41712,7 @@ var ParleAgentClient = class _ParleAgentClient {
       sessionAlias: void 0,
       aliasIdentityId: void 0,
       sessionGeneration: 0,
-      sessionAddress: null,
+      sessionAddress: this.runtime.exactSessionAddress ?? null,
       responsiveCursorScope: this.runtime.responsiveCursorScope === "alias" ? "session" : this.runtime.responsiveCursorScope
     };
     this.assertExpectedAliasRecovered();
@@ -45138,7 +45139,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var MCP_CLIENT_NAME = "@parlehq/mcp-server";
-var MCP_CLIENT_VERSION = "0.7.75";
+var MCP_CLIENT_VERSION = "0.7.76";
 var MCP_CLIENT_INSTANCE_ID = processClientInstanceId();
 function resolveIntegrationMetadata(env = process.env) {
   const rawName = env.PARLE_INTEGRATION_NAME;

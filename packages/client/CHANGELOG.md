@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.62 (unreleased)
+
+- Restore the retained exact-session address after alias ownership moves to another session, without reconnecting or reclaiming the alias.
+
 ## 0.8.61 (unreleased)
 
 - Complete the coordinated unreleased `Parle-Version: 2026-09-08` wire cut in this already-bumped candidate, not a second version bump. It carries explicit assume, non-secret restart diagnostics, and separately fenced session and alias delivery. No session credentials are persisted. Release requires coordinated core activation and consumer validation.

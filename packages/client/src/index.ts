@@ -136,6 +136,9 @@ export type RuntimeState = {
   bootstrapState: BootstrapState;
   sessionHandle: string;
   sessionAddress: string | null;
+  // Public address returned when this incarnation opened, before any alias claim.
+  // Never reconstruct it from sessionHandle, which is a credential.
+  exactSessionAddress?: string | null;
   // Active alias authority only. A configured or previously requested alias is
   // intentionally separate and never authorizes a claim.
   sessionAlias?: string;
@@ -1793,6 +1796,7 @@ export class ParleAgentClient {
         { sessionHandle: typeof session.session_handle === "string" ? session.session_handle : undefined },
         typeof session.address === "string" ? session.address : null,
       ),
+      exactSessionAddress: authenticatedAddress ? session.address : null,
       ...(authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {}),
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
@@ -1987,7 +1991,7 @@ export class ParleAgentClient {
       this.aliasLifecycleStateAvailable = Boolean(next);
     }
     if (this.runtime.sessionAlias !== alias) return;
-    this.runtime = { ...this.runtime, sessionAlias: undefined, aliasIdentityId: undefined, sessionGeneration: 0, sessionAddress: null,
+    this.runtime = { ...this.runtime, sessionAlias: undefined, aliasIdentityId: undefined, sessionGeneration: 0, sessionAddress: this.runtime.exactSessionAddress ?? null,
       responsiveCursorScope: this.runtime.responsiveCursorScope === "alias" ? "session" : this.runtime.responsiveCursorScope };
     this.assertExpectedAliasRecovered();
   }

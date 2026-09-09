@@ -6606,6 +6606,7 @@ var ParleAgentClient = class _ParleAgentClient {
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
       sessionAddress: this.deriveSessionAddress({ sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof session.address === "string" ? session.address : null),
+      exactSessionAddress: authenticatedAddress ? session.address : null,
       ...authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {},
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
@@ -6785,7 +6786,7 @@ var ParleAgentClient = class _ParleAgentClient {
       sessionAlias: void 0,
       aliasIdentityId: void 0,
       sessionGeneration: 0,
-      sessionAddress: null,
+      sessionAddress: this.runtime.exactSessionAddress ?? null,
       responsiveCursorScope: this.runtime.responsiveCursorScope === "alias" ? "session" : this.runtime.responsiveCursorScope
     };
     this.assertExpectedAliasRecovered();
@@ -8136,7 +8137,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.67";
+var PI_EXTENSION_VERSION = "0.7.68";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";

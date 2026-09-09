@@ -5,7 +5,7 @@ import { registerParleTools, type DegradedMcpBoot, type ParleMcpClientLike, type
 import { z } from "zod";
 
 const ADAPTER_NAME = "@parlehq/command-code-adapter";
-const ADAPTER_VERSION = "0.7.50";
+const ADAPTER_VERSION = "0.7.51";
 const CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 const STATUS_INTERVAL_MS = 5_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

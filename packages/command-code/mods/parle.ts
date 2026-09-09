@@ -6858,6 +6858,7 @@ var ParleAgentClient = class _ParleAgentClient {
       bootstrapState: "starting",
       sessionHandle: String(session.session_credential || ""),
       sessionAddress: this.deriveSessionAddress({ sessionHandle: typeof session.session_handle === "string" ? session.session_handle : void 0 }, typeof session.address === "string" ? session.address : null),
+      exactSessionAddress: authenticatedAddress ? session.address : null,
       ...authenticatedAddress ? { authenticatedAgent: `${authenticatedAddress.principal}.${authenticatedAddress.agent}` } : {},
       sessionGeneration: 0,
       sessionRevision: this.runtime.sessionRevision,
@@ -7037,7 +7038,7 @@ var ParleAgentClient = class _ParleAgentClient {
       sessionAlias: void 0,
       aliasIdentityId: void 0,
       sessionGeneration: 0,
-      sessionAddress: null,
+      sessionAddress: this.runtime.exactSessionAddress ?? null,
       responsiveCursorScope: this.runtime.responsiveCursorScope === "alias" ? "session" : this.runtime.responsiveCursorScope
     };
     this.assertExpectedAliasRecovered();
@@ -23679,7 +23680,7 @@ async function safeTool(fn, inferError = true) {
 
 // src/index.ts
 var ADAPTER_NAME = "@parlehq/command-code-adapter";
-var ADAPTER_VERSION = "0.7.50";
+var ADAPTER_VERSION = "0.7.51";
 var CUSTOM_MESSAGE_TYPE = "parle/responsive-delivery";
 var STATUS_INTERVAL_MS = 5e3;
 var UUID_RE6 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
