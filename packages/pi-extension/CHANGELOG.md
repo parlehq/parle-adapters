@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.69 (unreleased)
+
+- Add explicit `--parle-alias <alias>` startup assumption. Pi verifies identity, claims once without a model turn, and holds input and responsive acknowledgement admission until configured watcher startup is ready. A confirmed claim followed by watcher startup failure remains a reported partial success and is never undone or retried.
+
 ## 0.7.68 (unreleased)
 
 - Restore the retained exact-session address after alias ownership moves to another session, without reconnecting or reclaiming the alias.

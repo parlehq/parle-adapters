@@ -14,16 +14,19 @@ const PI_EXTENSION_VERSION = JSON.parse(readFileSync(new URL("../package.json", 
 const LOGIN_AGENT_ID = "019f2946-aef5-77ad-a41d-747ce0fd6a20";
 const ALIAS_ID = "019f7b46-178f-7a5a-9f7b-b4af2e045261";
 
-function installHarness(cwd) {
+function installHarness(cwd, flags = {}) {
   __testing.resetRuntime();
   const tools = {};
   const commands = {};
   const handlers = {};
+  const registeredFlags = {};
   const injected = [];
   const pi = {
     on(name, handler) { handlers[name] = handler; },
     registerCommand(name, spec) { commands[name] = spec; },
     registerTool(spec) { tools[spec.name] = spec; },
+    registerFlag(name, spec) { registeredFlags[name] = spec; },
+    getFlag(name) { return flags[name]; },
     sendUserMessage(message) { injected.push(message); },
   };
   mod.default(pi);
@@ -34,6 +37,7 @@ function installHarness(cwd) {
     tools,
     commands,
     handlers,
+    registeredFlags,
     statuses,
     injected,
     pi,
@@ -1248,6 +1252,132 @@ test("status publishes a display-safe runtime snapshot", async () => {
   assert.equal(snapshot.roomId, undefined, "v1 fields are gone in the hard cut");
   assert.deepEqual(snapshot.adapter, { name: "@parlehq/pi-extension", version: PI_EXTENSION_VERSION });
   assert.equal(JSON.stringify(snapshot).includes("parle_ses_raw-session"), false);
+});
+
+test("--parle-alias claims once after bootstrap and admits queued input without a model turn", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  const order = [];
+  let releaseBootstrap;
+  const bootstrapGate = new Promise((resolve) => { releaseBootstrap = resolve; });
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v/agent/sessions") {
+      order.push("session");
+      await bootstrapGate;
+      return new Response(JSON.stringify({ agent_session_id: "launch-session", session_credential: "parle_ses_launch", session_handle: "launch", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.launch" }), { status: 201 });
+    }
+    if (path.endsWith("/participants")) { order.push("entry"); return new Response(JSON.stringify({ participant_id: "p-launch", room_handle: "launch-room" }), { status: 201 }); }
+    if (path.includes("/projection")) { order.push("projection"); return new Response(JSON.stringify({ watermark: 0, messages: [] })); }
+    if (path === "/v/agent/session-aliases/launch-worker") { order.push("alias-read"); return new Response(JSON.stringify({ alias: "launch-worker", alias_identity_id: ALIAS_ID, generation: 1, current_agent_session_id: "prior" })); }
+    if (path.endsWith("/claim-alias")) { order.push("claim"); return new Response(JSON.stringify({ agent_session_id: "launch-session", alias: "launch-worker", alias_identity_id: ALIAS_ID, generation: 2, address: "@p.a.launch-worker", expires_at: "2099-01-01T00:00:00Z" })); }
+    throw new Error(`unexpected ${path}`);
+  };
+  const harness = installHarness(cwd, { "parle-alias": "launch-worker" });
+  assert.equal(harness.registeredFlags["parle-alias"].type, "string");
+  const startup = harness.handlers.session_start({ reason: "startup" }, harness.ctx);
+  const repeatedStartup = harness.handlers.session_start({ reason: "startup" }, harness.ctx);
+  // Re-evaluate the shipped module, not just its factory, while startup awaits.
+  const freshModule = await import(`../dist/index.js?launch-reload=${Date.now()}`);
+  const freshHandlers = {};
+  freshModule.default({ ...harness.pi, on(name, handler) { freshHandlers[name] = handler; } });
+  const reloadedStartup = freshHandlers.session_start({ reason: "startup" }, harness.ctx);
+  assert.equal((await harness.handlers.input({ text: "queued", source: "rpc" }, harness.ctx)).action, "handled");
+  assert.deepEqual(harness.injected, []);
+  releaseBootstrap();
+  await Promise.all([startup, repeatedStartup, reloadedStartup]);
+  assert.deepEqual(order, ["session", "entry", "projection", "alias-read", "claim"]);
+  assert.equal(__testing.aliasLaunchState().attempted, true);
+  assert.equal(__testing.aliasLaunchState().alias, "launch-worker");
+  assert.equal(__testing.aliasLaunchState().generation, 2);
+  assert.equal(__testing.aliasLaunchState().sessionAddress, "@p.a.launch-worker");
+  assert.equal(__testing.aliasLaunchState().outcome, "ready");
+  assert.equal((await harness.handlers.input({ text: "now", source: "rpc" }, harness.ctx)).action, "continue");
+  await harness.handlers.session_start({ reason: "startup" }, harness.ctx);
+  await harness.handlers.session_start({ reason: "reload" }, harness.ctx);
+  assert.equal(order.filter((item) => item === "claim").length, 1, "startup overlap and reload never repeat the assumption");
+});
+
+test("--parle-alias does not latch on a nonstartup handoff after reset", async () => {
+  const harness = installHarness(tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n"), { "parle-alias": "launch-worker" });
+  await harness.handlers.session_start({ reason: "reload" }, harness.ctx);
+  assert.equal(__testing.aliasLaunchState().attempted, false);
+  assert.equal((await harness.handlers.input({ text: "normal", source: "rpc" }, harness.ctx)).action, "continue");
+});
+
+test("--parle-alias refuses config resolution before preflight and closes admission", async () => {
+  const harness = installHarness(tempProject("PARLE_PROFILE=work\nPARLE_ROOM_ID=stale\n"), { "parle-alias": "launch-worker" });
+  const shutdowns = [];
+  const ctx = { ...harness.ctx, mode: "rpc", shutdown() { shutdowns.push(true); } };
+  const previousExitCode = process.exitCode;
+  try {
+    await assert.rejects(harness.handlers.session_start({ reason: "startup" }, ctx), /conflicts with direct configuration/);
+    assert.equal(__testing.aliasLaunchState().outcome, "refused");
+    assert.equal((await harness.handlers.input({ text: "nope", source: "rpc" }, ctx)).action, "handled");
+    assert.equal(shutdowns.length, 1);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("--parle-alias refuses disabled or conflicting configuration without claiming", async () => {
+  const disabled = installHarness(tempProject("PARLE_ENABLED=0\n"), { "parle-alias": "launch-worker" });
+  globalThis.fetch = async () => { assert.fail("disabled launch must not reach Parle"); };
+  await assert.rejects(disabled.handlers.session_start({ reason: "startup" }, disabled.ctx), /disabled/);
+  assert.equal(__testing.aliasLaunchState().outcome, "refused");
+  assert.equal((await disabled.handlers.input({ text: "nope", source: "rpc" }, disabled.ctx)).action, "handled");
+
+  const conflict = installHarness(tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_SESSION_ALIAS=other-worker\nPARLE_WATCH_ENABLED=0\n"), { "parle-alias": "launch-worker" });
+  globalThis.fetch = async () => { assert.fail("conflicting launch must not reach Parle"); };
+  await assert.rejects(conflict.handlers.session_start({ reason: "startup" }, conflict.ctx), /conflicts with display-only PARLE_SESSION_ALIAS/);
+  assert.equal(__testing.aliasLaunchState().outcome, "refused");
+});
+
+test("--parle-alias refusal survives a new extension factory", async () => {
+  const cwd = tempProject("PARLE_ENABLED=0\n");
+  const first = installHarness(cwd, { "parle-alias": "launch-worker" });
+  await assert.rejects(first.handlers.session_start({ reason: "startup" }, first.ctx), /disabled/);
+  const handlers = {};
+  mod.default({
+    on(name, handler) { handlers[name] = handler; },
+    registerCommand() {}, registerTool() {}, registerFlag() {},
+    getFlag(name) { return name === "parle-alias" ? "launch-worker" : undefined; },
+    sendUserMessage() {},
+  });
+  assert.equal((await handlers.input({ text: "nope", source: "rpc" }, first.ctx)).action, "handled");
+  await assert.rejects(handlers.session_start({ reason: "startup" }, first.ctx), /disabled/);
+  assert.equal(__testing.aliasLaunchState().outcome, "refused");
+});
+
+test("--parle-alias keeps the launch closed after claimed watcher startup failure", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=1\n");
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const path = new URL(String(url)).pathname;
+    calls.push(path);
+    if (path === "/v/agent/sessions") return new Response(JSON.stringify({ agent_session_id: "partial-session", session_credential: "parle_ses_partial", session_handle: "partial", expires_at: "2099-01-01T00:00:00Z", address: "@p.a.partial" }), { status: 201 });
+    if (path.endsWith("/participants")) return new Response(JSON.stringify({ participant_id: "p-partial", room_handle: "partial-room" }), { status: 201 });
+    if (path.includes("/projection")) return new Response(JSON.stringify({ watermark: 0, messages: [] }));
+    if (path === "/v/agent/session-aliases/launch-worker") return new Response(JSON.stringify({ alias: "launch-worker", alias_identity_id: ALIAS_ID, generation: 1, current_agent_session_id: "prior" }));
+    if (path.endsWith("/claim-alias")) return new Response(JSON.stringify({ agent_session_id: "partial-session", alias: "launch-worker", alias_identity_id: ALIAS_ID, generation: 2, address: "@p.a.launch-worker", expires_at: "2099-01-01T00:00:00Z" }));
+    if (path.includes("/responsive-delivery")) return new Response(JSON.stringify({ error: { code: "unavailable", message: "watch startup failed", action: "backoff", retryable: true } }), { status: 503 });
+    throw new Error(`unexpected ${path}`);
+  };
+  const harness = installHarness(cwd, { "parle-alias": "launch-worker" });
+  await assert.rejects(harness.handlers.session_start({ reason: "startup" }, harness.ctx), /wake stream could not be opened|did not open before startup timeout|unexpected \/v\/agent\/wake/);
+  assert.equal(__testing.aliasLaunchState().outcome, "partial");
+  assert.equal((await harness.handlers.input({ text: "no model", source: "rpc" }, harness.ctx)).action, "handled");
+  assert.equal(calls.filter((path) => path.endsWith("/claim-alias")).length, 1);
+  await assert.rejects(harness.handlers.session_start({ reason: "reload" }, harness.ctx), /alias launch claimed/);
+  assert.equal(calls.filter((path) => path.endsWith("/claim-alias")).length, 1, "reload does not undo or retry a confirmed claim");
+});
+
+test("responsive queue retains every deferred row without acknowledging overflow", async () => {
+  const cwd = tempProject("PARLE_ROOM_ID=room-1\nPARLE_ROOM_AGENT_TOKEN=token-1\nPARLE_WATCH_ENABLED=0\n");
+  const harness = installHarness(cwd);
+  const cfg = __testing.resolveConfig(cwd);
+  globalThis.fetch = async () => { assert.fail("deferred overflow must not acknowledge"); };
+  await __testing.queueResponsiveMessages(harness.ctx, cfg, Array.from({ length: 101 }, (_, index) => ({ seq: index + 1, event_id: `cap-${index + 1}`, content: "held" })));
+  assert.equal(__testing.runtimeState().pendingResponsiveCount, 101);
 });
 
 test("configured alias remains requested until an explicit assumption", async () => {

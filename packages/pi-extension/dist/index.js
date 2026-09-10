@@ -8137,7 +8137,7 @@ var ParleAgentClient = class _ParleAgentClient {
 import { Type } from "typebox";
 var EXTENSION_ID = "25-parle";
 var PI_CLIENT_NAME = "@parlehq/pi-extension";
-var PI_EXTENSION_VERSION = "0.7.68";
+var PI_EXTENSION_VERSION = "0.7.69";
 var PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 var AI_GUIDANCE_URL = "https://ai.parle.sh";
 var API_LLMS_URL = "https://api.parle.sh/llms.txt";
@@ -8155,6 +8155,20 @@ var RATE_LIMIT_FAILURE_THRESHOLD = 5;
 var RATE_LIMIT_MAX_ELAPSED_MS = 15 * 60 * 1e3;
 var INJECTED_KEY_LIMIT = 4096;
 var DELIVERY_PROGRESS_LIMIT = 64;
+var ALIAS_LAUNCH_STATE_KEY = /* @__PURE__ */ Symbol.for("@parlehq/pi-extension/parle-alias-launch-state");
+function aliasLaunchState() {
+  const host = globalThis;
+  return host[ALIAS_LAUNCH_STATE_KEY] ||= { attempted: false, outcome: "idle" };
+}
+function launchAdmissionOpen() {
+  const state = aliasLaunchState();
+  return !state.attempted || state.outcome === "ready";
+}
+function launchRefusalMessage() {
+  const state = aliasLaunchState();
+  if (state.outcome === "ended") return "Parle launch session ended; prompts remain closed. Start a new process with --parle-alias to request another assumption.";
+  return state.outcome === "partial" ? `Parle alias launch claimed ${state.alias || "the requested alias"}, but responsive delivery did not start; this session will not consume prompts: ${state.error || "watcher startup failed"}` : `Parle alias launch did not complete; this session will not consume prompts: ${state.error || "alias assumption failed"}`;
+}
 var runtime = { watcherState: "off" };
 var identityGuard = "unconfigured";
 var identityRefusal;
@@ -8175,6 +8189,31 @@ function refuseDeclaredIdentity(ctx, cfg, error) {
   runtime.watcherState = terminalWatcherState(error) || "disconnected";
   runtime.lastError = identityRefusal;
   setStatus(ctx, cfg);
+  if (!headlessHost(ctx)) return;
+  process.exitCode = 1;
+  try {
+    ctx.shutdown?.();
+  } catch {
+  }
+}
+function refuseAliasLaunch(ctx, cfg, error, partial = false) {
+  const state = aliasLaunchState();
+  state.outcome = partial ? "partial" : "refused";
+  state.error = redactString(error instanceof Error ? error.message : String(error));
+  const terminal = new Error(state.error);
+  terminal.code = partial ? "alias_launch_watcher_failed" : "alias_launch_failed";
+  terminal.action = "stop";
+  terminal.scope = "agent_session";
+  terminal.retryable = false;
+  if (cfg) recordAutomaticFailure(terminal, cfg);
+  runtime.nextRetryAt = void 0;
+  runtime.watcherState = "disconnected";
+  runtime.lastError = state.error;
+  if (cfg) setStatus(ctx, cfg);
+  try {
+    ctx?.ui?.notify?.(launchRefusalMessage(), "error");
+  } catch {
+  }
   if (!headlessHost(ctx)) return;
   process.exitCode = 1;
   try {
@@ -8241,6 +8280,7 @@ var watcherTask;
 var recoveryRestartAbort;
 var watcherLoopRunning = false;
 var activeWatcherRunId = 0;
+var watcherStartup;
 var rateLimitFirst429MonotonicMs;
 var rateLimitRecoveryInProgress = false;
 var wallNowMs = () => Date.now();
@@ -8736,6 +8776,10 @@ function recordHostDeliveryProgress(kind, detail = {}) {
 }
 function piDeliveryHandler(pi, ctx, cfg, input) {
   const key = deliveryKey2(input.roomId, input.message);
+  if (!launchAdmissionOpen()) {
+    if (key && !pendingResponsiveMessages.some((item) => item.key === key)) queuePendingResponsive(input, key, false);
+    return "deferred";
+  }
   if (!key) {
     runtime.lastError = "responsive delivery row missing seq or event_id";
     runtime.lastWatcherErrorAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -8765,7 +8809,7 @@ function piDeliveryHandler(pi, ctx, cfg, input) {
   runtime.lastBufferedSeq = typeof input.message.seq === "number" ? Math.max(runtime.lastBufferedSeq || 0, input.message.seq) : runtime.lastBufferedSeq;
   return "deferred";
 }
-function scheduleResponsiveFlush(pi, ctx, cfg) {
+function scheduleResponsiveFlush(pi, ctx, cfg, delayMs = 0) {
   if (responsiveFlushScheduled || shutdownRequested || lifecycleEnded) return;
   responsiveFlushScheduled = true;
   const timer = setTimeout(() => {
@@ -8776,8 +8820,9 @@ function scheduleResponsiveFlush(pi, ctx, cfg) {
     void flushPendingResponsiveMessages(firePi, fireCtx, cfg).catch((error) => {
       recordWatcherError(error);
       setStatus(fireCtx, cfg);
+      scheduleResponsiveFlush(firePi, fireCtx, cfg, watcherRetryDelayMs(error));
     });
-  }, 0);
+  }, delayMs);
   timer.unref?.();
 }
 function queuePendingResponsive(input, key, skip) {
@@ -8923,7 +8968,7 @@ async function runSavedStart(pi, ctx, start, signal) {
     nextQueued: Boolean(start.next)
   };
 }
-async function useSessionAlias(pi, ctx, cfg, alias, signal, toolAgentId) {
+async function useSessionAlias(pi, ctx, cfg, alias, signal, toolAgentId, startAfterAlias = true) {
   assertLifecycleActive();
   const live = agentClient(ctx, cfg);
   const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
@@ -8937,7 +8982,7 @@ async function useSessionAlias(pi, ctx, cfg, alias, signal, toolAgentId) {
     runtime.watcherEnabled = parseBoolEnabled(cfg.watchEnabled.value);
     setStatus(ctx, cfg);
     if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
-    else {
+    else if (startAfterAlias) {
       stopWatcher(ctx);
       startWatcher(pi, ctx, cfg);
     }
@@ -9042,6 +9087,7 @@ function assertDeliveryFenceCurrent(fence) {
   }
 }
 async function completePendingResponsive(pi, ctx, cfg, item) {
+  if (!launchAdmissionOpen()) return false;
   assertDeliveryFenceCurrent(item.fence);
   const controller = ensureDeliveryController(pi, ctx, cfg);
   const roomId = item.fence.roomId || cfg.roomId?.value || "";
@@ -9067,6 +9113,7 @@ async function completePendingResponsive(pi, ctx, cfg, item) {
     throw new Error(`Parle responsive acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
   }
   runtime.lastAckedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastAckedSeq || 0, item.message.seq) : runtime.lastAckedSeq;
+  return true;
 }
 function classifyWatcherError(error) {
   if (error?.code === "timeout") return "timeout";
@@ -9205,7 +9252,7 @@ async function queueResponsiveMessages(ctx, cfg, messages, responsePreamble, sig
   setStatus(ctx, cfg);
 }
 async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
-  if (responsiveFlushRunning || pendingResponsiveMessages.length === 0) return;
+  if (!launchAdmissionOpen() || responsiveFlushRunning || pendingResponsiveMessages.length === 0) return;
   responsiveFlushRunning = true;
   try {
     while (pendingResponsiveMessages.length > 0 && !signal?.aborted) {
@@ -9240,7 +9287,7 @@ async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
         }
       }
       for (const item of batch) {
-        await completePendingResponsive(pi, ctx, cfg, item);
+        if (!await completePendingResponsive(pi, ctx, cfg, item)) return;
         pendingResponsiveMessages.shift();
         updatePendingResponsiveState();
       }
@@ -9253,6 +9300,10 @@ async function flushPendingResponsiveMessages(pi, ctx, cfg, signal) {
 }
 function watcherWakeOpenPolicy(ctx, cfg, runId) {
   if (shutdownRequested || lifecycleEnded || runId !== activeWatcherRunId) return;
+  if (watcherStartup?.runId === runId) {
+    watcherStartup.resolve();
+    watcherStartup = void 0;
+  }
   recordWatcherSuccess(true);
   if (runtime.terminalCause || runtime.rateLimitParkedCause) return;
   runtime.watcherState = "watching";
@@ -9262,6 +9313,11 @@ function watcherWakeErrorPolicy(ctx, cfg, error, runId) {
   if (shutdownRequested || lifecycleEnded) return "stop";
   if (runId !== activeWatcherRunId) return "stop";
   if (!recordAutomaticFailure(error, cfg, runId)) return "stop";
+  if (watcherStartup?.runId === runId) {
+    watcherStartup.reject(error);
+    watcherStartup = void 0;
+    return "stop";
+  }
   const terminalState = terminalWatcherState(error);
   runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
   setStatus(ctx, cfg);
@@ -9273,7 +9329,32 @@ function watcherWakeErrorPolicy(ctx, cfg, error, runId) {
   }
   return "continue";
 }
-async function runWatcher(pi, ctx, cfg, signal, runId) {
+async function awaitWatcherStart(start, startup, signal) {
+  const timer = new AbortController();
+  let abort;
+  const aborted = new Promise((_, reject) => {
+    abort = () => reject(new Error("Parle watcher startup stopped"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    await Promise.race([
+      start.then(() => startup),
+      watcherSleep(1e4, timer.signal).then(() => {
+        throw new Error("Parle wake stream did not open before startup timeout");
+      }),
+      aborted
+    ]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+    timer.abort();
+  }
+}
+async function runWatcher(pi, ctx, cfg, signal, runId, propagateStartupFailure = false) {
+  const startup = propagateStartupFailure ? new Promise((resolve2, reject) => {
+    watcherStartup = { runId, resolve: resolve2, reject };
+  }) : void 0;
+  void startup?.catch(() => void 0);
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
@@ -9290,7 +9371,13 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
     signal.addEventListener("abort", () => {
       if (deliveryController === controller) void controller.stop().catch(() => void 0);
     }, { once: true });
-    await controller.start();
+    const controllerStart = controller.start();
+    void controllerStart.catch(() => void 0);
+    if (startup) {
+      await awaitWatcherStart(controllerStart, startup, signal);
+      const failedDrain = controller.status().rooms.find((room) => room.lastError);
+      if (failedDrain) throw new Error(failedDrain.lastError);
+    } else void controllerStart.catch(() => void 0);
     if (initialBaseline) {
       baselineNeeded = false;
       runtime.baselineAt = (/* @__PURE__ */ new Date()).toISOString();
@@ -9298,6 +9385,10 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
     }
     await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   } catch (error) {
+    if (watcherStartup?.runId === runId) {
+      watcherStartup.reject(error);
+      watcherStartup = void 0;
+    }
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
       if (identityGuard !== "unconfigured" && identityGuard !== "refused" && terminalError(error)) refuseDeclaredIdentity(ctx, cfg, error);
@@ -9305,7 +9396,7 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
       runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       watcherLoopRunning = false;
       setStatus(ctx, cfg);
-      if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
+      if (!propagateStartupFailure && !terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
         let retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
         while (retryDelay > 0 && !signal.aborted) {
           await watcherSleep(retryDelay, signal).catch(() => void 0);
@@ -9315,12 +9406,13 @@ async function runWatcher(pi, ctx, cfg, signal, runId) {
           startWatcher(pi, ctx, cfg);
         }
       }
+      if (propagateStartupFailure) throw error;
     }
   }
 }
-function startWatcher(pi, ctx, cfg = resolveConfig2(ctx.cwd || process.cwd())) {
+function startWatcher(pi, ctx, cfg = resolveConfig2(ctx.cwd || process.cwd()), allowLaunchPending = false, propagateStartupFailure = false) {
   if (shutdownRequested || lifecycleEnded) return;
-  if (identityGuard === "refused") return;
+  if (identityGuard === "refused" || !allowLaunchPending && !launchAdmissionOpen()) return;
   if (client?.runtime.bootstrapped && cfg.roomId?.value && client.runtime.rooms?.[0]?.roomId && client.runtime.rooms[0].roomId !== cfg.roomId.value) return;
   if (!watcherConfigured(cfg) || automaticGateClosed(cfg)) return;
   const controllerRunning = Boolean(deliveryController?.status().running);
@@ -9328,14 +9420,19 @@ function startWatcher(pi, ctx, cfg = resolveConfig2(ctx.cwd || process.cwd())) {
   watcherAbort?.abort();
   watcherAbort = new AbortController();
   const runId = ++activeWatcherRunId;
-  const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
+  const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId, propagateStartupFailure);
   watcherTask = task;
   void task.catch(() => void 0).finally(() => {
     if (watcherTask === task) watcherTask = void 0;
   });
+  return task;
 }
 function stopWatcher(ctx) {
   activeWatcherRunId += 1;
+  if (watcherStartup) {
+    watcherStartup.reject(new Error("Parle watcher startup stopped"));
+    watcherStartup = void 0;
+  }
   watcherAbort?.abort();
   watcherAbort = void 0;
   recoveryRestartAbort?.abort();
@@ -9442,6 +9539,7 @@ function statusDetails(ctx) {
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request."
     },
     sessionAlias: redactedValue2(cfg.sessionAlias),
+    aliasLaunch: { ...aliasLaunchState() },
     identityGuard,
     ...identityRefusal ? { identityRefusal } : {},
     expectedAgent: redactedValue2(cfg.expectedAgent),
@@ -9612,7 +9710,11 @@ var __testing = {
   identityGuard() {
     return identityGuard;
   },
+  aliasLaunchState() {
+    return { ...aliasLaunchState() };
+  },
   resetRuntime() {
+    delete globalThis[ALIAS_LAUNCH_STATE_KEY];
     runtime = { watcherState: "off" };
     identityGuard = "unconfigured";
     identityRefusal = void 0;
@@ -9629,6 +9731,7 @@ var __testing = {
     recoveryRestartAbort = void 0;
     watcherLoopRunning = false;
     activeWatcherRunId = 0;
+    watcherStartup = void 0;
     rateLimitFirst429MonotonicMs = void 0;
     rateLimitRecoveryInProgress = false;
     wallNowMs = () => Date.now();
@@ -9674,9 +9777,74 @@ function resolveLifecycleConfig(ctx) {
     return void 0;
   }
 }
+function reportAliasLaunch(ctx, cfg, phase) {
+  const state = aliasLaunchState();
+  const result = JSON.stringify({ alias: state.alias, generation: state.generation, sessionAddress: state.sessionAddress, phase });
+  setStatus(ctx, cfg);
+  if (ctx?.mode === "rpc") {
+    try {
+      ctx.ui?.setStatus?.("parle-alias-launch", result);
+    } catch {
+    }
+  } else if (ctx?.mode === "json" || ctx?.mode === "print") {
+    console.error(result);
+  } else {
+    try {
+      ctx?.ui?.notify?.(result, "info");
+    } catch {
+    }
+  }
+}
+async function launchSessionAlias(pi, ctx, cfg, alias) {
+  const state = aliasLaunchState();
+  setStatus(ctx, cfg);
+  try {
+    if (!isValidSessionAlias(alias)) {
+      throw new Error("--parle-alias must be an unreserved 2 to 32 character durable session alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.");
+    }
+    assertRuntimeConfig(cfg);
+    if (cfg.sessionAlias?.value && cfg.sessionAlias.value !== alias) {
+      throw new Error(`--parle-alias ${alias} conflicts with display-only PARLE_SESSION_ALIAS=${cfg.sessionAlias.value}; use one requested alias.`);
+    }
+    if (identityExpectationsConfigured(cfg)) await verifyDeclaredIdentity(ctx, cfg);
+    else await ensureBootstrapped(ctx, cfg);
+    const result = await useSessionAlias(pi, ctx, cfg, alias, void 0, void 0, false);
+    state.outcome = "claimed";
+    if (result.alias !== alias || !Number.isSafeInteger(result.generation) || typeof result.sessionAddress !== "string" || !result.sessionAddress) {
+      throw new Error("Parle alias claim did not return the requested alias, generation, and session address.");
+    }
+    state.alias = result.alias;
+    state.generation = result.generation;
+    state.sessionAddress = result.sessionAddress;
+    reportAliasLaunch(ctx, cfg, "claimed");
+    if (watcherConfigured(cfg)) {
+      const watcher = startWatcher(pi, ctx, cfg, true, true);
+      if (!watcher) throw new Error("Parle responsive watcher startup was refused");
+      await watcher;
+    }
+    state.outcome = "ready";
+    reportAliasLaunch(ctx, cfg, "ready");
+    try {
+      await flushPendingResponsiveMessages(pi, ctx, cfg);
+    } catch (error) {
+      recordWatcherError(error);
+      setStatus(ctx, cfg);
+      scheduleResponsiveFlush(pi, ctx, cfg, watcherRetryDelayMs(error));
+    }
+  } catch (error) {
+    const partial = state.outcome === "claimed" || state.outcome === "ready";
+    refuseAliasLaunch(ctx, cfg, error, partial);
+    throw error;
+  }
+}
 async function shutdownLifecycle(ctx, _cfg) {
   if (shutdownRequested) return;
   shutdownRequested = true;
+  const launch = aliasLaunchState();
+  if (launch.attempted && launch.outcome === "ready") {
+    launch.outcome = "ended";
+    if (_cfg) reportAliasLaunch(ctx, _cfg, "ended");
+  }
   stopWatcher();
   discardDeliveryController();
   removeRuntimeFile2(ctx.cwd || process.cwd());
@@ -9711,13 +9879,57 @@ async function shutdownLifecycle(ctx, _cfg) {
 }
 function parleExtension(pi) {
   lastPi = pi;
-  pi.on("session_start", async (_event, ctx) => {
+  pi.registerFlag("parle-alias", {
+    description: "Explicitly assume this durable Parle session alias at process startup.",
+    type: "string"
+  });
+  pi.on("session_start", async (event, ctx) => {
     lastCtx = ctx;
     pruneRuntimeFiles(ctx.cwd || process.cwd());
+    const launchAlias = event?.reason === "startup" ? pi.getFlag("parle-alias") : void 0;
+    const launchRequested = launchAlias !== void 0;
+    if (launchRequested && !aliasLaunchState().attempted) {
+      const state = aliasLaunchState();
+      state.attempted = true;
+      state.alias = typeof launchAlias === "string" ? launchAlias : void 0;
+      state.outcome = "pending";
+      state.error = void 0;
+    }
     const cfg = resolveLifecycleConfig(ctx);
-    if (!cfg) return;
-    preflightAutomaticBinding(cfg);
-    bindDeclaredExpectations(ctx, cfg);
+    if (!cfg) {
+      if (!launchRequested) return;
+      const error = new Error(runtime.lastError || "Parle alias launch could not resolve configuration.");
+      refuseAliasLaunch(ctx, void 0, error);
+      throw error;
+    }
+    if (!launchAdmissionOpen() && (!launchRequested || aliasLaunchState().outcome !== "pending")) {
+      if (headlessHost(ctx)) {
+        process.exitCode = 1;
+        try {
+          ctx.shutdown?.();
+        } catch {
+        }
+      }
+      throw new Error(launchRefusalMessage());
+    }
+    try {
+      preflightAutomaticBinding(cfg);
+      bindDeclaredExpectations(ctx, cfg);
+    } catch (error) {
+      if (launchRequested) refuseAliasLaunch(ctx, cfg, error, aliasLaunchState().outcome === "claimed" || aliasLaunchState().outcome === "ready");
+      throw error;
+    }
+    if (launchRequested) {
+      if (typeof launchAlias !== "string" || !launchAlias) {
+        const error = new Error("--parle-alias requires a non-empty alias value.");
+        refuseAliasLaunch(ctx, cfg, error);
+        throw error;
+      }
+      const state = aliasLaunchState();
+      if (!state.task && state.outcome === "pending") state.task = launchSessionAlias(pi, ctx, cfg, launchAlias);
+      if (state.task) await state.task;
+      return;
+    }
     if (identityExpectationsConfigured(cfg)) {
       try {
         await verifyDeclaredIdentity(ctx, cfg);
@@ -9732,13 +9944,13 @@ function parleExtension(pi) {
     startWatcher(pi, ctx, cfg);
   });
   pi.on("input", async (_event, ctx) => {
-    if (identityGuard === "unconfigured" || identityGuard === "verified") return { action: "continue" };
-    const reason = identityRefusalMessage();
+    if (launchAdmissionOpen() && (identityGuard === "unconfigured" || identityGuard === "verified")) return { action: "continue" };
+    const reason = !launchAdmissionOpen() ? launchRefusalMessage() : identityRefusalMessage();
     try {
       if (ctx?.hasUI) ctx.ui?.notify?.(reason, "error");
     } catch {
     }
-    if (identityGuard === "pending" && !identityVerifyInFlight && !watcherLoopRunning) {
+    if (launchAdmissionOpen() && identityGuard === "pending" && !identityVerifyInFlight && !watcherLoopRunning) {
       const cfg = resolveLifecycleConfig(ctx);
       if (cfg && identityExpectationsConfigured(cfg)) void verifyDeclaredIdentity(ctx, cfg).catch(() => void 0);
     }

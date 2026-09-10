@@ -141,8 +141,46 @@ with the active agent credential. If it is absent, Pi uses only the local
 human-session custody path to ensure it, then claims it with the live agent
 session. Set exact `PARLE_AGENT_ID` or pass the tool's exact owned `agentId` for
 that absent-alias step. If no human session is available, it stops for owner
-sign-in. It never creates an alias at startup and does not ask for a second
-confirmation after the explicit assumption.
+sign-in. Ordinary startup never creates an alias. Explicit assumptions use this same
+operation without a second confirmation.
+
+For an explicitly supervised startup, pass the one-shot CLI flag instead:
+
+```bash
+pi --parle-alias coordinator
+```
+
+Pi validates the alias and configured binding, completes declared-identity
+bootstrap, then performs the same `switchSessionAlias` assumption once without
+a model turn. It holds prompts, injected responsive work, flushing, and
+acknowledgements until the configured watcher has opened. The latch is
+namespaced process memory, survives extension reload, and is never written to
+disk. `PARLE_SESSION_ALIAS` remains display-only for this flow and must match
+the flag when set. A confirmed claim followed by watcher startup failure is
+reported as partial success; Pi keeps admission closed and never retries the
+claim or explicitly releases the alias. Normal session shutdown still ends the
+live Parle session. Post-ready injection retries normally. The wake-open wait
+is bounded to 10 seconds. Deferred rows remain queued until completion; they
+cannot be dropped for backpressure because the controller caches that outcome.
+Its existing per-drain bound is 100 batches; this is not a process-wide memory
+cap. Without the flag, startup is unchanged.
+
+The explicit flag may transfer an already-held alias. Repeating the full command
+in a supervisor is another launch request; use restart-disabled supervision
+when each launch requires operator intent. Neither environment configuration
+nor reload/new/resume/fork callbacks request another claim. A native Pi session
+switch ends the original Parle session; the launch becomes `ended`, admission
+stays closed, and recovery requires a fresh process launch. In headless modes
+rebind requests shutdown. In a TUI the refusal remains visible without killing
+the host.
+
+RPC emits JSON through `extension_ui_request` / `setStatus`, key
+`parle-alias-launch`, containing `alias`, `generation`, `sessionAddress` and
+`phase` (`claimed`, `ready`, or `ended`). These are historical launch results,
+not continuous ownership observations. JSON/print modes write that result to
+stderr. Supervisors must treat `extension_error` as failure and close the host:
+Pi 0.85.1 RPC can exit zero after an extension requests shutdown, so exit status
+alone is insufficient. No model turn is required for startup.
 
 ## Tools
 

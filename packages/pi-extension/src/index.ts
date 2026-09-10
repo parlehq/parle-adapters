@@ -2,11 +2,11 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, processClientInstanceId, readSavedStarts, recoveryInvokerState, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type RoomCapacityRecoveryParams, type RoomDetailsParams, type RoomParticipantsParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type DeliveryProgressDetail, type DeliveryProgressKind, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
+import { DEFAULT_API_BASE, DEFAULT_VERSION, DEFAULT_WAKE_BASE, FENCE_SUFFIX, INBOX_COMPLETENESS_GUIDANCE, INBOX_REPLY_GUIDANCE, SEND_ATTENTION_GUIDANCE, ParleAccountClient, ParleAgentClient, ResponsiveDeliveryController, activeRoomSectionFromStatus, assertNoReservedProtocolHeaders, assertSafeBase, catalogGitExposureWarning, compactServerWrappedContent as compactSharedServerWrappedContent, deleteProfile, deleteSavedStart, loadProfile, loadSavedStart, formatVersionErrorHint, parseErrorEnvelope, parseKeyValueFile, parseProfiles, knownAddressContextFor, parseSSEBlocks, isValidSessionAlias, processClientInstanceId, readSavedStarts, recoveryInvokerState, responsiveReplyPresentation, profileCatalogHasProfile, pruneRuntimeFiles, redactString, removeRuntimeFile as removeRuntimeFileShared, resolveProfileCatalogPath, resolveProfileCatalogPathForProcess, saveSavedStart, savedStartCatalogPath, savedStartPlan, summarizeSendDelivery, truncateText, type AcceptRoomInvitationParams, type AddOwnAgentSeatParams, type ClaimPrincipalInviteParams, type ConnectOwnAgentParams, type CreateOwnAgentParams, type CreateRoomParams, type CredentialProfile, type DeleteOwnAgentParams, type DeleteProfileParams, type EndOwnSessionParams, type HardenAccountParams, type LoginParams, type MintPrincipalInviteParams, type OnboardParams, type OwnedAliasDeliveryParams, type OwnedAliasReleaseParams, type RoomCapacityRecoveryParams, type RoomDetailsParams, type RoomParticipantsParams, type SavedStart, type TruncatedText, type DeliveryHandlerInput, type DeliveryHandlerResult, type DeliveryProgressDetail, type DeliveryProgressKind, type ResponsiveCursorScope, type SessionCommitPlan } from "@parlehq/agent-client";
 import { Type } from "typebox";
 const EXTENSION_ID = "25-parle";
 const PI_CLIENT_NAME = "@parlehq/pi-extension";
-const PI_EXTENSION_VERSION = "0.7.68";
+const PI_EXTENSION_VERSION = "0.7.69";
 const PI_CLIENT_INSTANCE_ID = processClientInstanceId();
 // Snapshot schema v2: one session, rooms[] only. Kept in step with
 // @parlehq/agent-client; readers accept nothing else.
@@ -216,6 +216,28 @@ type ParleSwitchProfileParams = {
   profile: string;
 };
 
+type AliasLaunchOutcome = "idle" | "pending" | "claimed" | "ready" | "refused" | "partial" | "ended";
+type AliasLaunchState = { attempted: boolean; alias?: string; generation?: number; sessionAddress?: string; outcome: AliasLaunchOutcome; error?: string; task?: Promise<void> };
+const ALIAS_LAUNCH_STATE_KEY = Symbol.for("@parlehq/pi-extension/parle-alias-launch-state");
+
+function aliasLaunchState(): AliasLaunchState {
+  const host = globalThis as any;
+  return host[ALIAS_LAUNCH_STATE_KEY] ||= { attempted: false, outcome: "idle" };
+}
+
+function launchAdmissionOpen(): boolean {
+  const state = aliasLaunchState();
+  return !state.attempted || state.outcome === "ready";
+}
+
+function launchRefusalMessage(): string {
+  const state = aliasLaunchState();
+  if (state.outcome === "ended") return "Parle launch session ended; prompts remain closed. Start a new process with --parle-alias to request another assumption.";
+  return state.outcome === "partial"
+    ? `Parle alias launch claimed ${state.alias || "the requested alias"}, but responsive delivery did not start; this session will not consume prompts: ${state.error || "watcher startup failed"}`
+    : `Parle alias launch did not complete; this session will not consume prompts: ${state.error || "alias assumption failed"}`;
+}
+
 // Pi owns only watcher policy state here: rate-limit parking, failure latches,
 // backoff bookkeeping, and the pending injection queue. The session, rooms,
 // cursor, alias, and lifecycle all live in the shared ParleAgentClient.
@@ -279,6 +301,26 @@ function refuseDeclaredIdentity(ctx: any, cfg: ParleConfig, error: any): void {
   // process.exitCode is still set for hosts whose exit path
   // honours it (print mode exits on its own). Never process.exit() here: it
   // would skip session_shutdown for every other extension.
+  process.exitCode = 1;
+  try { ctx.shutdown?.(); } catch {}
+}
+
+function refuseAliasLaunch(ctx: any, cfg: ParleConfig | undefined, error: any, partial = false): void {
+  const state = aliasLaunchState();
+  state.outcome = partial ? "partial" : "refused";
+  state.error = redactString(error instanceof Error ? error.message : String(error));
+  const terminal: any = new Error(state.error);
+  terminal.code = partial ? "alias_launch_watcher_failed" : "alias_launch_failed";
+  terminal.action = "stop";
+  terminal.scope = "agent_session";
+  terminal.retryable = false;
+  if (cfg) recordAutomaticFailure(terminal, cfg);
+  runtime.nextRetryAt = undefined;
+  runtime.watcherState = "disconnected";
+  runtime.lastError = state.error;
+  if (cfg) setStatus(ctx, cfg);
+  try { ctx?.ui?.notify?.(launchRefusalMessage(), "error"); } catch {}
+  if (!headlessHost(ctx)) return;
   process.exitCode = 1;
   try { ctx.shutdown?.(); } catch {}
 }
@@ -359,6 +401,7 @@ let watcherTask: Promise<void> | undefined;
 let recoveryRestartAbort: AbortController | undefined;
 let watcherLoopRunning = false;
 let activeWatcherRunId = 0;
+let watcherStartup: { runId: number; resolve: () => void; reject: (error: any) => void } | undefined;
 let rateLimitFirst429MonotonicMs: number | undefined;
 let rateLimitRecoveryInProgress = false;
 let wallNowMs = () => Date.now();
@@ -982,6 +1025,13 @@ function recordHostDeliveryProgress(kind: HostDeliveryProgressKind, detail: Omit
 // the queue as a completed skip instead of acknowledging ahead of them.
 function piDeliveryHandler(pi: any, ctx: any, cfg: ParleConfig, input: DeliveryHandlerInput): DeliveryHandlerResult {
   const key = deliveryKey(input.roomId, input.message);
+  // Startup alias assumption is an admission fence, not a delivery outcome:
+  // retain valid rows for the post-ready flush and never acknowledge any row
+  // while the requested identity is pending, refused, or only partially ready.
+  if (!launchAdmissionOpen()) {
+    if (key && !pendingResponsiveMessages.some((item) => item.key === key)) queuePendingResponsive(input, key, false);
+    return "deferred";
+  }
   if (!key) {
     runtime.lastError = "responsive delivery row missing seq or event_id";
     runtime.lastWatcherErrorAt = new Date().toISOString();
@@ -1016,7 +1066,7 @@ function piDeliveryHandler(pi: any, ctx: any, cfg: ParleConfig, input: DeliveryH
 // user-driven agent_settled coming. The flush is scheduled from the delivery
 // edge and resolves the host handle and context at fire time, so a stale
 // captured ctx.isIdle can never park delivery.
-function scheduleResponsiveFlush(pi: any, ctx: any, cfg: ParleConfig) {
+function scheduleResponsiveFlush(pi: any, ctx: any, cfg: ParleConfig, delayMs = 0) {
   if (responsiveFlushScheduled || shutdownRequested || lifecycleEnded) return;
   responsiveFlushScheduled = true;
   const timer = setTimeout(() => {
@@ -1027,12 +1077,15 @@ function scheduleResponsiveFlush(pi: any, ctx: any, cfg: ParleConfig) {
     void flushPendingResponsiveMessages(firePi, fireCtx, cfg).catch((error) => {
       recordWatcherError(error);
       setStatus(fireCtx, cfg);
+      scheduleResponsiveFlush(firePi, fireCtx, cfg, watcherRetryDelayMs(error));
     });
-  }, 0);
+  }, delayMs);
   (timer as any).unref?.();
 }
 
-function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: boolean) {
+function queuePendingResponsive(input: DeliveryHandlerInput, key: string, skip: boolean): void {
+  // The controller caches deferred outcomes. Every deferred row must retain
+  // its host queue entry; dropping overflow here would strand it, not replay it.
   const view = sessionView();
   pendingResponsiveMessages.push({
     key,
@@ -1209,7 +1262,7 @@ async function runSavedStart(pi: any, ctx: any, start: SavedStart, signal?: Abor
   };
 }
 
-async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal, toolAgentId?: string) {
+async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string, signal?: AbortSignal, toolAgentId?: string, startAfterAlias = true) {
   assertLifecycleActive();
   const live = agentClient(ctx, cfg);
   const priorHealthy = runtime.rateLimitRecoveryHealthy === true;
@@ -1223,7 +1276,7 @@ async function useSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: strin
     runtime.watcherEnabled = parseBoolEnabled(cfg.watchEnabled.value);
     setStatus(ctx, cfg);
     if (recovering) completeRateLimitRecovery(pi, ctx, cfg, "session_alias", true);
-    else {
+    else if (startAfterAlias) {
       stopWatcher(ctx);
       startWatcher(pi, ctx, cfg);
     }
@@ -1352,7 +1405,8 @@ function assertDeliveryFenceCurrent(fence: DeliveryFence) {
 // retry after rebootstrap, so a successor credential can never acknowledge
 // predecessor work. Acknowledgements run per row in queue order, so a crash
 // mid-batch leaves the un-acked suffix redeliverable.
-async function completePendingResponsive(pi: any, ctx: any, cfg: ParleConfig, item: PendingResponsiveMessage): Promise<void> {
+async function completePendingResponsive(pi: any, ctx: any, cfg: ParleConfig, item: PendingResponsiveMessage): Promise<boolean> {
+  if (!launchAdmissionOpen()) return false;
   assertDeliveryFenceCurrent(item.fence);
   const controller = ensureDeliveryController(pi, ctx, cfg);
   const roomId = item.fence.roomId || cfg.roomId?.value || "";
@@ -1378,6 +1432,7 @@ async function completePendingResponsive(pi: any, ctx: any, cfg: ParleConfig, it
     throw new Error(`Parle responsive acknowledgement failed: ${roomError || "acknowledgement did not complete"}`);
   }
   runtime.lastAckedSeq = typeof item.message.seq === "number" ? Math.max(runtime.lastAckedSeq || 0, item.message.seq) : runtime.lastAckedSeq;
+  return true;
 }
 
 function classifyWatcherError(error: any): WatcherErrorClass {
@@ -1542,7 +1597,7 @@ async function queueResponsiveMessages(ctx: any, cfg: ParleConfig, messages: any
 }
 
 async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfig, signal?: AbortSignal) {
-  if (responsiveFlushRunning || pendingResponsiveMessages.length === 0) return;
+  if (!launchAdmissionOpen() || responsiveFlushRunning || pendingResponsiveMessages.length === 0) return;
   responsiveFlushRunning = true;
   try {
     // Batches drain in queue order. A busy Pi admits the prompt through its
@@ -1581,7 +1636,7 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
         }
       }
       for (const item of batch) {
-        await completePendingResponsive(pi, ctx, cfg, item);
+        if (!await completePendingResponsive(pi, ctx, cfg, item)) return;
         pendingResponsiveMessages.shift();
         updatePendingResponsiveState();
       }
@@ -1599,6 +1654,10 @@ async function flushPendingResponsiveMessages(pi: any, ctx: any, cfg: ParleConfi
 // terminal; a later startWatcher (or explicit recovery) is the restart path.
 function watcherWakeOpenPolicy(ctx: any, cfg: ParleConfig, runId: number) {
   if (shutdownRequested || lifecycleEnded || runId !== activeWatcherRunId) return;
+  if (watcherStartup?.runId === runId) {
+    watcherStartup.resolve();
+    watcherStartup = undefined;
+  }
   recordWatcherSuccess(true);
   if (runtime.terminalCause || runtime.rateLimitParkedCause) return;
   runtime.watcherState = "watching";
@@ -1609,6 +1668,11 @@ function watcherWakeErrorPolicy(ctx: any, cfg: ParleConfig, error: any, runId: n
   if (shutdownRequested || lifecycleEnded) return "stop";
   if (runId !== activeWatcherRunId) return "stop";
   if (!recordAutomaticFailure(error, cfg, runId)) return "stop";
+  if (watcherStartup?.runId === runId) {
+    watcherStartup.reject(error);
+    watcherStartup = undefined;
+    return "stop";
+  }
   const terminalState = terminalWatcherState(error);
   runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
   setStatus(ctx, cfg);
@@ -1621,7 +1685,35 @@ function watcherWakeErrorPolicy(ctx: any, cfg: ParleConfig, error: any, runId: n
   return "continue";
 }
 
-async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal, runId: number) {
+async function awaitWatcherStart(start: Promise<void>, startup: Promise<void>, signal: AbortSignal): Promise<void> {
+  // start() returns after spawning the background loop, before wake-open.
+  // Its resolution is not readiness; propagate rejection but await the edge.
+  const timer = new AbortController();
+  let abort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    abort = () => reject(new Error("Parle watcher startup stopped"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    await Promise.race([
+      start.then(() => startup),
+      watcherSleep(10_000, timer.signal).then(() => { throw new Error("Parle wake stream did not open before startup timeout"); }),
+      aborted,
+    ]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+    timer.abort();
+  }
+}
+
+async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSignal, runId: number, propagateStartupFailure = false) {
+  const startup = propagateStartupFailure ? new Promise<void>((resolve, reject) => {
+    watcherStartup = { runId, resolve, reject };
+  }) : undefined;
+  // A wake failure can arrive before controller.start() returns. Observe it
+  // immediately; runWatcher still awaits it below to propagate the failure.
+  void startup?.catch(() => undefined);
   watcherLoopRunning = true;
   runtime.watcherStarted = true;
   runtime.watcherEnabled = true;
@@ -1638,7 +1730,16 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
     signal.addEventListener("abort", () => {
       if (deliveryController === controller) void controller.stop().catch(() => undefined);
     }, { once: true });
-    await controller.start();
+    const controllerStart = controller.start();
+    // ResponsiveDeliveryController.start() opens its loop in the background;
+    // wake failures settle startup, while cancellation must not wait forever
+    // for a transport that ignored abort.
+    void controllerStart.catch(() => undefined);
+    if (startup) {
+      await awaitWatcherStart(controllerStart, startup, signal);
+      const failedDrain = controller.status().rooms.find((room) => room.lastError);
+      if (failedDrain) throw new Error(failedDrain.lastError);
+    } else void controllerStart.catch(() => undefined);
     if (initialBaseline) {
       baselineNeeded = false;
       runtime.baselineAt = new Date().toISOString();
@@ -1646,6 +1747,10 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
     }
     await flushPendingResponsiveMessages(pi, ctx, cfg, signal);
   } catch (error: any) {
+    if (watcherStartup?.runId === runId) {
+      watcherStartup.reject(error);
+      watcherStartup = undefined;
+    }
     if (!signal.aborted && runId === activeWatcherRunId) {
       recordAutomaticFailure(error, cfg, runId);
       // Under declared expectations a terminal bootstrap failure (identity
@@ -1656,7 +1761,7 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
       runtime.watcherState = runtime.rateLimitParkedCause ? "rate_limited" : terminalState || (error?.action === "rebootstrap" ? "session_expired" : "backoff");
       watcherLoopRunning = false;
       setStatus(ctx, cfg);
-      if (!terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
+      if (!propagateStartupFailure && !terminalState && !runtime.rateLimitParkedCause && retryableError(error)) {
         let retryDelay = runtime.nextRetryAt ? Math.max(0, Date.parse(runtime.nextRetryAt) - wallNowMs()) : watcherRetryDelayMs(error);
         while (retryDelay > 0 && !signal.aborted) {
           await watcherSleep(retryDelay, signal).catch(() => undefined);
@@ -1666,13 +1771,14 @@ async function runWatcher(pi: any, ctx: any, cfg: ParleConfig, signal: AbortSign
           startWatcher(pi, ctx, cfg);
         }
       }
+      if (propagateStartupFailure) throw error;
     }
   }
 }
 
-function startWatcher(pi: any, ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd())) {
+function startWatcher(pi: any, ctx: any, cfg = resolveConfig(ctx.cwd || process.cwd()), allowLaunchPending = false, propagateStartupFailure = false): Promise<void> | undefined {
   if (shutdownRequested || lifecycleEnded) return;
-  if (identityGuard === "refused") return;
+  if (identityGuard === "refused" || (!allowLaunchPending && !launchAdmissionOpen())) return;
   if (client?.runtime.bootstrapped && cfg.roomId?.value && client.runtime.rooms?.[0]?.roomId && client.runtime.rooms[0].roomId !== cfg.roomId.value) return;
   if (!watcherConfigured(cfg) || automaticGateClosed(cfg)) return;
   const controllerRunning = Boolean(deliveryController?.status().running);
@@ -1680,15 +1786,20 @@ function startWatcher(pi: any, ctx: any, cfg = resolveConfig(ctx.cwd || process.
   watcherAbort?.abort();
   watcherAbort = new AbortController();
   const runId = ++activeWatcherRunId;
-  const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId);
+  const task = runWatcher(pi, ctx, cfg, watcherAbort.signal, runId, propagateStartupFailure);
   watcherTask = task;
   void task.catch(() => undefined).finally(() => {
     if (watcherTask === task) watcherTask = undefined;
   });
+  return task;
 }
 
 function stopWatcher(ctx?: any) {
   activeWatcherRunId += 1;
+  if (watcherStartup) {
+    watcherStartup.reject(new Error("Parle watcher startup stopped"));
+    watcherStartup = undefined;
+  }
   watcherAbort?.abort();
   watcherAbort = undefined;
   recoveryRestartAbort?.abort();
@@ -1807,6 +1918,7 @@ function statusDetails(ctx: any) {
       note: "Human-session credentials are restricted to typed account-plane tools and are never available to parle_request.",
     },
     sessionAlias: redactedValue(cfg.sessionAlias),
+    aliasLaunch: { ...aliasLaunchState() },
     identityGuard,
     ...(identityRefusal ? { identityRefusal } : {}),
     expectedAgent: redactedValue(cfg.expectedAgent),
@@ -1975,7 +2087,9 @@ export const __testing = {
   },
   setStatus,
   identityGuard() { return identityGuard; },
+  aliasLaunchState() { return { ...aliasLaunchState() }; },
   resetRuntime() {
+    delete (globalThis as any)[ALIAS_LAUNCH_STATE_KEY];
     runtime = { watcherState: "off" };
     identityGuard = "unconfigured";
     identityRefusal = undefined;
@@ -1992,6 +2106,7 @@ export const __testing = {
     recoveryRestartAbort = undefined;
     watcherLoopRunning = false;
     activeWatcherRunId = 0;
+    watcherStartup = undefined;
     rateLimitFirst429MonotonicMs = undefined;
     rateLimitRecoveryInProgress = false;
     wallNowMs = () => Date.now();
@@ -2044,9 +2159,70 @@ function resolveLifecycleConfig(ctx: any): ParleConfig | undefined {
   }
 }
 
+function reportAliasLaunch(ctx: any, cfg: ParleConfig, phase: "claimed" | "ready" | "ended"): void {
+  const state = aliasLaunchState();
+  const result = JSON.stringify({ alias: state.alias, generation: state.generation, sessionAddress: state.sessionAddress, phase });
+  setStatus(ctx, cfg);
+  if (ctx?.mode === "rpc") {
+    try { ctx.ui?.setStatus?.("parle-alias-launch", result); } catch {}
+  } else if (ctx?.mode === "json" || ctx?.mode === "print") {
+    console.error(result);
+  } else {
+    try { ctx?.ui?.notify?.(result, "info"); } catch {}
+  }
+}
+
+async function launchSessionAlias(pi: any, ctx: any, cfg: ParleConfig, alias: string): Promise<void> {
+  const state = aliasLaunchState();
+  setStatus(ctx, cfg);
+  try {
+    if (!isValidSessionAlias(alias)) {
+      throw new Error("--parle-alias must be an unreserved 2 to 32 character durable session alias using lowercase letters, digits, and single hyphens, and must not use the anonymous 16-character session shape.");
+    }
+    assertRuntimeConfig(cfg);
+    if (cfg.sessionAlias?.value && cfg.sessionAlias.value !== alias) {
+      throw new Error(`--parle-alias ${alias} conflicts with display-only PARLE_SESSION_ALIAS=${cfg.sessionAlias.value}; use one requested alias.`);
+    }
+    if (identityExpectationsConfigured(cfg)) await verifyDeclaredIdentity(ctx, cfg);
+    else await ensureBootstrapped(ctx, cfg);
+    const result = await useSessionAlias(pi, ctx, cfg, alias, undefined, undefined, false);
+    state.outcome = "claimed";
+    if (result.alias !== alias || !Number.isSafeInteger(result.generation) || typeof result.sessionAddress !== "string" || !result.sessionAddress) {
+      throw new Error("Parle alias claim did not return the requested alias, generation, and session address.");
+    }
+    state.alias = result.alias;
+    state.generation = result.generation;
+    state.sessionAddress = result.sessionAddress;
+    reportAliasLaunch(ctx, cfg, "claimed");
+    if (watcherConfigured(cfg)) {
+      const watcher = startWatcher(pi, ctx, cfg, true, true);
+      if (!watcher) throw new Error("Parle responsive watcher startup was refused");
+      await watcher;
+    }
+    state.outcome = "ready";
+    reportAliasLaunch(ctx, cfg, "ready");
+    try {
+      await flushPendingResponsiveMessages(pi, ctx, cfg);
+    } catch (error) {
+      recordWatcherError(error);
+      setStatus(ctx, cfg);
+      scheduleResponsiveFlush(pi, ctx, cfg, watcherRetryDelayMs(error));
+    }
+  } catch (error) {
+    const partial = state.outcome === "claimed" || state.outcome === "ready";
+    refuseAliasLaunch(ctx, cfg, error, partial);
+    throw error;
+  }
+}
+
 async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
   if (shutdownRequested) return;
   shutdownRequested = true;
+  const launch = aliasLaunchState();
+  if (launch.attempted && launch.outcome === "ready") {
+    launch.outcome = "ended";
+    if (_cfg) reportAliasLaunch(ctx, _cfg, "ended");
+  }
   stopWatcher();
   discardDeliveryController();
   removeRuntimeFile(ctx.cwd || process.cwd());
@@ -2081,29 +2257,68 @@ async function shutdownLifecycle(ctx: any, _cfg?: ParleConfig) {
 
 export default function parleExtension(pi: any) {
   lastPi = pi;
+  pi.registerFlag("parle-alias", {
+    description: "Explicitly assume this durable Parle session alias at process startup.",
+    type: "string",
+  });
 
-  pi.on("session_start", async (_event: any, ctx: any) => {
+  pi.on("session_start", async (event: any, ctx: any) => {
     lastCtx = ctx;
     pruneRuntimeFiles(ctx.cwd || process.cwd());
+    const launchAlias = event?.reason === "startup" ? pi.getFlag("parle-alias") : undefined;
+    const launchRequested = launchAlias !== undefined;
+    // The flag is an admission fence before config resolution. A malformed or
+    // disabled config must not leave its requested process able to consume input.
+    if (launchRequested && !aliasLaunchState().attempted) {
+      const state = aliasLaunchState();
+      state.attempted = true;
+      state.alias = typeof launchAlias === "string" ? launchAlias : undefined;
+      state.outcome = "pending";
+      state.error = undefined;
+    }
     const cfg = resolveLifecycleConfig(ctx);
-    if (!cfg) return;
-    preflightAutomaticBinding(cfg);
-    // Runs on every session_start (startup, reload, new, resume, fork): a
-    // changed declaration refuses; an unchanged one re-verifies below.
-    bindDeclaredExpectations(ctx, cfg);
+    if (!cfg) {
+      if (!launchRequested) return;
+      const error = new Error(runtime.lastError || "Parle alias launch could not resolve configuration.");
+      refuseAliasLaunch(ctx, undefined, error);
+      throw error;
+    }
+    if (!launchAdmissionOpen() && (!launchRequested || aliasLaunchState().outcome !== "pending")) {
+      if (headlessHost(ctx)) {
+        process.exitCode = 1;
+        try { ctx.shutdown?.(); } catch {}
+      }
+      throw new Error(launchRefusalMessage());
+    }
+    try {
+      preflightAutomaticBinding(cfg);
+      // Runs on every session_start (startup, reload, new, resume, fork): a
+      // changed declaration refuses; an unchanged one re-verifies below.
+      bindDeclaredExpectations(ctx, cfg);
+    } catch (error) {
+      if (launchRequested) refuseAliasLaunch(ctx, cfg, error, aliasLaunchState().outcome === "claimed" || aliasLaunchState().outcome === "ready");
+      throw error;
+    }
+    if (launchRequested) {
+      if (typeof launchAlias !== "string" || !launchAlias) {
+        const error = new Error("--parle-alias requires a non-empty alias value.");
+        refuseAliasLaunch(ctx, cfg, error);
+        throw error;
+      }
+      const state = aliasLaunchState();
+      if (!state.task && state.outcome === "pending") state.task = launchSessionAlias(pi, ctx, cfg, launchAlias);
+      if (state.task) await state.task;
+      return;
+    }
     if (identityExpectationsConfigured(cfg)) {
       // Pi awaits session_start, so the shared fail-closed check runs before
       // the first prompt in every mode; the input guard covers a prompt that
       // races it. A terminal failure (identity mismatch, unusable credential)
       // refuses the process outcome; a retryable one keeps the guard pending
-      // and lets the ordinary watcher retry re-run the same check.
+      // and lets the ordinary watcher retry re-run the same client check.
       try {
         await verifyDeclaredIdentity(ctx, cfg);
       } catch (error) {
-        // Retryable: the ordinary watcher retry (runWatcher -> ensureBootstrapped)
-        // re-runs the same client check and flips the guard on success; a
-        // refused prompt kicks one pass when no watcher is configured. Pi still
-        // reports the error (extension_error in RPC) either way.
         if (identityGuard !== "refused") startWatcher(pi, ctx, cfg);
         throw error;
       }
@@ -2118,10 +2333,10 @@ export default function parleExtension(pi: any) {
   // check, and it must also refuse extension-injected prompts (source
   // "extension"), which is how responsive delivery would otherwise start a turn.
   pi.on("input", async (_event: any, ctx: any) => {
-    if (identityGuard === "unconfigured" || identityGuard === "verified") return { action: "continue" };
-    const reason = identityRefusalMessage();
+    if (launchAdmissionOpen() && (identityGuard === "unconfigured" || identityGuard === "verified")) return { action: "continue" };
+    const reason = !launchAdmissionOpen() ? launchRefusalMessage() : identityRefusalMessage();
     try { if (ctx?.hasUI) ctx.ui?.notify?.(reason, "error"); } catch {}
-    if (identityGuard === "pending" && !identityVerifyInFlight && !watcherLoopRunning) {
+    if (launchAdmissionOpen() && identityGuard === "pending" && !identityVerifyInFlight && !watcherLoopRunning) {
       const cfg = resolveLifecycleConfig(ctx);
       if (cfg && identityExpectationsConfigured(cfg)) void verifyDeclaredIdentity(ctx, cfg).catch(() => undefined);
     }
