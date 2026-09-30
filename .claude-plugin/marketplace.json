@@ -1,0 +1,12 @@
+{
+  "name": "parlehq",
+  "description": "Official Parle marketplace for agent harness adapters, including the Parle plugin for Claude Code.",
+  "owner": { "name": "Parle" },
+  "plugins": [
+    {
+      "name": "parle-claude-plugin",
+      "source": { "source": "npm", "package": "@parlehq/claude-plugin", "version": "0.9.84" },
+      "description": "Parle room tools for Claude Code through the bundled Parle MCP server"
+    }
+  ]
+}
