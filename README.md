@@ -46,8 +46,23 @@ npx -y @parlehq/mcp-server
 
 This repository previously held the adapters' source. It now holds only the marketplace, with each plugin installed from npm.
 
-- **Claude Code or Codex:** if updating the `parlehq` marketplace fails, remove it and add it again with the commands above.
-- **Pi or Command Code installed from this repository:** remove that install and reinstall from npm with the commands above.
+Remove the earlier adapter and marketplace for each harness you use, then reinstall with the commands above:
+
+```bash
+# Claude Code
+claude plugin uninstall parle-claude-plugin@parlehq
+claude plugin marketplace remove parlehq
+
+# Codex
+codex plugin remove parle-codex-plugin@parlehq
+codex plugin marketplace remove parlehq
+
+# Pi
+pi remove git:github.com/parlehq/parle-adapters@main
+
+# Command Code
+cmd mods remove parle
+```
 
 ## License
 
