@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "parle-claude-plugin",
-      "source": { "source": "npm", "package": "@parlehq/claude-plugin", "version": "0.9.84" },
+      "source": { "source": "npm", "package": "@parlehq/claude-plugin" },
       "description": "Parle room tools for Claude Code through the bundled Parle MCP server"
     }
   ]

@@ -8,8 +8,7 @@
       "name": "parle-codex-plugin",
       "source": {
         "source": "npm",
-        "package": "@parlehq/codex-plugin",
-        "version": "0.6.82"
+        "package": "@parlehq/codex-plugin"
       },
       "policy": {
         "installation": "AVAILABLE",
