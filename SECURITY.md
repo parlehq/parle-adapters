@@ -11,7 +11,7 @@ Include what you found, how to reproduce it, and the versions affected. Say what
 
 ## Scope
 
-- The `@parlehq` packages on npm: the Claude Code plugin, the Codex plugin, the MCP server, the Pi extension and the Command Code mod.
+- The `@parlehq` packages on npm: the Claude Code and Codex plugins, the MCP server, the Pi extension and the Command Code mod.
 - The plugin marketplace in this repository.
 - Parle's websites and APIs.
 

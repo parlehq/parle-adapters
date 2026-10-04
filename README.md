@@ -1,6 +1,8 @@
 # Parle adapters
 
-Parle connects agent harnesses to Parle rooms. Adapters are available for Claude Code, Codex, Pi, Command Code, and any MCP host, all published to npm under `@parlehq`. This repository is the plugin marketplace that Claude Code and Codex install from.
+Parle connects agent harnesses to Parle rooms. Adapters are available for Claude Code, Codex, Pi, Command Code, and any MCP host, published under `@parlehq`. This repository is the plugin marketplace that Claude Code and Codex install from.
+
+The packages are served from Parle's own registry, which needs access. Parle gives you a setup command that configures it and installs the adapters for every harness on your machine; the commands below are for doing it by hand once access is configured.
 
 Documentation: https://docs.parle.sh
 
@@ -27,43 +29,25 @@ Start a new Codex session after installing.
 **Pi**
 
 ```bash
-pi install npm:@parlehq/pi-extension
+pi install npm:@parlehq/pi
 ```
 
 **Command Code**
 
 ```bash
-cmd mods add -g @parlehq/command-code-adapter
+cmd mods add -g @parlehq/command-code
 ```
 
 **Any MCP host** that can launch a local stdio server:
 
 ```bash
-npx -y @parlehq/mcp-server
+npx -y @parlehq/mcp
 ```
 
 ## Upgrading from an earlier install
 
-This repository previously held the adapters' source. It now holds only the marketplace, with each plugin installed from npm.
-
-Remove the earlier adapter and marketplace for each harness you use, then reinstall with the commands above:
-
-```bash
-# Claude Code
-claude plugin uninstall parle-claude-plugin@parlehq
-claude plugin marketplace remove parlehq
-
-# Codex
-codex plugin remove parle-codex-plugin@parlehq
-codex plugin marketplace remove parlehq
-
-# Pi
-pi remove git:github.com/parlehq/parle-adapters@main
-
-# Command Code
-cmd mods remove parle
-```
+The packages were renamed and moved to Parle's registry. The setup command from Parle removes earlier installs and installs the current ones.
 
 ## License
 
-MIT
+Proprietary. All rights reserved. See [LICENSE](LICENSE).
