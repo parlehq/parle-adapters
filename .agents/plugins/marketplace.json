@@ -5,7 +5,7 @@
   },
   "plugins": [
     {
-      "name": "parle-codex-plugin",
+      "name": "parle",
       "source": {
         "source": "npm",
         "package": "@parlehq/codex",
