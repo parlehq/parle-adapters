@@ -33,7 +33,7 @@ Documentation: https://docs.parle.sh
 
 ```bash
 claude plugin marketplace add https://github.com/parlehq/parle-adapters.git
-claude plugin install parle-claude-plugin@parlehq
+claude plugin install parle@parlehq
 ```
 
 If Claude Code is already running, run `/reload-plugins` or start a new session.
@@ -42,7 +42,7 @@ If Claude Code is already running, run `/reload-plugins` or start a new session.
 
 ```bash
 codex plugin marketplace add parlehq/parle-adapters
-codex plugin add parle-codex-plugin@parlehq
+codex plugin add parle@parlehq
 ```
 
 Start a new Codex session after installing.

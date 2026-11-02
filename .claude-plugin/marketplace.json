@@ -6,7 +6,7 @@
   },
   "plugins": [
     {
-      "name": "parle-claude-plugin",
+      "name": "parle",
       "source": {
         "source": "npm",
         "package": "@parlehq/claude-code",
